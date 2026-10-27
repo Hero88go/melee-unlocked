@@ -40,6 +40,7 @@ struct Slot {
   float prev[kPrev][kPad] = {};
   uint32_t last_frame = 0;
   bool live = false;
+  MuGhostAct last_act{};
   std::mt19937 rng{0x5EED};
 };
 
@@ -48,7 +49,7 @@ Model g_model;
 int g_loaded = 0;   // 0 not tried, 1 loaded, -1 missing or bad
 bool g_enabled = false;
 Slot g_slots[4];
-struct Ko { bool dead = false; float percent = 0; } g_ko[4];
+struct Ko { bool dead = false; float percent = 0, x = 0, y = 0; unsigned motion = 0; } g_ko[4];
 
 std::string model_path() {
   if (const char* v = std::getenv("MELEE_GHOST_AI_FILE")) return v;
@@ -159,6 +160,14 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   if (!ready() || o.version != MU_GHOST_VERSION || o.slot >= 4 || o.pro >= g_model.n_pros) return false;
   const Model& m = g_model;
   Slot& s = g_slots[o.slot];
+  // Asked twice in one frame (a fighter's input can be read more than once): the same answer, and the
+  // network does not step again. Stepping again looked like a gap and wiped its memory every frame.
+  if (s.live && !o.reset && o.frame == s.last_frame) {
+    static int repeats = 0;
+    if (++repeats <= 3) host::log("ghost ai: P%d asked again in frame %u", o.slot + 1, o.frame);
+    out = s.last_act;
+    return true;
+  }
   // A new match, a restart, a savestate or a gap: the memory of the match starts over.
   if (o.reset || !s.live || o.frame != s.last_frame + 1) {
     s.h.assign(m.h_rnn, 0.f);
@@ -173,9 +182,10 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   const auto note = [&](int port, const MuGhostFighter& f, const MuGhostFighter& other) {
     const bool dead = f.motion <= 10;
     if (dead && !g_ko[port].dead)
-      host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%)", port + 1, g_ko[port].percent, o.frame, other.num[3]);
+      host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%) last at %.0f,%.0f motion %u", port + 1,
+                g_ko[port].percent, o.frame, other.num[3], g_ko[port].x, g_ko[port].y, g_ko[port].motion);
     g_ko[port].dead = dead;
-    if (!dead) g_ko[port].percent = f.num[3];
+    if (!dead) { g_ko[port].percent = f.num[3]; g_ko[port].x = f.num[0]; g_ko[port].y = f.num[1]; g_ko[port].motion = f.motion; }
   };
   note(o.slot, o.self, o.opp);
   note(o.slot == 0 ? 1 : 0, o.opp, o.self);
@@ -256,6 +266,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
     spent = 0;
     calls = 0;
   }
+  s.last_act = out;
   // What it held, as a replay records it (the game's dead zone applied), for the next frame.
   std::memmove(s.prev[1], s.prev[0], sizeof s.prev[0]);
   const auto deadzone = [](float v) { return std::fabs(v) < 0.2875f ? 0.f : v; };

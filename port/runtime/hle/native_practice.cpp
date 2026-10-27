@@ -769,7 +769,7 @@ void tick() {
   {
     static const int test_at = [] { const char* v = std::getenv("MELEE_TEST_AFTER_SESSION"); return v ? std::atoi(v) : -1; }();
     static int ticks = 0;
-    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, 2);   // Fox
+    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, [] { const char* c = std::getenv("MELEE_TEST_P1_CHAR"); return c ? std::atoi(c) : 2; }());   // Fox, or MELEE_TEST_P1_CHAR
     // MELEE_TEST_TRAIN_AGAINST=<tick>,<character> (tests only): a ghost's character picked at that tick.
     static int against_at = -1, against = -1;
     static const bool parsed = [] { if (const char* v = std::getenv("MELEE_TEST_TRAIN_AGAINST")) std::sscanf(v, "%d,%d", &against_at, &against); return true; }();

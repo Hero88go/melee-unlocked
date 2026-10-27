@@ -341,20 +341,27 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
         mu_pc_reset(&pc_state[slot], 0x9E3779B9u ^ ((mu_pc_u32) slot * 2654435761u));
     }
     if (ghost_drive(fp, opp, c, out)) {
-        /* The safety net: below the stage's edge and free to act, the practice CPU's own recovery
+        /* The safety net: off the stage, falling at or below the ledge and free to act, the practice CPU's own recovery
          * brings the pro AI back (its network still ran, so its memory of the match goes on).
          * MELEE_GHOST_NO_NET (tests) leaves it to the network alone. */
         static int no_net = -1;
         const float ax = v.cpu.x < 0.0f ? -v.cpu.x : v.cpu.x;
         if (no_net < 0) no_net = getenv("MELEE_GHOST_NO_NET") != NULL;
-        if (!no_net && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag && ax > v.ledge_x - 5.0f &&
-            v.cpu.y < v.ledge_y - 5.0f)
+        if (!no_net && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag && ((ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
+             (ax > v.ledge_x - 40.0f && v.cpu.y < v.ledge_y - 10.0f)))
         {
             MuPcConfig rc = *c;
             rc.enabled = 1;
             rc.freeze = 0;
             if (rc.recovery == MU_PC_RECOVER_GAME) rc.recovery = MU_PC_RECOVER_MIX;
-            if (mu_pc_frame(&rc, &pc_state[slot], &v, &in)) {
+            static int net_logs;
+            if (getenv("MELEE_GHOST_LOG") != NULL && (v.frame % 6u) == 0 && net_logs < 400) {
+                net_logs++;
+                OSReport("[ghost] P%d net at %.0f,%.0f motion %d jumps %d ledge %.0f,%.0f\n", slot + 1, v.cpu.x,
+                         v.cpu.y, (int) v.cpu.motion, (int) v.cpu.jumps_left, v.ledge_x, v.ledge_y);
+            }
+            pc_clear(&in);   /* only the recovery: the model's other habits (an air dodge after hitstun) dropped it */
+            if (pc_recover(&rc, &pc_state[slot], &v, &in)) {
                 out->lx = in.lx;
                 out->ly = in.ly;
                 out->cx = in.cx;

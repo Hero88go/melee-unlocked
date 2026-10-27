@@ -439,9 +439,26 @@ static int pc_recover(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPc
     const float in = f->x > 0.0f ? -1.0f : 1.0f;
     const int high = c->recovery == MU_PC_RECOVER_HIGH ||
                      (c->recovery == MU_PC_RECOVER_MIX && (s->plan_arg & 1));
-    o->lx = in;
+    /* Under the stage's lip (inside the ledge and below it), going in only meets the underside: drift
+     * out from under it first. The up special aims at the ledge itself from wherever the fighter is
+     * (a fixed angle sent low fighters under the stage). */
+    const int under = pc_abs(f->x) < v->ledge_x + 6.0f && f->y < v->ledge_y - 12.0f;
+    float ax = (f->x > 0.0f ? v->ledge_x - 6.0f : 6.0f - v->ledge_x) - f->x;   /* a point inside and above the ledge */
+    float ay = v->ledge_y + 14.0f - f->y;
+    float len;
+    if (under) ax = -in * 0.4f * pc_abs(ay);   /* up and out, around the lip */
+    len = ax * ax + ay * ay;
+    if (len > 0.0f) {
+        float n = pc_abs(ax) + pc_abs(ay);   /* normalize: Newton steps from the L1 length (no sqrt here) */
+        int k;
+        for (k = 0; k < 6; k++) n = 0.5f * (n + len / n);
+        ax /= n;
+        ay /= n;
+    }
+    o->lx = under ? -in : in;
     if (pc_between(f->motion, MU_PC_MS_FALL_SPECIAL, MU_PC_MS_FALL_SPECIAL_B) || f->motion >= MU_PC_MS_SPECIAL_FIRST) {
-        o->ly = high ? 0.7f : 0.3f;   /* steer the up special and the fall after it */
+        o->lx = ax;   /* steer the up special (and the fall after it) at the ledge */
+        o->ly = ay;
         return 1;
     }
     if (f->jumps_left > 0 && f->vy < 0.0f && f->y < v->ledge_y + 30.0f) {
@@ -451,8 +468,8 @@ static int pc_recover(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPc
     }
     if (f->jumps_left == 0 && f->vy < 0.0f && f->y < v->ledge_y + (high ? 25.0f : -15.0f)) {
         o->buttons |= MU_PC_B;
-        o->ly = high ? 0.75f : 0.45f;
-        o->lx = (high ? 0.65f : 0.9f) * in;
+        o->lx = 0.0f;   /* straight up as B goes in: the up special, never the side one; aimed after */
+        o->ly = 1.0f;
     }
     return 1;
 }
