@@ -1567,7 +1567,7 @@ void refresh_updater() {
     if (MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) { settings_standby_stop(); host::updater::download_and_install(); }
     st = host::updater::state();
   }
-  std::string line = "Version " MELEE_PORT_VERSION ". " + host::updater::message();
+  std::string line = "Version " MELEE_PORT_VERSION ". " + host::updater::message() + " | " + launcher::lang::tx("What's new");
   if (st == State::Checking) line = "Version " MELEE_PORT_VERSION ". Checking for updates...";
   COLORREF d = st == State::Checking ? C_FAINT : st == State::UpdateAvailable ? C_WARN : st == State::Failed ? C_BAD : C_OK;
   // Only repaint when something actually changed: this runs on a 500 ms timer, and repainting the
@@ -1581,6 +1581,79 @@ void refresh_updater() {
   const bool choosing = host::updater::rollback_state() == host::updater::RollbackState::Downloading;
   EnableWindow(g_versions_btn, !choosing);
   EnableWindow(g_update_btn, !choosing);
+}
+
+// What's new: the release notes from GitHub, the same text as each release page there, newest
+// first. They come with the updater's version list, so nothing extra is fetched.
+std::wstring changelog_text() {
+  std::string out;
+  for (const auto& r : host::updater::releases()) {
+    out += "v" + r.version + (r.published.empty() ? "" : "   (" + r.published + ")") + "\n";
+    out += std::string(r.version.size() + 1, '=') + "\n";
+    std::string notes = r.notes;
+    for (const char* mark : {"**", "__", "`"})
+      for (size_t at; (at = notes.find(mark)) != std::string::npos;) notes.erase(at, std::strlen(mark));
+    std::string line, text;
+    bool install = false;   // each release's install steps are the same; only the changes are shown
+    for (size_t i = 0; i <= notes.size(); ++i) {
+      if (i < notes.size() && notes[i] != '\n') { if (notes[i] != '\r') line += notes[i]; continue; }
+      size_t h = 0;
+      while (h < line.size() && line[h] == '#') ++h;
+      if (h) { line.erase(0, h); while (!line.empty() && line[0] == ' ') line.erase(0, 1); }
+      if (h) install = line == "Install";
+      if (install) { line.clear(); continue; }
+      if (line.rfind("- ", 0) == 0 || line.rfind("* ", 0) == 0) line = "  \xE2\x80\xA2 " + line.substr(2);
+      text += line + "\n";
+      line.clear();
+    }
+    while (text.rfind("\n", 0) == 0) text.erase(0, 1);
+    out += (notes.empty() ? std::string("(no notes)\n") : text) + "\n";
+  }
+  std::wstring w;
+  for (wchar_t c : widen(out)) { if (c == L'\n') w += L'\r'; w += c; }
+  return w;
+}
+
+LRESULT CALLBACK changelog_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_SIZE) {
+    if (HWND edit = GetDlgItem(hwnd, 1)) MoveWindow(edit, 0, 0, LOWORD(lp), HIWORD(lp), TRUE);
+    return 0;
+  }
+  if (msg == WM_CTLCOLORSTATIC) {
+    SetTextColor((HDC)wp, C_TEXT); SetBkColor((HDC)wp, RGB(0x10, 0x14, 0x20));
+    static HBRUSH bg = CreateSolidBrush(RGB(0x10, 0x14, 0x20));
+    return (LRESULT)bg;
+  }
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void show_changelog() {
+  static HWND window;
+  if (window && IsWindow(window)) { SetForegroundWindow(window); return; }
+  if (host::updater::releases().empty()) {
+    MessageBoxW(g_main, launcher::lang::txw(L"The changelog is still loading or could not be reached. Try again shortly.").c_str(),
+                L"Melee Unlocked Launcher", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  static bool registered;
+  if (!registered) {
+    WNDCLASSW wc{}; wc.lpfnWndProc = changelog_proc; wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"MeleeUnlockedChangelog"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = (HICON)SendMessageW(g_main, WM_GETICON, ICON_BIG, 0);
+    RegisterClassW(&wc); registered = true;
+  }
+  RECT m{}; GetWindowRect(g_main, &m);
+  window = CreateWindowExW(0, L"MeleeUnlockedChangelog", launcher::lang::txw(L"What's new").c_str(), WS_OVERLAPPEDWINDOW,
+                           m.left + S(30), m.top + S(30), S(640), S(520), g_main, nullptr, GetModuleHandleW(nullptr), nullptr);
+  HWND edit = CreateWindowExW(0, L"EDIT", L"",
+                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                              0, 0, 10, 10, window, (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
+  SendMessageW(edit, EM_SETLIMITTEXT, 0, 0);   // the whole history is longer than the 32K default
+  SetWindowTextW(edit, changelog_text().c_str());
+  SendMessageW(edit, WM_SETFONT, (WPARAM)g_font, TRUE);
+  SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(12), S(12)));
+  RECT c{}; GetClientRect(window, &c); MoveWindow(edit, 0, 0, c.right, c.bottom, TRUE);
+  ShowWindow(window, SW_SHOW);
 }
 
 void choose_version() {
@@ -1722,6 +1795,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (!g_launcher_test) SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
       DragAcceptFiles(hwnd, TRUE);
       if (g_launcher_test) mod_manager::test_get();
+      if (g_launcher_test && std::getenv("MELEE_LAUNCHER_TEST_CHANGELOG")) host::updater::check(MELEE_PORT_VERSION);
       return 0;
     }
     case WM_ERASEBKGND: return 1;        // WM_PAINT paints every pixel from a memory DC
@@ -1774,6 +1848,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       RECT mods_line = LR(CX, 260, CW, 17);
+      RECT version_line = version_text_rect();
+      if (g_tab == 0 && PtInRect(&version_line, p)) { show_changelog(); return 0; }
       if (g_tab == 0 && PtInRect(&mods_line, p)) {
         std::error_code ec; std::filesystem::create_directories(widen(mod_manager::mods_dir()), ec);
         ShellExecuteW(nullptr, L"open", widen(mod_manager::mods_dir()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -1958,6 +2034,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // hears about a changed Game Build, setup or Mods folder within two seconds.
       launcher::lobby::tick_ui();
       replay_live_tick();   // "Watch live": opens a new broadcast game as it appears
+      // Test mode: What's new opens once the notes arrive, and its text is written beside the launcher.
+      if (static bool shown; g_launcher_test && !shown && std::getenv("MELEE_LAUNCHER_TEST_CHANGELOG") && !host::updater::releases().empty()) {
+        shown = true;
+        show_changelog();
+        std::ofstream(widen(g_dir + "\\changelog-test.txt"), std::ios::binary) << narrow(changelog_text());
+      }
       {
         static ULONGLONG last_state = 0;
         if (GetTickCount64() - last_state > 2000) {

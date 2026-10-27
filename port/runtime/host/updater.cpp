@@ -369,6 +369,7 @@ void check(const std::string& current_version, bool install_experimental) {
       if (!safe_version(tag)) continue;
       Download d; d.release.version = tag; d.root_name = "MeleeUnlocked-" + tag;
       if (r.count("published_at") && r["published_at"].is_string()) d.release.published = r["published_at"].get<std::string>().substr(0, 10);
+      if (r.count("body") && r["body"].is_string()) d.release.notes = r["body"].get<std::string>();
       if (r.count("assets") && r["assets"].is_array()) for (const auto& a : r["assets"]) {
         if (!a.is_object()) continue;
         const std::string name = a.value("name", std::string());
