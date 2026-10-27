@@ -102,7 +102,13 @@ int main() {
   gx::RenderOptions old_poly; old_poly.low_poly_fighters = 1; gx::migrate_lightweight(old_poly);
   check(old_poly.lightweight == 1 && old_poly.low_poly_fighters == 0, "lowpoly 1 becomes level 1");
   gx::RenderOptions old_spec; old_spec.low_spec = true; gx::migrate_lightweight(old_spec);
-  check(old_spec.lightweight == 4, "lowspec 1 becomes level 4");
+  check(old_spec.lightweight == 0 && !old_spec.low_spec, "lowspec 1 keeps the game's look");
+  gx::RenderOptions moved; moved.low_spec = true; moved.lightweight = 4; gx::migrate_lightweight(moved);
+  check(moved.lightweight == 0 && !moved.low_spec, "a 0.9.60 file moved to level 4 gets its look back");
+  gx::RenderOptions potato; potato.low_spec = true; potato.lightweight = 4; potato.look_fighter = 3; gx::migrate_lightweight(potato);
+  check(potato.lightweight == 4 && potato.low_spec, "a picked look stays");
+  gx::RenderOptions picked; picked.low_spec = true; picked.lightweight = 4; gx::migrate_lightweight(picked, true);
+  check(picked.lightweight == 4 && picked.low_spec, "level 4 picked in a fixed build stays");
 
   // Which scenes are matches (frame_in_match), from the game's own scene tables. The 1P modes'
   // first fights used to count as menus (B-526: pausing there lost the smooth pause zoom).

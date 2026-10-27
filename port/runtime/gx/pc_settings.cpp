@@ -1996,6 +1996,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   std::vector<std::string> texture_packs_off;
   bool gecko_chosen = false;           // the panel has saved a choice (even "none")
   int saved_lcancel_flash = -1, saved_lcancel_success = -1;
+  bool lowspec_look = false;   // "lowspec_look 1": written by builds that migrate Low spec to the image only
   int dlss5_defaults_version = 0;   // 2 from 0.9.60: NVIDIA's own DLSS 5 defaults
   while (file >> key) {
     std::getline(file, value);
@@ -2006,7 +2007,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
     if (source_port::mods::parse_choice(key, value, &options.mod_choices)) continue;
     try {
       bool matched = true;
-      if (key == "fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || (rate >= 30 && rate <= 2000)) options.fps_cap = rate; }
+      if (key == "fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || rate >= 30) options.fps_cap = std::min(rate, 2000.0); }
       else if (key == "scale") { int scale = std::stoi(value); if (scale >= 0 && scale <= 8) options.efb_scale = scale; }
       else if (key == "fullscreen") options.fullscreen = value == "1";
       else if (key == "exclusivefullscreen") options.exclusive_fullscreen = value == "1";
@@ -2112,6 +2113,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "stadium_frozen") options.stadium_frozen = value == "1";
       else if (key == "look_lab_fighters") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_lab_fighters = n; }
       else if (key == "look_lab_stage") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_lab_stage = n; }
+      else if (key == "lowspec_look") lowspec_look = value == "1";
       else if (key == "lightweight") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kLightweightLevels) options.lightweight = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
@@ -2205,7 +2207,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       // after a restart still restores their own settings rather than the defaults.
       else if (key == "lowspec") options.low_spec = value == "1";
       else if (key == "lowspec_prev_backend") options.low_spec_previous.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
-      else if (key == "lowspec_prev_fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || (rate >= 30 && rate <= 2000)) options.low_spec_previous.fps_cap = rate; }
+      else if (key == "lowspec_prev_fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || rate >= 30) options.low_spec_previous.fps_cap = std::min(rate, 2000.0); }
       else if (key == "lowspec_prev_scale") { int n = std::stoi(value); if (n >= 0 && n <= 8) options.low_spec_previous.efb_scale = n; }
       else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n == 1 || n == 2) options.low_spec_previous.ssaa = n; }
       else if (key == "lowspec_prev_anisotropy") { int n = std::stoi(value); if (n == 1 || n == 2 || n == 4 || n == 8 || n == 16) options.low_spec_previous.anisotropy = n; }
@@ -2378,7 +2380,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_mods_in_direct() = options.mods_in_direct;
   RenderOptions::live_te_options2() = options.te_options2;
   RenderOptions::live_te_menu_music().store(options.te_menu_music);
-  migrate_lightweight(options);   // files from before the "Lightweight" ladder
+  migrate_lightweight(options, lowspec_look);   // files from before the "Lightweight" ladder
   set_lightweight_level(options.lightweight);
 #ifdef GX_DLSS5
   dlss5::profile_set_folder(options.settings_path);
@@ -3492,7 +3494,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ninputoverlayvalues " << options.input_overlay_values
        << "\ninputoverlaystick " << options.input_overlay_stick
        << "\neffects " << options.effects_level
-       << "\nlightweight " << options.lightweight
+       << "\nlightweight " << options.lightweight << "\nlowspec_look 1"
        << "\nretro " << (options.retro ? 1 : 0)
        << "\nlook_fighter " << options.look_fighter << "\nlook_stage " << options.look_stage
        << "\nlook_menus " << options.look_menus << "\nlook_unfiltered " << (options.look_unfiltered ? 1 : 0) << "\nlook_own " << (options.look_own ? 1 : 0)
