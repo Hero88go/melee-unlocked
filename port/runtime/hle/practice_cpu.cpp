@@ -18,6 +18,7 @@
 // The decision model, compiled here for the Static Recomp (and for the menu's presets).
 #include "../abi/mu_practice_cpu_impl.inl"
 #include "practice_ghosts.h"
+#include "ghost_ai.h"
 
 namespace practice_cpu {
 namespace {
@@ -69,7 +70,8 @@ bool ghost(int index, MuPcConfig& c) {
   if (gh.l_cancel) c.l_cancel = gh.l_cancel;
   if (gh.aggression) c.aggression = gh.aggression;
   c.tools = tools;
-  c.preset = 0;
+  // With the pro AI file beside the game, that pro's network plays; the habits above stay as the fallback.
+  c.preset = ghost_ai::available() ? (uint8_t)MU_PC_PRESET_PRO(index) : 0;
   return true;
 }
 

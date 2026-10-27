@@ -27,6 +27,10 @@ typedef __INT32_TYPE__ mu_pc_s32;
 
 #define MU_PC_CONFIG_VERSION 1u
 
+/* preset values for the pro AI: one pro, or (replay takeover) the pro who plays the fighter's character. */
+#define MU_PC_PRESET_PRO(i) (0x80u | (unsigned) (i))
+#define MU_PC_PRESET_AI 0xFFu
+
 /* GameCube controller bits (the game's HSD_PAD_* values). */
 #define MU_PC_DLEFT 0x0001u
 #define MU_PC_DRIGHT 0x0002u
@@ -177,7 +181,8 @@ typedef struct MuPcConfig {
     mu_pc_u8 freeze;             /* 1: the CPU stands still and only does the hit reactions (DI, tech...) */
     mu_pc_u8 ledge_delay;        /* most frames it waits on the ledge before its option (random below it) */
     mu_pc_u8 tools;              /* MU_PC_TOOL_*: Training tools the Practice page turns on (host side) */
-    mu_pc_u8 preset;             /* 1 + the preset last applied; 0 once anything was changed by hand */
+    mu_pc_u8 preset;             /* 1 + the preset last applied; 0 once anything was changed by hand;
+                                  * MU_PC_PRESET_PRO(i): a pro AI plays (mu_ghost_ai.h) */
     mu_pc_u8 reserved[4];
 } MuPcConfig;
 

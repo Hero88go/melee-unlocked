@@ -14,6 +14,7 @@
 #include "host.h"
 #include "practice_cpu.h"
 #include "practice_ghosts.h"
+#include "ghost_ai.h"
 #include "native_practice.h"
 #include "slippi_online.h"
 
@@ -435,6 +436,8 @@ std::vector<Row> rows_for(Page p) {
       char t[24]; std::snprintf(t, sizeof t, tools ? "%d on" : "Off", tools);
       rows.push_back(page_row("Tools", Page::Tools, t, "Save states, hitboxes, inputs."));
       std::string preset = c.preset >= 1 && c.preset <= mu_pc_preset_count() ? mu_pc_preset_name(c.preset - 1) : "Your own";
+      if ((c.preset & 0x80) && c.preset != MU_PC_PRESET_AI && (c.preset & 0x7F) < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]))
+        preset = std::string(practice_ghosts::kGhosts[c.preset & 0x7F].name) + " AI";
       rows.push_back(page_row("Presets", Page::Presets, preset, "Ready-made CPUs and your own setups."));
       rows.push_back(action_row("All settings", kActWindow, "", "The full Practice window, for the mouse and keyboard."));
       break;
@@ -557,9 +560,15 @@ std::vector<Row> rows_for(Page p) {
         char about[220], games[16];
         if (gh.games >= 1000) std::snprintf(games, sizeof games, "%d,%03d", gh.games / 1000, gh.games % 1000);
         else std::snprintf(games, sizeof games, "%d", gh.games);
-        std::snprintf(about, sizeof about,
-                      "%s's habits from %s of their games: attacks, movement, shielding, techs, getups, ledge "
-                      "options. The CPU becomes %s and Training starts again on this stage.", gh.name, games, gh.character);
+        if (ghost_ai::available())
+          std::snprintf(about, sizeof about,
+                        "An AI that learned from %s's own %s games, frame by frame: it moves, attacks, punishes, "
+                        "recovers and edgeguards the way they do. The CPU becomes %s and Training starts again.",
+                        gh.name, gh.character, gh.character);
+        else
+          std::snprintf(about, sizeof about,
+                        "%s's habits from %s of their games: attacks, movement, shielding, techs, getups, ledge "
+                        "options. The CPU becomes %s and Training starts again on this stage.", gh.name, games, gh.character);
         rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about));
       }
       break;

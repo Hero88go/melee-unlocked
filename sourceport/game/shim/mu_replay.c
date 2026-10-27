@@ -561,11 +561,30 @@ void mu_refresh_part_matrices(Fighter* fp)
     }
 }
 
+/* The five state-flag bytes of a post-frame event (0x26..0x2A); also what the pro AI sees. */
+void mu_replay_fighter_flags(const Fighter* fp, unsigned char out[5])
+{
+    out[0] = FLAG(fp->allow_interrupt, 0) | FLAG(fp->x2218_b1, 1) | FLAG(fp->x2218_b2, 2) |
+              FLAG(fp->reflecting, 3) | FLAG(fp->x2218_b4, 4) | FLAG(fp->x2218_b5, 5) |
+              FLAG(fp->x2218_b6, 6) | FLAG(fp->x2218_b7, 7);
+    out[1] = FLAG(fp->x221A_b0, 0) | FLAG(fp->x221A_b1, 1) | FLAG(fp->allow_sdi, 2) |
+              FLAG(fp->x221A_b3, 3) | FLAG(fp->fall_fast, 4) | FLAG(fp->x221A_b5, 5) |
+              FLAG(fp->x221A_b6, 6) | FLAG(fp->x221A_b7, 7);
+    out[2] = FLAG(fp->x221B_b0, 0) | FLAG(fp->x221B_b1, 1) | FLAG(fp->x221B_b2, 2) |
+            FLAG(fp->x221B_b3, 3) | FLAG(fp->x221B_b4, 4) | FLAG(fp->x221B_b5, 5) |
+            FLAG(fp->x221B_b6, 6) | FLAG(fp->x221B_b7, 7);
+    out[3] = FLAG(fp->x221C_b0, 0) | FLAG(fp->x221C_b1, 1) | FLAG(fp->x221C_b2, 2) |
+              FLAG(fp->x221C_b3, 3) | FLAG(fp->x221C_b4, 4) | FLAG(fp->x221C_b5, 5) |
+              FLAG(fp->x221C_b6, 6) | FLAG((fp->x221C_u16_y >> 2) & 1, 7);
+    out[4] = FLAG(fp->x221F_b0, 0) | FLAG(fp->x221F_b1, 1) | FLAG(fp->x221F_b2, 2) |
+              FLAG(fp->is_sleeping, 3) | FLAG(fp->is_sub_fighter, 4) | FLAG(fp->x221F_b5, 5) |
+              FLAG(fp->x221F_b6, 6) | FLAG(fp->x221F_b7, 7);
+}
+
 void mu_replay_post_frame(Fighter* fp)
 {
     u8 b[0x55];
     u32 misc;
-    u8 flags;
 
     if (mu_replay_on() && !fp->is_sleeping) {
         dump_fighter(fp);
@@ -596,22 +615,7 @@ void mu_replay_post_frame(Fighter* fp)
     b[0x20] = (u8) fp->dmg.x18c4_source_ply;
     b[0x21] = (u8) Player_GetStocks(fp->player_idx);
     putf(b, 0x22, fp->cur_anim_frame);
-    b[0x26] = FLAG(fp->allow_interrupt, 0) | FLAG(fp->x2218_b1, 1) | FLAG(fp->x2218_b2, 2) |
-              FLAG(fp->reflecting, 3) | FLAG(fp->x2218_b4, 4) | FLAG(fp->x2218_b5, 5) |
-              FLAG(fp->x2218_b6, 6) | FLAG(fp->x2218_b7, 7);
-    b[0x27] = FLAG(fp->x221A_b0, 0) | FLAG(fp->x221A_b1, 1) | FLAG(fp->allow_sdi, 2) |
-              FLAG(fp->x221A_b3, 3) | FLAG(fp->fall_fast, 4) | FLAG(fp->x221A_b5, 5) |
-              FLAG(fp->x221A_b6, 6) | FLAG(fp->x221A_b7, 7);
-    flags = FLAG(fp->x221B_b0, 0) | FLAG(fp->x221B_b1, 1) | FLAG(fp->x221B_b2, 2) |
-            FLAG(fp->x221B_b3, 3) | FLAG(fp->x221B_b4, 4) | FLAG(fp->x221B_b5, 5) |
-            FLAG(fp->x221B_b6, 6) | FLAG(fp->x221B_b7, 7);
-    b[0x28] = flags;
-    b[0x29] = FLAG(fp->x221C_b0, 0) | FLAG(fp->x221C_b1, 1) | FLAG(fp->x221C_b2, 2) |
-              FLAG(fp->x221C_b3, 3) | FLAG(fp->x221C_b4, 4) | FLAG(fp->x221C_b5, 5) |
-              FLAG(fp->x221C_b6, 6) | FLAG((fp->x221C_u16_y >> 2) & 1, 7);
-    b[0x2A] = FLAG(fp->x221F_b0, 0) | FLAG(fp->x221F_b1, 1) | FLAG(fp->x221F_b2, 2) |
-              FLAG(fp->is_sleeping, 3) | FLAG(fp->is_sub_fighter, 4) | FLAG(fp->x221F_b5, 5) |
-              FLAG(fp->x221F_b6, 6) | FLAG(fp->x221F_b7, 7);
+    mu_replay_fighter_flags(fp, &b[0x26]);
     memcpy(&misc, &fp->mv, 4);
     put32(b, 0x2B, misc);
     b[0x2F] = (u8) fp->ground_or_air;

@@ -24,6 +24,7 @@
 
 #include "mu_native.h"
 #include "mu_practice_cpu_impl.inl"
+#include "mu_ghost_ai.h"
 
 /* The model's motion ids are the game's: checked here so a decomp renumbering cannot slip by. */
 _Static_assert(ftCo_MS_RebirthWait == MU_PC_MS_REBIRTH_WAIT, "motion ids");
@@ -177,6 +178,7 @@ static int pc_allowed(void)
 }
 
 static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out, int report);
+static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out);
 
 /* Nonzero when the practice CPU set this fighter's controller for the frame. */
 int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
@@ -185,6 +187,23 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
     const MuPcConfig* c;
     Fighter* opp = NULL;
     int k;
+    if (fp != NULL && !fp->is_sub_fighter && fp->player_idx == 0 && pc_allowed()) {
+        /* MELEE_TEST_AI_P1=<pro> (tests only): player 1 is a pro AI too, against player 2, so two AIs
+         * (or an AI and the practice CPU) can play whole matches in a hidden run. */
+        static int test_pro = -2;
+        if (test_pro == -2) {
+            const char* v = getenv("MELEE_TEST_AI_P1");
+            test_pro = v != NULL ? (int) (v[0] - '0') : -1;
+        }
+        if (test_pro >= 0) {
+            HSD_GObj* g = Player_GetEntity(1);
+            MuPcConfig t;
+            __builtin_memset(&t, 0, sizeof t);
+            t.enabled = 1;
+            t.preset = (mu_pc_u8) MU_PC_PRESET_PRO(test_pro);
+            return g != NULL && g->user_data != NULL && ghost_drive(fp, g->user_data, &t, out);
+        }
+    }
     if (fp == NULL || fp->is_sub_fighter || !ftCo_IsCpuControlled(fp) || !pc_allowed()) return 0;
     c = pc_settings();
     if (!c->enabled) return 0;
@@ -206,11 +225,118 @@ int mu_practice_cpu_drive_as(void* fighter, void* opponent, const MuPcConfig* c,
     return pc_drive(fp, opponent, c, out, 0);
 }
 
+/* ---- the pro AI (mu_ghost_ai.h): the host's network plays, from what a replay would record ---- */
+#define CMD_GHOST_AI 0xEA
+void mu_replay_fighter_flags(const Fighter* fp, unsigned char out[5]);
+
+static void ghost_read(const Fighter* fp, MuGhostFighter* g)
+{
+    u32 misc;
+    __builtin_memset(g, 0, sizeof *g);
+    if (fp == NULL) return;
+    __builtin_memcpy(&misc, &fp->mv, 4);
+    g->num[0] = fp->cur_pos.x;
+    g->num[1] = fp->cur_pos.y;
+    g->num[2] = fp->facing_dir;
+    g->num[3] = fp->dmg.x1830_percent;
+    g->num[4] = fp->shield_health;
+    g->num[5] = (float) Player_GetStocks(fp->player_idx);
+    g->num[6] = fp->cur_anim_frame;
+    __builtin_memcpy(&g->num[7], &misc, 4);
+    g->num[8] = fp->ground_or_air == GA_Air ? 1.0f : 0.0f;
+    g->num[9] = (float) (fp->co_attrs.max_jumps - fp->x1968_jumpsUsed);
+    g->num[10] = fp->self_vel.x;
+    g->num[11] = fp->self_vel.y;
+    g->num[12] = fp->x8c_kb_vel.x;
+    g->num[13] = fp->x8c_kb_vel.y;
+    g->num[14] = fp->gr_vel;
+    g->num[15] = fp->dmg.x195c_hitlag_frames;
+    g->motion = (unsigned short) fp->motion_id;
+    g->kind = (unsigned char) fp->kind;
+    mu_replay_fighter_flags(fp, g->flags);
+}
+
+/* The pro for this fighter: the one picked, or (MU_PC_PRESET_AI) the pro who plays its character. */
+static int ghost_pro(const Fighter* fp, const MuPcConfig* c)
+{
+    if (c->preset == MU_PC_PRESET_AI) {
+        switch (fp->kind) {
+        case Ft_Kind_Falco: return 0;   /* Mang0 */
+        case Ft_Kind_Mars: return 1;    /* Zain */
+        case Ft_Kind_Purin: return 2;   /* Hungrybox */
+        case Ft_Kind_Fox: return 3;     /* Cody Schwab */
+        default: return -1;
+        }
+    }
+    return (c->preset & 0x80u) ? (int) (c->preset & 0x7Fu) : -1;
+}
+
+static int ghost_stage(void)
+{
+    switch (stage_info.grkind) {
+    case Gr_Kind_Izumi: return 2;
+    case Gr_Kind_PStadium: return 3;
+    case Gr_Kind_Story: return 8;
+    case Gr_Kind_OldPupupu: return 28;
+    case Gr_Kind_Battle: return 31;
+    case Gr_Kind_Last: return 32;
+    default: return 0;
+    }
+}
+
+static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out)
+{
+    static void* owner[4];
+    static unsigned char response[4096];   /* the host's minimum reply capacity */
+    MuGhostObs obs;
+    MuGhostAct act;
+    unsigned int got = 0;
+    const int pro = ghost_pro(fp, c);
+    const int slot = fp->player_idx & 3;
+    if (pro < 0 || opp == NULL) return 0;
+    __builtin_memset(&obs, 0, sizeof obs);
+    obs.version = MU_GHOST_VERSION;
+    obs.pro = (unsigned char) pro;
+    obs.slot = (unsigned char) slot;
+    obs.reset = owner[slot] != fp->gobj;
+    owner[slot] = fp->gobj;
+    obs.stage = (short) ghost_stage();
+    obs.frame = (unsigned int) gm_GetFrameCount();
+    ghost_read(fp, &obs.self);
+    ghost_read(opp, &obs.opp);
+    if (mu_online_abi_command(CMD_GHOST_AI, (const unsigned char*) &obs, sizeof obs, response, sizeof response, &got) != 0 ||
+        got != sizeof act)
+    {
+        return 0;
+    }
+    __builtin_memcpy(&act, response, sizeof act);
+    out->lx = act.lx;
+    out->ly = act.ly;
+    out->cx = act.cx;
+    out->cy = act.cy;
+    out->l = act.l;
+    out->r = act.r;
+    out->buttons = act.buttons;
+    return 1;
+}
+
 static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out, int report)
 {
     MuPcView v;
     MuPcInput in;
     int slot, driven;
+    if (ghost_drive(fp, opp, c, out)) {
+        if (report) {
+            static unsigned char response[4096];
+            unsigned char payload[3] = {1, 0, 0};
+            unsigned int got = 0;
+            payload[2] = (unsigned char) fp->kind;
+            if ((gm_GetFrameCount() % 15u) == 0) {
+                mu_online_abi_command(CMD_PRACTICE_CPU, payload, sizeof payload, response, sizeof response, &got);
+            }
+        }
+        return 1;
+    }
     slot = fp->player_idx < 6 ? fp->player_idx : 0;
     __builtin_memset(&v, 0, sizeof v);
     pc_read(fp, &v.cpu);

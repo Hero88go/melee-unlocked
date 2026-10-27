@@ -39,6 +39,7 @@
 #include "gx_shader.h"
 #include "render_options.h"
 #include "training_overlay.h"
+#include "ghost_ai.h"
 #include "practice_cpu.h"
 #include "lcancel.h"
 #include "offline_input_delay.h"
@@ -1305,6 +1306,7 @@ constexpr uint8_t CMD_LAB_SAVE = 0xF2, CMD_LAB_LOAD = 0xF3, CMD_LAB_ADVANTAGE = 
 constexpr uint8_t CMD_PRACTICE_CPU = 0xF6;   // the practice CPU's settings (port/runtime/hle/practice_cpu.h)
 constexpr uint8_t CMD_FRAME_EVENT = 0xE8;   // replay frame data for the coach (shim/mu_framedata.c, host/replay_coach.h)
 constexpr uint8_t CMD_REPLAY_DEFENSE = 0xE9;   // a takeover's opponents once the game leaves the replay (shim/mu_replay_defend.c)
+constexpr uint8_t CMD_GHOST_AI = 0xEA;         // a pro AI's controller for this frame (hle/ghost_ai.h)
 void apply_content_mode(int mode);
 constexpr int32_t kLabFrame = -1000000;
 // The replay viewer's controls (shim/mu_replay.c mu_replay_frame_begin, host/replay_control.h):
@@ -1557,6 +1559,9 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
             for (auto& v : cfg.move_odds) v = 0;
             cfg.move_odds[MU_PC_MOVE_STAND] = 100;
             cfg.sdi_amount = 2;
+            // With the pro AI beside the game, a fighter whose character a pro plays is played by
+            // that AI instead (shim/mu_replay_defend.c picks the pro): it fights back, as a player would.
+            if (ghost_ai::available()) cfg.preset = MU_PC_PRESET_AI;
           } else if (defense == 1) {
             mu_pc_preset(1, &cfg);   // stands still and only reacts to being hit
             for (auto& v : cfg.di_odds) v = 0;
@@ -1585,6 +1590,16 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           return true;
         }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
+        if (c == CMD_GHOST_AI && n == sizeof(MuGhostObs)) {   // shim/mu_practice_cpu.c: a pro AI's controller
+          MuGhostObs obs;
+          std::memcpy(&obs, p, sizeof obs);
+          MuGhostAct act;
+          if (ghost_ai::act(obs, act)) {
+            const auto* bytes = reinterpret_cast<const uint8_t*>(&act);
+            reply.assign(bytes, bytes + sizeof act);
+          }
+          return true;
+        }
         if (c == CMD_PRACTICE_CPU) {   // shim/mu_practice_cpu.c: the settings, or what it is doing
           if (n == 2 || n == 3) { practice_cpu::note_status(p[0] != 0, p[1], 0, n == 3 ? p[2] : -1); return true; }
           const MuPcConfig cfg = practice_cpu::config();
