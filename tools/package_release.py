@@ -217,6 +217,8 @@ def main():
                     help="optional melee_game.dll paired with --source-exe")
     ap.add_argument("--source-dbg", type=Path, default=None,
                     help="optional melee_game.dbg paired with --source-dll")
+    ap.add_argument("--ghost-ai", type=Path, default=None,
+                    help="the pro AI network (ghost_ai.bin); default: beside --source-exe")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.compat_exe and not args.skip_compat_exe:
@@ -288,6 +290,11 @@ def main():
             if not args.source_dbg.is_file():
                 raise SystemExit(f"missing Source Port debug file: {args.source_dbg}")
             shutil.copy2(args.source_dbg, folder / "melee_game.dbg")
+        # Fight a pro: the network the practice CPU plays with (port/runtime/hle/ghost_ai.cpp).
+        ghost = args.ghost_ai or args.source_exe.parent / "ghost_ai.bin"
+        if not ghost.is_file():
+            raise SystemExit(f"missing pro AI file: {ghost} (ghost-ai/export.py)")
+        shutil.copy2(ghost, folder / "ghost_ai.bin")
         print(f"source port: {args.source_exe} + {args.source_dll}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():

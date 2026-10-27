@@ -346,7 +346,8 @@ void frame(int style, const practice_menu::Frame& f) {
     float ra = 0.0f;
     std::vector<std::string> detail;
     replay_coach::Readout r;
-    if (replay_coach::latest(ev, age) && age < 5.0) {
+    // Live: only what happened in this try, never a reading left over from the recording.
+    if (replay_coach::latest(ev, age) && age < 5.0 && (live < 0 || ev.frame >= g.live_frame)) {
       ra = std::clamp((float)(5.0 - age) / 0.6f, 0.0f, 1.0f);
       r = replay_coach::readout(ev);
       detail = practice_menu::wrap_text(r.detail, kCaption * u, 270 * u);

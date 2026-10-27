@@ -39,6 +39,8 @@ struct Slot {
   float prev[kPrev][kPad] = {};
   uint32_t last_frame = 0;
   bool live = false;
+  bool dead = false;
+  float percent = 0;
   std::mt19937 rng{0x5EED};
 };
 
@@ -153,6 +155,12 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   }
   s.live = true;
   s.last_frame = o.frame;
+  // Each KO (the dead motions are the first eleven), with the percents: a KO near 0% is usually a
+  // self-destruct. Tests read these lines to score matches.
+  const bool dead = o.self.motion <= 10;
+  if (dead && !s.dead) host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%)", o.slot + 1, s.percent, o.frame, o.opp.num[3]);
+  s.dead = dead;
+  if (!dead) s.percent = o.self.num[3];
 
   // Inputs, in train.py's order: cont (self, opp, rel, pad t-1, pad t-2), flag bits, embeddings.
   std::vector<float> x(m.n_in());
@@ -217,9 +225,9 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
 
   // What it held, as a replay records it (the game's dead zone applied), for the next frame.
   std::memmove(s.prev[1], s.prev[0], sizeof s.prev[0]);
-  const auto dead = [](float v) { return std::fabs(v) < 0.2875f ? 0.f : v; };
+  const auto deadzone = [](float v) { return std::fabs(v) < 0.2875f ? 0.f : v; };
   float* q = s.prev[0];
-  q[0] = dead(out.lx); q[1] = dead(out.ly); q[2] = out.cx; q[3] = out.cy; q[4] = out.r;
+  q[0] = deadzone(out.lx); q[1] = deadzone(out.ly); q[2] = out.cx; q[3] = out.cy; q[4] = out.r;
   for (int b = 0; b < kBtn; ++b) q[5 + b] = pressed[b];
   return true;
 }
