@@ -4,6 +4,7 @@
 #include "gx_core.h"
 #include "render_options.h"
 #include "gx_retro.h"
+#include "hle/online_frame_budget.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -72,6 +73,90 @@ int main() {
   check(!gx::lightweight_wire(gx::lightweight_filter(f, 5), f.draws[3]), "wire never reaches the HUD");
   check(gx::lightweight_effects_level(0, 3) == 2 && gx::lightweight_effects_level(1, 2) == 1, "effects held at Minimal from level 3");
 
+  // The optional particle tier must leave fighters, owned projectiles and the HUD intact.
+  {
+    gx::DrawCall smoke = f.draws[2];
+    smoke.bp.reg[gx::BP_BLENDMODE] = 1 | (5 << 5); // ordinary alpha blend
+    smoke.bp.reg[gx::BP_ZMODE] = 1;               // depth test, no depth writes
+    check(!gx::skip_for_effects(gx::effects_filter(f, 2), smoke), "Minimal keeps alpha smoke");
+    check(gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier removes unowned alpha smoke");
+    smoke.owner_player = 0;
+    check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps owned projectiles");
+    smoke.owner_player = 0xFF; smoke.skinned = true;
+    check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps fighter geometry");
+    smoke.skinned = false; smoke.xf_regs[0x20] = 0x9999;
+    check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps another camera's HUD");
+    gx::RenderOptions white; white.look_stage = 3; gx::publish_look(white);
+    smoke.xf_regs[0x20] = 0x1234;
+    check(gx::look_surface(two, smoke) == gx::Surface::White, "the chosen white look applies to smoke too");
+  }
+  // White and Flat recolour a texture but keep its alpha: one opaque texel made smoke, sparks and
+  // cut-out shapes solid squares over the fighters.
+  {
+    auto snap = std::make_shared<gx::TextureSnapshot>();
+    snap->image.resize(32);   // IA8 4x4 (one tile): alpha then intensity per texel
+    for (int i = 0; i < 16; ++i) { snap->image[i * 2] = i < 8 ? 0 : 255; snap->image[i * 2 + 1] = 100; }
+    gx::TextureRef smoke_tex; smoke_tex.width = smoke_tex.height = 4; smoke_tex.format = 3; smoke_tex.data = snap;
+    for (gx::Surface s : {gx::Surface::White, gx::Surface::Flat}) {
+      const auto r = gx::look_replacement(smoke_tex, s);
+      const uint8_t want = s == gx::Surface::White ? 255 : 100;
+      bool shaped = r && r->width == 4 && r->height == 4 && r->pixels.size() == 64;
+      for (int i = 0; shaped && i < 16; ++i)
+        shaped = r->pixels[i * 4] == want && r->pixels[i * 4 + 1] == want && r->pixels[i * 4 + 3] == (i < 8 ? 0 : 255);
+      check(shaped, s == gx::Surface::White ? "the white look keeps a texture's alpha" : "the flat look keeps a texture's alpha");
+    }
+    for (int i = 0; i < 16; ++i) snap->image[i * 2] = 255;
+    const auto opaque = gx::look_replacement(smoke_tex, gx::Surface::White);
+    check(opaque && opaque->width == 1 && opaque->pixels == std::vector<uint8_t>({255, 255, 255, 255}), "an opaque texture is still one white texel");
+  }
+
+  // Online match speed protection judges the frame pacer's deadlines, never single slow frames.
+  {
+    using Budget = slippi::online::FrameBudget;
+    const unsigned W = Budget::kWindow;
+    // A computer that keeps up, with a late frame after every rollback or hitch: never touched.
+    Budget keeps;
+    for (unsigned i = 0; i < 60 * 60 * 8; ++i) keeps.update(true, true, true, i % 4 == 0 || i % 7 == 0);
+    check(!keeps.suspended(), "rollback and hitch frames never pause sub-frames on a computer that keeps up");
+    Budget burst;
+    for (unsigned i = 0; i < 60 * 60; ++i) burst.update(true, true, true, (i % 600) < 120);
+    check(!burst.suspended(), "two seconds of lateness (a background task) does not pause sub-frames");
+    // Falling behind with sub-frames on, keeping up without them: paused for the rest of the match.
+    Budget slow;
+    Budget::Change c = Budget::Change::None;
+    for (unsigned i = 0; i < W - 1; ++i) c = slow.update(true, true, true, true);
+    check(c == Budget::Change::None && !slow.suspended(), "a window not yet full never pauses");
+    check(slow.update(true, true, true, true) == Budget::Change::Suspend, "a full window of late frames pauses sub-frames");
+    for (unsigned i = 0; i < 60 * 60 * 5; ++i) c = slow.update(true, true, false, i < 30);
+    check(slow.suspended() && slow.state() == Budget::State::Kept, "pausing fixed it: held for the match, no switching back and forth");
+    // Still behind without sub-frames: they were not the cause and come back on, once, for good.
+    Budget other;
+    for (unsigned i = 0; i < W; ++i) other.update(true, true, true, true);
+    unsigned resumes = 0, suspends = 0;
+    for (unsigned i = 0; i < 60 * 60 * 5; ++i) {
+      const bool sub = !other.suspended();
+      const auto r = other.update(true, true, sub, true);
+      resumes += r == Budget::Change::Resume; suspends += r == Budget::Change::Suspend;
+    }
+    check(resumes == 1 && suspends == 0 && !other.suspended() && other.state() == Budget::State::Done,
+          "pausing did not help: sub-frames return and stay on for the match");
+    // Off in settings, or the match ends: sub-frames are back at once.
+    Budget off;
+    for (unsigned i = 0; i < W; ++i) off.update(true, true, true, true);
+    check(off.update(false, true, false, true) == Budget::Change::Resume && !off.suspended(), "turning the setting off gives sub-frames back");
+    for (unsigned i = 0; i < W * 4; ++i) off.update(false, true, true, true);
+    check(!off.suspended(), "with the setting off nothing is ever paused");
+    Budget ends;
+    for (unsigned i = 0; i < W; ++i) ends.update(true, true, true, true);
+    check(ends.update(true, false, false, false) == Budget::Change::Resume && ends.state() == Budget::State::Watching, "the next match starts fresh");
+    Budget menus;
+    for (unsigned i = 0; i < W * 4; ++i) menus.update(true, false, true, true);
+    check(!menus.suspended(), "menus and results never pause sub-frames");
+    Budget capped;
+    for (unsigned i = 0; i < W * 4; ++i) capped.update(true, true, false, true);
+    check(!capped.suspended(), "with sub-frames already off (a 60 cap) there is nothing to pause");
+  }
+
   // Outside a match (the character select) nothing changes at any level.
   gx::Frame menu = f; menu.scene_minor = 0x00;
   check(!gx::skip_for_lightweight(gx::lightweight_filter(menu, 5), menu, menu.draws[2]), "menus are never touched");
@@ -97,6 +182,11 @@ int main() {
         o.subframe == gx::SubFrameMode::AuthoredInterpolate && o.api == gx::RenderApi::D3D12, "level 0 restores the player's settings");
   gx::apply_lightweight(o, 9, false);
   check(o.lightweight == 5, "levels are clamped");
+  gx::RenderOptions capped_white;
+  capped_white.fps_cap = 144; capped_white.subframe = gx::SubFrameMode::Off;
+  gx::apply_look_preset(capped_white, 8, false);
+  check(capped_white.fps_cap == 0 && capped_white.subframe != gx::SubFrameMode::Off,
+        "the cap-lifted white look enables its promised in-between frames");
 
   // Settings files from before the ladder.
   gx::RenderOptions old_poly; old_poly.low_poly_fighters = 1; gx::migrate_lightweight(old_poly);

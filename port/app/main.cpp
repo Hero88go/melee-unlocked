@@ -1778,7 +1778,7 @@ static int melee_main(int argc, char** argv) {
     // The same for the "Lightweight" ladder; the backend stays the one asked for (no Direct3D 11
     // swap). One branch for both: this chain is at the compiler's nesting limit.
     else if (a == "--effects" || a == "--lightweight" || a == "--retro" || a == "--look") {
-      if (a == "--effects") gfx.effects_level = std::clamp(std::atoi(next()), 0, 2);
+      if (a == "--effects") gfx.effects_level = std::clamp(std::atoi(next()), 0, 3);
       else if (a == "--lightweight") gx::apply_lightweight(gfx, std::atoi(next()), false);
       else if (a == "--look") gx::apply_look_preset(gfx, std::atoi(next()), false);   // a preset by index (render_options.h)
       else gfx.retro = true;   // "Retro (64 style)", no value
@@ -2086,6 +2086,10 @@ static int melee_main(int argc, char** argv) {
   // launch (hle_card.cpp, source_host.cpp), and its folder points at an empty one of its own so
   // nothing in the session can touch the player's saves.
   if (!host::gameplay::vanilla_only() && (gfx.lossless_lag_test || std::getenv("MELEE_LAG_TEST"))) {
+    // The saved switch arms this launch only: the next one is an ordinary game again.
+    if (gfx.lossless_lag_test && !gx::consume_lag_test_launch(gfx.settings_path))
+      host::log("lag test: could not clear the saved switch in %s", gfx.settings_path.c_str());
+    gfx.lossless_lag_test = false;
     _putenv_s("MELEE_LAG_TEST", "1");
     if (!std::getenv("MELEE_LAG_TEST_KEEP_CARD")) {   // test runs: keep the card given
       std::error_code ec;

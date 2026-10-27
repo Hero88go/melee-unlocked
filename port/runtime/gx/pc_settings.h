@@ -12,6 +12,9 @@ namespace gx {
 void load_pc_settings(RenderOptions& options, int& volume);
 // Same atomic writer used by the panel, for startup choices and settings validation.
 bool save_pc_settings(const RenderOptions& options, int volume);
+// The Lossless adapter lag test arms the next launch only: that launch sets the saved switch back
+// off ("lagtestnext 0"), touching no other line of the file.
+bool consume_lag_test_launch(const std::string& settings_path);
 // Current letterboxed gameplay viewport aspect, used to keep overlays out of the black bars.
 void settings_set_game_aspect(float aspect);
 // Copy the same simulation frame's HUD anchors used by the presented image.

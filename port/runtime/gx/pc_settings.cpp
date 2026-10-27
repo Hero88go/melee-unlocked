@@ -1978,7 +1978,13 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
+  // The Lossless adapter lag test arms one launch only ("lagtestnext", cleared by that launch:
+  // consume_lag_test_launch). 0.9.47 to 0.9.62 kept it on ("losslesslagtest") until it was switched
+  // off, so every later launch booted to an FFA character select that rumbled and turned the picture
+  // black and white on X and A. That old key is read as off.
+  options.lossless_lag_test = false;
   options.early_inputs = true;   // a file without the key: on
+  options.online_frame_protection = true;   // a file without the key: on
 #ifndef MELEE_NO_SLIPPI   // the spectator server is part of the Slippi layer
   options.slippi_spectator = true;   // a file without the key: on, as in Slippi Dolphin
   options.slippi_spectator_port = 51441;
@@ -2051,6 +2057,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
       else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
+      else if (key == "onlineframeprotection") options.online_frame_protection = value == "1";
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "musicpacks") slippi::jukebox::set_music_packs_enabled(value == "1");
       else if (key == "audio_mode") options.audio_mode = std::clamp(std::stoi(value), 0, 3);
@@ -2098,7 +2105,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "damagehudscale") options.damage_hud_scale = std::clamp(std::atoi(value.c_str()), 75, 175);
       else if (key == "playernicknames") options.show_player_nicknames = value == "1";
       else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
-      else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
+      else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 3) options.effects_level = n; }
       else if (key == "playertags") options.player_tags_always = value == "1";
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
       else if (key == "retro") options.retro = value == "1";
@@ -2181,7 +2188,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
       else if (key == "latencytest") options.latency_test = value == "1";
-      else if (key == "losslesslagtest") options.lossless_lag_test = value == "1";
+      else if (key == "lagtestnext") options.lossless_lag_test = value == "1";
       else if (key == "pathtracing")
         options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
       else if (key == "rayreconstruction")
@@ -2211,7 +2218,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "lowspec_prev_scale") { int n = std::stoi(value); if (n >= 0 && n <= 8) options.low_spec_previous.efb_scale = n; }
       else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n == 1 || n == 2) options.low_spec_previous.ssaa = n; }
       else if (key == "lowspec_prev_anisotropy") { int n = std::stoi(value); if (n == 1 || n == 2 || n == 4 || n == 8 || n == 16) options.low_spec_previous.anisotropy = n; }
-      else if (key == "lowspec_prev_effects") { int n = std::stoi(value); if (n >= 0 && n <= 2) options.low_spec_previous.effects_level = n; }
+      else if (key == "lowspec_prev_effects") { int n = std::stoi(value); if (n >= 0 && n <= 3) options.low_spec_previous.effects_level = n; }
       else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 10) options.low_spec_previous.dlss_mode = n; }
       else if (key == "lowspec_prev_subframe") options.low_spec_previous.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "discord") options.discord_presence = value == "1";
@@ -2353,7 +2360,17 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // a settings file without them. Measured on the same frame, NVIDIA's Preset B changes far fewer
   // pixels than the old defaults, so moving players over would look like DLSS 5 stopped working.
   (void)dlss5_defaults_version;
+  // Widescreen is True widescreen only (0.9.63). The Slippi code was a choice beside it that players
+  // took for the widescreen they knew from Slippi Dolphin, and in fullscreen it left the picture
+  // boxed in on wide screens; a saved Slippi code choice becomes True 16:9. --widescreen still runs
+  // the code for test runs, after this.
+  if (options.widescreen) {
+    options.widescreen = false;
+    options.true_widescreen = true;
+    options.true_aspect = TrueAspect::Wide16_9;
+  }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+  RenderOptions::live_online_frame_protection().store(options.online_frame_protection, std::memory_order_relaxed);
   RenderOptions::live_stadium_frozen() = options.stadium_frozen;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
@@ -3439,7 +3456,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
        << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
        << "\nlatencytest " << (options.latency_test ? 1 : 0)
-       << "\nlosslesslagtest " << (options.lossless_lag_test ? 1 : 0)
+       << "\nlagtestnext " << (options.lossless_lag_test ? 1 : 0)
        << "\npathtracing " << (options.path_tracing ? 1 : 0)
        << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
 #ifdef GX_DLSS5
@@ -3458,6 +3475,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
+       << "\nonlineframeprotection " << (options.online_frame_protection ? 1 : 0)
        << "\nmusicpacks " << (slippi::jukebox::music_packs_enabled() ? 1 : 0)
        << "\nonlinedelay " << slippi::online::config().delay
        << "\nonlinedelayauto " << (slippi::online::config().auto_delay ? 1 : 0)
@@ -3613,6 +3631,26 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
 bool save_pc_settings(const RenderOptions& options, int volume) {
   g_volume = volume;
   return write_settings_file(SettingsState{}, options);
+}
+
+bool consume_lag_test_launch(const std::string& settings_path) {
+  // Only that line changes: the launch's own options can hold command-line values that are not the
+  // player's saved ones, so the whole file is not written from them.
+  std::ifstream in(std::filesystem::u8path(settings_path));
+  if (!in) return false;
+  std::string text, line;
+  bool found = false;
+  while (std::getline(in, line)) {
+    if (line.rfind("lagtestnext ", 0) == 0) { line = "lagtestnext 0"; found = true; }
+    text += line; text += '\n';
+  }
+  in.close();
+  if (!found) return true;
+  std::filesystem::path path = std::filesystem::u8path(settings_path), temporary = path; temporary += ".tmp";
+  std::ofstream out(temporary);   // text mode, as write_settings_file writes it
+  out << text;
+  out.close();
+  return out.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }
 
 // 20XX TE has its own switch for two things the port already does: its "Disable screen rumble" is
@@ -4912,27 +4950,22 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Exclusive fullscreen: the game takes the display over, or falls back to\n"
                           "borderless when Windows does not allow it.\n%s", kExperimentalNote);
     }
-    // Widescreen: one choice. The Slippi code and True 16:9 both widen the view, and together they
-    // would widen it twice, so they were two switches that turned each other off.
+    // Widescreen: True widescreen only. The Slippi code was offered here too until 0.9.63 (a saved
+    // choice of it loads as True 16:9, load_pc_settings); --widescreen still runs it for test runs.
     // True 16:9 widens the frustum here in the renderer instead of running the Gecko code. The one
     // thing the game does differently is draw a fighter who is in the added sides (the Source Port
     // puts the fighter's state back afterwards, the Static Recomp uses the Slippi code's own
     // one-instruction change). Experimental because the game still lays out and culls scenery for
     // 73:60: geometry can be missing or pop in at the new edges.
     {
-#ifdef MELEE_NO_SLIPPI   // the same modes under neutral names; the saved setting is unchanged
-      const char* widescreen_modes[] = {"Off", "16:9 code", "True 16:9 (experimental)", "True 16:10 (experimental)",
-                                        "True custom (experimental)", "True: fit my screen (experimental)"};
-#else
-      const char* widescreen_modes[] = {"Off", "Slippi code", "True 16:9 (experimental)", "True 16:10 (experimental)",
-                                        "True custom (experimental)", "True: fit my screen (experimental)"};
-#endif
-      // Modes 2..5 are True widescreen at 16:9, 16:10, the player's W:H and the window's shape.
-      int widescreen_mode = options.widescreen ? 1 : options.true_widescreen ? 2 + std::clamp((int)options.true_aspect, 0, 3) : 0;
-      if (settings_combo("Widescreen", &widescreen_mode, widescreen_modes, 6)) {
-        options.widescreen = widescreen_mode == 1;
-        options.true_widescreen = widescreen_mode >= 2;
-        if (widescreen_mode >= 2) options.true_aspect = (TrueAspect)(widescreen_mode - 2);
+      const char* widescreen_modes[] = {"Off", "16:9 (experimental)", "16:10 (experimental)",
+                                        "Custom (experimental)", "Fit my screen (experimental)"};
+      // Modes 1..4 are True widescreen at 16:9, 16:10, the player's W:H and the window's shape.
+      int widescreen_mode = options.true_widescreen ? 1 + std::clamp((int)options.true_aspect, 0, 3) : 0;
+      if (settings_combo("Widescreen", &widescreen_mode, widescreen_modes, 5)) {
+        options.widescreen = false;
+        options.true_widescreen = widescreen_mode >= 1;
+        if (widescreen_mode >= 1) options.true_aspect = (TrueAspect)(widescreen_mode - 1);
         changed = true;
       }
       if (options.true_widescreen && !options.widescreen && options.true_aspect == TrueAspect::Custom) {
@@ -4951,25 +4984,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
       if (options.true_widescreen && !options.widescreen && options.true_aspect == TrueAspect::FitWindow)
         settings_hint("Widens to the window's shape; a window wider than True widescreen draws gets side bars.");
-#ifdef MELEE_NO_SLIPPI
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("16:9 code: the widely used 16:9 widescreen code, rebuilt in the game with the same\n"
-                          "values. Online safe: it changes only what you see. The view widens from the next screen.\n"
-                          "True 16:9: widens the camera in the renderer instead of running that code, and\n"
-                          "applies at once. Fighters in the added sides are drawn, as with the 16:9 code.\n"
-                          "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
-                          "Menus, character and stage select, matches and training all fill the\n"
-                          "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
-#else
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Slippi code: Slippi's widescreen code (on the Source Port, rebuilt with the same\n"
-                          "values). Online safe: it changes only what you see. The view widens from the next screen.\n"
-                          "True 16:9: widens the camera in the renderer instead of running Slippi's code, and\n"
-                          "applies at once. Fighters in the added sides are drawn, as with the Slippi code.\n"
+        ImGui::SetTooltip("Widens the camera in the renderer and fills a wide screen. Online safe: it changes only\n"
+                          "what you see, and applies at once. Fighters in the added sides are drawn.\n"
                           "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
                           "Menus, character and stage select, matches, training and replays all fill the\n"
                           "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
-#endif
     }
     // In pixels: on a scaled frame the display size is in layout units, not the window's size.
     float win_w = g_frame_pixel_size.x, win_h = g_frame_pixel_size.y;
@@ -4985,13 +5005,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         settings_hint("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
                             "size below and a wider screen to get the stretched resolution players use.");
       else
-#ifdef MELEE_NO_SLIPPI
-        settings_hint("Melee's camera asks for 73:60, not 4:3; the 16:9 widescreen code widens it to 16:9.\n"
-                            "Auto follows Widescreen above.");
-#else
-        settings_hint("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
-                            "Auto follows Widescreen above, which is what Slippi Dolphin does.");
-#endif
+        settings_hint("Melee's camera asks for 73:60, not 4:3; Widescreen above widens it.\n"
+                            "Auto follows Widescreen.");
 
       // Window size, the way Dolphin lets a player choose one. 4:3 sizes first: those are what
       // Melee players run (1440x1080 is the common one), then the 16:9 sizes.
@@ -5142,18 +5157,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::TextWrapped("Boost labels are based on one PC using Static Recomp, with no FPS cap on Final Destination. Results vary by PC and settings. Start with Light or Lighter.");
     }
     {
-      const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)"};
-      // Lightweight 3 and up holds effects at Minimal: shown that way, and greyed, until it is lowered.
-      const bool held = options.lightweight >= 3;
-      int shown = held ? 2 : options.effects_level;
-      ImGui::BeginDisabled(held);
-      if (settings_combo("Visual effects", &shown, levels, 3) && !held) { options.effects_level = shown; changed = true; }
-      ImGui::EndDisabled();
-      if (held) { ImGui::SameLine(); settings_hint("Set by Lightweight"); }
+      const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)", "No decorative particles"};
+      int shown = lightweight_effects_level(options.effects_level, options.lightweight);
+      if (settings_combo("Visual effects", &shown, levels, 4)) { options.effects_level = shown; changed = true; }
+      if (options.lightweight >= 3) ImGui::TextDisabled("This look uses at least Minimal effects.");
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Skips decorative effects during matches to help slower PCs: glow, sparks and\n"
                           "flashes (Reduced), plus full-screen overlays (Minimal). Menus, fighters, the\n"
-                          "stage and the HUD always draw. Display only: safe online.");
+                          "stage and the HUD always draw. No decorative particles also removes\n"
+                          "unowned translucent world effects, including smoke; fighter and owned\n"
+                          "item draws remain. Display only: safe online.");
     }
     // "Lightweight": one ladder from the full game down to wireframe, each step keeping the ones
     // below it. 1 to 3 are display only and change live; 4 and 5 also hold the image settings at
@@ -5726,6 +5739,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
     int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
     if (settings_combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
+    if (settings_toggle("Online: protect match speed", &options.online_frame_protection)) {
+      RenderOptions::live_online_frame_protection().store(options.online_frame_protection, std::memory_order_relaxed);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("If your PC can't keep up with an online match at your frame rate, the game turns off\n"
+                        "in-between frames for that match, so the match runs at full speed for you and your\n"
+                        "opponent. A PC that keeps up is never affected.\n"
+                        "Off keeps your frame rate even if the match slows down.");
     if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
     // Say it rather than quietly ignoring the setting: a player who picked a mode and sees no
@@ -5888,13 +5910,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "X + D-pad Down turns the picture black, then switches it between black and white\n"
                           "with each press, on the frame the press is read; X + D-pad Up gives the picture back.\n"
                           "Only the picture changes: the game is the same, online too.");
-      if (settings_toggle("Lossless adapter lag test", &options.lossless_lag_test)) changed = true;
+      if (settings_toggle("Lossless adapter lag test (next launch only)", &options.lossless_lag_test)) changed = true;
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Sets the game up the way the Lossless Adapter Manager sets up Slippi for its lag test.\n"
+        ImGui::SetTooltip("Sets the next launch up the way the Lossless Adapter Manager sets up Slippi for its lag test.\n"
                           "Turn it on, close the game and start it again with the adapter in its Slippi lag test\n"
                           "mode: the game boots to character select and rumbles, the adapter plays its inputs into\n"
                           "a Dream Land match and holds X (white) and A (black) while its sensor times the change.\n"
-                          "Uses a memory card of its own; your saves are untouched. Turn it off when you are done.");
+                          "Uses a memory card of its own; your saves are untouched. The launch after it is normal again.");
+      if (std::getenv("MELEE_LAG_TEST"))
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                           "This launch is the lag test. Restart the game to play normally.");
       // For pack authors, not for playing: writes what the game drew, named the way a pack must.
       // Offered with no pack installed too: dumping is how a new pack starts.
       changed |= settings_toggle("Dump textures (for making a pack)", &options.dump_textures);
@@ -5970,7 +5995,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Open music packs")) slippi::jukebox::open_music_packs_folder();
-    ImGui::TextWrapped("Replace menu and stage tracks with HPS or common audio files, or add a folder of tracks for random picks. Vanilla audio mode keeps the disc music; open the folder for the naming guide.");
+    ImGui::TextWrapped("1. Enable Use custom music.\n"
+                       "2. Open music packs, then Tracks.txt for the disc track names.\n"
+                       "3. For /audio/name.hps, put name.mp3 in MusicPacks/audio/. "
+                       "For random songs, put the songs in MusicPacks/audio/name/ (or name+othername/ for both).\n"
+                       "Re-enter the stage to play the replacement. Vanilla audio mode uses disc music.");
 #endif
     // With a game running the device holds the live value. Without one, which is the settings
     // window the launcher opens, the saved value is all there is: reading back from an audio module
@@ -7416,7 +7445,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "Off: straight back to character select, for playing sets back to back.\n"
                         "Online play always goes back to character select.");
     ImGui::TextUnformatted("Stages");
-    ImGui::BeginDisabled(host::gameplay::vanilla_only());
     if (settings_toggle("Freeze Final Destination", &options.freeze_fd)) {
       RenderOptions::live_freeze_fd() = options.freeze_fd;
       host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
@@ -7426,7 +7454,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("Final Destination's background stays on its first form: no transformations and no white flash.\n"
                         "Also keeps a Final Destination skin's own background in view. Yours alone, online too.\n"
                         "Takes effect immediately.");
-    ImGui::EndDisabled();
     // Slippi's Frozen Pokemon Stadium for offline play. It changes the match, so never online.
     ImGui::BeginDisabled(!options.native_source || host::gameplay::vanilla_only());
     if (settings_toggle("Freeze Pokemon Stadium (offline only)", &options.stadium_frozen)) {
@@ -8357,15 +8384,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #else
     ImGui::TextUnformatted("Slippi's codes, built in");
 #endif
-    if (settings_toggle("Widescreen 16:9", &options.widescreen)) {
-      if (options.widescreen) options.true_widescreen = false;
+    // The same setting as Video > Widescreen, which is True widescreen only since 0.9.63.
+    if (settings_toggle("Widescreen 16:9", &options.true_widescreen)) {
+      options.widescreen = false;
+      if (options.true_widescreen) options.true_aspect = TrueAspect::Wide16_9;
       changed = true;
     }
-#ifdef MELEE_NO_SLIPPI
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The 16:9 widescreen code. Online safe. From the next screen.");
-#else
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Slippi's widescreen code with the same values. Online safe. From the next screen.");
-#endif
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The same as Video > Widescreen: True 16:9. Online safe. Applies at once.");
     if (settings_toggle("Disable Screen Shake", &gecko::option_no_screen_shake)) {
       te_follow_ours(options, kTeNoScreenRumble, gecko::option_no_screen_shake);
       changed = true;

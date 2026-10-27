@@ -284,6 +284,9 @@ struct RenderOptions {
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
+  // Online: protect match speed (slippi_online.cpp budget_watch). On by default.
+  bool online_frame_protection = true;
+  static std::atomic<bool>& live_online_frame_protection() { static std::atomic<bool> value{true}; return value; }
   int efb_scale = 0;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
   int window_w = 1280, window_h = 960;  // initial client size
   // The player picked a fixed window size ("window WxH" in the ini, or --window): the panel keeps
@@ -473,7 +476,10 @@ inline void apply_look_preset(RenderOptions& o, int index, bool d3d11_available)
   if (index < 0 || index >= n) return;
   const LookPreset& l = p[index];
   apply_lightweight(o, l.lightweight, d3d11_available);
-  if (l.unlocked) o.fps_cap = 0;
+  if (l.unlocked) {
+    o.fps_cap = 0;
+    if (o.subframe == SubFrameMode::Off) o.subframe = SubFrameMode::Authored;
+  }
   o.lab_view = l.lab != 0; o.look_lab_fighters = l.lab; o.look_lab_stage = l.lab_stage;
   o.look_fighter = l.fighter; o.look_stage = l.stage; o.look_menus = l.menus; o.look_unfiltered = l.unfiltered;
   o.look_colours = l.colours; o.look_background = l.background; o.effects_level = l.effects; o.look_own = l.own;

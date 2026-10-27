@@ -193,6 +193,7 @@ enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, S
 void sim_cost_add(int slot, double seconds);
 double last_sim_frame_ms();
 double last_sim_frame_work_ms();       // the same frame without its in-frame pacing waits: the thread's own work            // work time of the most recent simulation frame (sleep excluded)
+bool last_sim_frame_late();          // the most recent frame finished after its 60 Hz deadline (the pacer had nothing to wait)
 
 // ---- time ----
 constexpr uint64_t TB_HZ = 40500000ull;   // bus clock / 4

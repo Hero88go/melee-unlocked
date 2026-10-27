@@ -26,8 +26,10 @@ int main() {
   check(scene_slot(0x02, 0) == 0, "offline CSS scene");
   check(scene_slot(0x02, 1) == 1, "offline SSS scene");
   check(scene_slot(0x08, 0) == 0, "online CSS scene");
-  check(scene_slot(0x08, 4) == 1, "online SSS scene");
-  check(scene_slot(0x08, 1) == -1, "online transitional scene is not SSS");
+  check(scene_slot(0x08, 1) == 1, "online SSS scene");
+  check(scene_slot(0x08, 4) == -1, "online VS splash never receives SSS video");
+  check(scene_slot(0x08, 2) == -1, "online match never receives menu video");
+  check(scene_slot(0x08, 3) == -1, "online results never receives menu video");
 
   const uint64_t backdrop = candidate_score(320, 120, 60, 60);
   const uint64_t portrait = candidate_score(136, 188, 60, 60);

@@ -231,8 +231,18 @@ struct Compare {
     // HIDDEN participates in collision activation (mpLib_8005667C); retain it.
     constexpr uint32_t visual = 0x6u | 0x80u | 0x100u | 0x10000u | 0x1C0000u | 0x70000000u;
     if ((a.get(x + 4) & ~visual) != (b.get(y + 4) & ~visual)) {
+      // Online forms already restore the original's gameplay values in tables. Joint
+      // flags need the same treatment: exporters may set or clear CLASSICAL_SCALE on every
+      // joint, which otherwise prevents pairing most of an unchanged skin's meshes.
+      // Keep its drawing flags, restore every behavioral/transform flag, then require
+      // the resulting archive to pass the complete gameplay comparison below.
+      if (repair) {
+        const uint32_t flags = (a.get(x + 4) & ~visual) | (b.get(y + 4) & visual);
+        for (unsigned k = 0; k < 4; ++k) (*repair)[32ull + y + 4 + k] = uint8_t(flags >> (24 - k * 8));
+      } else {
       *reason="stage joint transform flags differ at "+std::to_string(x)+"/"+std::to_string(y)+" ("+
           std::to_string(a.get(x+4))+"/"+std::to_string(b.get(y+4))+")"; return false;
+      }
     }
     if (std::memcmp(a.bytes.data() + 32ull + x + 20, b.bytes.data() + 32ull + y + 20, 36))
       return fail("stage joint transform differs");

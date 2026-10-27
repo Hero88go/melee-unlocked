@@ -18,6 +18,8 @@
 #include "net_trace.h"
 #include "netplay_state.h"
 #include "early_input.h"
+#include "online_frame_budget.h"
+#include "render_options.h"
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -181,47 +183,56 @@ static net_trace::Record g_trace_record;
 static bool g_trace_desync_pending = false;   // a checksum disagreed: marked on the next traced tick
 static bool g_trace_open = false;
 static int32_t g_trace_offset_us = 0;   // the time sync offset as last measured (every 30 frames)
-// Frame budget: sub-frames add work to the game thread every frame (about 3 ms measured), and an
-// online match adds Slippi's own code and rollbacks on top. On a slower computer that went past the
-// 16.7 ms a frame has, the game fell behind its opponent and Slippi held it back to resync: a
-// player at 165 ms ping saw 57 frames a second and inputs that felt several frames late. When 8 of
-// the last 120 frames run over 16 ms of work with sub-frames on, they are turned off until the
-// match ends. MELEE_TEST_BUDGET_MS=<ms> lowers the limit for a test.
-static uint8_t g_budget_window[120];
-static int g_budget_pos = 0, g_budget_over = 0;
+// Match speed protection (online_frame_budget.h): when this computer cannot keep a 60 Hz match with
+// sub-frames on, they are paused for the rest of the match so neither player's game is held back.
+// It judges the frame pacer's own deadlines, so rollbacks and one-off hitches never trigger it, and
+// it gives sub-frames back if pausing them did not help. Video > "Online: protect match speed" (on
+// by default) turns it off. MELEE_TEST_SIM_LOAD_MS=<ms> adds that much work to every online frame,
+// MELEE_TEST_SUBFRAME_COST_MS=<ms> only while sub-frames are on: a slow computer, for a test.
+static FrameBudget g_frame_budget;
 // Only from "online game starts" to the game report: the frames after the report still count as an
 // online match, and a slow results screen turned sub-frames off for the next match.
 static bool g_budget_armed = false;
+static uint32_t g_budget_retrace = 0;   // one sample per game frame, however many ticks it held
 static void budget_reset() {
-  std::memset(g_budget_window, 0, sizeof g_budget_window);
-  g_budget_pos = g_budget_over = 0;
+  g_frame_budget.reset();
   if (gx::subframe_suspended()) {
     gx::set_subframe_suspended(false);
     host::log("online: sub-frames are back on after the match");
   }
 }
-static void budget_watch(double work_ms) {
-  static const double limit = [] {
-    const char* v = std::getenv("MELEE_TEST_BUDGET_MS");
-    const double ms = v ? std::atof(v) : 0.0;
-    return ms > 0.0 ? ms : 16.0;
-  }();
-  if (!g_budget_armed || gx::subframe_suspended() || !gx::subframes_active() || !is_online_match()) return;
-  const uint8_t over = work_ms > limit ? 1 : 0;
-  g_budget_over += over - g_budget_window[g_budget_pos];
-  g_budget_window[g_budget_pos] = over;
-  g_budget_pos = (g_budget_pos + 1) % 120;
-  if (g_budget_over >= 8) {
+static void budget_test_load() {
+  static const double always = [] { const char* v = std::getenv("MELEE_TEST_SIM_LOAD_MS"); return v ? std::atof(v) : 0.0; }();
+  static const double subframe = [] { const char* v = std::getenv("MELEE_TEST_SUBFRAME_COST_MS"); return v ? std::atof(v) : 0.0; }();
+  const double ms = always + (gx::subframes_active() ? subframe : 0.0);
+  if (ms <= 0.0 || !g_budget_armed) return;
+  const double until = host::now_seconds() + ms / 1000.0;
+  while (host::now_seconds() < until) {}
+}
+static void budget_watch() {
+  budget_test_load();
+  const uint32_t retrace = host::retrace_count();
+  if (retrace == g_budget_retrace) return;
+  g_budget_retrace = retrace;
+  const auto change = g_frame_budget.update(gx::RenderOptions::live_online_frame_protection().load(std::memory_order_relaxed),
+      g_budget_armed && is_online_match(), gx::subframes_active(), host::last_sim_frame_late());
+  if (change == FrameBudget::Change::Suspend) {
     gx::set_subframe_suspended(true);
-    host::log("online: the game ran over its frame time %d times in 2 seconds with sub-frames on (last %.1f ms); "
-              "sub-frames are off for the rest of this match so it keeps 60 frames a second", g_budget_over, work_ms);
+    host::log("online: %u of the last %u frames missed 60 Hz with sub-frames on; sub-frames are paused for this match "
+              "so it keeps full speed (Video > Online: protect match speed)", FrameBudget::kSuspendBehind, FrameBudget::kWindow);
+  } else if (change == FrameBudget::Change::Resume) {
+    gx::set_subframe_suspended(false);
+    host::log(g_frame_budget.state() == FrameBudget::State::Done
+                  ? "online: still missing 60 Hz with sub-frames paused (%u of %u frames), so they were not the cause; sub-frames are back on"
+                  : "online: sub-frames are back on (%u of %u frames late)",
+              g_frame_budget.behind_in_window(), FrameBudget::kWindow);
   }
 }
 
 void trace_close_tick() {
   if (!g_trace_open) return;
   g_trace_open = false;
-  budget_watch(host::last_sim_frame_work_ms());
+  budget_watch();
   g_trace_record.sim_ms = (float)host::last_sim_frame_ms();
   g_trace_record.presents = (uint16_t)std::min<uint32_t>(net_trace::take_presents(), 0xFFFFu);
   net_trace::push(g_trace_record);

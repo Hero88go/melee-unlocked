@@ -60,11 +60,17 @@ struct Input {
 };
 }  // namespace
 
-bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames, std::vector<int16_t>& out, bool* too_long) {
+bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames, const AudioSink& sink,
+                  size_t* expected_frames, bool* too_long) {
   if (too_long) *too_long = false;
-  out.clear();
+  if (expected_frames) *expected_frames = 0;
   Input in;
   if (!in.open(path, AVMEDIA_TYPE_AUDIO, nullptr)) return false;
+  if (in.format->duration > 0) {
+    const double frames = (double)in.format->duration / AV_TIME_BASE * rate;
+    if (frames > (double)max_frames) { if (too_long) *too_long = true; return false; }
+    if (expected_frames) *expected_frames = (size_t)frames;
+  }
   SwrContext* swr = nullptr;
   AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
   AVChannelLayout source_layout{};
@@ -80,6 +86,7 @@ bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames
   AVFrame* frame = av_frame_alloc();
   AVPacket* packet = av_packet_alloc();
   bool draining = false, ok = true;
+  size_t written = 0;
   std::vector<int16_t> chunk;
   for (;;) {
     const int got = in.next(frame, packet, &draining);
@@ -90,8 +97,9 @@ bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames
       uint8_t* dst = reinterpret_cast<uint8_t*>(chunk.data());
       const int converted = swr_convert(swr, &dst, capacity, got ? (const uint8_t**)frame->extended_data : nullptr, got ? frame->nb_samples : 0);
       if (converted < 0) { ok = false; break; }
-      if (out.size() / 2 + (size_t)converted > max_frames) { if (too_long) *too_long = true; ok = false; break; }
-      out.insert(out.end(), chunk.begin(), chunk.begin() + (size_t)converted * 2);
+      if (written + (size_t)converted > max_frames) { if (too_long) *too_long = true; ok = false; break; }
+      if (converted > 0 && !sink(chunk.data(), (size_t)converted)) break;   // the caller stopped it
+      written += (size_t)converted;
     }
     if (!got) break;
     av_frame_unref(frame);
@@ -99,8 +107,7 @@ bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames
   av_packet_free(&packet);
   av_frame_free(&frame);
   swr_free(&swr);
-  if (!ok) out.clear();
-  return ok && !out.empty();
+  return ok && written > 0;
 }
 
 bool load_picture(const std::filesystem::path& path, uint32_t max_w, uint32_t max_h, uint32_t* width, uint32_t* height,

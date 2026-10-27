@@ -105032,7 +105032,7 @@ index 693498879..6bfcfced1 100644
      case 33:
          result->x0_0 = base[0].icons[c_kind];
 diff --git a/src/melee/gm/gm_1832.c b/src/melee/gm/gm_1832.c
-index 406c85597..0c20728c2 100644
+index 406c85597..3de8a5f05 100644
 --- a/src/melee/gm/gm_1832.c
 +++ b/src/melee/gm/gm_1832.c
 @@ -1,8 +1,12 @@
@@ -105471,12 +105471,18 @@ index 406c85597..0c20728c2 100644
              Player_SetSlottype(player_slot, Gm_PKind_Demo);
              Player_SetFacingDirection(player_slot, 0.0f);
              Player_SetModelScale(player_slot, 1.0f);
-@@ -917,12 +1022,16 @@ void fn_80185F5C(s32 arg0)
+@@ -917,12 +1022,22 @@ void fn_80185F5C(s32 arg0)
      local = lbl_803B7C40;
  
      while (i < lbl_8047368C.xF0) {
 +#if MU_ROGUE  /* rogueMelee */
 +        if ((RogueNativeIntro_Held() ? lbl_8047368C.xF4[i] : lbl_8047368C.xF1[i]) != 0x21) {
++#elif defined(MU_NATIVE)
++        /* The right side's own slot. Retail tests the left side's (xF1) here, which never matters
++         * while both sides hold the console's fighters; with an added fighter shown as no one
++         * (0x21, mu_slippi_menu.c) on one side, the other side's fighter was left out, or an
++         * empty one was built from kind 0x21. */
++        if (lbl_8047368C.xF4[i] != 0x21) {
 +#else
          if (lbl_8047368C.xF1[i] != 0x21) {
 +#endif
@@ -105489,7 +105495,7 @@ index 406c85597..0c20728c2 100644
              Player_SetSlottype(arg0, Gm_PKind_Demo);
              Player_SetFacingDirection(arg0, 0.0f);
              Player_SetModelScale(arg0, 1.0f);
-@@ -985,11 +1094,21 @@ void fn_801861B8(void)
+@@ -985,11 +1100,21 @@ void fn_801861B8(void)
          text->font_size.y = 1.0f;
          ((HSD_Text*) lbl_804735A8.x4[7 + i])->default_alignment = 1;
          HSD_SisLib_803A6B98((HSD_Text*) lbl_804735A8.x4[7 + i],
@@ -105511,7 +105517,7 @@ index 406c85597..0c20728c2 100644
      }
  
      for (i = 0; i < (s32) lbl_8047368C.xF0; i++) {
-@@ -1001,32 +1120,56 @@ void fn_801861B8(void)
+@@ -1001,32 +1126,56 @@ void fn_801861B8(void)
          ((HSD_Text*) lbl_804735A8.x4[10 + i])->default_alignment = 1;
          if (lbl_8047368C.model_scale_kind == 4) {
              HSD_SisLib_803A6B98((HSD_Text*) lbl_804735A8.x4[10 + i],
@@ -105570,7 +105576,7 @@ index 406c85597..0c20728c2 100644
      HSD_JObjReqAnimAll(jobj, 0.0F);
      HSD_JObjAnimAll(jobj);
      if (lbl_8047368C.model_scale_kind != 3) {
-@@ -1050,7 +1193,7 @@ typedef struct ClassicArchiveNameLocal {
+@@ -1050,7 +1199,7 @@ typedef struct ClassicArchiveNameLocal {
  
  static inline void* gm_80186634_LoadLightList(void)
  {
@@ -105579,7 +105585,7 @@ index 406c85597..0c20728c2 100644
  }
  
  static inline void gm_80186634_SetupLight(void)
-@@ -1071,8 +1214,8 @@ static inline void gm_80186634_SetupCamera(void)
+@@ -1071,8 +1220,8 @@ static inline void gm_80186634_SetupCamera(void)
      HSD_CObj* cobj2;
  
      gobj = GObj_Create(0x13, 0x14, 0);
@@ -105590,7 +105596,7 @@ index 406c85597..0c20728c2 100644
      HSD_GObjObject_80390A70(gobj, HSD_GObj_CameraKind, cobj);
      GObj_SetupGXLinkMax(gobj, HSD_GObj_803910D8, 8);
      gobj->gxlink_prios = 0x801;
-@@ -1091,11 +1234,14 @@ static inline void gm_80186634_SetupModel(void)
+@@ -1091,11 +1240,14 @@ static inline void gm_80186634_SetupModel(void)
      HSD_JObj* jobj;
  
      gobj = GObj_Create(0xE, 0xF, 0);
@@ -105607,7 +105613,7 @@ index 406c85597..0c20728c2 100644
      HSD_JObjReqAnimAll(jobj, (f32) ((lbl_8047368C.xEE - 1) * 0x32));
      HSD_JObjAnimAll(jobj);
      lb_80011E24(jobj, &lbl_804735A8.x4[4], 0xE, -1);
-@@ -1108,7 +1254,7 @@ static inline void gm_80186634_SetupFog(void)
+@@ -1108,7 +1260,7 @@ static inline void gm_80186634_SetupFog(void)
      HSD_Fog* fog;
  
      gobj = GObj_Create(0xE, 0xF, 0);
@@ -105616,7 +105622,7 @@ index 406c85597..0c20728c2 100644
      HSD_GObjObject_80390A70(gobj, HSD_GObj_FogKind, fog);
      GObj_SetupGXLink(gobj, HSD_GObj_FogCallback, 0xB, 0);
  }
-@@ -1118,7 +1264,7 @@ void fn_80186634(void* arg0)
+@@ -1118,7 +1270,7 @@ void fn_80186634(void* arg0)
      ClassicArchiveNameLocal local;
      PAD_STACK(12);
  
@@ -105625,7 +105631,7 @@ index 406c85597..0c20728c2 100644
      Camera_Init(0xC);
      lb_8000FCDC();
      mpColl_80041C78();
-@@ -1132,9 +1278,9 @@ void fn_80186634(void* arg0)
+@@ -1132,9 +1284,9 @@ void fn_80186634(void* arg0)
  
      local.names = *(const ClassicArchiveNameArray*) lbl_803B7C58;
      lbl_804D65F4 = lbArchive_80016DBC(local.names.v[lbl_8047368C.game_type],
@@ -105637,7 +105643,7 @@ index 406c85597..0c20728c2 100644
  
      gm_80186634_SetupLight();
  
-@@ -1159,6 +1305,10 @@ void fn_80186634(void* arg0)
+@@ -1159,6 +1311,10 @@ void fn_80186634(void* arg0)
          gm_80186634_SetupFog();
          fn_801861B8();
          fn_80185D64();
@@ -105648,7 +105654,7 @@ index 406c85597..0c20728c2 100644
          fn_80185F5C(fn_80185E34());
          break;
      case 4:
-@@ -1168,12 +1318,89 @@ void fn_80186634(void* arg0)
+@@ -1168,12 +1324,89 @@ void fn_80186634(void* arg0)
          gm_80186634_SetupFog();
          fn_801861B8();
          fn_80185D64();
@@ -105738,7 +105744,7 @@ index 406c85597..0c20728c2 100644
  }
  
  void gm_Scene_IntroEasy_OnFrame(void)
-@@ -1216,6 +1443,11 @@ void gm_Scene_IntroEasy_OnEnter(void* arg0_)
+@@ -1216,6 +1449,11 @@ void gm_Scene_IntroEasy_OnEnter(void* arg0_)
      lbl_804735A8.x3C = 0;
      *(ClassicModeEnterData*) &lbl_8047368C.model_scale_kind = *arg0;
      fn_80186634(arg0_);

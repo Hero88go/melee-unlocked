@@ -337,6 +337,36 @@ int main() {
     fs::remove(low_path, ec);
   }
 
+  // The Lossless adapter lag test arms one launch. 0.9.62's switch stayed on, so every launch after
+  // it booted to an FFA character select that rumbled and turned the picture black and white on X/A.
+  {
+    const fs::path diagnostic_path = fs::temp_directory_path() / "melee_unlocked_settings_lagtest_test.ini";
+    { std::ofstream f(diagnostic_path); f << "losslesslagtest 1\nfps 144\n"; }
+    gx::RenderOptions o;
+    o.settings_path = diagnostic_path.string();
+    o.lossless_lag_test = true;
+    int vol = 100;
+    gx::load_pc_settings(o, vol);
+    CHECK(!o.lossless_lag_test && o.fps_cap == 144);   // the old always-on switch is read as off
+    o.lossless_lag_test = true;                        // the player arms the next launch
+    CHECK(gx::save_pc_settings(o, vol));
+    const std::string armed = read_text(diagnostic_path);
+    CHECK(!has_key_line(armed, "losslesslagtest") && armed.find("\nlagtestnext 1\n") != std::string::npos);
+    gx::RenderOptions next;
+    next.settings_path = diagnostic_path.string();
+    gx::load_pc_settings(next, vol);
+    CHECK(next.lossless_lag_test && next.fps_cap == 144);
+    CHECK(gx::consume_lag_test_launch(diagnostic_path.string()));   // that launch clears it
+    const std::string consumed = read_text(diagnostic_path);
+    CHECK(consumed.find("\nlagtestnext 0\n") != std::string::npos && consumed.find("lagtestnext 1") == std::string::npos);
+    CHECK(consumed.size() == armed.size());   // nothing else in the file changed
+    gx::RenderOptions after;
+    after.settings_path = diagnostic_path.string();
+    gx::load_pc_settings(after, vol);
+    CHECK(!after.lossless_lag_test && after.fps_cap == 144);   // the launch after the test is normal
+    fs::remove(diagnostic_path, ec);
+  }
+
   // Settings audit (0.8.5): Video and Overlays were regrouped (one Display choice, one Widescreen
   // choice, an Advanced group on each) and 20XX TE's screen rumble and input display were linked with
   // ours, all with the settings file's keys unchanged. A file in 0.8.1's format loads the same values,
@@ -386,7 +416,7 @@ int main() {
     fs::remove(old_path, ec);
   }
   // One Display choice and one Widescreen choice: a file with both of a pair on (possible only by
-  // hand) loads as the one the renderers already let win, exclusive and the Slippi code.
+  // hand) loads as one of them, exclusive fullscreen and True 16:9.
   {
     const fs::path pair_path = fs::temp_directory_path() / "melee_unlocked_settings_pairs_test.ini";
     { std::ofstream f(pair_path); f << "fullscreen 1\nexclusivefullscreen 1\nwidescreen 1\ntruewidescreen 1\n"; }
@@ -395,10 +425,26 @@ int main() {
     int vol = 0;
     gx::load_pc_settings(o, vol);
     CHECK(o.exclusive_fullscreen && !o.fullscreen);
-    CHECK(o.widescreen && !o.true_widescreen);
+    CHECK(!o.widescreen && o.true_widescreen && o.true_aspect == gx::TrueAspect::Wide16_9);
     CHECK(gx::presented_aspect(o, 1920, 1080) == 16.0f / 9.0f);
     std::error_code ec;
     fs::remove(pair_path, ec);
+  }
+  // Widescreen is True widescreen only (0.9.63): a saved Slippi code choice loads as True 16:9 and
+  // is saved that way, so a player who had it keeps a wide picture.
+  {
+    const fs::path ws_path = fs::temp_directory_path() / "melee_unlocked_settings_slippi_ws_test.ini";
+    { std::ofstream f(ws_path); f << "widescreen 1\ntruewidescreen 0\ntruewsaspect 1\n"; }
+    gx::RenderOptions o;
+    o.settings_path = ws_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(!o.widescreen && o.true_widescreen && o.true_aspect == gx::TrueAspect::Wide16_9);
+    CHECK(gx::save_pc_settings(o, vol));
+    const std::string saved = read_text(ws_path);
+    CHECK(saved.find("\nwidescreen 0\n") != std::string::npos && saved.find("\ntruewidescreen 1\n") != std::string::npos);
+    std::error_code ec;
+    fs::remove(ws_path, ec);
   }
   // The Advanced groups remember being opened, and a file without their keys reads as closed again.
   {

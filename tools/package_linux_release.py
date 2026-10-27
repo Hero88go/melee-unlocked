@@ -73,6 +73,16 @@ GameCube adapter, box controllers, PlayStation and Switch Pro pads
 
   Xbox-style and other pads work without it.
 
+Music packs
+
+  F1 > Audio > turn on Use custom music > Open music packs. Tracks.txt there lists the original
+  track names. For /audio/name.hps, put your song at MusicPacks/audio/name.mp3 (or .wav, .m4a,
+  .flac, .ogg, or stereo .hps). For random picks, put several songs in MusicPacks/audio/name/; one
+  folder named name+othername serves both tracks, such as a stage's main and alternate songs. A
+  direct replacement comes before a playlist. Extract ZIP packs first: audio goes directly inside
+  MusicPacks. Leave and re-enter the stage or menu to hear a new song. Packs replace music, not
+  voices or sound effects.
+
 Updates
 
   The launcher and the game's settings panel offer each new version and install it in place.

@@ -8,6 +8,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <new>
 #include <vector>
 #include "gx_regs.h"
 #include "native_draw_audit.h"
@@ -215,12 +216,20 @@ struct Frame {
   // megabytes on the simulation thread and miss a 16.7 ms frame. Recycled frames retain this memory.
   void reserve_gameplay_capacity(size_t vertex_count = 65536, size_t draw_count = 1024,
                                  size_t segment_count = 2048, size_t command_count = 2048,
-                                 size_t copy_count = 16) {
-    vertices.reserve(vertex_count);
-    draws.reserve(draw_count);
-    segments.reserve(segment_count);
-    commands.reserve(command_count);
-    copies.reserve(copy_count);
+                                 size_t copy_count = 16) noexcept {
+    // Headroom is optional. Under Windows commit pressure, a speculative reserve must
+    // not terminate a frame that was already submitted successfully. Vector reserve
+    // preserves existing storage on failure; real geometry can still use that capacity.
+    try {
+      vertices.reserve(vertex_count);
+      draws.reserve(draw_count);
+      segments.reserve(segment_count);
+      commands.reserve(command_count);
+      copies.reserve(copy_count);
+    } catch (const std::bad_alloc&) {
+      // Ordinary vector growth remains checked by its caller if actual geometry needs
+      // more memory. Skipping this optimization does not omit any draw or game state.
+    }
   }
   // sequence and time are reset too: a recycled frame is handed back to the producer as "cleared",
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
@@ -352,7 +361,11 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
   if (zmode & 0x10) return false;                                   // writes depth: part of the scene
   if (std::memcmp(e.projection, &dc.xf_regs[0x20], sizeof e.projection) != 0) return false;   // another camera
   const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
-  return additive || (e.level >= 2 && !(zmode & 1));
+  if (additive || (e.level >= 2 && !(zmode & 1))) return true;
+  // No decorative particles (3): every other blended world draw nobody owns as well, the smoke and
+  // dust that Reduced keeps and that can cover a fighter. Fighters and their items (projectiles)
+  // are owned draws and stay.
+  return e.level >= 3 && !dc.skinned && dc.owner_player >= 6;
 }
 
 // "Lightweight" (RenderOptions::lightweight, 0 to 5): one ladder of display-only savings for weak
@@ -503,9 +516,8 @@ inline int lightweight_effects_level(int effects_level, int lightweight) { retur
 // rollback: an online rollback, a few frames back on the same match, so fighters may still be
 // smoothed through it. Anything else is a hard cut.
 void mark_discontinuity(bool rollback = false);
-// Online, when the game thread keeps running over its frame budget with sub-frames on, they are
-// turned off until the match ends so the game holds 60 frames a second (slippi_online.cpp). The
-// presentation loop reports whether sub-frames are on; it honours the suspension.
+// Optional online frame protection temporarily pauses sub-frames while the game thread is over
+// budget and restores them after sustained headroom. The presentation loop honours suspension.
 void set_subframe_suspended(bool suspended);
 bool subframe_suspended();
 void set_subframes_active(bool active);

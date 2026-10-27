@@ -9,6 +9,7 @@
 #include "renderer_gl.h"
 #include "exi_slippi.h"
 #include "gx_shader.h"
+#include <GL/glew.h>
 #include <SDL.h>
 #include <algorithm>
 #include <memory>
@@ -48,6 +49,10 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
   } catch (const std::exception& e) {
     host::die("OpenGL renderer: %s", e.what());
   }
+  // The driver in the log: a Linux graphics crash report is unreadable without knowing whose driver it
+  // was (the renderer's own line goes to the terminal only, which a report does not include).
+  const auto gl_text = [](GLenum name) { const GLubyte* s = glGetString(name); return s ? reinterpret_cast<const char*>(s) : "?"; };
+  host::log("opengl: %s | %s | %s", gl_text(GL_VENDOR), gl_text(GL_RENDERER), gl_text(GL_VERSION));
   host::log("opengl: internal resolution EFB x%d (window %dx%d)", scale, client_w, client_h);
   if (opts.pc_settings) g_presentation->settings = std::make_unique<PcSettingsUIGL>(hwnd, opts);
   linux_renderer::Hooks hooks;

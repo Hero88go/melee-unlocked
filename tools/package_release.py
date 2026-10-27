@@ -107,6 +107,16 @@ are under 1P Mode > Event Match. Akaneia runs on the Static Recomp (launcher > M
 20XX Training Hack Pack is not supported yet. See TrainingMods.md for compatibility and differences
 from the original console mods.
 
+Music packs / audio packs: F1 > Audio > enable Use custom music > Open music packs.
+Open Tracks.txt there for the original track names. For /audio/name.hps, put your replacement
+at MusicPacks/audio/name.mp3 (or .wav, .m4a, .flac, .ogg, or stereo .hps), using the actual name
+from Tracks.txt. For random picks, put several songs in MusicPacks/audio/name/ instead (one folder
+named name+othername serves both tracks, such as a stage's main and alternate songs); a
+direct replacement takes priority. Extract ZIP packs first: audio must be directly inside
+MusicPacks, without an extra pack-name folder. Leave and re-enter the stage/menu to start the
+new song. Open the folder while the game is running to refresh Tracks.txt. These packs replace
+music, not character voices or sound effects. Vanilla audio mode keeps the disc music.
+
 Audio: F1 > Audio offers Auto (recommended: starts at the lowest buffer and backs off only after
 real gaps), Low latency (a fixed buffer), Exclusive (takes over the output device), and ASIO(R)
 for audio interfaces with a driver and buffer picker. Restart after changing the mode or driver.
