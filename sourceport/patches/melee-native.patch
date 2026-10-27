@@ -106157,7 +106157,7 @@ index 8bbd8c0c5..d47747183 100644
  /* 187F48 */ void gm_Scene_IntroNormal_OnEnter(UNK_T);
  /* 188364 */ void gm_Scene_IntroNormal_OnLeave(UNK_T);
 diff --git a/src/melee/gm/gm_1884.c b/src/melee/gm/gm_1884.c
-index d2318284a..777404146 100644
+index d2318284a..04e12b701 100644
 --- a/src/melee/gm/gm_1884.c
 +++ b/src/melee/gm/gm_1884.c
 @@ -4,8 +4,8 @@
@@ -106207,7 +106207,34 @@ index d2318284a..777404146 100644
  
      gm_80473814.menu_values[0] = 0;
      gm_80473814.menu_values[1] = 0;
-@@ -506,9 +503,6 @@ void fn_80188EE8(HSD_GObj* gobj)
+@@ -449,6 +446,26 @@ void fn_80188EE8(HSD_GObj* gobj)
+     HSD_JObjAnimAll(sub->jobjs[22]);
+     HSD_JObjReqAnimAll(sub->jobjs[1], (f32) (u32) sub->anim_frames[1]);
+     HSD_JObjAnimAll(sub->jobjs[1]);
++#ifdef MU_NATIVE
++    {
++        /* A wide picture (either widescreen option) shows past the 4:3 edge where the closed menu
++         * waits, so it is hidden while fully closed (frame 30) and shown again as it opens. Picture only. */
++        extern int mu_wide_picture(void);
++        static int hid = 0;
++        const int closed = sub->anim_frames[22] >= 30 && mu_wide_picture();
++        if (closed) {   /* every frame: a new Training session builds a new menu */
++            HSD_JObjSetFlagsAll(sub->jobjs[1], JOBJ_HIDDEN);
++            HSD_JObjSetFlagsAll(sub->jobjs[22], JOBJ_HIDDEN);
++            sub->text->hidden = 1;
++            hid = 1;
++        } else if (!closed && hid) {
++            HSD_JObjClearFlagsAll(sub->jobjs[1], JOBJ_HIDDEN);
++            HSD_JObjClearFlagsAll(sub->jobjs[22], JOBJ_HIDDEN);
++            sub->text->hidden = 0;
++            hid = 0;
++        }
++    }
++#endif
+ 
+     sub->text->pos_x =
+         (12.0f * (9.798828f + HSD_JObjGetTranslationX(jobj = sub->jobjs[1]))) +
+@@ -506,9 +523,6 @@ void fn_80188EE8(HSD_GObj* gobj)
      HSD_JObjAnimAll(cursor_jobj);
  }
  
@@ -106217,7 +106244,7 @@ index d2318284a..777404146 100644
  static inline u32 gm_801891F4_GetTickRate(void)
  {
      return OS_TIMER_CLOCK;
-@@ -780,9 +774,8 @@ void fn_801891F4(void)
+@@ -780,9 +794,8 @@ void fn_801891F4(void)
              {
                  f32 selected_speed =
                      speed_stack.speeds.values[sub->menu_values[0]];
@@ -106229,7 +106256,7 @@ index d2318284a..777404146 100644
              }
  
              fn_80188550(sub->menu_values[2] + 1);
-@@ -834,9 +827,6 @@ void fn_801891F4(void)
+@@ -834,9 +847,6 @@ void fn_801891F4(void)
          sub->x01 = 0;
      }
  }
@@ -106239,7 +106266,7 @@ index d2318284a..777404146 100644
  
  void fn_80189B88(void)
  {
-@@ -853,12 +843,12 @@ void fn_80189B88(void)
+@@ -853,12 +863,12 @@ void fn_80189B88(void)
      HSD_GObj_SetupProc(GObj_Create(0xE, 2, 0), (HSD_GObjEvent) fn_801891F4,
                         0x15);
      gobj = GObj_Create(0xE, 0xF, 0);
@@ -106254,7 +106281,7 @@ index d2318284a..777404146 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_JObjAnimAll(jobj);
      for (i = 0; i < 0x27; i++) {
-@@ -918,7 +908,7 @@ HSD_Text* fn_8018A000(void)
+@@ -918,7 +928,7 @@ HSD_Text* fn_8018A000(void)
      state = &lbl_80473700;
      memzero(state->result_cache, sizeof(state->result_cache));
      lbl_804D6628 = lbArchive_80016DBC("GmTrain", &lbl_804D662C,
