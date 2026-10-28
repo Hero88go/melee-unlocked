@@ -76,6 +76,16 @@ bool ghost(int index, MuPcConfig& c) {
 }
 
 MuPcConfig config() { std::lock_guard<std::mutex> lk(g_mutex); return g_config; }
+void initialize_source_test_ghost() {
+  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_GHOST")) {
+    MuPcConfig c = config();
+    if (ghost(std::atoi(v), c)) {
+      c.enabled = 1;
+      set_config(c);
+      host::log("practice test: ghost %d selected after Source initialization (preset %u)", std::atoi(v), c.preset);
+    }
+  }
+}
 void set_config(const MuPcConfig& c) {
   std::lock_guard<std::mutex> lk(g_mutex);
   if (std::memcmp(&g_config, &c, sizeof c) == 0) return;

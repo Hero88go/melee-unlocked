@@ -204,6 +204,8 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   }
   // A new match, a restart, a savestate or a gap: the memory of the match starts over.
   if (o.reset || !s.live || s.pro != o.pro || o.frame != s.last_frame + 1) {
+    host::log("ghost ai: P%d driving pro %u as fighter %u (memory reset at frame %u)",
+              o.slot + 1, o.pro, o.self.kind, o.frame);
     s.h.assign(m.h_rnn, 0.f);
     s.fresh = true;
     std::memset(s.prev, 0, sizeof s.prev);

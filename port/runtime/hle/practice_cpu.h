@@ -28,6 +28,8 @@ void set_slot(int index, const MuPcConfig& c);
 // A habit ghost (practice_ghosts.h): the defaults with what that player's games measured in place.
 // False for an index past the list.
 bool ghost(int index, MuPcConfig& out);
+// Source Port test selection must happen after the neural runtime is enabled, not in static init.
+void initialize_source_test_ghost();
 // The special moves' names for a character (FighterKind), for the attack rows; nullptr if unknown.
 const char* special_name(int kind, int which);   // which: 0 neutral, 1 side, 2 up, 3 down
 }  // namespace practice_cpu

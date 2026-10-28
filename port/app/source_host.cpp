@@ -3382,6 +3382,7 @@ int run(void (*shutdown)(int)) {
   }
 #endif
   ghost_ai::enable();   // the pro AI needs the game library's fighters: Source Port only
+  practice_cpu::initialize_source_test_ghost();
   g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
 #ifndef _WIN32
