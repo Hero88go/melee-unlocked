@@ -9,6 +9,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,30 +98,36 @@ inline std::vector<File> collect(const std::string& game_dir, const std::string&
   return files;
 }
 
-// Only the rows around each marked moment of a trace: 10 s before a mark, 3 s after (60 rows a
-// second), plus the header. A match is minutes long; what the player flagged is a few seconds.
+// Rows around each player mark or checksum disagreement: 10 s before, 3 s after (60 rows a
+// second), plus the header. Keep automatically detected problems even without a player mark.
 inline std::vector<uint8_t> marked_rows(const std::vector<uint8_t>& data) {
   constexpr size_t kBefore = 600, kAfter = 180;
   std::vector<std::pair<size_t, size_t>> lines;   // [start, end) of each line, newline included
   for (size_t i = 0, start = 0; i < data.size(); ++i)
     if (data[i] == '\n' || i + 1 == data.size()) { lines.emplace_back(start, i + 1); start = i + 1; }
   if (lines.size() < 2) return data;
-  // The "mark" column, found by name in the header so older traces read the same way.
-  int mark_col = -1, col = 0;
+  // Find columns by name: older traces may have only marks, and their order can change.
+  int mark_col = -1, desync_col = -1, col = 0;
   for (size_t i = lines[0].first, s = i; i <= lines[0].second; ++i) {
     if (i == lines[0].second || data[i] == ',' || data[i] == '\n' || data[i] == '\r') {
-      if (std::string(data.begin() + s, data.begin() + i) == "mark") { mark_col = col; break; }
+      const std::string name(data.begin() + s, data.begin() + i);
+      if (name == "mark") mark_col = col;
+      if (name == "desync") desync_col = col;
       ++col; s = i + 1;
       if (i < lines[0].second && (data[i] == '\n' || data[i] == '\r')) break;
     }
   }
-  if (mark_col < 0) return data;
+  if (mark_col < 0 && desync_col < 0) return data;
+  auto nonzero = [&](size_t line, int column) {
+    if (column < 0) return false;
+    int c = 0; size_t i = lines[line].first;
+    while (i < lines[line].second && c < column) { if (data[i] == ',') ++c; ++i; }
+    return c == column && i < lines[line].second && data[i] != '0' && data[i] != ',' && data[i] != '\n' && data[i] != '\r';
+  };
   std::vector<bool> keep(lines.size(), false);
   keep[0] = true;
   for (size_t l = 1; l < lines.size(); ++l) {
-    int c = 0; size_t i = lines[l].first;
-    while (i < lines[l].second && c < mark_col) { if (data[i] == ',') ++c; ++i; }
-    if (c == mark_col && i < lines[l].second && data[i] != '0' && data[i] != ',' && data[i] != '\n' && data[i] != '\r') {
+    if (nonzero(l, mark_col) || nonzero(l, desync_col)) {
       for (size_t k = l > kBefore ? l - kBefore : 1; k <= std::min(lines.size() - 1, l + kAfter); ++k) keep[k] = true;
     }
   }
@@ -160,11 +167,12 @@ inline std::vector<File> collect_logs(const std::string& game_dir, const std::st
     auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + kPathSep + part.name, part.max_bytes);
     if (!data.empty()) files.emplace_back(part.name, private_report_text(part.name, data, data.size() >= part.max_bytes));
   }
-  // Every session trace from the last day, oldest first. A match keeps its trace only when the player
-  // marked a moment in it, so these are exactly the matches they flagged. They travel as one
+  // Every retained session trace from the last day, oldest first. Player marks and automatically
+  // detected problems keep a match's trace. They travel as one
   // session.trace: each match starts with a "# match <name>" line (tools/pull_reports.py splits them
   // again). When they would not all fit, the newest are kept.
   std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> traces;
+  std::set<std::filesystem::path> seen_traces;
   std::error_code ec;
   const auto now = std::filesystem::file_time_type::clock::now();
   for (const auto& dir : replay_dirs) {
@@ -172,7 +180,10 @@ inline std::vector<File> collect_logs(const std::string& game_dir, const std::st
       if (it.depth() > 2) { it.disable_recursion_pending(); continue; }
       if (!it->is_regular_file(ec) || it->path().extension() != ".trace") continue;
       const auto when = it->last_write_time(ec);
-      if (!ec && now - when < std::chrono::hours(24)) traces.emplace_back(when, it->path());
+      if (!ec && now - when < std::chrono::hours(24)) {
+        const auto resolved = std::filesystem::weakly_canonical(it->path(), ec);
+        if (!ec && seen_traces.insert(resolved).second) traces.emplace_back(when, resolved);
+      }
     }
     ec.clear();
   }
