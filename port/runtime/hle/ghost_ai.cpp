@@ -43,6 +43,7 @@ struct Slot {
   MuGhostAct last_act{};
   bool prev_valid = false;
   bool fresh = true;   // the memory was just cleared (self-play records start a sequence here)
+  unsigned pro = MU_GHOST_NONE;
   std::mt19937 rng{0x5EED};
 };
 
@@ -74,11 +75,31 @@ bool load_file(const std::string& path, Model& m) {
   if (ok) {
     m.cont = dims[0]; m.n_states = dims[1]; m.e_state = dims[2]; m.n_chars = dims[3]; m.e_char = dims[4]; m.n_stages = dims[5];
     m.e_stage = dims[6]; m.n_pros = dims[7]; m.e_pro = dims[8]; m.h_in = dims[9]; m.h_rnn = dims[10]; m.h_out = dims[11];
-    ok = m.cont == 2 * kNum + 3 + kPrev * kPad && m.h_in && m.h_in <= 4096 && m.h_rnn && m.h_rnn <= 4096 && m.h_out <= 4096;
+    ok = m.cont == 2 * kNum + 3 + kPrev * kPad &&
+         m.n_states && m.n_states <= 4096 && m.e_state && m.e_state <= 256 &&
+         m.n_chars && m.n_chars <= 256 && m.e_char && m.e_char <= 256 &&
+         m.n_stages && m.n_stages <= 256 && m.e_stage && m.e_stage <= 256 &&
+         m.n_pros && m.n_pros <= 256 && m.e_pro && m.e_pro <= 256 &&
+         m.h_in && m.h_in <= 4096 && m.h_rnn && m.h_rnn <= 4096 && m.h_out && m.h_out <= 4096;
+  }
+  if (ok) {
+    // Validate the complete layout before allocating. A wrong pro count shifts every later layer;
+    // accepting trailing bytes used to make such a model appear to load successfully.
+    const uint64_t count = uint64_t(m.n_states) * m.e_state + uint64_t(m.n_chars) * m.e_char +
+        uint64_t(m.n_stages) * m.e_stage + uint64_t(m.n_pros) * m.e_pro +
+        uint64_t(m.h_in) * m.n_in() + m.h_in + uint64_t(3) * m.h_rnn * m.h_in +
+        uint64_t(3) * m.h_rnn * m.h_rnn + 6 * m.h_rnn +
+        uint64_t(m.h_out) * (m.h_rnn + m.h_in) + m.h_out +
+        uint64_t(kStick + kCStick + kBtn) * (m.h_out + 1) + kStick * 2;
+    const long start = std::ftell(f);
+    ok = count <= (256u * 1024u * 1024u / sizeof(float)) && std::fseek(f, 0, SEEK_END) == 0;
+    if (ok) ok = std::ftell(f) == start + count * sizeof(float) && std::fseek(f, start, SEEK_SET) == 0;
   }
   const auto read = [&](std::vector<float>& v, size_t n) {
+    if (!ok) return;
     v.resize(n);
-    ok = ok && std::fread(v.data(), 4, n, f) == n;
+    ok = std::fread(v.data(), sizeof(float), n, f) == n &&
+         std::all_of(v.begin(), v.end(), [](float x) { return std::isfinite(x); });
   };
   if (ok) {
     read(m.state, (size_t)m.n_states * m.e_state);
@@ -100,6 +121,7 @@ bool load_file(const std::string& path, Model& m) {
     read(m.bt_w, (size_t)kBtn * m.h_out);
     read(m.bt_b, kBtn);
     read(m.stick_mean, (size_t)kStick * 2);
+    if (ok) ok = std::all_of(m.stick_mean.begin(), m.stick_mean.end(), [](float x) { return std::fabs(x) <= 1.f; });
   }
   std::fclose(f);
   host::log("ghost ai: %s %s (%u pros)", path.c_str(), ok ? "loaded" : "unreadable", m.n_pros);
@@ -166,25 +188,30 @@ bool available() {
 
 bool act(const MuGhostObs& o, MuGhostAct& out) {
   std::lock_guard<std::mutex> lk(g_mutex);
-  if (!ready() || o.version != MU_GHOST_VERSION || o.slot >= 4 || o.pro >= g_model.n_pros) return false;
+  if (!ready() || o.version != MU_GHOST_VERSION || o.slot >= 4) return false;
   const Model& m = (g_has_p1 && o.slot == 0) ? g_model_p1 : g_model;
+  if (o.pro >= m.n_pros) return false;
+  for (const MuGhostFighter* f : {&o.self, &o.opp})
+    for (float v : f->num) if (!std::isfinite(v)) return false;
   Slot& s = g_slots[o.slot];
   // Asked twice in one frame (a fighter's input can be read more than once): the same answer, and the
   // network does not step again. Stepping again looked like a gap and wiped its memory every frame.
-  if (s.live && !o.reset && o.frame == s.last_frame) {
+  if (s.live && s.pro == o.pro && !o.reset && o.frame == s.last_frame) {
     static int repeats = 0;
     if (++repeats <= 3) host::log("ghost ai: P%d asked again in frame %u", o.slot + 1, o.frame);
     out = s.last_act;
     return true;
   }
   // A new match, a restart, a savestate or a gap: the memory of the match starts over.
-  if (o.reset || !s.live || o.frame != s.last_frame + 1) {
+  if (o.reset || !s.live || s.pro != o.pro || o.frame != s.last_frame + 1) {
     s.h.assign(m.h_rnn, 0.f);
     s.fresh = true;
     std::memset(s.prev, 0, sizeof s.prev);
+    s.prev_valid = false;
     s.rng.seed(0x5EED ^ (o.frame * 2654435761u) ^ o.slot);
   }
   s.live = true;
+  s.pro = o.pro;
   s.last_frame = o.frame;
   // Each KO (the dead motions are the first eleven), with the percent it came at: a KO near 0% is
   // usually a self-destruct. A dead fighter may not be asked for input, so both sides report, once
@@ -269,7 +296,8 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   // MELEE_GHOST_TEMP (tests) sets it to compare.
   static const float temp_all = [] { const char* v = std::getenv("MELEE_GHOST_TEMP"); return v ? (float)std::atof(v) : kTemperature; }();
   static const float temp_p1 = [] { const char* v = std::getenv("MELEE_GHOST_TEMP_P1"); return v ? (float)std::atof(v) : -1.f; }();
-  const float temp = (o.slot == 0 && temp_p1 > 0) ? temp_p1 : temp_all;
+  const float requested_temp = (o.slot == 0 && temp_p1 > 0) ? temp_p1 : temp_all;
+  const float temp = std::isfinite(requested_temp) && requested_temp > 0 ? requested_temp : kTemperature;
   const int stick = sample(s.rng, ls, kStick, temp);
   const int cstick = sample(s.rng, lc, kCStick, temp);
   std::memset(&out, 0, sizeof out);
