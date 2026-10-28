@@ -61,9 +61,10 @@ bool cosmetics_enabled();
 //   tex1_<w>x<h>[_m]_<tex_hash>[_<tlut_hash>]_<format>
 std::string base_name(const TextureRef& t, const TextureSnapshot& s);
 
-// Decodes the replacement for `base`, or returns nullptr when the pack has none, the file is
-// unreadable, or it would cost more than `budget_bytes` of texture memory.
-std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes);
+// The replacement for `base`, or nullptr when the pack has none, the file is unreadable, or it
+// would cost more than `budget_bytes` of texture memory. A decoded replacement stays decoded (within
+// the cache budget): a texture the renderer drops and builds again gets it at once.
+std::shared_ptr<const Replacement> load(const std::string& base, uint64_t budget_bytes);
 
 // One installed pack, for the settings list. Each folder dropped into Load/Textures/GALE01 or
 // TexturePacks is a pack; files loose in either are grouped as one.

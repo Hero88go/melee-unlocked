@@ -365,7 +365,7 @@ void OutputDebugStringW(LPCWSTR text);
 
 // The keyboard state the SDL window keeps (port/linux/window_sdl.cpp), in Windows virtual-key codes, so
 // GetAsyncKeyState answers for the game window as on Windows.
-namespace linux_compat { void set_key_state(int vk, bool down); void set_window_focused(bool focused); bool window_focused(); }
+namespace linux_compat { void set_key_state(int vk, bool down); void set_window_focused(bool focused); bool window_focused(); void set_game_window(HWND window); }
 
 // ---- memory status, process lists (from /proc) ----
 typedef struct _MEMORYSTATUSEX { DWORD dwLength, dwMemoryLoad; ULONGLONG ullTotalPhys, ullAvailPhys, ullTotalPageFile,

@@ -151,6 +151,13 @@ struct Compare {
     if (ha != hb || ea->second != eb->second) { fail("stage external symbol differs"); return -1; }
     return 1;
   }
+  // Zeros in the skin that nothing points at and that hold no pointer or symbol.
+  bool padding(uint32_t at, uint32_t n) const {
+    if (!b.bounds(at, n)) return false;
+    for (uint32_t k = 0; k < n; ++k)
+      if (b.bytes[32ull + at + k] || b.pointers.count(at + k) || b.externs.count(at + k)) return false;
+    return true;
+  }
   // Generic gameplay objects retain every non-pointer byte and their graph of pointers.
   // Boundary/padding changes are refused: no guessed span can conceal a changed script.
   bool object(uint32_t x, uint32_t y, unsigned depth = 0) {
@@ -168,7 +175,11 @@ struct Compare {
     if (!visited.emplace(x, y).second) return true;
     const uint32_t n = a.typed_sizes.count(x) ? a.typed_sizes.at(x) : a.extent(x);
     const uint32_t bn = b.typed_sizes.count(y) ? b.typed_sizes.at(y) : b.extent(y);
-    if (!n || n != bn) {
+    // An object's size is the distance to the next one, so an exporter's alignment padding after
+    // it reads as a longer object. The game reads the original's bytes only: a skin's copy may run
+    // on into zeros that hold no pointer. A shorter copy, or anything else after it, is refused.
+    if (n && bn > n && !a.typed_sizes.count(x) && !b.typed_sizes.count(y) && padding(y + n, bn - n)) {
+    } else if (!n || n != bn) {
       *reason = "stage gameplay object size differs at " + std::to_string(x) + "/" + std::to_string(y) +
           " (" + std::to_string(n) + "/" + std::to_string(b.extent(y)) + ")";
       return false;
@@ -219,10 +230,49 @@ struct Compare {
     return fail("stage animation count exceeds supported bounds");
   }
   std::set<std::pair<uint32_t, uint32_t>> joints, active_joints;
-  bool joint(uint32_t x, uint32_t y, unsigned depth = 0) {
+  std::set<uint32_t> added;   // the other file's joints in added scenery (scenery below)
+  // Added scenery: a branch of joints the other file hangs after the last joint of a model, where
+  // nothing of the original comes after it. The game finds a model's joints by their place in the
+  // tree (the collision joints, Ground_801C3FA4) and every original joint keeps its place; an
+  // animation reaches only the joints it has entries for (HSD_JObjAddAnimAll), so the branch is
+  // drawn as it stands. Only drawing: no particle or spline joint, no gameplay table, no slot
+  // filled from another file, no joint the comparison pairs with an original one.
+  bool scenery(uint32_t y) {
+    std::set<uint32_t> tables;   // every named object but images and palettes
+    for (const auto& root : b.roots) {
+      static const char* const kVisual[] = {"_image", "_image_desc", "_tlut", "_tlut_desc"};
+      bool visual = root.first == "map_texg";
+      for (const char* s : kVisual) {
+        const size_t n = std::strlen(s);
+        visual |= root.first.size() >= n && root.first.compare(root.first.size() - n, n, s) == 0;
+      }
+      if (!visual) tables.insert(root.second);
+    }
+    std::vector<uint32_t> pending{y};
+    std::set<uint32_t> seen;
+    while (!pending.empty()) {
+      const uint32_t at = pending.back(); pending.pop_back();
+      if (!b.bounds(at, 1) || tables.count(at) || backward.count(at)) return false;
+      if (!seen.insert(at).second) {
+        if (b.joint_offsets.count(at)) return false;   // no cycle or repeated joint in added scenery
+        continue;
+      }
+      if (seen.size() > 100000) return false;
+      if (b.joint_offsets.count(at) && (!b.bounds(at, 64) || (b.get(at + 4) & (0x20u | 0x4000u)))) return false;
+      const uint32_t n = b.extent(at);
+      const auto e = b.externs.lower_bound(at);
+      if (e != b.externs.end() && e->first < uint64_t(at) + n) return false;
+      for (auto p = b.pointers.lower_bound(at); p != b.pointers.end() && *p < uint64_t(at) + n; ++p) pending.push_back(b.get(*p));
+    }
+    for (uint32_t at : seen) if (b.joint_offsets.count(at)) added.insert(at);
+    return true;
+  }
+  // `tail`: nothing of the model comes after this joint's subtree but its later siblings.
+  bool joint(uint32_t x, uint32_t y, unsigned depth = 0, bool tail = true) {
     if (depth > 256 || joints.size() > 16384 || !a.bounds(x, 64) || !b.bounds(y, 64))
       return fail("stage joint tree is malformed or too large");
     if (active_joints.count({x,y})) return fail("stage joint tree contains a cycle");
+    if (added.count(y)) return fail("stage joint mapping differs");
     if ((forward.count(x) && forward[x] != y) || (backward.count(y) && backward[y] != x)) return fail("stage joint mapping differs");
     forward[x] = y; backward[y] = x;
     if (!joints.emplace(x, y).second) return true;
@@ -251,8 +301,13 @@ struct Compare {
     if ((a.get(x + 4) & (0x20u | 0x4000u)) && !field(x + 16, y + 16)) return false;
     for (uint32_t k : {8u, 12u}) {
       const bool pa = a.pointers.count(x + k), pb = b.pointers.count(y + k);
+      const bool child_tail = k == 8 ? tail && !a.pointers.count(x + 12) : tail;
+      if (k == 12 && !pa && pb && tail && !a.get(x + k)) {
+        if (!scenery(b.get(y + k))) return fail("stage joint hierarchy differs");
+        continue;
+      }
       if (pa != pb) return fail("stage joint hierarchy differs");
-      if (pa ? !joint(a.get(x + k), b.get(y + k), depth + 1) : a.get(x + k) != b.get(y + k))
+      if (pa ? !joint(a.get(x + k), b.get(y + k), depth + 1, child_tail) : a.get(x + k) != b.get(y + k))
         return fail("stage joint hierarchy differs");
     }
     active_joints.erase({x,y});

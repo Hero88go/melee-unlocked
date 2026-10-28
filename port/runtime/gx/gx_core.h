@@ -140,8 +140,9 @@ struct DrawCall {
   uint64_t identity = 0;
   std::shared_ptr<const AuthoredPose> authored_pose;
   uint64_t object_generation = 0; // Allocated JObj lifetime; zero means unobserved.
-  // Player slot (0..5) whose fighter rendered this draw, 0xFF for everything else. Display only:
-  // it feeds the per-player tint, is not part of `identity` and never reaches a shader UID.
+  // Player slot (0..5) whose fighter rendered this draw, kEffectOwner for the game's effects and
+  // particles, 0xFF for everything else. Display only: it feeds the per-player tint and the
+  // particle tier of Visual effects, is not part of `identity` and never reaches a shader UID.
   uint8_t owner_player = 0xFF;
   // Skinned (envelope) draw: the fighter's model. Its shadow and its effects are rigid draws, so
   // this is what tells the model apart from everything else the same player renders.
@@ -342,6 +343,8 @@ inline const DrawCall* frame_scene_draw(const Frame& f) {
 // "Of the world camera" is the projection the fighters are drawn with. A HUD drawn in perspective
 // has a camera of its own, and text from the game's text library neither tests nor writes depth:
 // without this test Minimal removed a mod's song title banner text and left its empty backing.
+// owner_player of a draw made by a particle dispatcher (class 8, no user data).
+constexpr uint8_t kEffectOwner = 0xFE;
 struct EffectsFilter {
   int level = 0;                // 0 = nothing is skipped this frame
   uint32_t projection[6] = {};  // XF 0x1020..0x1025 of the world camera
@@ -362,10 +365,10 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
   if (std::memcmp(e.projection, &dc.xf_regs[0x20], sizeof e.projection) != 0) return false;   // another camera
   const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
   if (additive || (e.level >= 2 && !(zmode & 1))) return true;
-  // No decorative particles (3): every other blended world draw nobody owns as well, the smoke and
-  // dust that Reduced keeps and that can cover a fighter. Fighters and their items (projectiles)
-  // are owned draws and stay.
-  return e.level >= 3 && !dc.skinned && dc.owner_player >= 6;
+  // No decorative particles (3): every other blended draw of the particle dispatchers as well, the
+  // smoke and dust that Reduced keeps and that can cover a fighter. Fighters with their shields,
+  // items (projectiles) and the stage do not carry that token and stay.
+  return e.level >= 3 && dc.owner_player == kEffectOwner;
 }
 
 // "Lightweight" (RenderOptions::lightweight, 0 to 5): one ladder of display-only savings for weak

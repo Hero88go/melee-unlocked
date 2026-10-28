@@ -73,19 +73,25 @@ int main() {
   check(!gx::lightweight_wire(gx::lightweight_filter(f, 5), f.draws[3]), "wire never reaches the HUD");
   check(gx::lightweight_effects_level(0, 3) == 2 && gx::lightweight_effects_level(1, 2) == 1, "effects held at Minimal from level 3");
 
-  // The optional particle tier must leave fighters, owned projectiles and the HUD intact.
+  // The optional particle tier removes only the effect objects' draws: fighters with their shields,
+  // items, the stage and the HUD stay.
   {
     gx::DrawCall smoke = f.draws[2];
     smoke.bp.reg[gx::BP_BLENDMODE] = 1 | (5 << 5); // ordinary alpha blend
     smoke.bp.reg[gx::BP_ZMODE] = 1;               // depth test, no depth writes
+    smoke.owner_player = gx::kEffectOwner;
     check(!gx::skip_for_effects(gx::effects_filter(f, 2), smoke), "Minimal keeps alpha smoke");
-    check(gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier removes unowned alpha smoke");
-    smoke.owner_player = 0;
-    check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps owned projectiles");
-    smoke.owner_player = 0xFF; smoke.skinned = true;
-    check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps fighter geometry");
-    smoke.skinned = false; smoke.xf_regs[0x20] = 0x9999;
+    check(gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier removes effect smoke");
+    gx::DrawCall shield = smoke; shield.owner_player = 0;
+    check(!gx::skip_for_effects(gx::effects_filter(f, 3), shield), "particle tier keeps a fighter's shield");
+    gx::DrawCall item = smoke; item.owner_player = 0xFF;
+    check(!gx::skip_for_effects(gx::effects_filter(f, 3), item), "particle tier keeps items and the stage");
+    smoke.xf_regs[0x20] = 0x9999;
     check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps another camera's HUD");
+    gx::RenderOptions particles; particles.effects_level = 3; gx::publish_look(particles);
+    check(gx::look_live().effect_owners.load(), "the particle tier turns effect owners on");
+    gx::publish_look(gx::RenderOptions{});
+    check(!gx::look_live().effect_owners.load(), "and off again below it");
     gx::RenderOptions white; white.look_stage = 3; gx::publish_look(white);
     smoke.xf_regs[0x20] = 0x1234;
     check(gx::look_surface(two, smoke) == gx::Surface::White, "the chosen white look applies to smoke too");

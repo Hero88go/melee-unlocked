@@ -217,6 +217,7 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   SDL_Window* window = SDL_CreateWindow(utf8_title(title).c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
   if (!window) die("cannot create the game window: %s", SDL_GetError());
   g_hwnd = window;
+  linux_compat::set_game_window(g_hwnd);
   ds4_init_defaults();
   hidraw_start();
   g_closed = false;
@@ -271,7 +272,7 @@ bool window_take_escape() { return g_escape_press.exchange(false); }
 
 void window_destroy() {
   hidraw_stop();
-  if (g_hwnd) { SDL_DestroyWindow(sdl_window()); g_hwnd = nullptr; }
+  if (g_hwnd) { linux_compat::set_game_window(nullptr); SDL_DestroyWindow(sdl_window()); g_hwnd = nullptr; }
 }
 
 void window_pump() {

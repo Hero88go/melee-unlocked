@@ -26,6 +26,7 @@ struct LookLive {
   std::atomic<uint8_t> fighter{0}, stage{0}, menus{0};   // Surface per group; menus = everything outside a match's world
   std::atomic<bool> unfiltered{false};                   // nearest-texel sampling on treated groups (the 64 look)
   std::atomic<uint8_t> colours{0};                       // 0 original, 1 port colours on fighters
+  std::atomic<bool> effect_owners{false};                // Visual effects at No decorative particles: effect draws are marked
   std::atomic<uint8_t> background{0};                    // 0 the stage's own, 1 black, 2 plain colour
   std::atomic<uint32_t> background_rgb{0x000000};
   std::atomic<bool> retro{false};                        // the original "Retro (64 style)" switch
@@ -43,6 +44,7 @@ template <class Options> inline void publish_look(const Options& o) {
   l.menus.store((uint8_t)o.look_menus, std::memory_order_relaxed);
   l.unfiltered.store(o.look_unfiltered, std::memory_order_relaxed);
   l.colours.store((uint8_t)o.look_colours, std::memory_order_relaxed);
+  l.effect_owners.store(o.effects_level >= 3, std::memory_order_relaxed);
   l.background.store((uint8_t)o.look_background, std::memory_order_relaxed);
   l.background_rgb.store(o.look_background_rgb, std::memory_order_relaxed);
   // An exact look draws its own art: the renderer's stand-in treatments step aside (port colours and the

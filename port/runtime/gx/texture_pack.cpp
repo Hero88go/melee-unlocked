@@ -117,7 +117,8 @@ struct Pack {
 };
 
 struct State {
-  bool on = false, dump = false;
+  std::atomic<bool> on{false};
+  bool dump = false;
   std::filesystem::path root, dump_root;
   std::unordered_map<std::string, Entry> index;
   std::vector<Pack> packs;
@@ -128,9 +129,9 @@ struct State {
   uint64_t legacy_skipped = 0;     // pre-4.0 "GALE01_<hash>_<fmt>" names
   uint64_t material_skipped = 0;   // .nrm/.mat/.bump/.spec/.lum companions
   uint64_t other_skipped = 0;
-  uint64_t lookups = 0, matched = 0, decoded = 0, decode_failed = 0;
-  uint64_t mips_ignored = 0;       // packs that supplied mips we did not use
-  bool reported_budget = false;
+  uint64_t lookups = 0, matched = 0;
+  std::atomic<uint64_t> decoded{0}, decode_failed{0}, mips_ignored{0};
+  std::atomic<bool> reported_budget{false};
   std::unordered_map<std::string, bool> dumped;
   std::unordered_map<uint64_t, std::string> cosmetic_csp;
   std::unordered_map<uint64_t, std::string> cosmetic_stock;
@@ -484,9 +485,18 @@ void refresh_packs() {
   build_index();
 }
 
+// Decoded replacements, kept after the renderer has taken one: a texture it drops (its texture
+// cache over budget, a device reset) and builds again found nothing here before and drew the game's
+// own texture until its PNG was decoded again, so a stage background could flash between the two
+// over and over. Least recently used entries go once the budget is passed.
+struct CacheEntry {
+  std::shared_ptr<const Replacement> image;
+  uint64_t used = 0;   // g_cache_clock when last decoded or taken
+};
 std::mutex g_cache_mutex;
-std::unordered_map<std::string, std::unique_ptr<Replacement>> g_cache;
-uint64_t g_cache_bytes = 0;
+std::unordered_map<std::string, CacheEntry> g_cache;
+uint64_t g_cache_bytes = 0, g_cache_clock = 0;
+uint64_t g_cache_budget = 0;   // set by prefetch_begin, or the first time the cache is filled
 // Decoded PNGs are CPU-side staging data, and on an integrated GPU they compete with the GPU for
 // the same physical RAM. Keep the old 1.5 GB ceiling on ordinary machines, but do not reserve that
 // much of a small machine's memory before the game has even started. A quarter leaves room for the
@@ -507,6 +517,24 @@ uint64_t prefetch_cache_budget() {
 
 void clear_cache();   // defined with load()
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
+
+// Adds a decoded replacement (g_cache_mutex held), then lets the least recently used others go
+// until the cache fits its budget again. One wanted right now always goes in.
+void cache_put_locked(const std::string& name, std::shared_ptr<const Replacement> image) {
+  if (!g_cache_budget) g_cache_budget = prefetch_cache_budget();
+  auto at = g_cache.find(name);
+  if (at != g_cache.end()) { g_cache_bytes -= at->second.image->pixels.size(); g_cache.erase(at); }
+  g_cache_bytes += image->pixels.size();
+  g_cache[name] = CacheEntry{std::move(image), ++g_cache_clock};
+  while (g_cache_bytes > g_cache_budget && g_cache.size() > 1) {
+    auto oldest = g_cache.end();
+    for (auto it = g_cache.begin(); it != g_cache.end(); ++it)
+      if (it->first != name && (oldest == g_cache.end() || it->second.used < oldest->second.used)) oldest = it;
+    if (oldest == g_cache.end()) break;
+    g_cache_bytes -= oldest->second.image->pixels.size();
+    g_cache.erase(oldest);
+  }
+}
 std::unique_ptr<Replacement> decode_entry_unchecked(const std::string& base, uint64_t budget_bytes);
 
 bool configure(bool on, bool dump) {
@@ -621,6 +649,7 @@ void set_disabled_packs(std::vector<std::string> names) {
 std::thread g_prefetch;
 std::atomic<bool> g_prefetching{false};
 std::atomic<uint64_t> g_prefetch_done{0}, g_prefetch_total{0};
+std::atomic<int> g_req_waiting{0};   // requests not decoded yet: prefetch yields to these
 
 
 void open_packs_folder() {
@@ -651,35 +680,57 @@ void prefetch_begin() {
   refresh_packs();
   if (!g.on || g.index.empty()) return;
   const uint64_t cache_budget = prefetch_cache_budget();
+  { std::lock_guard<std::mutex> lk(g_cache_mutex); g_cache_budget = cache_budget; }
   if (g_prefetch.joinable()) g_prefetch.join();
   g_prefetch_done.store(0, std::memory_order_relaxed);
   g_prefetch_total.store(g.index.size(), std::memory_order_relaxed);
   g_prefetching.store(true, std::memory_order_release);
   g_prefetch = std::thread([cache_budget] {
+    host::optional_work("textures", [&] {
     std::vector<std::string> names;
     names.reserve(g.index.size());
     for (const auto& kv : g.index) names.push_back(kv.first);
-    for (const auto& name : names) {
-      if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
-      if (g_low_memory.load(std::memory_order_relaxed)) break;   // no room: the rest load when drawn
-      {
-        std::lock_guard<std::mutex> lk(g_cache_mutex);
-        if (g_cache_bytes >= cache_budget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
-      }
-      if (auto r = decode_entry(name, ~0ull)) {   // decoded into the cache; the draw path then finds it ready
-        std::lock_guard<std::mutex> lk(g_cache_mutex);
-        if (g_cache_bytes < cache_budget && r->pixels.size() <= cache_budget - g_cache_bytes) {
-          g_cache_bytes += r->pixels.size(); g_cache.emplace(name, std::move(r));
+    // Several decoders: a large pack took a single thread long enough that the stage select's
+    // textures were still in the game's own look when it opened. Each steps aside while the game
+    // waits on a texture it needs now (request), so those are decoded first.
+    std::atomic<size_t> next{0};
+    auto work = [&] { host::optional_work("textures", [&] {
+      for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < names.size();) {
+        const std::string& name = names[i];
+        if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
+        if (g_low_memory.load(std::memory_order_relaxed)) break;   // no room: the rest load when drawn
+        while (g_req_waiting.load(std::memory_order_relaxed) && g.on) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        {
+          std::lock_guard<std::mutex> lk(g_cache_mutex);
+          if (g_cache_bytes >= cache_budget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
         }
+        if (auto r = decode_entry(name, ~0ull)) {   // decoded into the cache; the draw path then finds it ready
+          std::lock_guard<std::mutex> lk(g_cache_mutex);
+          if (!g_cache.count(name) && g_cache_bytes < cache_budget && r->pixels.size() <= cache_budget - g_cache_bytes) {
+            g_cache_bytes += r->pixels.size();
+            g_cache.emplace(name, CacheEntry{std::shared_ptr<const Replacement>(std::move(r)), ++g_cache_clock});
+          }
+        }
+        g_prefetch_done.fetch_add(1, std::memory_order_relaxed);
       }
-      g_prefetch_done.fetch_add(1, std::memory_order_relaxed);
+    }); };
+    const unsigned cores = std::thread::hardware_concurrency();
+    const unsigned workers = std::clamp(cores > 2 ? cores / 2 : 1u, 1u, 4u);
+    std::vector<std::thread> pool;
+    pool.reserve(workers - 1);
+    for (unsigned k = 1; k < workers; ++k) {
+      try { pool.emplace_back(work); }
+      catch (const std::system_error&) { break; }   // existing workers and this thread finish the queue
     }
+    work();
+    for (auto& t : pool) t.join();
     {
       std::lock_guard<std::mutex> lk(g_cache_mutex);
       host::log("textures: prefetched %llu of %llu replacements, %zu kept decoded (%.0f MB of %.0f MB)",
                 (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load(),
                 g_cache.size(), g_cache_bytes / 1048576.0, cache_budget / 1048576.0);
     }
+    });
     g_prefetching.store(false, std::memory_order_release);
   });
 }
@@ -710,25 +761,26 @@ void clear_cache() {
 
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
 
-std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes) {
+std::shared_ptr<const Replacement> load(const std::string& base, uint64_t budget_bytes) {
   if (base.empty() || (!g.on && !cosmetic_path(base))) return nullptr;
+  const bool cosmetic = cosmetic_path(base);
   {
     std::lock_guard<std::mutex> lk(g_cache_mutex);
     auto hit = g_cache.find(base);
     if (hit != g_cache.end()) {
-      std::unique_ptr<Replacement> r = std::move(hit->second);
-      g_cache_bytes -= r->pixels.size();
-      g_cache.erase(hit);
+      hit->second.used = ++g_cache_clock;
+      std::shared_ptr<const Replacement> r = hit->second.image;
       auto found = g.index.find(base);
-      const bool cosmetic = cosmetic_path(base);
       if (!cosmetic && found != g.index.end()) {
         const int pack = found->second.pack;
         if (pack >= 0 && pack < (int)g.packs.size() && !g.packs[(size_t)pack].enabled) return nullptr;
       }
-      return cosmetic || r->pixels.size() <= budget_bytes ? std::move(r) : nullptr;
+      return cosmetic || r->pixels.size() <= budget_bytes ? r : nullptr;
     }
   }
-  return decode_entry(base, budget_bytes);
+  std::shared_ptr<const Replacement> r = decode_entry(base, budget_bytes);
+  if (r) { std::lock_guard<std::mutex> lk(g_cache_mutex); cache_put_locked(base, r); }
+  return r;
 }
 
 // An allocation that fails here (the PNG's bytes, the pixels, the mip chain) is this texture's
@@ -785,8 +837,7 @@ std::unique_ptr<Replacement> decode_entry_unchecked(const std::string& base, uin
   // Refuse before allocating the mip chain rather than after: the budget exists so a huge pack
   // degrades into "some textures replaced" instead of exhausting video memory.
   if ((uint64_t)w * h * 4 > budget_bytes) {
-    if (!g.reported_budget) {
-      g.reported_budget = true;
+    if (!g.reported_budget.exchange(true, std::memory_order_relaxed)) {
       host::log("textures: replacement budget reached; the rest of the pack stays at native resolution");
     }
     return nullptr;
@@ -851,6 +902,7 @@ void request(const std::string& base) {
   std::lock_guard<std::mutex> lk(g_req_mutex);
   if (!g_req_pending.insert(base).second) return;
   g_req_queue.push_back(base);
+  g_req_waiting.fetch_add(1, std::memory_order_relaxed);
   if (!g_req_started) {
     g_req_started = true;
     g_req_thread = std::thread([] {
@@ -866,16 +918,16 @@ void request(const std::string& base) {
         bool cached;
         { std::lock_guard<std::mutex> lk(g_cache_mutex); cached = g_cache.count(name) != 0; }
         if (!cached && has(name)) {
-          // Wanted right now, so it goes in past the prefetch cap; load() takes it out again.
+          // Wanted right now: it goes in, and the least recently used others make room.
           if (auto r = decode_entry(name, ~0ull)) {
             std::lock_guard<std::mutex> lk(g_cache_mutex);
-            g_cache_bytes += r->pixels.size();
-            g_cache.emplace(name, std::move(r));
+            cache_put_locked(name, std::shared_ptr<const Replacement>(std::move(r)));
           }
         }
         });
         std::lock_guard<std::mutex> lk(g_req_mutex);
         g_req_pending.erase(name);
+        g_req_waiting.fetch_sub(1, std::memory_order_relaxed);
       }
     });
     g_req_thread.detach();
@@ -902,11 +954,11 @@ void dump_level(const std::string& base, uint32_t level, const uint8_t* level_rg
 void report() {
   if (!g.on) return;
   host::log("textures: %llu of %llu textures the game drew had a replacement (%llu decoded, %llu failed, %llu pack entries unused)",
-            (unsigned long long)g.matched, (unsigned long long)g.lookups, (unsigned long long)g.decoded,
-            (unsigned long long)g.decode_failed,
+            (unsigned long long)g.matched, (unsigned long long)g.lookups, (unsigned long long)g.decoded.load(),
+            (unsigned long long)g.decode_failed.load(),
             (unsigned long long)(g.index.size() > g.matched ? g.index.size() - g.matched : 0));
   if (g.mips_ignored)
-    host::log("textures: %llu mip levels from the pack were not used", (unsigned long long)g.mips_ignored);
+    host::log("textures: %llu mip levels from the pack were not used", (unsigned long long)g.mips_ignored.load());
   if (g.lookups && !g.matched)
     host::log("textures: nothing matched. Check that the files sit under %s and are named tex1_<w>x<h>_<hash>_<format>.png; "
               "run with --dump-textures to write the exact names this build looks for.",

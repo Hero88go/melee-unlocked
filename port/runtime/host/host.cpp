@@ -1573,11 +1573,12 @@ void apply_low_poly_fighters() {
 // such a skin is in use the function runs from RAM with the stop replaced by "this phase is not
 // over yet": the match goes on and the background stays in that phase. The disc's stage never
 // reaches the replaced instruction. Retail code only: any other bytes there are left alone.
-// "Freeze Final Destination" on the Static Recomp. The background's think is one call in
-// grLast_8021AAB0 (bl 8021B2E8 at 8021AAE4); the function runs from RAM with that call made a nop,
-// as the Source Port skips it (gr/grlast.c). What was there is put back when the option goes off:
-// online that word is Slippi's DesyncProofBGTransformations branch, and with the call skipped the
-// seed is not touched at all, so both players stay in step whatever each one chose.
+// "Freeze Final Destination" on the Static Recomp. The background's think is grLast_8021B2E8, called
+// only from grLast_8021AAB0, which the Source Port skips (gr/grlast.c). Here the think runs from
+// RAM with its first word a return, so every caller finds it does nothing: the call in
+// grLast_8021AAB0 and the cave of Slippi's DesyncProofBGTransformations. An earlier version made
+// that call (8021AAE4) a nop instead, which held in Direct, but in Unranked the background still
+// moved. The seed is not touched either way, so both players stay in step whatever each one chose.
 // A fighter whose player slot carries a tint index past the game's four (a mod's mode can leave one)
 // stops the game at fighter.c:828 ("fighter sub color num over!"). The tint is only a colour: it is
 // set to none before the fighter reads it, and the fighter loads.
@@ -1598,7 +1599,7 @@ void install_sub_color_guard() {
   });
 }
 void apply_freeze_final_destination() {
-  constexpr uint32_t kThink = 0x8021AAB0u, kCall = 0x8021AAE4u, kNop = 0x60000000u;
+  constexpr uint32_t kThink = 0x8021B2E8u, kReturn = 0x4E800020u;
   static bool frozen = false;
   static uint32_t saved = 0;
   if (!ram) return;
@@ -1607,18 +1608,18 @@ void apply_freeze_final_destination() {
   const bool want = g_freeze_fd.load(std::memory_order_relaxed);
   if (want == frozen) return;
   if (want) {
-    if (!try_ptr(kCall, 4)) return;
-    saved = rd32(kCall);
+    if (!try_ptr(kThink, 4)) return;
+    saved = rd32(kThink);
     if (!ppc::redirect_to_interpreter(kThink)) {
       static bool logged = false;
       if (!logged) { logged = true; log("stages: Freeze Final Destination could not run the stage's code from RAM; left off"); }
       return;
     }
-    wr32(kCall, kNop);
+    wr32(kThink, kReturn);
     frozen = true;
     log("stages: Final Destination's background frozen");
   } else {
-    if (rd32(kCall) == kNop) wr32(kCall, saved);
+    if (rd32(kThink) == kReturn) wr32(kThink, saved);
     ppc::undo_redirect(kThink);
     frozen = false;
     log("stages: Final Destination's background moves again");

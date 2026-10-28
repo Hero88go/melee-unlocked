@@ -2047,6 +2047,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       }
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "crt_filter") options.crt_filter = std::clamp(std::stoi(value), 0, 2);
+      else if (key == "crt_curve") options.crt_curve = std::clamp(std::stof(value), 0.0f, 3.0f);
       else if (key == "borderart") options.border_art = value;
       else if (key == "borderedge") options.border_edge = value == "0" ? 0 : 1;
       else if (key == "shaderpreset") options.shader_preset = value;
@@ -3471,7 +3472,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5defaults 2"
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncrt_filter " << options.crt_filter << "\ncrt_curve " << options.crt_curve << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -5721,6 +5722,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "Studio monitor is flat and sharp. Home television is softer, with curved glass.\n"
                         "Scanlines are clearest at 1440p and above; at 1080p they are kept faint so they do not shimmer.\n"
                         "Sharpening is not applied while this is on.");
+    if (options.crt_filter == 2) {
+      int curve = (int)std::lround(options.crt_curve * 100.0f);
+      if (settings_slider("Screen curve", &curve, 0, 300, "%d%%")) { options.crt_curve = curve / 100.0f; changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How curved the home television's glass is. 0%% is flat, 100%% is the default.");
+    }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (settings_slider("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
     int ao = (int)std::lround(options.screen_space_ao * 100.0f);

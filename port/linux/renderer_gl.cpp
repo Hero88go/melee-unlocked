@@ -590,7 +590,7 @@ void main() {
       pack_name = gx::texpack::base_name(t, *t.data);
       if (gx::texpack::has(pack_name)) {
         constexpr uint64_t budget = 512ull << 20;
-        std::unique_ptr<gx::texpack::Replacement> r = gx::texpack::load(pack_name, replacement_bytes_ < budget ? budget - replacement_bytes_ : 0);
+        std::shared_ptr<const gx::texpack::Replacement> r = gx::texpack::load(pack_name, replacement_bytes_ < budget ? budget - replacement_bytes_ : 0);
         gx::texpack::note_lookup(r != nullptr);
         if (r) {
           glGenTextures(1, &entry.id); glBindTexture(GL_TEXTURE_2D, entry.id);
@@ -769,7 +769,7 @@ void main() {
   void picture(const gx::EfbCopy& c, int w, int h, int pw, int ph) {
     const gx::RenderOptions* o = hooks_.options;
     if (!picture_program_) picture_program_ = build_picture_program();
-    const gx::CrtLook look = gx::crt_look(o ? o->crt_filter : 0);
+    const gx::CrtLook look = gx::crt_look(o ? o->crt_filter : 0, o ? o->crt_curve : 1.0f);
     const float lines = std::max(float(c.src_h) * c.y_scale, 1.0f);
     // A shader preset (Video settings) takes the place of the built-in CRT model, as on Windows: the
     // plain picture goes into a console-sized texture and the preset draws that into the window.

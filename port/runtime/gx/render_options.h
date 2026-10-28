@@ -320,6 +320,7 @@ struct RenderOptions {
   int border_edge = 1;        // border art: 0 = cut off sharp at the picture, 1 = the picture casts a soft shadow on it
   std::string border_art;     // file in the Borders folder shown behind the picture (video_background.h); empty = black bars
   int crt_filter = 0;         // CRT display model in the present pass: 0 off, 1 studio monitor, 2 home television (crt_shader.h)
+  float crt_curve = 1.0f;     // the home television's screen curve, 1 as designed, 0 flat to 3 (crt_look)
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   float screen_space_ao = 0.0f; // 0..1 depth-based contact shading; display-only, not ray traced
   bool path_tracing = false;       // D3D12 DXR diffuse indirect bounce, display-only and off by default

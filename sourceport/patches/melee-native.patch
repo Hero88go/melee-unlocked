@@ -207903,7 +207903,7 @@ index 6d5505e85..e6807fd4f 100644
      return gen;
  }
 diff --git a/src/sysdolphin/baselib/gobj.c b/src/sysdolphin/baselib/gobj.c
-index 8caeba264..ccb9be74b 100644
+index 8caeba264..ebb1a266e 100644
 --- a/src/sysdolphin/baselib/gobj.c
 +++ b/src/sysdolphin/baselib/gobj.c
 @@ -1,18 +1,11 @@
@@ -207954,7 +207954,42 @@ index 8caeba264..ccb9be74b 100644
  {
      s32 i;
      HSD_GObjProc* proc;
-@@ -199,76 +179,6 @@ void HSD_GObj_80390FC0(void)
+@@ -147,12 +127,34 @@ u32 HSD_GObj_80390EB8(s32 i)
+     return HSD_GObj_804085F0[i];
+ }
+ 
++#ifdef MU_NATIVE
++#include "mu_gxpipe.h"
++int mu_native_owner_tracking(void);
++#endif
++
+ static inline void render_gobj(HSD_GObj* cur, int i)
+ {
+     HSD_GObj* saved = HSD_GObj_804D7814;
++#ifdef MU_NATIVE
++    /* Private FIFO token 0xF1 0xFE: the draws that follow belong to an effect object (particles,
++     * smoke, dust), the owner the recompiled build reads from the classifier. Sent only while the
++     * host tracks owners, so the stream is otherwise unchanged. */
++    /* efLib's particle dispatchers have no user data; model effects such as shields do. */
++    int effect = cur->classifier == 8 && cur->user_data == NULL && mu_native_owner_tracking();
++    if (effect) {
++        GXW_u8(0xF1);
++        GXW_u8(0xFE);
++    }
++#endif
+     HSD_GObj_804D7814 = cur;
+     cur->render_cb(cur, i);
+     HSD_GObj_804D7814 = saved;
++#ifdef MU_NATIVE
++    if (effect) {
++        GXW_u8(0xF1);
++        GXW_u8(0xFF);
++    }
++#endif
+ }
+ 
+ /// GObj_SetTextureCamera
+@@ -199,76 +201,6 @@ void HSD_GObj_80390FC0(void)
      }
  }
  
