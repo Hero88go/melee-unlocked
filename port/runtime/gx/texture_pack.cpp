@@ -524,8 +524,9 @@ void cache_put_locked(const std::string& name, std::shared_ptr<const Replacement
   if (!g_cache_budget) g_cache_budget = prefetch_cache_budget();
   auto at = g_cache.find(name);
   if (at != g_cache.end()) { g_cache_bytes -= at->second.image->pixels.size(); g_cache.erase(at); }
-  g_cache_bytes += image->pixels.size();
-  g_cache[name] = CacheEntry{std::move(image), ++g_cache_clock};
+  const uint64_t bytes = image->pixels.size();
+  g_cache.emplace(name, CacheEntry{std::move(image), ++g_cache_clock});
+  g_cache_bytes += bytes;
   while (g_cache_bytes > g_cache_budget && g_cache.size() > 1) {
     auto oldest = g_cache.end();
     for (auto it = g_cache.begin(); it != g_cache.end(); ++it)
@@ -778,8 +779,13 @@ std::shared_ptr<const Replacement> load(const std::string& base, uint64_t budget
       return cosmetic || r->pixels.size() <= budget_bytes ? r : nullptr;
     }
   }
-  std::shared_ptr<const Replacement> r = decode_entry(base, budget_bytes);
-  if (r) { std::lock_guard<std::mutex> lk(g_cache_mutex); cache_put_locked(base, r); }
+  std::shared_ptr<const Replacement> r;
+  try {
+    r = decode_entry(base, budget_bytes);
+    if (r) { std::lock_guard<std::mutex> lk(g_cache_mutex); cache_put_locked(base, r); }
+  } catch (const std::bad_alloc&) {
+    note_low_memory(base);   // shared ownership and the cache index also allocate
+  }
   return r;
 }
 
