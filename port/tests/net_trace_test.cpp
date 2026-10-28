@@ -296,6 +296,23 @@ int main() {
   expect(count_ext(dir, ".part") == 0);
   expect(count_ext(dir, ".trace") == 3);
   expect(g_log.size() == 3);
+  {
+    // A checksum disagreement must keep its trace even without a player mark, for both
+    // engines' replay naming orders. The collector needs these rows to diagnose the match.
+    net_trace::Writer writer(keep_log);
+    Record mismatch = r;
+    mismatch.flags = net_trace::kDesync;
+    for (const bool named_early : {true, false}) {
+      const std::string replay = d + (named_early ? "\\Game_SyncEarly.slp" : "\\Game_SyncLate.slp");
+      writer.begin(d, named_early ? replay : "");
+      writer.add(r); writer.add(mismatch);
+      writer.end();
+      if (!named_early) writer.replay_saved(replay);
+      writer.wait_idle();
+      expect(lines(fs::path(net_trace::trace_path(replay))).size() == 3);
+    }
+  }
+  expect(count_ext(dir, ".part") == 0 && count_ext(dir, ".trace") == 5);
   fs::remove_all(dir, ec);
   return 0;
 }
