@@ -382,6 +382,13 @@ void main() {
            blue[2] > 150 && blue[0] < 65 && blue[1] < 65 &&
            near(texture[0], 200) && near(texture[1], 200) && near(texture[2], 200);
   }
+  void prepare_smoke_frame(const gx::Frame& frame) {
+    // The self-test inspects its first frame. Prepare its shaders synchronously, as startup
+    // prewarming does, instead of inspecting draws skipped while translation is still pending.
+    struct Restore { bool& flag; bool saved; ~Restore() { flag = saved; } } restore{prewarming_, prewarming_};
+    prewarming_ = true;
+    for (const auto& dc : frame.draws) program(dc);
+  }
   void compare_culling(const gx::Frame& frame, const std::filesystem::path& prefix) {
     const bool saved = clockwise_front_;
     clockwise_front_ = true; submit_frame(frame); capture(prefix.string() + ".cw.ppm");
@@ -1171,6 +1178,7 @@ bool smoke_test(gx::Backend& backend, const std::filesystem::path& capture) {
   frame.draws.push_back(textured); frame.commands.push_back({gx::FrameCommand::Draw, 1});
   gx::EfbCopy present{}; present.to_xfb = true; present.src_w = 640; present.src_h = 528;
   frame.copies.push_back(present); frame.commands.push_back({gx::FrameCommand::Copy, 0});
+  dynamic_cast<Renderer&>(backend).prepare_smoke_frame(frame);
   backend.submit_frame(frame); capture_efb(backend, capture);
   const GLenum error = glGetError(); if (error != GL_NO_ERROR) throw std::runtime_error("OpenGL smoke error " + std::to_string(error));
   if (!dynamic_cast<Renderer&>(backend).check_smoke_pixels())
