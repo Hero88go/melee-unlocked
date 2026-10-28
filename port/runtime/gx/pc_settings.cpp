@@ -5166,8 +5166,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Skips decorative effects during matches to help slower PCs: glow, sparks and\n"
                           "flashes (Reduced), plus full-screen overlays (Minimal). Menus, fighters, the\n"
                           "stage and the HUD always draw. No decorative particles also removes\n"
-                          "unowned translucent world effects, including smoke; fighter and owned\n"
-                          "item draws remain. Display only: safe online.");
+                          "particle smoke and dust. Shields, reflectors and projectiles stay visible\n"
+                          "at every level. Display only: safe online.");
     }
     // "Lightweight": one ladder from the full game down to wireframe, each step keeping the ones
     // below it. 1 to 3 are display only and change live; 4 and 5 also hold the image settings at

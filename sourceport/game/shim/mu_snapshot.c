@@ -4,6 +4,7 @@
 #include <melee/gm/gmvs.h>
 #include <melee/pl/player.h>
 #include <melee/ft/types.h>
+#include <melee/it/types.h>
 #include <sysdolphin/baselib/gobj.h>
 #include <sysdolphin/baselib/random.h>
 #include <sysdolphin/baselib/jobj.h>
@@ -14,6 +15,35 @@
 
 int mu_is_game_memory(const void* p, unsigned long size);   /* shim/mu_entry.c */
 extern StaticPlayer player_slots[];
+
+/* Optional read-only item snapshot. Lab styles replace the 3D scene, so their projectiles
+ * must come from live items rather than relying on recording events being enabled. */
+MU_EXPORT void mu_look_items_v1(MuLookItems* out)
+{
+    HSD_GObj* gobj;
+    int visited = 0;
+    __builtin_memset(out, 0, sizeof *out);
+    if (!HSD_GObjPLinkHead) return;
+    for (gobj = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_ITEM]; gobj && visited++ < MU_LOOK_ITEMS; gobj = gobj->next) {
+        const Item* ip;
+        MuLookItem* dst;
+        unsigned int word0, word6;
+        if (!mu_is_game_memory(gobj, sizeof *gobj)) break;
+        ip = gobj->user_data;
+        if (!ip || !mu_is_game_memory(ip, sizeof *ip)) continue;
+        dst = &out->items[out->count++];
+        dst->type = ip->kind; dst->state = ip->msid; dst->owner = -1;
+        dst->facing = ip->facing_dir; dst->vx = ip->x40_vel.x; dst->vy = ip->x40_vel.y;
+        dst->x = ip->pos.x; dst->y = ip->pos.y;
+        __builtin_memcpy(&word0, &ip->xDD4_itemVar, 4);
+        __builtin_memcpy(&word6, (const char*)&ip->xDD4_itemVar + 0x18, 4);
+        dst->missile_type = word0 & 255; dst->charge_level = word6 & 255;
+        if (ip->owner && mu_is_game_memory(ip->owner, sizeof *ip->owner) &&
+            ip->owner->classifier == HSD_GOBJ_CLASS_FIGHTER && ip->owner->user_data &&
+            mu_is_game_memory(ip->owner->user_data, sizeof(Fighter)))
+            dst->owner = ((Fighter*)ip->owner->user_data)->player_idx;
+    }
+}
 
 /* Host calls at a retrace boundary only while a low-detail view is active. This copies live
  * geometry; it never changes fighter state, collision, inputs, or the recorded match. */

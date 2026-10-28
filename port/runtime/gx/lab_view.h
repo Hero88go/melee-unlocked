@@ -16,6 +16,7 @@
 
 struct ImFont;
 struct MuLookSnapshot;
+struct MuLookItems;
 
 namespace lab {
 
@@ -23,7 +24,7 @@ namespace lab {
 // received it. Cheap; copies the fields the view uses and returns.
 void feed(const uint8_t* event, uint32_t size);
 // Source Port: a read-only geometry snapshot captured at a simulation boundary.
-void native_frame(const MuLookSnapshot& snapshot);
+void native_frame(const MuLookSnapshot& snapshot, const MuLookItems* items = nullptr);
 
 // Render thread, between ImGui::NewFrame and ImGui::Render. Covers the window when enabled and a
 // match is in progress; does nothing otherwise, so menus and the character select stay normal.

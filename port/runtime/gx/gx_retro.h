@@ -44,7 +44,7 @@ template <class Options> inline void publish_look(const Options& o) {
   l.menus.store((uint8_t)o.look_menus, std::memory_order_relaxed);
   l.unfiltered.store(o.look_unfiltered, std::memory_order_relaxed);
   l.colours.store((uint8_t)o.look_colours, std::memory_order_relaxed);
-  l.effect_owners.store(o.effects_level >= 3, std::memory_order_relaxed);
+  l.effect_owners.store(o.effects_level > 0 || o.lightweight > 0 || o.look_stage != 0 || o.look_fighter != 0, std::memory_order_relaxed);
   l.background.store((uint8_t)o.look_background, std::memory_order_relaxed);
   l.background_rgb.store(o.look_background_rgb, std::memory_order_relaxed);
   // An exact look draws its own art: the renderer's stand-in treatments step aside (port colours and the
@@ -142,6 +142,7 @@ inline uint64_t retro_key(uint64_t key) { return look_key(key, treated(Surface::
 // The group a draw belongs to for the look: fighters (skinned models of the match's world camera), the stage (the
 // rest of that world), or menus (everything else: character and stage select, HUD, pause screen).
 inline Surface look_surface(const LightweightFilter& e, const DrawCall& d) {
+  if (d.owner_player == kGameplayOwner) return Surface::Textured;
   const LookLive& l = look_live();
   if (e.in_match && d.xf_regs[0x26] == 0 && std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) == 0)
     return treated((Surface)(d.skinned ? l.fighter.load(std::memory_order_relaxed) : l.stage.load(std::memory_order_relaxed)));

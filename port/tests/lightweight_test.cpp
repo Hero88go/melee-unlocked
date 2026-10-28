@@ -86,6 +86,13 @@ int main() {
     check(!gx::skip_for_effects(gx::effects_filter(f, 3), shield), "particle tier keeps a fighter's shield");
     gx::DrawCall item = smoke; item.owner_player = 0xFF;
     check(!gx::skip_for_effects(gx::effects_filter(f, 3), item), "particle tier keeps items and the stage");
+    gx::DrawCall projectile = smoke; projectile.owner_player = gx::kGameplayOwner;
+    projectile.bp.reg[gx::BP_BLENDMODE] = 1 | (1 << 5); // additive projectile or reflector
+    projectile.bp.reg[gx::BP_ZMODE] = 0;
+    for (int level = 1; level <= 3; ++level)
+      check(!gx::skip_for_effects(gx::effects_filter(f, level), projectile), "all effect levels keep gameplay visuals");
+    check(!gx::lightweight_flat(five, projectile) && !gx::lightweight_wire(five, projectile), "lowest levels keep projectile shape");
+    check(gx::look_surface(five, projectile) == gx::Surface::Textured, "gameplay visuals keep their original textures");
     smoke.xf_regs[0x20] = 0x9999;
     check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps another camera's HUD");
     gx::RenderOptions particles; particles.effects_level = 3; gx::publish_look(particles);

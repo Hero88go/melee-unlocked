@@ -62,8 +62,9 @@ uint8_t resolve_owner(uint8_t* memory) {
   const uint32_t fighter = r.word(gobj + 0x2C);          // HSD_GObj::user_data
   // efLib's two particle dispatchers have no user data. Model effects (including shields)
   // share classifier 8 but carry an EF_Effect, so they must not receive the particle token.
-  if ((r.word(gobj) >> 16) == 8 && !fighter) {
-    player = kEffectOwner;
+  const uint32_t classifier = r.word(gobj) >> 16;
+  if (classifier == 6 || classifier == 8) {
+    player = classifier == 8 && !fighter ? kEffectOwner : kGameplayOwner;
   } else if (fighter && r.word(fighter) == gobj) {              // Fighter::gobj points back at it
     for (uint32_t slot = 0; slot < 6; ++slot)            // StaticPlayer player_slots[6], stride 0xE90
       if (r.word(0x80453080 + slot * 0xE90 + 0xB0) == gobj) { player = (uint8_t)slot; break; }
