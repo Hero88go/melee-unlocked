@@ -30,14 +30,15 @@ constexpr bool should_insert_fullscreen_layer(int active_slot, unsigned leading_
   return active_slot == 0 && leading_untextured >= 8 && next_draw_is_textured;
 }
 
-// Offline CSS/SSS uses minor 0/1. Slippi online uses 0/4; minor 1 is a transitional scene.
+// Offline and Slippi CSS/SSS both use minor 0/1. Slippi's minor 4 is its VS splash
+// (MU_SLP_STATE_SPLASH in mu_slippi_menu.c), whose backdrop must never receive SSS video.
 constexpr int scene_slot(uint8_t major, uint8_t minor) {
   const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 ||
                           major == 0x05 || major == 0x0f ||
                           (major >= 0x10 && major <= 0x13) ||
                           major == 0x1b || major == 0x1c;
   if ((match_mode || major == 0x08) && minor == 0) return 0;
-  if ((match_mode && minor == 1) || (major == 0x08 && minor == 4)) return 1;
+  if ((match_mode || major == 0x08) && minor == 1) return 1;
   return -1;
 }
 

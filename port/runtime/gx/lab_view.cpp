@@ -366,7 +366,7 @@ void commit(bool native = false) {
 
 }  // namespace
 
-void native_frame(const MuLookSnapshot& snapshot) {
+void native_frame(const MuLookSnapshot& snapshot, const MuLookItems* items) {
   gx::Frame scene;
   scene.scene_major = (uint8_t)snapshot.major;
   scene.scene_minor = (uint8_t)snapshot.minor;
@@ -391,6 +391,18 @@ void native_frame(const MuLookSnapshot& snapshot) {
     }
   }
   begin_frame(snapshot.frame);
+  if (items) {
+    g_building.items.clear();
+    for (int i = 0; i < std::clamp(items->count, 0, MU_LOOK_ITEMS); ++i) {
+      const MuLookItem& src = items->items[i];
+      if (!std::isfinite(src.x) || !std::isfinite(src.y) || !std::isfinite(src.vx) || !std::isfinite(src.vy)) continue;
+      ItemFrame dst;
+      dst.type = (uint16_t)src.type; dst.state = (uint8_t)src.state; dst.owner = (int8_t)src.owner;
+      dst.missile_type = (uint8_t)src.missile_type; dst.charge_level = (uint8_t)src.charge_level;
+      dst.facing = src.facing; dst.x = src.x; dst.y = src.y; dst.vx = src.vx; dst.vy = src.vy;
+      g_building.items.push_back(dst);
+    }
+  }
   g_building.stage_lines.clear();
   for (int i = 0; i < std::clamp(snapshot.stage_line_count, 0, MU_LOOK_STAGE_LINES); ++i) {
     const MuLookStageLine& line = snapshot.stage_lines[i];
@@ -1057,16 +1069,39 @@ void draw_player(ImDrawList* dl, const View& v, const GameInfo& info, const Play
     // Never drawn yet this match (an action with no silhouette on the very first frames).
     draw_circle(dl, v, p.x, p.y + 8, 6, inner);
   }
-  if (anim && anim->guard) {
+}
+
+// Gameplay signals are shared by silhouettes, sticks and capsules, including when no pack exists.
+void draw_player_signals(ImDrawList* dl, const View& v, const GameInfo& info, const PlayerFrame& p,
+                         const std::vector<Frame::Capsule>& caps, int port, bool nana) {
+  const ImU32 inner = rgb(player_color(info, port, nana));
+  const auto pack = g_fighter_style.load(std::memory_order_relaxed) == 0 ? get_pack(p.character) : nullptr;
+  const Anim* anim = pack && p.action < pack->action_anim.size() && pack->action_anim[p.action] < pack->anims.size()
+                         ? &pack->anims[pack->action_anim[p.action]] : nullptr;
+  float x = p.x, y = p.y + 8, radius = 10;
+  if (pack) { x += pack->shield_x * p.facing; y = p.y + pack->shield_y; radius = pack->shield_size; }
+  else if (!caps.empty()) {
+    float lo_x = 1e9f, hi_x = -1e9f, lo_y = 1e9f, hi_y = -1e9f;
+    for (const auto& c : caps) {
+      lo_x = std::min(lo_x, std::min(c.ax, c.bx) - c.r); hi_x = std::max(hi_x, std::max(c.ax, c.bx) + c.r);
+      lo_y = std::min(lo_y, std::min(c.ay, c.by) - c.r); hi_y = std::max(hi_y, std::max(c.ay, c.by) + c.r);
+    }
+    x = (lo_x + hi_x) * 0.5f; y = (lo_y + hi_y) * 0.5f;
+    radius = std::clamp(std::max(hi_x - lo_x, hi_y - lo_y) * 0.9f, 4.0f, 50.0f);
+  }
+  if ((p.action >= 178 && p.action <= 182) || (anim && anim->guard)) {
     // Shield size from shield health and trigger strength (ssbwiki Shield statistics), with the
     // trigger read at the start of GuardDamage, since that action ignores trigger changes.
-    float trigger = anim->guard_damage ? p.start_trigger : (p.trigger == 0 ? 1.0f : p.trigger);
+    float trigger = (p.action == 181 || (anim && anim->guard_damage)) ? p.start_trigger : (p.trigger == 0 ? 1.0f : p.trigger);
+    trigger = std::clamp(trigger, 0.3f, 1.0f);
     const float trig_mult = 1 - (0.5f * (trigger - 0.3f)) / 0.7f;
-    const float size_mult = ((p.shield * trig_mult) / 60) * 0.85f + 0.15f;
-    draw_circle(dl, v, p.x + pack->shield_x * p.facing, p.y + pack->shield_y, pack->shield_size * size_mult, (inner & 0x00FFFFFF) | ((ImU32)(0.6f * 255) << IM_COL32_A_SHIFT));
+    const float size_mult = ((std::clamp(p.shield, 0.0f, 60.0f) * trig_mult) / 60) * 0.85f + 0.15f;
+    draw_circle(dl, v, x, y, radius * size_mult, (inner & 0x00FFFFFF) | ((ImU32)(0.35f * 255) << IM_COL32_A_SHIFT));
+    dl->AddCircle(v(x, y), radius * size_mult * v.px, inner, 0, std::max(1.5f, v.px * 0.35f));
   }
-  if (anim && anim->shine && (p.character == kFox || p.character == kFalco))
-    draw_hexagon_ring(dl, v, p.x, p.y + pack->shield_y * 3 / 4, 6, 0.6f, rgb(0x8ABCE9));
+  if ((p.character == kFox || p.character == kFalco) &&
+      ((p.action >= 360 && p.action <= 369) || (anim && anim->shine)))
+    draw_hexagon_ring(dl, v, x, y, 6, 0.6f, rgb(0x8ABCE9));
 }
 
 void draw_items(ImDrawList* dl, const View& v, const Frame& f) {
@@ -1088,6 +1123,9 @@ void draw_items(ImDrawList* dl, const View& v, const Frame& f) {
       case 79: draw_circle(dl, v, it.x, it.y, 500.0f / 256, gray); break;   // Sheik's needle
       case 48: draw_circle(dl, v, it.x, it.y, 600.0f / 256, gray); break;   // Mario's fireball
       case 105: draw_circle(dl, v, it.x, it.y, 500.0f / 256, gray); break;  // Luigi's fireball
+      case 69: draw_circle(dl, v, it.x, it.y, 2.5f, rgb(0x38BDF8)); break; // PK Thunder head
+      case 70: case 71: case 72: case 73:
+        draw_circle(dl, v, it.x, it.y, 1.2f, rgb(0x38BDF8)); break;       // PK Thunder trail
       case 95: draw_circle(dl, v, it.x, it.y, (it.missile_type == 0 ? 500.0f : 600.0f) / 256, gray); break;
       case 93: draw_circle(dl, v, it.x, it.y, (it.state == 3 ? 1536.0f : 500.0f) / 256, gray); break;   // Samus's bomb
       case 94: {   // Samus's charge shot, charge levels 0 to 7
@@ -1108,7 +1146,7 @@ void draw_items(ImDrawList* dl, const View& v, const Frame& f) {
         break;
       }
       case 210: draw_circle(dl, v, it.x, it.y, 5 * 0.85f, rgb(0xAA0000)); break;   // Fly Guy
-      default: break;
+      default: draw_circle(dl, v, it.x, it.y, 2.0f, gray); break;   // unknown items remain visible
     }
   }
 }
@@ -1196,6 +1234,7 @@ void draw(bool enabled, float width, float height) {
       } else {
         draw_player(dl, v, info, p, port, fol == 1);
       }
+      draw_player_signals(dl, v, info, p, caps, port, fol == 1);
     }
   draw_items(dl, v, f);
   draw_hud(dl, info, f, width, height);

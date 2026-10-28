@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
 #include "lab_view.h"
+#include "../runtime/abi/mu_look_snapshot.h"
 #include "imgui.h"
 #include <chrono>
 #include <cmath>
@@ -254,6 +255,46 @@ int unit_test() {
     host::ram = nullptr;
   }
 
+  // Both native low-detail styles retain shield/reflector signals without silhouette packs,
+  // and use the separate item snapshot even when replay recording supplies no item events.
+  for (int style : {1, 2}) {
+    lab::set_style(style, 1);
+    MuLookSnapshot snapshot{};
+    snapshot.major = 2; snapshot.minor = 2; snapshot.stage = 32; snapshot.frame = 100;
+    auto& fighter = snapshot.fighters[0][0];
+    fighter.present = 1; fighter.kind = 1; fighter.external = 2; fighter.stocks = 4;
+    fighter.facing = 1; fighter.shield = 60; fighter.action = 14;
+    fighter.capsule_count = 1; fighter.capsules[0] = {0, 2, 0, 10, 2};
+    MuLookItems items{};
+    lab::native_frame(snapshot, &items);
+    const ImU32 shield_color = IM_COL32(0xB9, 0x1C, 0x1C, (int)(0.35f * 255));
+    CHECK(frame_box(shield_color, W, H).n == 0);
+    ++snapshot.frame; fighter.action = 179;
+    lab::native_frame(snapshot, &items);
+    const Box full_shield = frame_box(shield_color, W, H);
+    CHECK(full_shield.n > 8);
+    ++snapshot.frame; fighter.shield = 10;
+    lab::native_frame(snapshot, &items);
+    const Box weak_shield = frame_box(shield_color, W, H);
+    CHECK(weak_shield.n > 8 && weak_shield.x1 - weak_shield.x0 < full_shield.x1 - full_shield.x0);
+    ++snapshot.frame; fighter.action = 360;
+    lab::native_frame(snapshot, &items);
+    CHECK(frame_box(IM_COL32(0x8A, 0xBC, 0xE9, 255), W, H).n > 8);
+    ++snapshot.frame; fighter.action = 14;
+    items.count = 3;
+    items.items[0] = {54, 0, 0, 0, 0, 1, 3, 0, 20, 12};
+    items.items[1] = {69, 0, 0, 0, 0, 1, 0, 3, -20, 12};
+    items.items[2] = {999, 0, -1, 0, 0, 1, 0, 0, 10, 12};
+    lab::native_frame(snapshot, &items);
+    CHECK(frame_box(IM_COL32(255, 0, 0, 255), W, H).n > 8);          // laser
+    CHECK(frame_box(IM_COL32(0x38, 0xBD, 0xF8, 255), W, H).n > 8); // PK Thunder
+    CHECK(frame_box(shield_color, W, H).n == 0);
+    ++snapshot.frame; items.count = 0;
+    lab::native_frame(snapshot, &items);
+    CHECK(frame_box(IM_COL32(255, 0, 0, 255), W, H).n == 0);       // removed projectile leaves no ghost
+    feed(end);
+  }
+  lab::set_style(0, 0);
   fs::remove_all(dir, ec);
   if (g_failures) std::printf("%d failure(s)\n", g_failures);
   else std::printf("lab view: all checks passed\n");

@@ -35,6 +35,9 @@ inline std::set<uint32_t> visual_only_models(std::string stage_file) {
   if (slash != std::string::npos) stage_file = stage_file.substr(slash + 1);
   // Model 0 is never one: its joints are the stage's points (spawns, camera and blast lines).
   if (stage_file == "griz.dat" || stage_file == "griz.usd") return {1};       // Fountain of Dreams, grizumi.c
+  // Yoshi's Story, grstory.c: 1 starts its animation and sets a drawing flag on its materials
+  // (grStory_801E31C0, a null joint is skipped), and its updates are empty. 2 and 3 carry collision.
+  if (stage_file == "grst.dat" || stage_file == "grst.usd") return {1};
   // Final Destination, grlast.c: 1 and 2 are the backdrop; 4, 5, 6, 8 and 9 are made only by the
   // stage's demo (grLast_OnDemoInit), never in a match. 7 is left out: it starts a particle generator.
   if (stage_file == "grnla.dat" || stage_file == "grnla.usd") return {1, 2, 4, 5, 6, 8, 9};
@@ -100,10 +103,15 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
 
   // 1. Pair the joints: each original joint with the skin joint at the same place, children matched by
   //    transform and flags so a removed sibling does not shift the rest. 0 = no counterpart.
+  //    `tail`: nothing of the model comes after this joint's subtree but its later siblings. A skin
+  //    branch hung after the last of them is added scenery (Compare::scenery), carried over below.
   std::map<uint32_t, uint32_t> pairs;
-  std::function<void(uint32_t, uint32_t, unsigned)> walk = [&](uint32_t ja, uint32_t jb, unsigned depth) {
+  std::map<uint32_t, uint32_t> scenery;   // original joint -> the skin's branch hung after it
+  std::function<void(uint32_t, uint32_t, unsigned, bool)> walk = [&](uint32_t ja, uint32_t jb, unsigned depth, bool tail) {
     if (depth > 256 || pairs.size() > 16384 || pairs.count(ja)) return;
     pairs[ja] = jb;
+    if (tail && jb && !a.pointers.count(ja + 12) && !a.get(ja + 12) && b.pointers.count(jb + 12))
+      scenery[ja] = b.get(jb + 12);   // the skin's siblings after its counterpart of the last original joint here
     auto children = [](const Archive& z, uint32_t j) {
       std::vector<uint32_t> list;
       if (!j || !z.pointers.count(j + 8)) return list;
@@ -121,11 +129,12 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
              !std::memcmp(a.bytes.data() + 32ull + x + 20, b.bytes.data() + 32ull + y + 20, 36);
     };
     size_t next = 0;
+    const bool child_tail = tail && !a.pointers.count(ja + 12);
     for (uint32_t x : ca) {
       uint32_t match = 0;
       for (size_t k = next; k < cb.size(); ++k)
         if (!used[k] && same(x, cb[k])) { match = cb[k]; used[k] = true; next = k + 1; break; }
-      walk(x, match, depth + 1);
+      walk(x, match, depth + 1, child_tail);
     }
   };
   // 0. Models taken whole: everything the skin's model entry reaches, as long as none of it is a
@@ -182,7 +191,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     if (whole_from.count(i)) continue;
     const uint32_t pa = a.get(ha + 8) + i * 52, pb = b.get(hb + 8) + i * 52;
     if (!a.pointers.count(pa)) continue;
-    walk(a.get(pa), b.pointers.count(pb) ? b.get(pb) : 0, 0);
+    walk(a.get(pa), b.pointers.count(pb) ? b.get(pb) : 0, 0, true);
   }
 
   // 2. Which skin meshes to bring over: everything reachable from the paired joints' +16, as long as
@@ -209,6 +218,32 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     if (!ok) continue;   // keeps the original mesh
     mesh_of[ja] = b.get(jb + 16);
     copy.insert(reach.begin(), reach.end());
+  }
+
+  // 2b. Added scenery: the skin's branch, its joints and their meshes, as long as it reaches no joint
+  //     paired above, no particle or spline joint, no gameplay table and no slot filled from another
+  //     file. Otherwise it is left out, as before.
+  std::set<uint32_t> paired_b;
+  for (const auto& [ja, jb] : pairs) if (jb) paired_b.insert(jb);
+  std::set<uint32_t> scenery_joints;
+  for (auto it = scenery.begin(); it != scenery.end();) {
+    std::set<uint32_t> reach;
+    std::vector<uint32_t> pending{it->second};
+    bool ok = true;
+    while (!pending.empty() && ok) {
+      const uint32_t at = pending.back(); pending.pop_back();
+      if (paired_b.count(at) || gameplay_b.count(at) || whole_joints.count(at) || at >= b.size) { ok = false; break; }
+      if (!reach.insert(at).second) continue;
+      if (b.joint_offsets.count(at) && (b.get(at + 4) & kBehaviourJoint)) { ok = false; break; }
+      const uint32_t n = b.extent(at);
+      if (b.externs.lower_bound(at) != b.externs.end() && b.externs.lower_bound(at)->first < uint64_t(at) + n) { ok = false; break; }
+      for (auto p = b.pointers.lower_bound(at); p != b.pointers.end() && *p < uint64_t(at) + n; ++p) pending.push_back(b.get(*p));
+      if (reach.size() > 200000) ok = false;
+    }
+    if (!ok) { it = scenery.erase(it); continue; }
+    for (uint32_t at : reach) if (b.joint_offsets.count(at)) scenery_joints.insert(at);
+    copy.insert(reach.begin(), reach.end());
+    ++it;
   }
 
   // 3. Lay the copied objects out after the original data: contiguous runs stay together, and each
@@ -254,6 +289,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
       put(data, ja + 16, moved.at(m->second)); relocs.insert(ja + 16); ++shown;
     }
   }
+  for (const auto& [ja, branch] : scenery) { put(data, ja + 12, moved.at(branch)); relocs.insert(ja + 12); }
   // Models taken whole: the original's entry points at the skin's model (its pointer slots); the
   // entry's other words stay the original's.
   std::set<uint32_t> whole_models;
@@ -269,8 +305,15 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
   // Every original object that lost its pointer keeps one, in a table nothing reads: the archive's
   // object bounds (each object ends where the next pointed-to one starts) then stay the original's,
   // and the gameplay tables beside an unhooked model are measured as before.
+  // The table's first word points at the table itself: an object ends where the next pointed-to one
+  // starts, so without it the last copied object would seem to run on into the table, and added
+  // scenery would seem to reach the original objects listed there.
   if (!unhooked.empty()) {
     data.resize((data.size() + 31) & ~size_t(31), 0);
+    const size_t table = data.size();
+    data.resize(table + 4, 0);
+    put(data, table, (uint32_t)table);
+    relocs.insert((uint32_t)table);
     for (uint32_t target : unhooked) {
       const size_t at = data.size();
       data.resize(at + 4, 0);
@@ -302,8 +345,9 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
   for (const auto& [ja, m] : mesh_of) if (m != UINT32_MAX) used.insert(m);
   for (uint32_t j : b.joint_offsets)
     if (!(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) all.insert(b.get(j + 16));
-  for (uint32_t j : whole_joints)   // the models taken whole draw every mesh they have
-    if (b.joint_offsets.count(j) && !(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) used.insert(b.get(j + 16));
+  for (const auto* joints : {&whole_joints, &scenery_joints})   // models taken whole and added scenery draw every mesh they have
+    for (uint32_t j : *joints)
+      if (b.joint_offsets.count(j) && !(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) used.insert(b.get(j + 16));
   // Most of the skin has to make it. A skin whose meshes mostly found no joint of the original to
   // sit on drew a near-empty stage online (20XX's Battlefield alt 8AT showed its platforms offline
   // and nothing online; its Luigi's Mansion Fountain of Dreams showed only the sky): the original
@@ -318,6 +362,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
   *note = std::to_string(shown) + " joints show the skin, " + std::to_string(hidden) + " the skin removed, " +
           std::to_string(kept) + " keep the original mesh; " + std::to_string(used.size()) + " of the skin's " +
           std::to_string(all.size()) + " meshes drawn";
+  if (!scenery_joints.empty()) *note += "; " + std::to_string(scenery_joints.size()) + " joints of added scenery";
   if (!whole_models.empty()) {
     *note += "; the skin's own model";
     for (uint32_t i : whole_models) *note += " " + std::to_string(i);

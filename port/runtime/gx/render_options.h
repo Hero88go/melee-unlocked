@@ -290,6 +290,9 @@ struct RenderOptions {
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
+  // Online: protect match speed (slippi_online.cpp budget_watch). On by default.
+  bool online_frame_protection = true;
+  static std::atomic<bool>& live_online_frame_protection() { static std::atomic<bool> value{true}; return value; }
   int efb_scale = 0;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
   int window_w = 1280, window_h = 960;  // initial client size
   // The player picked a fixed window size ("window WxH" in the ini, or --window): the panel keeps
@@ -323,6 +326,7 @@ struct RenderOptions {
   int border_edge = 1;        // border art: 0 = cut off sharp at the picture, 1 = the picture casts a soft shadow on it
   std::string border_art;     // file in the Borders folder shown behind the picture (video_background.h); empty = black bars
   int crt_filter = 0;         // CRT display model in the present pass: 0 off, 1 studio monitor, 2 home television (crt_shader.h)
+  float crt_curve = 1.0f;     // the home television's screen curve, 1 as designed, 0 flat to 3 (crt_look)
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   float screen_space_ao = 0.0f; // 0..1 depth-based contact shading; display-only, not ray traced
   bool path_tracing = false;       // D3D12 DXR diffuse indirect bounce, display-only and off by default
@@ -479,7 +483,10 @@ inline void apply_look_preset(RenderOptions& o, int index, bool d3d11_available)
   if (index < 0 || index >= n) return;
   const LookPreset& l = p[index];
   apply_lightweight(o, l.lightweight, d3d11_available);
-  if (l.unlocked) o.fps_cap = 0;
+  if (l.unlocked) {
+    o.fps_cap = 0;
+    if (o.subframe == SubFrameMode::Off) o.subframe = SubFrameMode::Authored;
+  }
   o.lab_view = l.lab != 0; o.look_lab_fighters = l.lab; o.look_lab_stage = l.lab_stage;
   o.look_fighter = l.fighter; o.look_stage = l.stage; o.look_menus = l.menus; o.look_unfiltered = l.unfiltered;
   o.look_colours = l.colours; o.look_background = l.background; o.effects_level = l.effects; o.look_own = l.own;

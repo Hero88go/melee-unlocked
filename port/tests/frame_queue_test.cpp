@@ -2,9 +2,32 @@
 #include <cstdio>
 #include <cstdlib>
 #include <future>
+#include <new>
+#include <atomic>
+static std::atomic<bool> fail_next_allocation{false};
+void* operator new(std::size_t size) {
+  if (fail_next_allocation.exchange(false)) throw std::bad_alloc();
+  if (void* p = std::malloc(size ? size : 1)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 #define check(x) do { if (!(x)) { std::printf("frame_queue_test FAILED line %d: %s\n", __LINE__, #x); std::fflush(stdout); std::abort(); } } while (0)
 static gx::Frame frame(uint64_t sequence) { gx::Frame f; f.sequence = sequence; return f; }
 int main() {
+  // The reported bad_alloc originated in speculative frame headroom. A failed
+  // allocation must preserve already-recorded geometry and allow later growth.
+  {
+    gx::Frame f = frame(99);
+    f.vertices.resize(1);
+    const auto* storage = f.vertices.data();
+    fail_next_allocation.store(true);
+    f.reserve_gameplay_capacity();
+    check(!fail_next_allocation.load());
+    check(f.sequence == 99 && f.vertices.size() == 1 && f.vertices.data() == storage);
+    f.reserve_gameplay_capacity();
+    check(f.vertices.capacity() >= 65536 && f.draws.capacity() >= 1024);
+  }
   // The queue used to block the producer at two frames, which made the renderer able to stall the
   // 60 Hz simulation: a slow presented frame cost a simulation tick and the game ran in slow
   // motion. Frames are never dropped (EFB copies made in one frame feed later ones), so instead the

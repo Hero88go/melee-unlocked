@@ -1586,11 +1586,12 @@ void apply_low_poly_fighters() {
 // such a skin is in use the function runs from RAM with the stop replaced by "this phase is not
 // over yet": the match goes on and the background stays in that phase. The disc's stage never
 // reaches the replaced instruction. Retail code only: any other bytes there are left alone.
-// "Freeze Final Destination" on the Static Recomp. The background's think is one call in
-// grLast_8021AAB0 (bl 8021B2E8 at 8021AAE4); the function runs from RAM with that call made a nop,
-// as the Source Port skips it (gr/grlast.c). What was there is put back when the option goes off:
-// online that word is Slippi's DesyncProofBGTransformations branch, and with the call skipped the
-// seed is not touched at all, so both players stay in step whatever each one chose.
+// "Freeze Final Destination" on the Static Recomp. The background's think is grLast_8021B2E8, called
+// only from grLast_8021AAB0, which the Source Port skips (gr/grlast.c). Here the think runs from
+// RAM with its first word a return, so every caller finds it does nothing: the call in
+// grLast_8021AAB0 and the cave of Slippi's DesyncProofBGTransformations. An earlier version made
+// that call (8021AAE4) a nop instead, which held in Direct, but in Unranked the background still
+// moved. The seed is not touched either way, so both players stay in step whatever each one chose.
 // A fighter whose player slot carries a tint index past the game's four (a mod's mode can leave one)
 // stops the game at fighter.c:828 ("fighter sub color num over!"). The tint is only a colour: it is
 // set to none before the fighter reads it, and the fighter loads.
@@ -1611,25 +1612,27 @@ void install_sub_color_guard() {
   });
 }
 void apply_freeze_final_destination() {
-  constexpr uint32_t kThink = 0x8021AAB0u, kCall = 0x8021AAE4u, kNop = 0x60000000u;
+  constexpr uint32_t kThink = 0x8021B2E8u, kReturn = 0x4E800020u;
   static bool frozen = false;
   static uint32_t saved = 0;
   if (!ram) return;
-  const bool want = g_freeze_fd.load(std::memory_order_relaxed) && !gameplay::vanilla_only();
+  // This is a local backdrop preference, like the HUD and video backgrounds. A vanilla
+  // launcher session suppresses gameplay mods, not the player's display settings.
+  const bool want = g_freeze_fd.load(std::memory_order_relaxed);
   if (want == frozen) return;
   if (want) {
-    if (!try_ptr(kCall, 4)) return;
-    saved = rd32(kCall);
+    if (!try_ptr(kThink, 4)) return;
+    saved = rd32(kThink);
     if (!ppc::redirect_to_interpreter(kThink)) {
       static bool logged = false;
       if (!logged) { logged = true; log("stages: Freeze Final Destination could not run the stage's code from RAM; left off"); }
       return;
     }
-    wr32(kCall, kNop);
+    wr32(kThink, kReturn);
     frozen = true;
     log("stages: Final Destination's background frozen");
   } else {
-    if (rd32(kCall) == kNop) wr32(kCall, saved);
+    if (rd32(kThink) == kReturn) wr32(kThink, saved);
     ppc::undo_redirect(kThink);
     frozen = false;
     log("stages: Final Destination's background moves again");
@@ -2490,6 +2493,7 @@ static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
 static ULONG64 g_slow_frame_cycles = 0;   // this thread's cycle count at the start of the frame, for the slow-frame line
 static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode", "input", "wait", "late"};   // record includes texsnap and observe; gxdecode includes record and queue
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0, g_last_sim_work_ms = 0.0;
+static bool g_last_sim_late = false;   // the most recent frame missed its place on the 60 Hz schedule
 static ULONG64 g_sim_frame_start_cycles = 0;   // this thread's cycle count at g_sim_frame_start (MELEE_SIM_TIMES)
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
 // "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
@@ -2519,6 +2523,7 @@ static std::string sim_cost_line(uint32_t frames) {
 }
 double last_sim_frame_ms() { return g_last_sim_ms; }
 double last_sim_frame_work_ms() { return g_last_sim_work_ms; }
+bool last_sim_frame_late() { return g_last_sim_late; }
 
 // MELEE_TEST_EARLY_RNG_SEED="<seed>@<retrace>" (M4 diagnostic, off by default): the recompiled
 // game's seed is written through HSD_RandSeedPtr at the start of that retrace, before the VI
@@ -2812,6 +2817,7 @@ void retrace() {
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
     auto now = std::chrono::steady_clock::now();
+    g_last_sim_late = !(g_next_frame > now);   // no time left to wait: the frame finished after its deadline
     if (g_next_frame > now) wait_for_tick(g_next_frame);
     else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)
     g_frame_time = std::chrono::duration<double>(g_next_frame.time_since_epoch()).count();

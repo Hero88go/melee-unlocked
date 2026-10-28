@@ -26,6 +26,7 @@ struct LookLive {
   std::atomic<uint8_t> fighter{0}, stage{0}, menus{0};   // Surface per group; menus = everything outside a match's world
   std::atomic<bool> unfiltered{false};                   // nearest-texel sampling on treated groups (the 64 look)
   std::atomic<uint8_t> colours{0};                       // 0 original, 1 port colours on fighters
+  std::atomic<bool> effect_owners{false};                // Visual effects at No decorative particles: effect draws are marked
   std::atomic<uint8_t> background{0};                    // 0 the stage's own, 1 black, 2 plain colour
   std::atomic<uint32_t> background_rgb{0x000000};
   std::atomic<bool> retro{false};                        // the original "Retro (64 style)" switch
@@ -43,6 +44,7 @@ template <class Options> inline void publish_look(const Options& o) {
   l.menus.store((uint8_t)o.look_menus, std::memory_order_relaxed);
   l.unfiltered.store(o.look_unfiltered, std::memory_order_relaxed);
   l.colours.store((uint8_t)o.look_colours, std::memory_order_relaxed);
+  l.effect_owners.store(o.effects_level > 0 || o.lightweight > 0 || o.look_stage != 0 || o.look_fighter != 0, std::memory_order_relaxed);
   l.background.store((uint8_t)o.look_background, std::memory_order_relaxed);
   l.background_rgb.store(o.look_background_rgb, std::memory_order_relaxed);
   // An exact look draws its own art: the renderer's stand-in treatments step aside (port colours and the
@@ -106,14 +108,23 @@ inline std::unique_ptr<texpack::Replacement> look_replacement(const TextureRef& 
   if (s == Surface::Retro64 && t.width <= kRetroMaxSide && t.height <= kRetroMaxSide) return nullptr;
   std::vector<uint8_t> px;
   uint32_t w = t.width, h = t.height;
-  if (s == Surface::White) { px = {255, 255, 255, 255}; w = h = 1; }
-  else {
-    decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.data(), t.tlut_format, px);
-    if (px.size() < (size_t)w * h * 4) return nullptr;
-    if (s == Surface::Retro64) while (w > kRetroMaxSide || h > kRetroMaxSide) retro_halve(px, w, h);
-    else if (s == Surface::Flat) { px = flat_colour(px); w = h = 1; }
-    else if (s == Surface::Posterize) posterize(px);
+  decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.data(), t.tlut_format, px);
+  if (px.size() < (size_t)w * h * 4) {
+    if (s != Surface::White) return nullptr;
+    px = {255, 255, 255, 255}; w = h = 1;   // undecodable: plain white, as before
   }
+  if (s == Surface::White || s == Surface::Flat) {
+    // One colour for the whole texture, its own alpha kept: a single opaque texel turned smoke, sparks
+    // and cut-out shapes (leaves, fences) into solid squares, which in a match hid the fighters behind
+    // them. A texture with no transparency still becomes one texel.
+    const std::vector<uint8_t> flat = s == Surface::White ? std::vector<uint8_t>{255, 255, 255, 255} : flat_colour(px);
+    bool opaque = true;
+    for (size_t i = 3; i < px.size() && opaque; i += 4) opaque = px[i] == 255;
+    if (opaque) { px = {flat[0], flat[1], flat[2], 255}; w = h = 1; }
+    else for (size_t i = 0; i + 3 < px.size(); i += 4) { px[i] = flat[0]; px[i + 1] = flat[1]; px[i + 2] = flat[2]; }
+  }
+  else if (s == Surface::Retro64) while (w > kRetroMaxSide || h > kRetroMaxSide) retro_halve(px, w, h);
+  else if (s == Surface::Posterize) posterize(px);
   auto r = std::make_unique<texpack::Replacement>();
   r->width = w; r->height = h; r->levels = 1;
   r->pixels = std::move(px);
@@ -131,6 +142,7 @@ inline uint64_t retro_key(uint64_t key) { return look_key(key, treated(Surface::
 // The group a draw belongs to for the look: fighters (skinned models of the match's world camera), the stage (the
 // rest of that world), or menus (everything else: character and stage select, HUD, pause screen).
 inline Surface look_surface(const LightweightFilter& e, const DrawCall& d) {
+  if (d.owner_player == kGameplayOwner) return Surface::Textured;
   const LookLive& l = look_live();
   if (e.in_match && d.xf_regs[0x26] == 0 && std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) == 0)
     return treated((Surface)(d.skinned ? l.fighter.load(std::memory_order_relaxed) : l.stage.load(std::memory_order_relaxed)));

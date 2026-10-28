@@ -13,6 +13,9 @@
 #include <vector>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <new>
+#include <string>
 #include <windows.h>
 #include <shellapi.h>
 #ifdef _WIN32
@@ -35,8 +38,20 @@ constexpr uint32_t OUTPUT_RATE = 32000;
 constexpr double CONSOLE_GAIN[2] = {32510.0 / 32768.0 * 23124.0 / 32768.0,    // 0.700133
                                     32510.0 / 32768.0 * 23215.0 / 32768.0};   // 0.702887
 
+// A player's own file (MP3, WAV, ...) is played while it decodes: decoding a whole track before the
+// first sample took up to a second or more, heard as a gap where the song should start. The decoder
+// thread writes frames into the buffer and then publishes how many are ready; the mixer plays only
+// those. A buffer that has to grow is copied into a larger one on the decoder thread and swapped in,
+// so the audio thread never waits on a lock or an allocation.
+struct StreamBuffer {
+  std::unique_ptr<int16_t[]> data;   // interleaved stereo at OUTPUT_RATE
+  size_t capacity = 0;               // frames
+};
 struct Song {
-  std::vector<int16_t> samples;   // interleaved stereo at OUTPUT_RATE
+  std::vector<int16_t> samples;   // interleaved stereo at OUTPUT_RATE (a song decoded whole)
+  std::shared_ptr<StreamBuffer> stream;   // a song decoded while it plays; std::atomic_load/store
+  std::atomic<size_t> ready{0};           // frames of `stream` written; read before `stream`
+  std::atomic<bool> complete{true};       // false while `stream` is still being written
   size_t loop_frame = SIZE_MAX;   // frame index the song restarts at, or SIZE_MAX for one-shot
   size_t position = 0;            // frames played
   double phase = 0.0;            // fractional input sample when the endpoint runs above 32 kHz
@@ -153,46 +168,28 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
   return song;
 }
 
-std::shared_ptr<Song> decode_custom_file(const std::filesystem::path& path) {
-  std::string ext = path.extension().string();
-  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-  if (ext == ".hps") {
-    std::error_code ec;
-    const uint64_t size = std::filesystem::file_size(path, ec);
-    if (ec || size > 64u * 1024 * 1024 || size < 0x80) return nullptr;
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return nullptr;
-    std::vector<uint8_t> file((size_t)size);
-    if (!in.read((char*)file.data(), (std::streamsize)file.size())) return nullptr;
-    return decode_hps(file);
-  }
+// Ten minutes of decoded stereo is about 77 MB held in memory; longer files use the disc track.
+constexpr size_t MAX_CUSTOM_FRAMES = OUTPUT_RATE * 60u * 10u;
+using PcmSink = std::function<bool(const int16_t* pcm, size_t frames)>;
 
+// A player's file in any format the system decodes (all but HPS), to `sink` piece by piece as
+// interleaved stereo at OUTPUT_RATE. *expected_frames is set to the length the file states before
+// the first piece. False when nothing could be decoded, or the file is over ten minutes.
+bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, size_t* expected_frames, bool* too_long) {
+  *expected_frames = 0;
+  *too_long = false;
 #ifndef _WIN32
-  // Linux: FFmpeg decodes the player formats (WAV, MP3, M4A/AAC, OGG, FLAC, Opus) to the same stereo
-  // mixer format used by HPS. Unsupported formats fail back to disc.
-  {
-    constexpr size_t MAX_FRAMES = OUTPUT_RATE * 60u * 10u;
-    auto song = std::make_shared<Song>();
-    bool too_long = false;
-    if (!linux_media::decode_audio(path, (int)OUTPUT_RATE, MAX_FRAMES, song->samples, &too_long)) {
-      host::log("jukebox: custom audio %s %s, using the disc track", path.filename().string().c_str(),
-                too_long ? "is longer than 10 minutes" : "could not be decoded");
-      return nullptr;
-    }
-    song->loop_frame = 0;
-    host::log("jukebox: custom audio %s, %zu frames", path.filename().string().c_str(), song->samples.size() / 2);
-    return song;
-  }
+  // Linux: FFmpeg decodes the player formats (WAV, MP3, M4A/AAC, OGG, FLAC, Opus).
+  return linux_media::decode_audio(path, (int)OUTPUT_RATE, MAX_CUSTOM_FRAMES, sink, expected_frames, too_long);
 #else
-  // Windows Media Foundation decodes common player formats (WAV, MP3, M4A/AAC and installed
-  // codecs) to the same stereo mixer format used by HPS. Unsupported formats fail back to disc.
+  // Windows Media Foundation decodes common player formats (WAV, MP3, M4A/AAC and installed codecs).
   const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   const bool uninit_com = SUCCEEDED(com_hr);
-  if (FAILED(com_hr) && com_hr != RPC_E_CHANGED_MODE) return nullptr;
+  if (FAILED(com_hr) && com_hr != RPC_E_CHANGED_MODE) return false;
   static std::once_flag mf_once;
   static HRESULT mf_hr = E_FAIL;
   std::call_once(mf_once, [] { mf_hr = MFStartup(MF_VERSION, MFSTARTUP_LITE); });
-  if (FAILED(mf_hr)) { if (uninit_com) CoUninitialize(); return nullptr; }
+  if (FAILED(mf_hr)) { if (uninit_com) CoUninitialize(); return false; }
 
   IMFSourceReader* reader = nullptr;
   IMFMediaType* output_type = nullptr;
@@ -207,16 +204,26 @@ std::shared_ptr<Song> decode_custom_file(const std::filesystem::path& path) {
   if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, OUTPUT_RATE * 4);
   if (SUCCEEDED(hr)) hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, output_type);
   if (output_type) output_type->Release();
-  auto song = SUCCEEDED(hr) ? std::make_shared<Song>() : nullptr;
-  bool finished = false, too_long = false;
-  // Ten minutes of decoded stereo is about 77 MB held in memory; longer files use the disc track.
-  constexpr size_t MAX_FRAMES = OUTPUT_RATE * 60u * 10u;
-  while (song && !finished) {
+  if (SUCCEEDED(hr)) {
+    // The length the file states (100 ns units), to size the buffer once and refuse a long file early.
+    PROPVARIANT duration;
+    PropVariantInit(&duration);
+    if (SUCCEEDED(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &duration)) &&
+        duration.vt == VT_UI8) {
+      const double frames = (double)duration.uhVal.QuadPart / 1e7 * OUTPUT_RATE;
+      if (frames > (double)MAX_CUSTOM_FRAMES) { *too_long = true; hr = E_FAIL; }
+      else *expected_frames = (size_t)frames;
+    }
+    PropVariantClear(&duration);
+  }
+  bool ok = SUCCEEDED(hr), finished = false;
+  size_t written = 0;
+  while (ok && !finished) {
     DWORD stream = 0, flags = 0;
     LONGLONG timestamp = 0;
     IMFSample* sample = nullptr;
     hr = reader->ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &stream, &flags, &timestamp, &sample);
-    if (FAILED(hr)) { song.reset(); break; }
+    if (FAILED(hr)) { ok = false; break; }
     if (flags & MF_SOURCE_READERF_ENDOFSTREAM) finished = true;
     if (sample) {
       IMFMediaBuffer* buffer = nullptr;
@@ -226,32 +233,95 @@ std::shared_ptr<Song> decode_custom_file(const std::filesystem::path& path) {
         DWORD maximum = 0, length = 0;
         hr = buffer->Lock(&data, &maximum, &length);
         if (SUCCEEDED(hr)) {
-          if ((length & 3u) != 0 || song->samples.size() / 2 + length / 4 > MAX_FRAMES) {
-            too_long = (length & 3u) == 0;
-            song.reset();
-          } else {
-            const size_t before = song->samples.size();
-            song->samples.resize(before + length / 2);
-            std::memcpy(song->samples.data() + before, data, length);
-          }
+          if ((length & 3u) != 0) ok = false;
+          else if (written + length / 4 > MAX_CUSTOM_FRAMES) { *too_long = true; ok = false; }
+          else if (length && !sink(reinterpret_cast<const int16_t*>(data), length / 4)) finished = true;   // the caller stopped it
+          else written += length / 4;
           buffer->Unlock();
-        } else song.reset();
+        } else ok = false;
         buffer->Release();
-      } else song.reset();
+      } else ok = false;
       sample->Release();
     }
   }
   if (reader) reader->Release();
   if (uninit_com) CoUninitialize();
-  if (!song || song->samples.empty()) {
-    host::log("jukebox: custom audio %s %s, using the disc track", path.filename().string().c_str(),
-              too_long ? "is longer than 10 minutes" : "could not be decoded");
-    return nullptr;
-  }
-  song->loop_frame = 0;
-  host::log("jukebox: custom audio %s, %zu frames", path.filename().string().c_str(), song->samples.size() / 2);
-  return song;
+  return ok && written > 0;
 #endif
+}
+
+// Starts `song` as the one playing, unless another song has been asked for since `generation`.
+void publish_song(const std::shared_ptr<Song>& song, uint32_t generation) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (g_song_generation.load() != generation) return;
+  if (g_song) g_fading = g_song;   // the old song fades out while the new one fades in
+  else if (song) song->level = 1.0;   // nothing playing: start as the console does, at full level
+  g_song = song;
+}
+
+// A player's file played while it decodes (StreamBuffer): it starts as soon as one second is ready,
+// where decoding all of it first left a gap of up to a second or more at the start of every song.
+// False when it could not start (the disc track plays instead). Once started, a file that fails or
+// runs past ten minutes partway ends where its decoding stopped.
+bool stream_custom_file(const std::filesystem::path& path, uint32_t generation, float gain) {
+  auto song = std::make_shared<Song>();
+  song->gain = gain;
+  song->loop_frame = 0;
+  song->complete.store(false, std::memory_order_relaxed);
+  std::shared_ptr<StreamBuffer> buffer;
+  size_t written = 0, expected = 0;
+  bool started = false, out_of_memory = false;
+  const auto sink = [&](const int16_t* pcm, size_t frames) {
+    if (g_song_generation.load() != generation) return false;   // another song was asked for
+    if (!buffer || written + frames > buffer->capacity) {
+      // Sized from the stated length plus a second, so a file that states it is copied at most once.
+      const size_t want = std::max({written + frames, expected + OUTPUT_RATE,
+                                    buffer ? buffer->capacity * 2 : (size_t)OUTPUT_RATE * 60});
+      auto next = std::make_shared<StreamBuffer>();
+      next->data.reset(new (std::nothrow) int16_t[want * 2]);
+      if (!next->data) { out_of_memory = true; return false; }
+      next->capacity = want;
+      if (written) std::memcpy(next->data.get(), buffer->data.get(), written * 4);
+      std::atomic_store(&song->stream, next);   // swapped in before more frames are counted
+      buffer = std::move(next);
+    }
+    std::memcpy(buffer->data.get() + written * 2, pcm, frames * 4);
+    written += frames;
+    song->ready.store(written, std::memory_order_release);
+    if (!started && written >= OUTPUT_RATE) { started = true; publish_song(song, generation); }
+    return true;
+  };
+  bool too_long = false;
+  const bool ok = decode_player_file(path, sink, &expected, &too_long);
+  song->complete.store(true, std::memory_order_release);
+  const std::string name = path.filename().u8string();
+  if (g_song_generation.load() != generation) return true;   // replaced meanwhile: nothing to play
+  if (!started) {
+    if (!ok || !written) {
+      host::log("jukebox: custom audio %s %s, using the disc track", name.c_str(),
+                too_long ? "is longer than 10 minutes" : out_of_memory ? "did not fit in memory" : "could not be decoded");
+      return false;
+    }
+    publish_song(song, generation);   // shorter than a second
+  }
+  if (!ok || out_of_memory)
+    host::log("jukebox: custom audio %s stopped decoding after %zu frames (%s); it ends there", name.c_str(), written,
+              too_long ? "longer than 10 minutes" : out_of_memory ? "out of memory" : "decode error");
+  else
+    host::log("jukebox: custom audio %s, %zu frames", name.c_str(), written);
+  return true;
+}
+
+// An HPS file from a music pack, decoded whole: that takes tens of milliseconds.
+std::shared_ptr<Song> decode_custom_hps(const std::filesystem::path& path) {
+  std::error_code ec;
+  const uint64_t size = std::filesystem::file_size(path, ec);
+  if (ec || size > 64u * 1024 * 1024 || size < 0x80) return nullptr;
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return nullptr;
+  std::vector<uint8_t> file((size_t)size);
+  if (!in.read((char*)file.data(), (std::streamsize)file.size())) return nullptr;
+  return decode_hps(file);
 }
 }  // namespace
 
@@ -278,7 +348,31 @@ bool resolve_music_pack_path(const std::string& disc_path, std::filesystem::path
     if (std::filesystem::is_regular_file(alternate, ec) && !ec) { *out = alternate; return true; }
     ec.clear();
   }
-  const std::filesystem::path playlist = root / disc.parent_path() / disc.stem();
+  std::filesystem::path playlist = root / disc.parent_path() / disc.stem();
+  // One playlist for several songs (a stage's main and alternate songs): a folder named after each
+  // of them joined with "+", such as audio/ystory+smari3/. A folder named after the song alone wins.
+  if (!std::filesystem::is_directory(playlist, ec)) {
+    ec.clear();
+    const std::string stem = disc.stem().u8string();
+    std::filesystem::directory_iterator shared(root / disc.parent_path(), std::filesystem::directory_options::skip_permission_denied, ec);
+    std::vector<std::filesystem::path> matches;
+    for (std::filesystem::directory_iterator end; !ec && shared != end; shared.increment(ec)) {
+      std::error_code item_ec;
+      if (!shared->is_directory(item_ec) || item_ec) continue;
+      const std::string name = shared->path().filename().u8string();
+      for (size_t start = 0; start <= name.size();) {
+        const size_t plus = std::min(name.find('+', start), name.size());
+        if (plus - start == stem.size() && _strnicmp(name.c_str() + start, stem.c_str(), stem.size()) == 0) {
+          matches.push_back(shared->path());
+          break;
+        }
+        start = plus + 1;
+      }
+    }
+    ec.clear();
+    if (!matches.empty()) { std::sort(matches.begin(), matches.end()); playlist = matches.front(); }   // the same one every time
+  }
+  ec.clear();
   std::vector<std::filesystem::path> tracks;
   std::filesystem::directory_iterator it(playlist, std::filesystem::directory_options::skip_permission_denied, ec);
   for (std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
@@ -323,7 +417,13 @@ void start_song(uint32_t disc_offset, uint32_t size) {
         custom = resolve_music_pack_path(disc_path, &custom_path);
     }
     if (custom) host::log("jukebox: music pack picked %s", custom_path.u8string().c_str());
-    std::shared_ptr<Song> song = custom ? decode_custom_file(custom_path) : nullptr;
+    std::shared_ptr<Song> song;
+    if (custom) {
+      std::string ext = custom_path.extension().u8string();
+      std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+      if (ext == ".hps") song = decode_custom_hps(custom_path);
+      else if (stream_custom_file(custom_path, generation, song_gain)) return;   // playing (or replaced) already
+    }
     const DiscReader reader = g_reader.load();
     // A malformed optional replacement should never mute a song that otherwise worked.
     if (!song) {
@@ -335,12 +435,7 @@ void start_song(uint32_t disc_offset, uint32_t size) {
       song = decode_hps(file);
     }
     if (song) song->gain = song_gain;
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (g_song_generation.load() == generation) {
-      if (g_song) g_fading = g_song;   // the old song fades out while the new one fades in
-      else if (song) song->level = 1.0;   // nothing playing: start as the console does, at full level
-      g_song = song;
-    }
+    publish_song(song, generation);
   }); }).detach();
 }
 
@@ -370,11 +465,18 @@ void open_music_packs_folder() {
   const auto readme = folder / L"README.txt";
   if (!std::filesystem::exists(readme, ec)) {
     std::ofstream note(readme);
-    note << "Custom music\n\n"
+    note << "Custom music / audio packs\n\n"
+            "1. In F1 > Audio, enable Use custom music and use Open music packs to open this build's folder.\n"
+            "2. Open Tracks.txt for the exact original names. Start the game with its ISO loaded, then open this folder again if the list is missing.\n"
+            "3. Extract downloaded ZIP packs first. The audio folder goes directly inside MusicPacks, without an extra pack-name folder.\n"
             "Tracks.txt lists the original menu and stage music files (refresh it from Audio settings while the game is running). For /audio/name.hps, replace it with\n"
             "MusicPacks/audio/name.hps (HPS), or MusicPacks/audio/name.mp3 (MP3), MusicPacks/audio/name.wav\n"
             "(WAV), or another supported audio extension. For a random playlist, put audio files in\n"
             "MusicPacks/audio/name/. The game picks one each time it starts that song.\n"
+            "Use the actual name from Tracks.txt in place of name. Keep the file's real extension; renaming an MP3 to HPS does not convert it.\n"
+            "One folder can serve several tracks (a stage's main and alternate songs): name it after each joined with +, like MusicPacks/audio/name+othername/.\n"
+            "A direct replacement takes priority over the random playlist. Leave and re-enter the stage/menu to start the new song.\n"
+            "These packs replace music, not character voices or sound effects. Check the Music and Volume sliders if silent.\n"
             "Windows Media Foundation handles common formats; HPS files must be stereo.\n"
             "Custom tracks play locally; other players do not need the same pack. Vanilla audio mode keeps the disc music.\n";
   }
@@ -395,11 +497,20 @@ namespace {
 // Adds one song into out[] (float accumulator). The fade level moves toward target at FADE_STEP per
 // 32 kHz frame. Returns false when the song has ended or faded out.
 bool render(Song& song, float* acc, size_t frames, double step, double target, const double* gains) {
-  const size_t total = song.samples.size() / 2;
-  if (total == 0) return false;
+  // `complete` and `ready` before `stream`: a count that is read is never more than the buffer that
+  // is then loaded holds (the decoder swaps in a grown buffer before it counts frames written to it).
+  const bool complete = song.complete.load(std::memory_order_acquire);
+  const size_t ready = song.ready.load(std::memory_order_acquire);
+  const std::shared_ptr<StreamBuffer> stream = std::atomic_load(&song.stream);
+  const int16_t* samples = stream ? stream->data.get() : song.samples.data();
+  const size_t total = stream ? ready : song.samples.size() / 2;
+  if (total == 0 && complete) return false;
   const double fade = FADE_STEP * step;
   for (size_t i = 0; i < frames; ++i) {
     song.level += song.level < target ? std::min(fade, target - song.level) : -std::min(fade, song.level - target);
+    // Decoding has not reached this point yet (it runs far faster than playback, so only a computer
+    // under heavy load gets here): hold the place in silence rather than loop or end early.
+    if (!complete && song.position + 1 >= total) continue;
     if (song.position >= total) {
       if (song.loop_frame == SIZE_MAX) return false;
       song.position = std::min(song.loop_frame, total - 1);
@@ -408,7 +519,7 @@ bool render(Song& song, float* acc, size_t frames, double step, double target, c
         song.loop_frame == SIZE_MAX ? song.position : std::min(song.loop_frame, total - 1);
     const double g = gains[i] * song.gain * song.level;
     for (int ch = 0; ch < 2; ++ch) {
-      const double sample = song.samples[song.position * 2 + ch] * (1.0 - song.phase) + song.samples[next * 2 + ch] * song.phase;
+      const double sample = samples[song.position * 2 + ch] * (1.0 - song.phase) + samples[next * 2 + ch] * song.phase;
       acc[i * 2 + ch] += (float)(sample * g * CONSOLE_GAIN[ch]);
     }
     song.phase += step;

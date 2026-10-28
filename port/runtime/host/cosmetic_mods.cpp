@@ -126,8 +126,9 @@ constexpr const char* kStageLengthKind = "stage_length";
 constexpr const char* kLookFighterKind = "look_fighter_tables";   // an exact look's fighter data (look_fighter_tables)
 constexpr const char* kLookFileKind = "look_file";   // an exact look's HUD, pause, announcer or effect file
 // The online rule a saved stage verdict was made under. 2 (0.9.0): a skin's gameplay values are put
-// back to the original's (stage_safety::restore_gameplay) before it is judged.
-constexpr int kOnlineRule = 2;
+// back to the original's (stage_safety::restore_gameplay) before it is judged. 3 (0.9.63): a joint's
+// behavior flags are put back too (exporters set or clear CLASSICAL_SCALE on every joint).
+constexpr int kOnlineRule = 3;
 
 // One disc bank file ("audio/us/fox.ssm") that at least one installed skin has a fitting bank for.
 // The candidates are fixed at startup; plan_match_voices picks among them.

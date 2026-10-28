@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -39,7 +41,15 @@ bool make_wave(const std::filesystem::path& path) {
 namespace host {
 const double tsc_seconds = 1.0;
 void sim_cost_add(int, double) {}
-void log(const char*, ...) {}
+void log(const char* format, ...) {
+  if (!std::getenv("MELEE_TEST_JUKEBOX_FILE")) return;
+  va_list args;
+  va_start(args, format);
+  std::printf("  log: ");
+  std::vprintf(format, args);
+  std::printf("\n");
+  va_end(args);
+}
 bool disc_read(uint32_t, void*, uint32_t) { return false; }
 bool disc_find_path_by_offset(uint32_t offset, std::string* path) {
   if (offset != 0x1000 || !path) return false;
@@ -65,22 +75,61 @@ int main() {
   if (ec) return 1;
   ec.clear();
   if (!std::filesystem::create_directory(slot, ec) || ec) return 1;
-  custom_path = slot / L"track.wav";
+  // MELEE_TEST_JUKEBOX_FILE=<file>: that file instead of the generated one, timing its first sound.
+  const char* timed = std::getenv("MELEE_TEST_JUKEBOX_FILE");
+  custom_path = slot / (timed ? L"track" + std::filesystem::u8path(timed).extension().wstring() : std::wstring(L"track.wav"));
   disc_path = "/audio/" + slot.filename().string() + ".hps";
-  if (!make_wave(custom_path)) return 2;
+  if (timed ? !std::filesystem::copy_file(std::filesystem::u8path(timed), custom_path, ec) : !make_wave(custom_path)) return 2;
+  const auto started = std::chrono::steady_clock::now();
   slippi::jukebox::set_music_pack_reader(nullptr);
   slippi::jukebox::set_disc_reader(disc_reader);
   slippi::jukebox::set_music_packs_enabled(true);
   slippi::jukebox::set_user_volume(100);
   slippi::jukebox::start_song(0x1000, 0x80);
+  // MELEE_TEST_JUKEBOX_DUMP=<file>: once decoded, 30 seconds of the mixer's output written there raw,
+  // to compare two builds' output sample for sample.
+  if (const char* dump = std::getenv("MELEE_TEST_JUKEBOX_DUMP")) {
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    std::ofstream out(std::filesystem::u8path(dump), std::ios::binary);
+    for (int block = 0; block < 32000 * 30 / 256; ++block) {
+      int16_t samples[512]{};
+      slippi::jukebox::mix(samples, 256, 1.0);
+      out.write((const char*)samples, sizeof samples);
+    }
+  }
   bool heard = false;
-  for (int attempt = 0; attempt < 200 && !heard; ++attempt) {
+  for (int attempt = 0; attempt < (timed ? 4000 : 200) && !heard; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     int16_t samples[512]{};
     slippi::jukebox::mix(samples, 256, 1.0);
     heard = std::any_of(std::begin(samples), std::end(samples), [](int16_t s) { return s != 0; });
   }
+  if (timed) std::printf("first sound after %.0f ms\n",
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+  if (timed) std::this_thread::sleep_for(std::chrono::seconds(3));   // the decode's own log line
   slippi::jukebox::stop();
+  // One playlist folder for several songs: "<other>+<song>" serves both, and a folder named after
+  // the song alone, or a direct replacement file, still comes first.
+  bool shared_ok = true;
+  if (!timed) {
+    const std::string song = "shared_" + std::to_string(nonce);
+    const auto shared = audio_root / std::filesystem::u8path("menu01+" + song);
+    const auto own = audio_root / std::filesystem::u8path(song);
+    std::filesystem::path picked;
+    std::filesystem::create_directory(shared, ec);
+    ec.clear();
+    shared_ok = make_wave(shared / L"a.wav") && slippi::jukebox::resolve_music_pack_path("/audio/" + song + ".hps", &picked) &&
+                picked == shared / L"a.wav";
+    shared_ok = shared_ok && !slippi::jukebox::resolve_music_pack_path("/audio/" + song.substr(1) + ".hps", &picked);   // whole names only
+    std::filesystem::create_directory(own, ec);
+    ec.clear();
+    shared_ok = shared_ok && make_wave(own / L"b.wav") && slippi::jukebox::resolve_music_pack_path("/audio/" + song + ".hps", &picked) &&
+                picked == own / L"b.wav";
+    std::filesystem::remove_all(shared, ec);
+    ec.clear();
+    std::filesystem::remove_all(own, ec);
+    ec.clear();
+  }
   std::filesystem::remove(custom_path, ec);
   ec.clear();
   std::filesystem::remove(slot, ec);
@@ -88,5 +137,5 @@ int main() {
   if (made_audio_root) std::filesystem::remove(audio_root, ec);
   ec.clear();
   if (made_music_root) std::filesystem::remove(music_root, ec);
-  return heard ? 0 : 3;
+  return !heard ? 3 : !shared_ok ? 4 : 0;
 }

@@ -21,3 +21,14 @@ typedef struct MuLookSnapshot {
     MuLookStageLine stage_lines[MU_LOOK_STAGE_LINES];
     MuLookFighter fighters[4][2];
 } MuLookSnapshot;
+
+/* Separate optional export: the original geometry snapshot ABI keeps its size. */
+#define MU_LOOK_ITEMS 128
+typedef struct MuLookItem {
+    int type, state, owner, missile_type, charge_level;
+    float facing, vx, vy, x, y;
+} MuLookItem;
+typedef struct MuLookItems {
+    int count;
+    MuLookItem items[MU_LOOK_ITEMS];
+} MuLookItems;

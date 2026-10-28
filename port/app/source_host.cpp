@@ -954,6 +954,7 @@ void h_poll() {
 }
 
 static void (*g_look_snapshot)(MuLookSnapshot*) = nullptr;
+static void (*g_look_items)(MuLookItems*) = nullptr;
 void native_retrace() {
   native_audio_tick();
   g_game.fire_alarms(host::cpu->tb);
@@ -961,7 +962,9 @@ void native_retrace() {
   if (g_look_snapshot && lab::styles_on()) {
     MuLookSnapshot snapshot{};
     g_look_snapshot(&snapshot);
-    lab::native_frame(snapshot);
+    MuLookItems items{};
+    if (g_look_items) g_look_items(&items);
+    lab::native_frame(snapshot, g_look_items ? &items : nullptr);
   }
 }
 
@@ -989,7 +992,7 @@ uint32_t h_display_options() {
          (gx::player_tags_always_active() ? MU_DISPLAY_OPTION_PLAYER_TAGS : 0u) |
          (gx::fod_reflections_active() ? MU_DISPLAY_OPTION_FOD_REFLECTIONS : 0u) |
          (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u) |
-         (gx::RenderOptions::live_freeze_fd() && !host::gameplay::vanilla_only() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u);
+         (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u);
 }
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
@@ -3414,6 +3417,7 @@ int run(void (*shutdown)(int)) {
 #endif
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
   g_look_snapshot = (void (*)(MuLookSnapshot*))GetProcAddress(module, "mu_look_snapshot_v1");
+  g_look_items = (void (*)(MuLookItems*))GetProcAddress(module, "mu_look_items_v1");
   user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
   user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());

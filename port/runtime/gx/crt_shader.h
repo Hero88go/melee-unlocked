@@ -21,6 +21,7 @@
 //   float3 crt_tap(float2 uv): the display-encoded picture at a source uv.
 // 16 picture taps for the two nearest scanlines and 4 for the halation.
 #pragma once
+#include <algorithm>
 
 namespace gx {
 
@@ -120,12 +121,13 @@ inline CrtFit crt_fit(float height, float lines) {
   return {per_line * lines, even ? 0.5f / per_line : 0.0f};
 }
 
-// Scanline depth, mask depth, curvature and halation of each setting. 0 is off.
+// Scanline depth, mask depth, curvature and halation of each setting. 0 is off. `curve` scales the
+// home television's glass ("Screen curve", 0 flat to 3 times the designed 0.10).
 struct CrtLook { float scan, mask, curve, halation; };
-inline CrtLook crt_look(int mode) {
+inline CrtLook crt_look(int mode, float curve = 1.0f) {
   switch (mode) {
     case 1: return {0.85f, 0.30f, 0.00f, 0.06f};   // flat studio monitor: thin beam, fine stripes
-    case 2: return {0.60f, 0.45f, 0.10f, 0.14f};   // home television: softer beam, curved glass, more glow
+    case 2: return {0.60f, 0.45f, 0.10f * std::clamp(curve, 0.0f, 3.0f), 0.14f};   // home television: softer beam, curved glass, more glow
     default: return {0.0f, 0.0f, 0.0f, 0.0f};
   }
 }

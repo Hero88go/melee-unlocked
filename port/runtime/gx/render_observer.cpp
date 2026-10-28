@@ -38,10 +38,20 @@ struct Reader {
 // that GObj, which gives the slot. Every one of those is a read; nothing here writes guest memory,
 // which is the whole point of doing the tint here instead of in the fighter the way the Gecko code
 // does. All three checks have to agree, so anything that is not a player's fighter resolves to
-// 0xFF and is never tinted.
+// 0xFF and is never tinted. An effect object (classifier 8, the particles and effect models of
+// efLib) resolves to kEffectOwner instead, for the particle tier of Visual effects.
 std::atomic<bool> owner_tracking{false};
 uint32_t owner_cache_gobj = 0;
 uint8_t owner_cache_player = 0xFF, current_owner = 0xFF;
+uint8_t* guest_memory = nullptr;   // the last memory a joint was displayed from (it never moves)
+
+// Owners cost a few reads per rendered object, so they are resolved only for their users: the
+// L-cancel indicator, the look's port colours (gx_retro.h) and the particle tier.
+bool owners_wanted() {
+  const LookLive& l = look_live();
+  return owner_tracking.load(std::memory_order_relaxed) || l.colours.load(std::memory_order_relaxed) != 0 ||
+         l.effect_owners.load(std::memory_order_relaxed);
+}
 
 uint8_t resolve_owner(uint8_t* memory) {
   Reader r{memory};   // its own reader: a miss here must not mark the pose capture's reader invalid
@@ -50,7 +60,12 @@ uint8_t resolve_owner(uint8_t* memory) {
   if (gobj == owner_cache_gobj) return owner_cache_player;
   uint8_t player = 0xFF;
   const uint32_t fighter = r.word(gobj + 0x2C);          // HSD_GObj::user_data
-  if (fighter && r.word(fighter) == gobj) {              // Fighter::gobj points back at it
+  // efLib's two particle dispatchers have no user data. Model effects (including shields)
+  // share classifier 8 but carry an EF_Effect, so they must not receive the particle token.
+  const uint32_t classifier = r.word(gobj) >> 16;
+  if (classifier == 6 || classifier == 8) {
+    player = classifier == 8 && !fighter ? kEffectOwner : kGameplayOwner;
+  } else if (fighter && r.word(fighter) == gobj) {              // Fighter::gobj points back at it
     for (uint32_t slot = 0; slot < 6; ++slot)            // StaticPlayer player_slots[6], stride 0xE90
       if (r.word(0x80453080 + slot * 0xE90 + 0xB0) == gobj) { player = (uint8_t)slot; break; }
   }
@@ -311,11 +326,9 @@ RenderObserver::RenderObserver(ppc::Context& cpu, Observe kind, uint8_t* memory)
   if (kind == Observe::EnvelopeMatrix) { rigid = false; envelope = true; envelope_pobj = cpu.r[3]; envelope_vmtx = cpu.r[4]; }
   if (kind != Observe::DisplayJoint) return;
   saved_joint_ = current_joint; current_joint = cpu.r[3];
-  saved_memory_ = current_memory; current_memory = memory;
+  saved_memory_ = current_memory; current_memory = memory; guest_memory = memory;
   saved_owner_ = current_owner;
-  // Owners are resolved for the L-cancel indicator, and for the look's port colours (gx_retro.h).
-  current_owner = (owner_tracking.load(std::memory_order_relaxed) || look_live().colours.load(std::memory_order_relaxed) != 0)
-                      ? resolve_owner(memory) : (uint8_t)0xFF;
+  current_owner = owners_wanted() ? resolve_owner(memory) : (uint8_t)0xFF;
   saved_rigid_ = rigid; rigid = false; saved_envelope_ = envelope; envelope = false;
   saved_pose_ = std::move(current_pose); current_pose.reset();
   saved_generation_ = current_generation; saved_pass_ = current_pass; saved_draw_ = current_draw;
@@ -344,8 +357,13 @@ uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
 void set_authored_capture(bool enabled) { authored_enabled = enabled; }
 bool authored_capture_enabled() { return authored_enabled; }
 void set_owner_tracking(bool enabled) { owner_tracking.store(enabled, std::memory_order_relaxed); }
-bool owner_tracking_enabled() { return owner_tracking.load(std::memory_order_relaxed); }
-uint8_t observed_owner() { return current_owner; }
+bool owner_tracking_enabled() { return owners_wanted(); }
+// Particles are drawn by psDispParticles from the effect object's render callback without
+// displaying a joint, so outside every joint the object being rendered right now decides.
+uint8_t observed_owner() {
+  if (current_joint || !guest_memory || !owners_wanted()) return current_owner;
+  return resolve_owner(guest_memory);
+}
 bool observed_skinned() { return envelope; }
 std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   if(!authored_enabled||!authored_capture_wanted()||!current_generation||!current_memory||!(rigid||envelope)){ ++authored_stats().capture[1]; return {}; }

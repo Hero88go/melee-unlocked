@@ -90,6 +90,24 @@ int main(int argc, char** argv) {
   }
   HWND window=nullptr;
   try {
+    // Rebuilding a GPU texture must reuse its decoded PNG, even after every upload reference
+    // was released. Removing the file makes an accidental second decode fail deterministically.
+    const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,120,156,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130};
+    const char* fixture = "texture-cache-fixture.png";
+    std::ofstream(fixture, std::ios::binary).write((const char*)png, sizeof png);
+    const std::string identity = "tex1_136x188_344dd1ecdd6c1ce7_0000000000000000_9";
+    gx::texpack::set_cosmetic_companions({{"csp", "PlFxGr.dat", fixture}});
+    auto decoded = gx::texpack::load(identity, ~0ull);
+    check(decoded && decoded->width == 1 && decoded->pixels[0] == 255, "fixture decodes");
+    decoded.reset();
+    std::remove(fixture);
+    check(gx::texpack::ready(identity), "uploaded texture stays decoded");
+    decoded = gx::texpack::load(identity, ~0ull);
+    check(decoded && decoded->pixels[0] == 255, "texture rebuild needs no file read");
+    gx::texpack::set_cosmetic_companions({});
+    check(!gx::texpack::ready(identity) && !gx::texpack::load(identity, ~0ull), "changing cosmetics invalidates the cache");
+    check(decoded->pixels[0] == 255, "an upload remains valid while the cache is cleared");
+    decoded.reset();
     WNDCLASSW wc{}; wc.lpfnWndProc=DefWindowProcW; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"MeleeGpuResourceTest";
     RegisterClassW(&wc);
     window=CreateWindowW(wc.lpszClassName,L"GPU resource regression",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,wc.hInstance,nullptr);

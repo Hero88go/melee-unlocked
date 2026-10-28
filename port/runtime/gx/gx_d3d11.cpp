@@ -1356,7 +1356,7 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   // unique texture on this cache-miss path, never per draw. Cosmetic companions stay active
   // independently of the general-purpose texture-pack toggle.
   std::string pack_name;
-  std::unique_ptr<texpack::Replacement> replacement;
+  std::shared_ptr<const texpack::Replacement> replacement;
   if (texpack::enabled() || texpack::dumping() || texpack::cosmetics_enabled()) {
     pack_name = video_name.empty() ? texpack::base_name(t, *t.data) : video_name;
     if (texpack::has(pack_name)) {
@@ -1685,7 +1685,7 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
-  const CrtLook look = crt_look(opts_.crt_filter);
+  const CrtLook look = crt_look(opts_.crt_filter, opts_.crt_curve);
   const float lines = std::max((float)c.src_h * c.y_scale, 1.0f);
   // A player-chosen shader preset takes the place of the built-in CRT model (see the D3D12 backend):
   // the plain present goes into a console-sized texture and the preset draws that to the window.

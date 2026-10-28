@@ -710,12 +710,12 @@ bool tools_present() {
 
 // ---- the page ----
 enum { ID_MOD_BUTTON = 3000, ID_MOD_UPDATE = 4000, ID_MOD_REMOVE = 5000, ID_MOD_TOGGLE = 6000,
-       ID_MOD_FOLDER = 7000, ID_MOD_LINK, ID_MOD_SKINS = 8000 };
+       ID_MOD_FOLDER = 7000, ID_MOD_LINK, ID_MOD_RESCAN, ID_MOD_SKINS = 8000 };
 struct Row { CatalogMod catalog; Installed installed; bool found = false; };
 int disc_skins(const std::string& disc_path, std::string* sets);
 std::vector<Row> g_rows;
 std::vector<HWND> g_buttons, g_updates, g_removes, g_toggles, g_skins;
-HWND g_folder_btn = nullptr, g_link_btn = nullptr;
+HWND g_folder_btn = nullptr, g_link_btn = nullptr, g_rescan_btn = nullptr;
 int g_top = 0;
 bool g_tools_ok = true;
 // Layout units (S() turns them into pixels), relative to the panel's client area.
@@ -942,7 +942,7 @@ void draw_item(DRAWITEMSTRUCT* di) {
   RECT wr; GetWindowRect(di->hwndItem, &wr); MapWindowPoints(nullptr, g_window, (POINT*)&wr, 2);
   RECT client{}; GetClientRect(g_window, &client);
   const int base = (int)(di->CtlID / 1000) * 1000;
-  const bool footer = di->CtlID == ID_MOD_FOLDER || di->CtlID == ID_MOD_LINK;
+  const bool footer = di->CtlID == ID_MOD_FOLDER || di->CtlID == ID_MOD_LINK || di->CtlID == ID_MOD_RESCAN;
   const RECT r = di->rcItem;
   if (footer) vgrad(di->hDC, r, lerp(C_CONTENT_TOP, C_CONTENT_BOT, wr.top, client.bottom - 1), lerp(C_CONTENT_TOP, C_CONTENT_BOT, wr.bottom, client.bottom - 1));
   else fill(di->hDC, r, C_CARD);
@@ -978,6 +978,7 @@ void layout_footer() {
   const int h = units(client.bottom);
   MoveWindow(g_folder_btn, S(kPad), S(h - 42), S(150), S(30), TRUE);
   MoveWindow(g_link_btn, S(kPad + 158), S(h - 42), S(150), S(30), TRUE);
+  MoveWindow(g_rescan_btn, S(kPad + 316), S(h - 42), S(100), S(30), TRUE);
 }
 void choose_link() {
   wchar_t file[32768]{}; OPENFILENAMEW ofn{sizeof ofn}; ofn.hwndOwner = g_main;
@@ -1028,6 +1029,12 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       const int id = LOWORD(wp);
       if (id == ID_MOD_FOLDER) { std::error_code ec; fs::create_directories(fs::u8path(mods_dir()), ec); ShellExecuteW(nullptr, L"open", widen(mods_dir()).c_str(), nullptr, nullptr, SW_SHOWNORMAL); return 0; }
       if (id == ID_MOD_LINK) { choose_link(); return 0; }
+      // Refresh: mods copied into the folder while the page is open show up without leaving it.
+      if (id == ID_MOD_RESCAN) {
+        std::thread(rescan).detach();
+        if (!g_launcher_test) std::thread(refresh_catalog).detach();
+        return 0;
+      }
       const int base = (id / 1000) * 1000, index = id - base;
       if (index < 0 || index >= (int)g_rows.size()) return 0;
       const Row row = g_rows[index];
@@ -1080,6 +1087,7 @@ void show_page(bool show) {
     };
     g_folder_btn = button(L"Open Mods folder", ID_MOD_FOLDER);
     g_link_btn = button(L"Use it where it is", ID_MOD_LINK);
+    g_rescan_btn = button(L"Refresh", ID_MOD_RESCAN);
     g_tools_ok = tools_present();
     if (!g_launcher_test) std::thread(refresh_catalog).detach();
   }

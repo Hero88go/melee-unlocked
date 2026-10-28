@@ -772,14 +772,21 @@ int MessageBoxW(HWND w, LPCWSTR text, LPCWSTR caption, UINT type) {
 namespace linux_compat {
 static std::atomic<bool> g_keys[256];
 static std::atomic<bool> g_focused{false};
+static std::atomic<HWND> g_game_window{nullptr};
 void set_key_state(int vk, bool down) { if (vk >= 0 && vk < 256) g_keys[vk].store(down); }
 void set_window_focused(bool focused) { g_focused.store(focused); }
 bool window_focused() { return g_focused.load(); }
+void set_game_window(HWND window) { g_game_window.store(window); }
 }
-// The game window, when it has focus: the code asking "is our window in front?" compares this with
-// its own window's process, which is ours.
+// The game window, when it has focus. The pad read compares this with the game window itself
+// (window.cpp: the keyboard counts only then), the replay keys with its process, which is ours. It
+// answered a stand-in handle before, so the keyboard never reached the game on Linux.
 HWND GetActiveWindow() { return nullptr; }
-HWND GetForegroundWindow() { return linux_compat::window_focused() ? (HWND)&g_current_process : nullptr; }
+HWND GetForegroundWindow() {
+  if (!linux_compat::window_focused()) return nullptr;
+  const HWND window = linux_compat::g_game_window.load();
+  return window ? window : (HWND)&g_current_process;
+}
 DWORD GetWindowThreadProcessId(HWND window, LPDWORD process) {
   if (process) *process = window ? (DWORD)getpid() : 0;
   return window ? 1u : 0u;

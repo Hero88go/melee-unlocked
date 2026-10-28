@@ -2164,7 +2164,7 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   // cache-miss path), never per draw. Cosmetic companions stay active independently of the
   // general-purpose texture-pack toggle.
   std::string pack_name;
-  std::unique_ptr<texpack::Replacement> replacement;
+  std::shared_ptr<const texpack::Replacement> replacement;
   if (texpack::enabled() || texpack::dumping() || texpack::cosmetics_enabled()) {
     pack_name = video_name.empty() ? texpack::base_name(t, *t.data) : video_name;
     if (texpack::has(pack_name) && !texpack::ready(pack_name)) {
@@ -2948,7 +2948,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     } else { shader_source_w_ = shader_w; shader_source_h_ = shader_h; }
   }
   const bool crt_on = opts_.crt_filter && !shader_on;
-  const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0);
+  const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0, opts_.crt_curve);
   CrtFit crt_fit_now{vh, 0.0f};
   // Only the built-in CRT snaps its height to whole pixels per line; a preset smooths its own lines,
   // and snapping would leave a border on every side (True widescreen fills the window otherwise).

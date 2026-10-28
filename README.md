@@ -72,6 +72,9 @@ are included with Melee Unlocked.
 
 ## Features
 
+<img width="1600" height="1040" alt="image" src="https://github.com/user-attachments/assets/91256ba3-b118-48c8-9ead-ebe42c2d78f4" />
+
+
 - Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
 - Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
 - Subframe rollback (early inputs) between Melee Unlocked players: button presses and stick moves
