@@ -345,6 +345,7 @@ inline const DrawCall* frame_scene_draw(const Frame& f) {
 // without this test Minimal removed a mod's song title banner text and left its empty backing.
 // owner_player of a draw made by a particle dispatcher (class 8, no user data).
 constexpr uint8_t kEffectOwner = 0xFE;
+constexpr uint8_t kModelEffectOwner = 0xFC; // class-8 EF_Effect objects with their own GObj
 constexpr uint8_t kGameplayOwner = 0xFD;   // items/projectiles and model effects (shields, reflectors)
 struct EffectsFilter {
   int level = 0;                // 0 = nothing is skipped this frame
@@ -360,7 +361,7 @@ inline EffectsFilter effects_filter(const Frame& f, int level) {
   return e;
 }
 inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
-  if (dc.owner_player == kGameplayOwner || dc.owner_player < 6) return false;
+  if (dc.owner_player == kGameplayOwner || dc.owner_player == kModelEffectOwner || dc.owner_player < 6) return false;
   if (e.level <= 0 || dc.xf_regs[0x26] != 0 || !(dc.bp.blendmode() & 1)) return false;
   const uint32_t zmode = dc.bp.zmode();
   if (zmode & 0x10) return false;                                   // writes depth: part of the scene
@@ -510,9 +511,9 @@ inline bool skip_for_lightweight(const LightweightFilter& e, const Frame& f, con
   return skip;
 }
 // Level 3 and up: no textures on world draws (every slot reads one white texel).
-inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && e.level >= 3 && lightweight_world_draw(e, d); }
+inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 3 && lightweight_world_draw(e, d); }
 // Level 5: world draws as lines.
-inline bool lightweight_wire(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && e.level >= 5 && lightweight_world_draw(e, d); }
+inline bool lightweight_wire(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 5 && lightweight_world_draw(e, d); }
 // Visual effects in force: Lightweight 3 and up holds them at Minimal.
 inline int lightweight_effects_level(int effects_level, int lightweight) { return lightweight >= 3 ? std::max(effects_level, 2) : effects_level; }
 

@@ -3243,6 +3243,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
             d.primitive, d.vertex_count, d.components, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5], d.xf_regs[0x26], pr[0], pr[1], pr[2], pr[3], pr[4], pr[5],
             d.bp.reg[0], d.bp.zmode(), d.bp.blendmode(), d.bp.alpha_test(), d.bp.zcontrol(), d.bp.reg[BP_SCISSORTL], d.bp.reg[BP_SCISSORBR], d.bp.reg[BP_SCISSOROFFSET],
             d.xf_regs[0x3F] & 15, d.xf_regs[0x09] & 3, d.matrix_index_a);
+    fprintf(f, "   owner=%u skinned=%u\n", d.owner_player, d.skinned ? 1u : 0u);
     const Vertex& v = frame.vertices[d.first_vertex];
     fprintf(f, "   v0 pos=(%g %g %g) nrm=(%g %g %g) col0=%02X%02X%02X%02X uv0=(%g %g) posmtx=%u | mtx row0=[%g %g %g %g]\n", v.pos[0], v.pos[1], v.pos[2], v.nrm[0], v.nrm[1], v.nrm[2],
             v.col0[0], v.col0[1], v.col0[2], v.col0[3], v.uv[0][0], v.uv[0][1], v.posmtx, d.posMatrices[v.posmtx * 4], d.posMatrices[v.posmtx * 4 + 1], d.posMatrices[v.posmtx * 4 + 2], d.posMatrices[v.posmtx * 4 + 3]);

@@ -142,7 +142,7 @@ inline uint64_t retro_key(uint64_t key) { return look_key(key, treated(Surface::
 // The group a draw belongs to for the look: fighters (skinned models of the match's world camera), the stage (the
 // rest of that world), or menus (everything else: character and stage select, HUD, pause screen).
 inline Surface look_surface(const LightweightFilter& e, const DrawCall& d) {
-  if (d.owner_player == kGameplayOwner) return Surface::Textured;
+  if (d.owner_player == kGameplayOwner || d.owner_player == kModelEffectOwner) return Surface::Textured;
   const LookLive& l = look_live();
   if (e.in_match && d.xf_regs[0x26] == 0 && std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) == 0)
     return treated((Surface)(d.skinned ? l.fighter.load(std::memory_order_relaxed) : l.stage.load(std::memory_order_relaxed)));
