@@ -21,7 +21,7 @@ def auto_geometry(width: int, height: int, source_height: int = 480):
             break
         zoom = level
     out_size = (PATTERNS[zoom][0] * crt_size[0], PATTERNS[zoom][1] * crt_size[1])
-    scale = (min(1.0, width / out_size[0]), min(1.0, height / out_size[1]))
+    scale = (width / out_size[0], height / out_size[1])
     fitted = (out_size[0] * scale[0], out_size[1] * scale[1])
     pitch = (PATTERNS[zoom][0] * scale[0], PATTERNS[zoom][1] * scale[1])
     # Last output pixel center mapped back to a source row/column by the shader's pitch math.
@@ -32,7 +32,7 @@ def auto_geometry(width: int, height: int, source_height: int = 480):
 
 def main():
     assert "if (int(params.VZOOM) <= 2)" in TEXT, "fit must apply to Auto, not manual zoom"
-    assert "raster_scale = min(vec2(1.0), params.OutputSize.xy / out_sz);" in TEXT
+    assert "raster_scale = params.OutputSize.xy / out_sz;" in TEXT
     assert "vec2 raster_pitch = pat_nfo_a[zoom].xy * raster_scale;" in TEXT
     assert "vec2 fitted_sz = out_sz * raster_scale;" in TEXT
     assert "TexCoord * params.OutputSize.xy) - floor((params.OutputSize.xy - fitted_sz) / 2.0)" in TEXT
@@ -46,12 +46,13 @@ def main():
         assert last_col == 959, (output, last_col)
         assert last_row == 479, (output, last_row)
 
-    # At a large output, an integer zoom level still fits and Auto must preserve it.
-    (fit_w, fit_h), (last_col, last_row), zoom = auto_geometry(3840, 2160)
-    assert zoom > 0 and (fit_w, fit_h) == (2880.0, 1920.0)
-    assert (last_col, last_row) == (959, 479)
-
+    # Above the smallest pattern the picture still fills the viewport at its aspect (4:3 or 16:9),
+    # rather than staying at the pattern's own aspect inside it.
+    for output in ((2560, 1440), (3840, 2160), (2880, 2160), (1600, 900)):
+        (fit_w, fit_h), (last_col, last_row), _ = auto_geometry(*output)
+        assert abs(fit_w - output[0]) < 1e-6 and abs(fit_h - output[1]) < 1e-6, (output, fit_w, fit_h)
+        assert (last_col, last_row) == (959, 479), (output, last_col, last_row)
 
 if __name__ == "__main__":
     main()
-    print("Trinitron Auto fit: full source visible at 720p/1080p and integer zoom retained at 4K")
+    print("Trinitron Auto fit: full source visible at 720p/1080p and the viewport aspect kept at every size")
