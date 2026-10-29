@@ -535,6 +535,7 @@ class D3D12Backend : public Backend {
     bool operator==(const FallbackKey& o) const { return blend == o.blend && zmode == o.zmode && cull == o.cull && topology == o.topology && pixel_format == o.pixel_format && mvec == o.mvec && variant == o.variant; } };
   struct FallbackKeyHash { size_t operator()(const FallbackKey& k) const { return hash_bytes(&k, sizeof k); } };
   std::unordered_map<FallbackKey, ComPtr<ID3D12PipelineState>, FallbackKeyHash> fallback_psos_;
+  std::unordered_map<uint32_t, std::pair<ComPtr<ID3DBlob>, ComPtr<ID3DBlob>>> fallback_blobs_;   // per variant and mvec
   ID3D12PipelineState* fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   void prewarm_fallback_psos();
   std::mutex pso_mutex_, pipeline_library_mutex_;
@@ -1840,7 +1841,11 @@ ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCal
   // Raster state is deliberately normalized here. The fallback is approximate by design; using
   // one generic blend/depth/cull state per output format and topology bounds the set to a few
   // startup-created PSOs instead of one synchronous PSO creation for every new guest state.
-  FallbackKey fk{0, 0, 0, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
+  // A blended draw keeps its own blend and depth state: forced opaque, the first frame of a shield
+  // (or any new translucent effect) drew as a solid ball. The game uses a handful of blend modes,
+  // so the set stays small, and the shaders are compiled once per variant (fallback_blobs_).
+  const bool blended = (key.blend & 1) != 0;
+  FallbackKey fk{blended ? key.blend : 0, blended ? key.zmode : 0, 0, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
   auto it = fallback_psos_.find(fk);
   if (it != fallback_psos_.end()) return it->second.Get();
   // On menus and transitions only: an untextured, uncoloured draw has its colour in TEV state this
@@ -1888,16 +1893,20 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
   ps.replace(ps.find("TEX_EXPR"), 8, textured ? "c *= Tex[0].Sample(samp[0], uv);" : "");
   ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1, out float ohud : SV_Target2" : "");
   ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0); ohud = 0.0;" : "");
-  ComPtr<ID3DBlob> vsb, psb, err;
-  if (FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err)) ||
-      FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err))) {
+  auto& blobs = fallback_blobs_[fk.variant | (key.mvec << 2)];
+  ComPtr<ID3DBlob>& vsb = blobs.first;
+  ComPtr<ID3DBlob>& psb = blobs.second;
+  ComPtr<ID3DBlob> err;
+  if ((!vsb && FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err))) ||
+      (!psb && FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err)))) {
     host::log("d3d12: fallback shader compile failed: %s", err ? (const char*)err->GetBufferPointer() : "?");
+    vsb.Reset(); psb.Reset();
     fallback_psos_[fk] = nullptr; return nullptr;
   }
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
   PsoKey generic = key;
-  generic.blend = 0x18; // write RGBA, blending disabled
-  generic.zmode = 0;    // depth disabled
+  generic.blend = blended ? key.blend : 0x18;   // blended: the draw's own mode; otherwise write RGBA, blending disabled
+  generic.zmode = blended ? key.zmode : 0;      // blended: the draw's own depth test (no write); otherwise depth disabled
   generic.cull = 0;     // no culling
   describe_pipeline(pd, generic, topo, root_.Get(), vsb.Get(), psb.Get());
   ComPtr<ID3D12PipelineState> pso;
@@ -1922,6 +1931,13 @@ void D3D12Backend::prewarm_fallback_psos() {
           if (variant & 1) draw.xf_regs[0x3F] = 1;
           PsoKey key{0, 0, 0x18, 0, 0, (uint32_t)topo, pixel_format, mvec};
           fallback_pso(key, draw, topo);
+          // The blend modes of most translucent effects (shields, smoke, sparks): alpha over and
+          // additive, depth test without write.
+          if (topo == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
+            for (uint32_t blend : {0x18u | 1u | (5u << 5) | (4u << 8), 0x18u | 1u | (1u << 5) | (4u << 8)}) {
+              PsoKey blended_key{0, 0, blend, 0x0Fu, 0, (uint32_t)topo, pixel_format, mvec};
+              fallback_pso(blended_key, draw, topo);
+            }
         }
       }
     }
@@ -1985,6 +2001,9 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       }
     }
     ++g_pso_skips;
+    // A translucent draw waits the frame or two out instead: the stand-in cannot shape it by its
+    // texture's alpha, so the first frame of a shield drew as a square.
+    if (key.blend & 1) return nullptr;
     return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
   }
   ++g_pso_creates;
