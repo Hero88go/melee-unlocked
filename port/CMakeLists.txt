@@ -494,6 +494,11 @@ target_include_directories(port_box_melee_test PRIVATE runtime/host runtime/ppc)
 target_compile_features(port_box_melee_test PRIVATE cxx_std_17)
 target_compile_definitions(port_box_melee_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 add_test(NAME port_box_melee COMMAND port_box_melee_test)
+add_executable(port_controller_relay_test tests/controller_relay_test.cpp)
+target_include_directories(port_controller_relay_test PRIVATE runtime/host runtime/ppc)
+target_compile_features(port_controller_relay_test PRIVATE cxx_std_17)
+target_compile_definitions(port_controller_relay_test PRIVATE NOMINMAX)
+add_test(NAME port_controller_relay COMMAND port_controller_relay_test)
 add_executable(port_gc_adapter_reset_test tests/gc_adapter_reset_test.cpp)
 target_include_directories(port_gc_adapter_reset_test PRIVATE runtime/host runtime/ppc third_party/libusb/libusb)
 target_compile_features(port_gc_adapter_reset_test PRIVATE cxx_std_17)
@@ -503,7 +508,7 @@ target_link_libraries(port_gc_adapter_reset_test PRIVATE port_libusb setupapi hi
 add_test(NAME port_gc_adapter_reset COMMAND port_gc_adapter_reset_test)
 set_tests_properties(port_gc_adapter_reset PROPERTIES TIMEOUT 10)
 add_executable(port_controller_profiles_test tests/controller_profiles_test.cpp runtime/host/controller_profiles.cpp)
-target_include_directories(port_controller_profiles_test PRIVATE runtime/host)
+target_include_directories(port_controller_profiles_test PRIVATE runtime/host runtime/ppc)
 target_compile_features(port_controller_profiles_test PRIVATE cxx_std_17)
 add_test(NAME port_controller_profiles COMMAND port_controller_profiles_test)
 add_executable(port_dolphin_profile_test tests/dolphin_profile_test.cpp runtime/host/dolphin_profile.cpp)
@@ -1021,6 +1026,13 @@ set_tests_properties(port_lab_view PROPERTIES TIMEOUT 30)
 # binaries; that must produce a normal non-Streamline build rather than a post-link copy failure.
 set(MELEE_STREAMLINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline" CACHE PATH
     "NVIDIA Streamline SDK root (headers, import library, and x64 runtime plugins)")
+option(MELEE_REQUIRE_STREAMLINE "Fail configuration if the advertised NVIDIA features cannot be compiled" OFF)
+if(MELEE_REQUIRE_STREAMLINE AND NOT (EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
+   EXISTS "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" AND
+   EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.interposer.dll" AND
+   EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.common.dll"))
+  message(FATAL_ERROR "MELEE_REQUIRE_STREAMLINE requires a complete MELEE_STREAMLINE_ROOT; runtime DLL copying alone does not enable NVIDIA features")
+endif()
 if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
    EXISTS "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" AND
    EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.interposer.dll" AND

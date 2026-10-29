@@ -19,6 +19,15 @@ int main() {
   host::profiles_set_folder((root / "port-settings.ini").string());
   CHECK(fs::path(host::profiles_folder()) == root / "ControllerProfiles");
 
+  for (int family=0;family<(int)host::ProfileDevice::Count;++family) {
+    host::ProfileBindings original{},loaded{};
+    for (int action=0;action<host::kProfileActions;++action) original[action]=0x80000000u | (family*100+action+1);
+    const std::string name="All actions "+std::to_string(family);
+    CHECK(host::profile_save((host::ProfileDevice)family,name,original));
+    CHECK(host::profile_load((host::ProfileDevice)family,name,loaded));
+    CHECK(original==loaded);
+    CHECK(host::profile_delete((host::ProfileDevice)family,name));
+  }
   // Names: what is safe in a file name survives, the rest goes.
   CHECK(host::profile_clean_name("My Box 2") == "My Box 2");
   CHECK(host::profile_clean_name("  ../../evil  ") == "evil");

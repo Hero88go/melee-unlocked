@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hid_pad.h"
 #include "host.h"
+#include "controller_relay.h"
 #include "input_bindings.h"
 #define NOMINMAX
 #include <windows.h>
@@ -373,6 +374,10 @@ bool hidpad_haybox_dinput(int slot) {
 }
 
 std::string hidpad_name(int slot) {
+  if (controller_relay::active()) {
+    controller_relay::Sample s;
+    return controller_relay::sample(CaptureDevice::HidPad,slot,s) ? s.name : std::string();
+  }
   if (slot < 0 || slot >= kHidPadSlots) return {};
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_slots[slot].ready ? g_slots[slot].name : std::string();
