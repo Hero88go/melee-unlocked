@@ -55,6 +55,9 @@ class ThreadedBackend final : public Backend {
     int probe_state = 0;          // the variable refresh check below: 0 not run, 1 running, 2 done
     int fg_logged = 1;            // frame generation multiplier last logged by the pacing below
     double probe_until = 0;
+    double probe_refresh = 0;
+    int previous_vrr = -1;
+    bool stats_were_readable = false;
     bool reflex_slept = false;    // Reflex has already waited for the frame about to be drawn
     double render_budget = 0.004;
     // "Uncapped" used to present as fast as this thread could go. Against a GPU that cannot keep
@@ -169,11 +172,21 @@ class ThreadedBackend final : public Backend {
       // display as variable refresh so the hand-over present path can be timed there.
       static const bool assume_vrr = [] { const char* v = std::getenv("MELEE_ASSUME_VRR"); return v && *v == '1'; }();
       if (assume_vrr) vrr = 1;
+      const bool stats_readable = renderer->display_counts_readable();
+      // Alt-tab, a new swap chain, or moving to another monitor can invalidate the detector.
+      // Re-run the below-refresh probe instead of leaving the new display at an undecidable,
+      // full-refresh rate for the rest of the session (with tearing allowed when VSync is off).
+      if (std::fabs(last_refresh - probe_refresh) > 0.5 ||
+          (stats_readable && !stats_were_readable) || (vrr < 0 && previous_vrr >= 0))
+        probe_state = 0;
+      probe_refresh = last_refresh;
+      stats_were_readable = stats_readable;
+      previous_vrr = vrr;
       const double vrr_cap = vrr::under_refresh(last_refresh);
       // Frames as fast as the refresh look alike on both kinds of display, so the counts cannot tell
       // them apart. Once, for four seconds at the start, frames are held to 90% of the refresh to
       // find out. Melee's own frames stay 60 a second; only the in-between frames thin out.
-      if (vrr < 0 && probe_state == 0 && renderer->display_counts_readable() && last_refresh >= 75.0 &&
+      if (vrr < 0 && probe_state == 0 && stats_readable && last_refresh >= 75.0 &&
           (wanted <= 0.0 || wanted > 0.96 * last_refresh)) {
         probe_state = 1;
         probe_until = host::now_seconds() + 4.0;

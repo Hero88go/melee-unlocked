@@ -7,6 +7,19 @@
 
 namespace slippi {
 
+// An absent, truncated or malformed server reply is not evidence of compatibility.
+inline bool release_version_valid(const std::string& version) {
+  unsigned parts = 0, digits = 0;
+  for (char ch : version) {
+    if (ch >= '0' && ch <= '9') {
+      if (++digits > 8) return false;
+    } else if (ch == '.' && digits && ++parts < 4) {
+      digits = 0;
+    } else return false;
+  }
+  return digits && parts >= 2 && parts <= 3;
+}
+
 // True when dotted version `a` is newer than `b` ("3.6.10" is newer than "3.6.4"). Anything after
 // the numbers (a "-beta" tag) is ignored; a missing part counts as 0; an empty `a` is never newer.
 inline bool version_newer(const std::string& a, const std::string& b) {

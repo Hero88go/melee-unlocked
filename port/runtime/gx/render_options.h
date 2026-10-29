@@ -216,6 +216,7 @@ struct RenderOptions {
   // Offline only (the host gives the game 0 online and in replays).
   static bool& live_audio_early_keyon() { static bool value = false; return value; }
   bool offline_delay = false;
+  int offline_delay_frames = 2;  // independent of the online delay; enabled separately for old settings
   // Early inputs (Online, ini key early_inputs, on unless the file says 0): controller changes go
   // to the other player the moment they happen (host/early_input.h). Applied with
   // host::early_input::set_enabled when the file is read and when the toggle changes.
@@ -234,6 +235,7 @@ struct RenderOptions {
   int slippi_spectator_port = 51441;
   static int& live_slippi_spectator_port() { static int value = 51441; return value; }
   static bool& live_offline_delay() { static bool value = false; return value; }
+  static int& live_offline_delay_frames() { static int value = 2; return value; }
   // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in
   // shim/mu_20xx_cpu.c. Plain options like "20XX CPUs": no pack or save needed. They go to the game
   // packed in option word 3 (MU_GAME_OPTION3_CPU_*, host API 17) and into a replay as "muOptions3".
@@ -293,7 +295,7 @@ struct RenderOptions {
   // the window at it. Off = the window is whatever size it has been dragged to.
   bool window_pinned = false;
   AspectMode aspect = AspectMode::Auto;   // --aspect, or "aspect" in port-settings.ini
-  bool vsync = false;
+  bool vsync = true;  // Fresh installs synchronize scanout; a saved explicit choice still wins.
   bool widescreen = false;    // Slippi Widescreen 16:9 code on (present at 16:9 and tell the game)
   // EXPERIMENTAL: widen the frustum in the renderer rather than running the Gecko code, so the HUD
   // and the 2D layer keep their authored size and nothing is written to guest memory. Mutually

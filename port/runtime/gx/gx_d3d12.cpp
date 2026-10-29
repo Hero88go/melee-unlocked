@@ -25,6 +25,7 @@
 #include <vector>
 #include "dxgi_paced_mode.h"
 #include "vrr_detect.h"
+#include "temporal_history.h"
 #include "vblank_clock.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
@@ -513,8 +514,8 @@ class D3D12Backend : public Backend {
   // A draw's pose this frame and in the frame before. A model drawn in several passes in one frame
   // (fighters are) must compare every pass with the previous frame; comparing a second pass with the
   // first pass's pose gave zero motion, and DLSS/DLAA blended the moving fighter into the background.
-  struct LastPose { float pos[256]; float proj[16]; uint64_t frame; float prev_pos[256]; float prev_proj[16]; uint64_t prev_frame; };
-  std::unordered_map<uint64_t, LastPose> last_poses_;
+  TemporalMotionHistory last_poses_;
+  uint64_t temporal_cut_sequence_ = 0;
   void configure_dlss();
   void update_vram();
   void set_dlss_mip_bias(float bias);
@@ -2501,18 +2502,15 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   VSConstants vs_constants;
   if (dlss_active_) {
     MotionInfo motion; motion.jitter_x = jitter_x_; motion.jitter_y = jitter_y_;
-    LastPose& last = last_poses_[dc.identity];
-    if (last.frame != 0 && last.frame != frame_counter_) {   // first pass this frame: last frame's pose moves back
-      std::memcpy(last.prev_pos, last.pos, sizeof last.pos); std::memcpy(last.prev_proj, last.proj, sizeof last.proj);
-      last.prev_frame = last.frame;
-    }
-    bool had = last.prev_frame != 0 && last.prev_frame + 2 >= frame_counter_ && last.prev_frame != frame_counter_;
-    if (had) { motion.prev_pos = last.prev_pos; motion.prev_proj = last.prev_proj; }
+    const uint64_t presentation = (uint64_t)frames_presented_ + 1;
+    const auto* previous = last_poses_.previous(dc.identity, presentation, !skip_present_);
+    const bool had = previous != nullptr;
+    if (had) { motion.prev_pos = previous->position.data(); motion.prev_proj = previous->projection.data(); }
     ++mv_draws_; if (had) ++mv_matched_;
     fill_vs_constants(dc, vs_constants, scale_, override_matrices, &motion);
-    std::memcpy(last.pos, override_matrices ? override_matrices->pos : dc.posMatrices, sizeof last.pos);
-    std::memcpy(last.proj, vs_constants.unjittered_projection, sizeof last.proj);
-    last.frame = frame_counter_;
+    last_poses_.record(dc.identity, presentation, !skip_present_,
+                       override_matrices ? override_matrices->pos : dc.posMatrices,
+                       &vs_constants.unjittered_projection[0][0]);
   } else {
     fill_vs_constants(dc, vs_constants, scale_, override_matrices);
   }
@@ -3378,6 +3376,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   pso_wait_budget_us_ = 0;
   capturing_efb_ = std::any_of(frame.copies.begin(),frame.copies.end(),[](const EfbCopy& c) { return !c.to_xfb; });
   ++frame_counter_;
+  if (frame.discontinuous && frame.sequence != temporal_cut_sequence_) {
+    temporal_cut_sequence_ = frame.sequence;
+    last_poses_.clear();
+    dlss_reset_ = xess_reset_ = true;
+#ifdef GX_DLSS5
+    dlss5_reset_ = true;
+#endif
+  }
   // Opt-in hardware-build probe: capture and upload one real match scene every two seconds.
   // Kept off in ordinary sessions until the ray dispatch and shading path are integrated.
   static const bool dxr_scene_diag = [] {
@@ -3484,10 +3490,15 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
-    fc.reset = dlss_reset_; dlss_reset_ = false;
-    if (!xess_active()) streamline::set_constants(fc);
+    fc.reset = dlss_reset_;
+    // A drained frame writes EFB textures but never evaluates the upscaler. It must not advance
+    // either the per-draw history above or Streamline's previous camera projection.
+    if (!skip_present_) {
+      dlss_reset_ = false;
+      if (!xess_active()) streamline::set_constants(fc);
+    }
     if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
-    if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
+    if (frame_counter_ % 600 == 0) last_poses_.prune((uint64_t)frames_presented_ + 1);
   }
   // Reflex and frame generation: a frame token is needed for the markers even without DLSS, and even
   // with Reflex's own low-latency mode left Off -- the PC Latency markers below are what feeds the

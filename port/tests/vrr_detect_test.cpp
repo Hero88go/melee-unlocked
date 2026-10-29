@@ -73,6 +73,46 @@ int main() {
     feed(d, back, 2, 224, 224, 240);
     CHECK(d.state() == 1);
   }
+  // A disconnected statistics stream must not carry a verdict or half a vote into another
+  // window/monitor. Otherwise a fixed verdict can leave a newly connected VRR display tearing.
+  {
+    Detector d; Sample s;
+    d.add(s, 240);
+    feed(d, s, 2, 224, 240, 240);
+    CHECK(d.state() == 0);
+    d.restart();
+    CHECK(d.state() == -1);
+    d.add(s, 240);
+    feed(d, s, 1, 216, 216, 240);
+    CHECK(d.state() == -1);
+    feed(d, s, 1, 216, 216, 240);
+    CHECK(d.state() == 1);
+    Sample reset{1, 1, s.seconds + 1.0};
+    d.add(reset, 240);
+    CHECK(d.state() == -1);
+  }
+  // A mode change invalidates the old verdict, even if the counts remain monotonic.
+  {
+    Detector d; Sample s;
+    d.add(s, 240);
+    feed(d, s, 2, 224, 240, 240);
+    CHECK(d.state() == 0);
+    d.add(s, 144);
+    CHECK(d.state() == -1);
+    feed(d, s, 2, 130, 130, 144);
+    CHECK(d.state() == 1);
+  }
+  // The two agreeing windows must actually be consecutive.
+  {
+    Detector d; Sample s;
+    d.add(s, 240);
+    feed(d, s, 1, 216, 216, 240);
+    feed(d, s, 1, 240, 240, 240);
+    feed(d, s, 1, 216, 216, 240);
+    CHECK(d.state() == -1);
+    feed(d, s, 1, 216, 216, 240);
+    CHECK(d.state() == 1);
+  }
   if (failures) { std::printf("%d failures\n", failures); return 1; }
   std::printf("vrr_detect: ok\n");
   return 0;

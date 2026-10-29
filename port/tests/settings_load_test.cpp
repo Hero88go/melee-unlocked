@@ -25,6 +25,11 @@
 #include <sstream>
 #include <string>
 #include "slippi_version.h"
+#ifdef MELEE_NO_SLIPPI
+#include "host/netplay_state.h"
+#else
+#include "hle/slippi_online.h"
+#endif
 
 namespace {
 int g_failures = 0;
@@ -139,6 +144,7 @@ int main() {
     CHECK(!gx::skip_for_effects(gx::effects_filter(match, 2), match.draws[1]));
   }
   gx::RenderOptions aspect_options;
+  CHECK(aspect_options.vsync); // New installs start with synchronized presentation.
   CHECK(aspect_options.te_options == 0x10u); // recognized TE save is enabled by default
   aspect_options.widescreen = true;
   CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 16.0f / 9.0f);
@@ -151,7 +157,7 @@ int main() {
   {
     std::ofstream f(path);
     // The order the game writes: the preset line sits above the controls.
-    f << "fps -1\nscale 2\n"
+    f << "fps -1\nscale 2\nvsync 0\n"
          "custompreset 2 1 16 0 -1.000000 1\n"
          "texpackoff HD Textures Pack\n"
          "fodreflections 0\n"
@@ -178,6 +184,7 @@ int main() {
   options.settings_path = path.string();
   int volume = 0;
   gx::load_pc_settings(options, volume);
+  CHECK(!options.vsync); // Preserve an existing explicit VSync-off preference.
 
   CHECK(options.mod_choices.at("te") == 0 && options.mod_choices.at("tmce") == 1);
   CHECK(source_port::mods::choices() == options.mod_choices);
@@ -190,6 +197,7 @@ int main() {
   gx::RenderOptions reloaded;
   reloaded.settings_path = path.string();
   gx::load_pc_settings(reloaded, volume);
+  CHECK(!reloaded.vsync);
   CHECK(reloaded.mod_choices == options.mod_choices);
   CHECK(reloaded.mod_choices.at("abcdef0123456789") == 0);
   // The volume a player set survives a save and a restart. It came back at full volume before.
@@ -207,9 +215,43 @@ int main() {
   CHECK(!options.offline_delay && !gx::RenderOptions::live_offline_delay());
   for (bool enabled : {true, false}) {
     options.offline_delay = enabled;
+    options.offline_delay_frames = 3;
+    slippi::online::config().delay = 5;
     CHECK(gx::save_pc_settings(options, volume));
     gx::load_pc_settings(reloaded, volume);
     CHECK(reloaded.offline_delay == enabled && gx::RenderOptions::live_offline_delay() == enabled);
+    CHECK(reloaded.offline_delay_frames == 3 && gx::RenderOptions::live_offline_delay_frames() == 3);
+    CHECK(slippi::online::config().delay == 5);
+  }
+  {
+    // Upgrade the old shared slider without changing a player's offline timing. New independent
+    // values take precedence regardless of file order, including with Auto selected online.
+    const auto delay_path = path.parent_path() / "delay-migration.ini";
+    const std::string cases[] = {
+      "offline_delay 1\nonlinedelay 4\n",
+      "onlinedelay 4\noffline_delay 1\n",
+      "offline_delay_frames 3\nonlinedelay 6\noffline_delay 1\nonlinedelayauto 1\n",
+      "onlinedelay 6\noffline_delay 1\nonlinedelayauto 1\noffline_delay_frames 3\n",
+      "offline_delay 0\nonlinedelay 4\n",
+      "offline_delay 1\noffline_delay_frames 99\n",
+      "offline_delay 1\noffline_delay_frames -1\n"
+    };
+    const int expected[] = {4, 4, 3, 3, 4, 9, 1};
+    for (int i = 0; i < 7; ++i) {
+      { std::ofstream f(delay_path); f << cases[i]; }
+      gx::RenderOptions migrated;
+      migrated.settings_path = delay_path.string();
+      gx::load_pc_settings(migrated, volume);
+      CHECK(migrated.offline_delay == (i != 4));
+      CHECK(migrated.offline_delay_frames == expected[i]);
+      CHECK(gx::RenderOptions::live_offline_delay_frames() == expected[i]);
+      CHECK(gx::save_pc_settings(migrated, volume));
+      slippi::online::config().delay = 8;
+      gx::load_pc_settings(migrated, volume);
+      CHECK(migrated.offline_delay_frames == expected[i]);
+    }
+    fs::remove(delay_path);
+    gx::load_pc_settings(reloaded, volume);
   }
   CHECK(options.overlay_style == 2);
   CHECK(options.legacy_menu_enabled);

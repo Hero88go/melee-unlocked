@@ -399,6 +399,7 @@ bool discord_join_pending() {
 
 void cleanup_connection() {
   host::log("slippi: connection cleanup");
+  if (g_user) g_user->ResetOnlineCompatibility();
   host::cosmetics::thaw_after_online_session();
   stop_early_inputs();
   if (g_matchmaking || g_netplay) {
@@ -719,6 +720,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_latched_delay = (int)delay;   // the delay the game took: every later answer this match agrees with it
     g_in_online_match = true;
+    if (g_user) g_user->ResetOnlineCompatibility();  // the next game needs its own fresh check
     budget_reset();
     g_budget_armed = true;
     host::input_mark_match_start();
@@ -1067,6 +1069,17 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
         return;
       }
       if (verdict == 0) remote_ready = 0;   // the opponent's build is not known yet
+      if (local_ready && remote_ready && !Matchmaking::local_peer.enabled) {
+        std::string version_error;
+        const int version = g_user->PollOnlineCompatibility(&version_error);
+        if (version < 0) {
+          cleanup_connection();
+          g_forced_error = version_error;
+          prepare_online_match_state(q);
+          return;
+        }
+        if (version == 0) remote_ready = 0;  // fresh verification, including an existing connection's rematch
+      }
       if (remote_count == 1) {
         bool decider = g_netplay->IsDecider();
         g_local_player_index = decider ? 0 : 1;

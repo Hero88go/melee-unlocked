@@ -32,7 +32,12 @@ class Detector {
  public:
   // True when the verdict changed.
   bool add(const Sample& s, double nominal_hz) {
+    if (std::fabs(nominal_hz - nominal_hz_) > 0.5) restart();
+    nominal_hz_ = nominal_hz;
     if (!have_ || s.seconds <= last_.seconds || s.presents < last_.presents || s.refreshes < last_.refreshes) {
+      // Mode/swap-chain changes may reset counters. Neither the old verdict nor a pending
+      // vote describes the new statistics stream.
+      restart();
       last_ = s;
       have_ = true;
       return false;
@@ -43,15 +48,14 @@ class Detector {
     refreshes_ = (double)(s.refreshes - last_.refreshes) / dt;
     last_ = s;
     const int v = judge(shown_, refreshes_, nominal_hz);
-    if (v < 0) return false;
+    if (v < 0) { pending_ = -1; votes_ = 0; return false; }
     if (v != pending_) { pending_ = v; votes_ = 1; return false; }
     if (++votes_ < 2 || v == state_) return false;
     state_ = v;
     return true;
   }
-  // The statistics stopped (Windows composes the window, the mode changed): the next reading starts
-  // a new window. The verdict stays.
-  void restart() { have_ = false; }
+  // Statistics stopped or the display changed: require fresh evidence for this display.
+  void restart() { have_ = false; state_ = pending_ = -1; votes_ = 0; shown_ = refreshes_ = 0; }
   int state() const { return state_; }
   double shown() const { return shown_; }
   double refreshes() const { return refreshes_; }
@@ -60,7 +64,7 @@ class Detector {
   Sample last_{};
   bool have_ = false;
   int state_ = -1, pending_ = -1, votes_ = 0;
-  double shown_ = 0, refreshes_ = 0;
+  double shown_ = 0, refreshes_ = 0, nominal_hz_ = 0;
 };
 
 // Where a frame rate sits on a display that follows the frames: just under the refresh, as NVIDIA

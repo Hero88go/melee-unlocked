@@ -1978,6 +1978,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
+  options.offline_delay_frames = 2;
+  bool offline_delay_frames_seen = false;
   // The Lossless adapter lag test arms one launch only ("lagtestnext", cleared by that launch:
   // consume_lag_test_launch). 0.9.47 to 0.9.62 kept it on ("losslesslagtest") until it was switched
   // off, so every later launch booted to an FFA character select that rumbled and turned the picture
@@ -2071,6 +2073,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
       else if (key == "offline_delay") options.offline_delay = value == "1";
+      else if (key == "offline_delay_frames") {
+        options.offline_delay_frames = std::clamp(std::stoi(value), 1, 9);
+        offline_delay_frames_seen = true;
+      }
       else if (key == "early_inputs") options.early_inputs = value == "1";
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
@@ -2378,6 +2384,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
+  // Old files used the online slider for offline play. Preserve that value once, independent
+  // of key order, then save separate values so future online changes leave offline play alone.
+  if (!offline_delay_frames_seen) options.offline_delay_frames = slippi::online::config().delay;
+  RenderOptions::live_offline_delay_frames() = options.offline_delay_frames;
   host::early_input::set_enabled(options.early_inputs);
 #ifndef MELEE_NO_SLIPPI
   RenderOptions::live_slippi_spectator() = options.slippi_spectator;
@@ -3481,6 +3491,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nonlinedelay " << slippi::online::config().delay
        << "\nonlinedelayauto " << (slippi::online::config().auto_delay ? 1 : 0)
        << "\noffline_delay " << (options.offline_delay ? 1 : 0)
+       << "\noffline_delay_frames " << options.offline_delay_frames
        << "\nearly_inputs " << (options.early_inputs ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
@@ -4935,7 +4946,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
     if (settings_combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
-    changed |= settings_toggle("VSync", &options.vsync);
+    changed |= settings_toggle("VSync (prevents tearing)", &options.vsync);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Prevents horizontal screen tearing; may add display latency.\n"
+                        "With VSync off, tearing is possible when automatic variable-refresh detection is unavailable.");
     // Display: one choice. Borderless and exclusive fullscreen were two switches that turned each
     // other off; the same two settings are written, so the renderers see no difference.
     {
@@ -7623,36 +7637,47 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         te_pair_hover(kTeNoScreenRumble));
 
 
-#ifndef MELEE_NO_SLIPPI   // the build without that layer has neither setting
-    // ---- Online ----
-    // Slippi's local input delay: frames of your own input held back so there is less to roll back.
-    // The game asks for it when an online match is set up, so a change applies from the next match.
-    // Both engines: the Source Port's match state carries the same setting (checked 09-29: delay 4
-    // in a Source Port pair, 0 mismatches).
-    ImGui::TextUnformatted("Online");
+    ImGui::TextUnformatted("Input delay");
     {
-      int delay = slippi::online::config().delay;
-      ImGui::SetNextItemWidth(160.0f);
-      if (settings_slider("Frame delay", &delay, 1, 9)) { slippi::online::config().delay = delay; changed = true; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
-                          "Higher means fewer rollbacks on a bad connection and more input lag.\n"
-                          "2 is Slippi's default. Takes effect from the next online match.");
-      ImGui::SameLine();
-      if (settings_toggle("Auto", &slippi::online::config().auto_delay)) changed = true;
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Picks the delay from the ping when each match starts: 2 frames up to about\n"
-                          "50 ms ping, more on slower connections (at most 6). Never below 2.\n"
-                          "Off: the frame delay above.");
-      ImGui::SameLine();
-      if (settings_toggle("Also use offline", &options.offline_delay)) {
+      static const char* offline_choices[] = {"Off (0 frames)", "1 frame", "2 frames", "3 frames",
+                                              "4 frames", "5 frames", "6 frames", "7 frames", "8 frames", "9 frames"};
+      int offline = options.offline_delay ? options.offline_delay_frames : 0;
+      ImGui::SetNextItemWidth(180.0f);
+      if (settings_combo("Offline input delay", &offline, offline_choices, 10)) {
+        options.offline_delay = offline > 0;
+        if (offline > 0) options.offline_delay_frames = offline;
         RenderOptions::live_offline_delay() = options.offline_delay;
+        RenderOptions::live_offline_delay_frames() = options.offline_delay_frames;
         changed = true;
       }
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Use this frame delay in all offline gameplay, including VS, Training and 1P modes.\n"
-                          "Both engines. Menus and replay playback keep their normal input.\n"
-                          "Online matches use Frame delay regardless of this checkbox.");
+        ImGui::SetTooltip("Added input delay in offline VS, Training and 1P modes, on both engines.\n"
+                          "Off adds no delay. Menus and replay playback are unaffected.");
+#ifndef MELEE_NO_SLIPPI
+      static const char* online_choices[] = {"Auto", "1 frame", "2 frames", "3 frames", "4 frames",
+                                             "5 frames", "6 frames", "7 frames", "8 frames", "9 frames"};
+      int online = slippi::online::config().auto_delay ? 0 : slippi::online::config().delay;
+      ImGui::SetNextItemWidth(180.0f);
+      if (settings_combo("Online input delay", &online, online_choices, 10)) {
+        slippi::online::config().auto_delay = online == 0;
+        if (online > 0) slippi::online::config().delay = online;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Applies from the next online match. Higher delay can reduce rollbacks.\n"
+                          "Auto picks 2 to 6 frames from ping at match start and holds it for that match.\n"
+                          "Without a ping measurement, Auto uses the last manual online value (%d frames).",
+                          slippi::online::config().delay);
+      if (online == 1)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                           "1 frame online can cause more rollbacks: fighters may jump or stutter.");
+#endif
+      ImGui::TextDisabled("Added input delay, not total controller-to-screen latency.");
+    }
+
+#ifndef MELEE_NO_SLIPPI
+    ImGui::TextUnformatted("Online");
+    {
       // Early inputs (host/early_input.h): the other player's game learns of a press up to a frame
       // sooner, so it guesses right more often and rolls back less. Only between two Melee Unlocked
       // players who both have it on; a Slippi Dolphin opponent is never sent anything new.
@@ -7665,16 +7690,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "other player's game guesses them right more often and rolls back less.\n"
                           "Only between Melee Unlocked players who both have this on. Slippi Dolphin\n"
                           "opponents see nothing new. Takes effect from the next online match.");
-      // A player ran at 3 without knowing and reported the game as feeling slow. The cost is
-      // shown whenever the value is above the default; the tooltip alone is not seen on a controller.
-      if (delay > 2)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                           "%d frames: about %d ms more input delay than the default of 2.", delay, (delay - 2) * 17);
-      // A player at 1 frame and 50 ms ping rolled back on half of all frames and reported it as
-      // visual lag. Shown here in the settings only, never over the game.
-      else if (delay < 2)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                           "%d frame: more rollbacks than the default of 2. Fighters can jump or stutter online.", delay);
       // Slippi's quick chat on the online character select screen, the same three choices as
       // Slippi Dolphin. Off also stops showing the other player's messages.
       static const char* chat_choices[] = {"On", "Direct matches only", "Off"};
