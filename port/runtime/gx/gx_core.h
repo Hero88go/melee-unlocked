@@ -147,6 +147,10 @@ struct DrawCall {
   // Skinned (envelope) draw: the fighter's model. Its shadow and its effects are rigid draws, so
   // this is what tells the model apart from everything else the same player renders.
   bool skinned = false;
+  // A camera-space quad whose corners sit exactly on the edges of its camera's frustum: a stage's
+  // backdrop plane authored to fill the 4:3 view (Poke Floats' sky gradient). True widescreen leaves
+  // it at its authored projection so it fills the widened picture instead of showing as a 4:3 box.
+  bool frustum_backdrop = false;
   // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
   // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
   mutable void* cached_pipeline = nullptr;
@@ -361,12 +365,16 @@ inline EffectsFilter effects_filter(const Frame& f, int level) {
   return e;
 }
 inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
-  if (dc.owner_player == kGameplayOwner || dc.owner_player == kModelEffectOwner || dc.owner_player < 6) return false;
+  if (dc.owner_player == kGameplayOwner || dc.owner_player < 6) return false;
   if (e.level <= 0 || dc.xf_regs[0x26] != 0 || !(dc.bp.blendmode() & 1)) return false;
   const uint32_t zmode = dc.bp.zmode();
   if (zmode & 0x10) return false;                                   // writes depth: part of the scene
   if (std::memcmp(e.projection, &dc.xf_regs[0x20], sizeof e.projection) != 0) return false;   // another camera
   const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
+  // A fighter's model effects: the shield bubble and reflectors blend over the scene and always
+  // stay. No decorative particles also drops the additive glows of moves (Mario's tornado swirl),
+  // which kept drawing at that level.
+  if (dc.owner_player == kModelEffectOwner) return e.level >= 3 && additive;
   if (additive || (e.level >= 2 && !(zmode & 1))) return true;
   // No decorative particles (3): every other blended draw of the particle dispatchers as well, the
   // smoke and dust that Reduced keeps and that can cover a fighter. Fighters with their shields,
