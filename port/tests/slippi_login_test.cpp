@@ -6,6 +6,7 @@
 #include "slippi_online.h"
 #include "native_slippi_bridge.h"
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <process.h>
 #include <atomic>
@@ -237,6 +238,16 @@ int main() {
   write(standard, "{}");
   CHECK(slippi::account::resolve(local).file == playback);
   CHECK(read(moved) == shared_data && read(shared_history) == "[\"UNCHANGED#1\"]");
+  // Explicit opt-in only: use a local launcher profile to exercise the real WinHTTP version
+  // check. No matchmaking request is made and the profile is only read, never changed.
+  if (const char* live_profile = std::getenv("MELEE_TEST_LIVE_SLIPPI_PROFILE")) {
+    slippi::Matchmaking::local_peer.enabled = false;
+    slippi::User live_user(live_profile);
+    std::string live_error;
+    CHECK(live_user.CheckOnlineCompatibility(&live_error));
+    CHECK(live_error.empty());
+    std::puts("Live Slippi user API version check passed");
+  }
   std::puts("Slippi login regression passed: relocated profiles, live Log In, EXI/native status, local history, credential validation");
   return 0;
 }
