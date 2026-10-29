@@ -50,7 +50,7 @@ bool fetch_version(const std::string& url, std::string* response, int* status) {
   while (block_version_fetch.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   *response = version_reply;
   *status = version_http_status;
-  return version_transport_ok && url == "https://users.slippi.gg/user/synthetic-test-user";
+  return version_transport_ok && url == "https://users-rest-dot-slippi.uc.r.appspot.com/user/synthetic-test-user";
 }
 }
 

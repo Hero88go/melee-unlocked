@@ -191,7 +191,7 @@ void User::RefreshFromServer() {
     // Nothing may leave this thread as an exception: that would end the process.
     try {
       std::string response; int status = 0;
-      if (!report::http_get("https://users.slippi.gg/user/" + me.uid, &response, &status) || status != 200) {
+      if (!report::http_get("https://users-rest-dot-slippi.uc.r.appspot.com/user/" + me.uid, &response, &status) || status != 200) {
         host::log("slippi: profile refresh unavailable (HTTP %d); keeping user.json", status);
         return;
       }
@@ -247,7 +247,7 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
   if (me.uid.empty()) { *error = "Sign in to Slippi before playing online."; return false; }
   try {
     std::string response; int status = 0;
-    if (!(fetch ? fetch : report::http_get)("https://users.slippi.gg/user/" + me.uid, &response, &status) || status != 200)
+    if (!(fetch ? fetch : report::http_get)("https://users-rest-dot-slippi.uc.r.appspot.com/user/" + me.uid, &response, &status) || status != 200)
       return false;
     const json reply = json::parse(response, nullptr, false);
     if (!reply.is_object()) return false;
