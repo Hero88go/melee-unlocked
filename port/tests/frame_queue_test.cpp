@@ -46,6 +46,21 @@ int main() {
     for (uint64_t i = 1; i <= 31; ++i) { check(queue.pop(out)); check(out.sequence == i); }
     check(!queue.pop(out));
   }
+  // A backlog of large frames waits on the memory it holds, not only on the count: 32 frames of a
+  // big scene were several hundred MB and ran a 5.7 GB PC out of memory. Two frames always fit.
+  {
+    gx::FrameQueue queue;
+    auto big = [](uint64_t sequence) { gx::Frame f = frame(sequence); f.vertices.reserve((200u << 20) / sizeof(gx::Vertex)); return f; };
+    check(queue.push(big(1)));
+    check(queue.push(big(2)));
+    auto blocked = std::async(std::launch::async, [&] { return queue.push(big(3)); });
+    check(blocked.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout);
+    gx::Frame out;
+    check(queue.pop(out) && out.sequence == 1);
+    out = gx::Frame{};
+    check(blocked.get());
+    check(queue.size() == 2);
+  }
   // At the cap the producer waits rather than dropping a frame, and a pop releases it.
   {
     gx::FrameQueue queue;

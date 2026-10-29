@@ -22,6 +22,7 @@ namespace gx { void settings_guest_options_frame(uint8_t menu, uint16_t selectio
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <vector>
 #include <unordered_map>
 
@@ -784,8 +785,27 @@ size_t parse_command(const uint8_t* d, size_t len) {
     if (count) {
       g_native_draw_audit.note_decoded_draw();
       uint32_t first = (uint32_t)g_frame.vertices.size();
-      uint32_t components = decode_vertices(desc, d + 3, count, fmt);
-      record_draw(op & 0xF8, first, count, components);
+      // With Windows out of commit (5.7 GB PCs, 0.1 GB left) growing the frame's vectors threw
+      // bad_alloc on the simulation thread and ended the game ("internal error: bad allocation").
+      // The draw is left out of this frame instead: what was recorded so far is put back (shrinking
+      // never allocates) and the game goes on; the next frame tries again.
+      const size_t draws = g_frame.draws.size(), segments = g_frame.segments.size(), commands = g_frame.commands.size();
+      try {
+        uint32_t components = decode_vertices(desc, d + 3, count, fmt);
+        record_draw(op & 0xF8, first, count, components);
+      } catch (const std::bad_alloc&) {
+        auto cut = [](auto& v, size_t n) { if (v.size() > n) v.erase(v.begin() + (ptrdiff_t)n, v.end()); };
+        cut(g_frame.vertices, first);
+        cut(g_frame.draws, draws);
+        cut(g_frame.segments, segments);
+        cut(g_frame.commands, commands);
+        static uint64_t skipped = 0;
+        const uint64_t n = ++skipped;
+        if ((n & (n - 1)) == 0) {   // the 1st, 2nd, 4th, 8th...: a log line allocates too
+          try { host::log("gx: not enough memory for a draw (%u vertices); %llu left out so far", count, (unsigned long long)n); }
+          catch (...) {}
+        }
+      }
     }
     return need;
   }

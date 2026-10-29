@@ -1,7 +1,8 @@
 // Ordered transfer from the simulation to the renderer. Every frame is executed (EFB copies
 // made in one frame feed later ones), never dropped; a backlog is drained by the renderer
 // without presenting (threaded_backend.cpp), so the simulation only waits in the pathological
-// case of a renderer that has stopped consuming altogether (cap 32 frames, half a second).
+// case of a renderer that has stopped consuming altogether (cap 32 frames, half a second, or
+// 256 MB of queued frames, see kQueuedBytes).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "gx_core.h"
@@ -19,10 +20,26 @@ class FrameQueue {
   std::deque<Frame> frames;
   std::deque<Frame> recycled;   // buffers returned by the renderer, capacity preserved
   bool finished = false;
+  // The memory the queued frames hold (each keeps a recycled buffer's capacity, 10 to 20 MB). A
+  // slow GPU on a 5.7 GB PC let the backlog reach 32 such frames, several hundred MB at once, and
+  // the simulation's next allocation failed ("bad allocation"). Past this the producer waits as it
+  // does at 32 frames; two frames always fit, so a large scene never waits on its own size.
+  static constexpr size_t kQueuedBytes = 256u << 20;
+  static size_t frame_bytes(const Frame& f) {
+    return f.vertices.capacity() * sizeof(Vertex) + f.draws.capacity() * sizeof(DrawCall) +
+           f.segments.capacity() * sizeof(f.segments[0]) + f.commands.capacity() * sizeof(f.commands[0]);
+  }
+  bool has_room() const {
+    if (frames.size() >= 32) return false;
+    if (frames.size() < 2) return true;
+    size_t bytes = 0;
+    for (const Frame& f : frames) bytes += frame_bytes(f);
+    return bytes < kQueuedBytes;
+  }
 public:
   bool push(Frame frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || frames.size() < 32; });   // the renderer drains backlogs; this only trips if it is stuck
+    changed.wait(lock, [&] { return finished || has_room(); });   // the renderer drains backlogs; this only trips if it is stuck
     if (finished) return false;
     frames.push_back(std::move(frame));
     pushes.fetch_add(1, std::memory_order_release);
@@ -37,7 +54,7 @@ public:
   // thread refills them instead of reallocating every frame.
   bool push_and_recycle(Frame& frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || frames.size() < 32; });
+    changed.wait(lock, [&] { return finished || has_room(); });
     if (finished) return false;
     // Keep one frame of headroom in every buffer handed back to simulation. An abrupt increase in
     // Stadium geometry should allocate into an empty recycled frame here instead of moving a live
