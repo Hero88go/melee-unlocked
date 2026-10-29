@@ -193,6 +193,37 @@ void rotation_from_quat(const Quat& q, double r[9]) {
   r[6] = 2 * (xz - wy);     r[7] = 2 * (yz + wx);     r[8] = 1 - 2 * (xx + yy);
 }
 
+// The step this tick of the player tag (the P1 to P4 marker over a fighter, if/ifnametag.c) that
+// screen-space draw `d` belongs to, in the draw's own matrix space. The tag's camera is a 640 x 480
+// orthographic view down -z with no rotation, and the game sets the marker's root to (screen x,
+// -screen y) each frame, so every piece of the marker moves exactly as the root does. The host
+// reads that root into Frame::hud_players on both engines. The HUD draws are held at the game's
+// rate (they never pair), which left the tag stepping beside a fighter shown at the display rate.
+// False for anything that is not a tag, a tag not shown on both frames, or one that jumped (a
+// respawn), so those keep holding.
+bool player_tag_step(const Frame& prev, const Frame& cur, const DrawCall& d, float& dx, float& dy) {
+  float p[6];
+  std::memcpy(p, &d.xf_regs[0x20], sizeof p);
+  // The vertical terms only: True widescreen widens the horizontal ones.
+  if (std::abs(p[2] - 2.0f / 480.0f) > 1e-5f || std::abs(p[3] - 1.0f) > 1e-3f) return false;
+  int row = (int)(d.matrix_index_a & 63);
+  if ((d.components & VB_HAS_POSMTXIDX) && d.vertex_count && d.first_vertex < cur.vertices.size()) row = (int)(cur.vertices[d.first_vertex].posmtx & 63);
+  if (row + 2 >= 64) return false;
+  const float x = d.posMatrices[row * 4 + 3], y = -d.posMatrices[(row + 1) * 4 + 3];
+  int best = -1;
+  float best_d2 = 48.0f * 48.0f;
+  for (int slot = 0; slot < 4; ++slot) {
+    const HudPlayerSnapshot& c = cur.hud_players[slot];
+    if (!c.tag_visible || !prev.hud_players[slot].tag_visible) continue;
+    const float ex = x - c.tag_x, ey = y - c.tag_y, d2 = ex * ex + ey * ey;
+    if (d2 < best_d2) { best_d2 = d2; best = slot; }
+  }
+  if (best < 0) return false;
+  dx = cur.hud_players[best].tag_x - prev.hud_players[best].tag_x;
+  dy = -(cur.hud_players[best].tag_y - prev.hud_players[best].tag_y);
+  return dx * dx + dy * dy <= 64.0f * 64.0f;
+}
+
 }  // namespace
 
 void SubFrameSolver::interpolate_matrix(const float prev[12], const float cur[12], double t, float out[12]) {
@@ -790,6 +821,32 @@ bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
         o.vertices = nullptr;
         if (!pd) {
+          // A player tag moves with its fighter on the same timeline: from this frame's pose (or the
+          // previous one when interpolating) by the phase's share of the tag's own step this tick.
+          // Decided from the two frames alone, never the phase, so the route cannot change within a
+          // tick. Pairing every screen-space draw instead doubled the route flips (HUD pieces held at
+          // one phase and moved at the next).
+          float tag_dx = 0, tag_dy = 0;
+          if (!menus && !cur_->discontinuous && d.xf_regs[0x26] != 0 && frame_in_match(*prev_) && frame_in_match(*cur_) &&
+              player_tag_step(*prev_, *cur_, d, tag_dx, tag_dy)) {
+            const float k = (float)(interpolate ? t - 1.0 : t);
+            uint64_t slots = 0;
+            if (d.components & VB_HAS_POSMTXIDX) {
+              for (uint32_t v = 0; v < d.vertex_count; ++v) {
+                const uint32_t idx = cur_->vertices[d.first_vertex + v].posmtx;
+                if (idx < 64) slots |= 1ull << idx;
+              }
+            } else {
+              slots |= 1ull << (d.matrix_index_a & 63);
+            }
+            for (uint32_t r = 0; r + 2 < 64; ++r) {
+              if (!(slots >> r & 1)) continue;
+              o.pos[r * 4 + 3] += k * tag_dx;
+              o.pos[(r + 1) * 4 + 3] += k * tag_dy;
+            }
+            routes_[i] = 9;
+            continue;
+          }
           // No pair at all (stage bushes and similar rewrite their geometry every frame). Leaving
           // these at their exact current pose while every paired draw is shown between frames puts
           // them on a different timeline, which is visible as flicker against a moving camera.
