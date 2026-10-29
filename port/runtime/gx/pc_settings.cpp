@@ -46,6 +46,7 @@
 #include "lag_test_codes.h"
 #include "gecko_data.h"
 #include "hid_pad.h"
+#include "phob_menu.h"
 #include "updater.h"
 #include "discord_presence.h"
 
@@ -2532,6 +2533,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
 #ifdef GX_DLSS5
   dlss5::profile_set_folder(options.settings_path);
 #endif
+  host::phob_store_load(options.settings_path);
 }
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
@@ -9315,6 +9317,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             if (!any) { ImGui::Spacing(); ImGui::SeparatorText("Per button"); any = true; }
             changed |= binding_level_slider(tab_kind, tab_index, i);
           }
+        }
+        if (tab_kind == host::CaptureDevice::GCAdapter && ImGui::CollapsingHeader("PhobGCC")) {
+          ImGui::PushID("phob");
+          draw_phob_menu(tab_index);
+          ImGui::PopID();
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {
           if (ImGui::Button("B0XX (vJoy / b0xx-ahk)")) { host::g_hid_bindings[tab_index] = host::vjoy_b0xx_bindings(); changed = true; }

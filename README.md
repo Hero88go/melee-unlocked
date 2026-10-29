@@ -351,3 +351,7 @@ Hero88go - developer
 Johnny Brookes Aka Lainthewired for their major contribution of the last graphic error fix that took this project from alpha -> beta. Could not have done it without them 
 
 SSBM_Arte for subframe rollback: the idea and the original implementation of sending inputs between frames so the other game can predict and roll back sooner. Melee Unlocked's early inputs, early rollback and the check against faked early inputs are adapted from that work, and the exclusive audio timing draws on Arte's audio research.
+
+The PhobGCC team (Phobos132, FrostSSBM, CarVac, NiceMitch and contributors) for the PhobGCC firmware and PhobVision, which the PhobGCC controller settings are ported from.
+
+greenwave-1 for GCC Test Suite, whose tester views inspired the PhobScope additions.

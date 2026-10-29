@@ -11,6 +11,7 @@
 // adapter through as a HID device, and on Windows for an adapter still on its stock HID driver.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "phob.h"
 #define NOMINMAX
 #include <windows.h>
 #ifdef _WIN32
@@ -72,6 +73,72 @@ std::string g_problem;
 void set_problem(const std::string& text) { std::lock_guard<std::mutex> lock(g_problem_mutex); g_problem = text; }
 constexpr const char* kFrame1Note = " A box controller plugged in normally, such as a Frame1, counts as an adapter.";
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
+
+// PhobGCC settings per adapter port (phob.h). The firmware's loop runs on the reader thread, once
+// per millisecond of adapter reports, so its filters see every report the adapter sends; the poll
+// then hands the game the latest result. All of it under g_mutex.
+phob::Prepared g_phob[4];
+phob::PortState g_phob_state[4];
+phob::Output g_phob_out[4];
+bool g_phob_live[4] = {};
+std::chrono::steady_clock::time_point g_phob_last;
+bool g_phob_have_last = false;
+// Every report as read and as the Phob settings shaped it, for the Phob scope menus.
+constexpr int kScopeLen = 4096;
+GCScopeSample g_scope[4][kScopeLen];
+uint32_t g_scope_head[4] = {};
+
+phob::HardwareInput phob_input(const uint8_t* c, const Origin& o) {
+  phob::HardwareInput in;
+  uint16_t b = 0;
+  if (c[1] & 0x01) b |= PAD_A; if (c[1] & 0x02) b |= PAD_B; if (c[1] & 0x04) b |= PAD_X; if (c[1] & 0x08) b |= PAD_Y;
+  if (c[1] & 0x10) b |= PAD_LEFT; if (c[1] & 0x20) b |= PAD_RIGHT; if (c[1] & 0x40) b |= PAD_DOWN; if (c[1] & 0x80) b |= PAD_UP;
+  if (c[2] & 0x01) b |= PAD_START; if (c[2] & 0x02) b |= PAD_Z; if (c[2] & 0x04) b |= PAD_R; if (c[2] & 0x08) b |= PAD_L;
+  in.buttons = b;
+  in.ax = c[3]; in.ay = c[4]; in.cx = c[5]; in.cy = c[6];
+  in.ax0 = o.sx; in.ay0 = o.sy; in.cx0 = o.cx; in.cy0 = o.cy;
+  in.la = (uint8_t)(c[7] > o.tl ? c[7] - o.tl : 0);
+  in.ra = (uint8_t)(c[8] > o.tr ? c[8] - o.tr : 0);
+  return in;
+}
+
+// Called with g_mutex held, for each new report.
+void phob_process(const uint8_t* report, std::chrono::steady_clock::time_point now) {
+  int steps = 1;
+  if (g_phob_have_last) {
+    const double ms = std::chrono::duration<double, std::milli>(now - g_phob_last).count();
+    steps = (int)(ms + 0.5);
+    steps = steps < 1 ? 1 : steps > 50 ? 50 : steps;
+  }
+  g_phob_last = now;
+  g_phob_have_last = true;
+  const uint32_t t = (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+  for (int port = 0; port < 4; ++port) {
+    const uint8_t* c = report + 1 + port * 9;
+    if (!(c[0] & 0x30) || !g_origin[port].set) { g_phob_live[port] = false; g_phob_state[port].primed = false; continue; }
+    const phob::HardwareInput in = phob_input(c, g_origin[port]);
+    GCScopeSample& s = g_scope[port][g_scope_head[port] % kScopeLen];
+    s.time_us = t;
+    s.raw_ax = (int8_t)((int)in.ax - in.ax0); s.raw_ay = (int8_t)((int)in.ay - in.ay0);
+    s.raw_cx = (int8_t)((int)in.cx - in.cx0); s.raw_cy = (int8_t)((int)in.cy - in.cy0);
+    s.raw_l = in.la; s.raw_r = in.ra;
+    s.raw_buttons = in.buttons;
+    if (g_phob[port].s.enabled) {
+      g_phob_out[port] = phob::step(g_phob[port], g_phob_state[port], in, steps);
+      g_phob_live[port] = true;
+      s.ax = g_phob_out[port].stick_x; s.ay = g_phob_out[port].stick_y;
+      s.cx = g_phob_out[port].sub_x; s.cy = g_phob_out[port].sub_y;
+      s.l = g_phob_out[port].trig_l; s.r = g_phob_out[port].trig_r;
+      s.buttons = g_phob_out[port].buttons;
+    } else {
+      g_phob_live[port] = false;
+      g_phob_state[port].primed = false;
+      s.ax = s.raw_ax; s.ay = s.raw_ay; s.cx = s.raw_cx; s.cy = s.raw_cy;
+      s.l = s.raw_l; s.r = s.raw_r; s.buttons = s.raw_buttons;
+    }
+    ++g_scope_head[port];
+  }
+}
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
 std::thread g_writer;
@@ -204,6 +271,7 @@ void reader_thread() {
         std::memcpy(g_report, buf, 37);
         g_report_time = received;
         g_have_report = true;
+        phob_process(buf, received);
       }
     } else {
       if (rc == LIBUSB_ERROR_TIMEOUT) {
@@ -593,6 +661,12 @@ uint32_t gcadapter_poll(PadState out[4]) {
     p.sub_x = axis(c[5], o.cx); p.sub_y = axis(c[6], o.cy);
     p.trig_l = (uint8_t)(c[7] > o.tl ? c[7] - o.tl : 0);
     p.trig_r = (uint8_t)(c[8] > o.tr ? c[8] - o.tr : 0);
+    if (g_phob_live[port] && g_phob[port].s.enabled) {
+      const phob::Output& q = g_phob_out[port];
+      p.button = q.buttons;
+      p.stick_x = q.stick_x; p.stick_y = q.stick_y; p.sub_x = q.sub_x; p.sub_y = q.sub_y;
+      p.trig_l = q.trig_l; p.trig_r = q.trig_r;
+    }
     mask |= 1u << port;
   }
   return mask;
@@ -628,5 +702,39 @@ void gcadapter_shutdown() {
 }
 
 bool steam_running() { return steam_is_running(); }
+
+void gcadapter_phob_set(int port, const phob::Settings& settings) {
+  if (port < 0 || port > 3) return;
+  phob::Prepared prepared;
+  phob::prepare(settings, prepared);   // the calibration fit runs outside the lock
+  std::lock_guard<std::mutex> lk(g_mutex);
+  g_phob[port] = prepared;
+  g_phob_state[port].primed = false;
+}
+
+phob::Settings gcadapter_phob_get(int port) {
+  if (port < 0 || port > 3) return {};
+  std::lock_guard<std::mutex> lk(g_mutex);
+  return g_phob[port].s;
+}
+
+bool gcadapter_phob_raw(int port, phob::HardwareInput& in) {
+  if (port < 0 || port > 3) return false;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (!g_have_report || !g_origin[port].set) return false;
+  const uint8_t* c = g_report + 1 + port * 9;
+  if (!(c[0] & 0x30)) return false;
+  in = phob_input(c, g_origin[port]);
+  return true;
+}
+
+int gcadapter_scope(int port, GCScopeSample* out, int max) {
+  if (port < 0 || port > 3 || max <= 0) return 0;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  const uint32_t head = g_scope_head[port];
+  const int n = (int)std::min<uint32_t>((uint32_t)std::min(max, kScopeLen), head);
+  for (int i = 0; i < n; ++i) out[i] = g_scope[port][(head - (uint32_t)n + (uint32_t)i) % kScopeLen];
+  return n;
+}
 
 }  // namespace host

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include "ppc.h"
 #include "../abi/mu_host.h"
+#include "phob.h"
 #include "tick_timing.h"
 
 namespace host {
@@ -276,6 +277,29 @@ void input_note_pad_frame(int32_t frame);
 void input_last_pads(PadState out[4]);
 // GameCube controller adapter (WUP-028 over WinUSB): fills plugged ports, returns their mask.
 uint32_t gcadapter_poll(PadState out[4]);
+// PhobGCC settings for an adapter port (phob.h): applied to every report while enabled.
+void gcadapter_phob_set(int port, const phob::Settings& settings);
+phob::Settings gcadapter_phob_get(int port);
+// The controller on `port` as the adapter reports it right now, for calibration. False if none.
+bool gcadapter_phob_raw(int port, phob::HardwareInput& in);
+// One adapter report as read and as the Phob settings shaped it, for the scope menus. Stick values
+// are relative to the neutral point.
+struct GCScopeSample {
+  uint32_t time_us;
+  int8_t raw_ax, raw_ay, raw_cx, raw_cy, ax, ay, cx, cy;
+  uint8_t raw_l, raw_r, l, r;
+  uint16_t raw_buttons, buttons;
+};
+// The latest `max` reports for `port`, oldest first; returns how many were written.
+int gcadapter_scope(int port, GCScopeSample* out, int max);
+// Saved Phob settings (phob_store.cpp): load reads every port's file and applies it, save applies
+// and writes one port. Setups are named copies a player can share.
+void phob_store_load(const std::string& settings_path);
+bool phob_store_save(int port, const phob::Settings& s);
+std::string phob_store_folder();   // the PhobGCC folder beside the settings file
+std::vector<std::string> phob_setup_list();
+bool phob_setup_save(const std::string& name, const phob::Settings& s, bool with_calibration);
+bool phob_setup_load(const std::string& name, phob::Settings& s);
 // Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
 double gcadapter_poll_rate_hz();
 // Why a plugged-in adapter cannot be read (another program has it, no driver), in words for the

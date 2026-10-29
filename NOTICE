@@ -67,6 +67,9 @@ Code ported or adapted from other projects:
 - Slippi's Rust extensions (published with the GPL version 2 text): the music player and game
   reporting
 - Slippi Launcher (GPL-3.0): the launcher's default stock icons
+- PhobGCC (GPL-3.0, https://github.com/PhobGCC/PhobGCC-SW): stick calibration, notch
+  adjustment, snapback filter, waveshaping, smoothing, trigger modes, tourney lockouts and the
+  PhobVision menus, in port/runtime/host/phob.cpp and port/runtime/gx/phob_menu.cpp
 - slippi-js (LGPL-3.0-or-later): the landing lag table in the launcher
 - hps_decode (MIT): docs/licenses/hps_decode-MIT.txt
 - Slippi Lab (MIT): docs/licenses/slippilab-MIT.txt
