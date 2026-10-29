@@ -388,16 +388,6 @@ void run_waveshaping(PortState::Wave& w, float x, float y, float& xo, float& yo,
   w.out_x = xo; w.out_y = yo;
 }
 
-// An uncalibrated stick: the stock reading through the same scaling and snapping.
-void remap_uncalibrated(float x, float y, float& xo, float& yo, const Settings& s, Stick which) {
-  StickParams identity;
-  for (int i = 0; i < kNotches; i++) {
-    identity.affine[i][0] = 1; identity.affine[i][3] = 1;
-    identity.boundary[i] = -kPi + 2 * kPi * (float)i / kNotches;
-  }
-  notch_remap(x, y, xo, yo, identity, -1, s, which);
-}
-
 void set_hysteresis(uint8_t& out, float remapped) {
   const float hyst = 0.3f;
   const float diff = (remapped + kFloatOrigin) - out;
@@ -580,6 +570,16 @@ void prepare(const Settings& s, Prepared& out) {
   recompute_gains(out.s, out.g);
 }
 
+void filter_step(const Prepared& p, PortState& st, float lin_x, float lin_y) {
+  const Settings& s = p.s;
+  const Gains& g = p.g;
+  run_kalman(st, lin_x, lin_y, s, g);
+  float shaped_x = st.x_pos_filt, shaped_y = st.y_pos_filt;
+  run_waveshaping(st.wave_a, shaped_x, shaped_y, shaped_x, shaped_y, s.ax_waveshaping, s.ay_waveshaping, g, true);
+  st.smooth_ax = g.ax_smooth * shaped_x + (1 - g.ax_smooth) * st.smooth_ax;
+  st.smooth_ay = g.ay_smooth * shaped_y + (1 - g.ay_smooth) * st.smooth_ay;
+}
+
 Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps) {
   const Settings& s = p.s;
   const Gains& g = p.g;
@@ -619,7 +619,11 @@ Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps
   const int shutoff_ra = s.remap[R_REMAP] == (1 << R_REMAP) ? 1 : 0;
   const float scale_l = (0.0112f * s.l_offset) + 0.4494f;   // firmware: mode 6's multiplier
   const float scale_r = (0.0112f * s.r_offset) + 0.4494f;
-  auto read_trigger = [](uint8_t travel, float scale) { return (int)std::fmin(255, std::fmax(0, (float)travel) * scale); };
+  // firmware (readLa / readRa): a reading under 3 is 0, then the scale, capped at 255
+  auto read_trigger = [](uint8_t travel, float scale) {
+    const float temp = travel < 3 ? 0.0f : (float)travel;
+    return (int)std::fmin(255, std::fmax(0, temp) * scale);
+  };
   auto trigger_mode = [&](int mode, uint8_t travel, int offset, int shutoff, float scale, uint16_t click, uint16_t& b) {
     const bool pressed = (b & click) != 0;
     const int read = read_trigger(travel, 1);
@@ -669,13 +673,8 @@ Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps
     }
 
     // ---- readSticks ----
-    run_kalman(st, lin_ax, lin_ay, s, g);
-    float shaped_ax = st.x_pos_filt, shaped_ay = st.y_pos_filt;
-    run_waveshaping(st.wave_a, shaped_ax, shaped_ay, shaped_ax, shaped_ay, s.ax_waveshaping, s.ay_waveshaping, g, true);
-    const float pos_ax = g.ax_smooth * shaped_ax + (1 - g.ax_smooth) * st.smooth_ax;
-    const float pos_ay = g.ay_smooth * shaped_ay + (1 - g.ay_smooth) * st.smooth_ay;
-    st.smooth_ax = pos_ax;
-    st.smooth_ay = pos_ay;
+    filter_step(p, st, lin_ax, lin_ay);
+    const float pos_ax = st.smooth_ax, pos_ay = st.smooth_ay;
     float pos_cx, pos_cy;
     run_waveshaping(st.wave_c, lin_cx, lin_cy, pos_cx, pos_cy, s.cx_waveshaping, s.cy_waveshaping, g, false);
     const float old_cx = st.smooth_cx, old_cy = st.smooth_cy;
@@ -689,24 +688,27 @@ Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps
       notch_remap(pos_ax, pos_ay, rax, ray, p.a, -1, s, ASTICK);
       notch_remap(lin_ax, lin_ay, uax, uay, p.a, 1, s, ASTICK);   // firmware: unfiltered, no snapping
     } else {
-      remap_uncalibrated(pos_ax, pos_ay, rax, ray, s, ASTICK);
+      rax = pos_ax; ray = pos_ay;
       uax = lin_ax; uay = lin_ay;
     }
     if (c_cal) {
       notch_remap(pos_cx, pos_cy, rcx, rcy, p.c, -1, s, CSTICK);
       notch_remap(lin_cx, lin_cy, ucx, ucy, p.c, 1, s, CSTICK);
     } else {
-      remap_uncalibrated(pos_cx, pos_cy, rcx, rcy, s, CSTICK);
+      rcx = pos_cx; rcy = pos_cy;
       ucx = lin_cx; ucy = lin_cy;
     }
     auto clamp125 = [](float v) { return std::fmin(125.0f, std::fmax(-125.0f, v)); };
     rax = clamp125(rax); ray = clamp125(ray); rcx = clamp125(rcx); rcy = clamp125(rcy);
     st.ax_unfilt = clamp125(uax); st.ay_unfilt = clamp125(uay);
     st.cx_unfilt = clamp125(ucx); st.cy_unfilt = clamp125(ucy);
-    set_hysteresis(st.ax, rax);
-    set_hysteresis(st.ay, ray);
-    set_hysteresis(st.cx, rcx);
-    set_hysteresis(st.cy, rcy);
+    // firmware: a stick with no calibration outputs its reading as it is, with no filtering,
+    // snapping or hysteresis; here that is the controller's own value around the adapter's neutral.
+    auto pass = [](uint8_t v, uint8_t origin) { const int a = 127 + (int)v - (int)origin; return (uint8_t)(a < 0 ? 0 : a > 255 ? 255 : a); };
+    if (a_cal) { set_hysteresis(st.ax, rax); set_hysteresis(st.ay, ray); }
+    else { st.ax = pass(in.ax, in.ax0); st.ay = pass(in.ay, in.ay0); }
+    if (c_cal) { set_hysteresis(st.cx, rcx); set_hysteresis(st.cy, rcy); }
+    else { st.cx = pass(in.cx, in.cx0); st.cy = pass(in.cy, in.cy0); }
 
     out.buttons = b;
     out.trig_l = out_la;

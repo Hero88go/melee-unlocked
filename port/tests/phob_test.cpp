@@ -1,8 +1,10 @@
 // PhobGCC port: calibration hits the firmware's notch targets, filters behave, trigger modes match.
 // SPDX-License-Identifier: GPL-3.0-only
 #include "phob.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <random>
 
 namespace {
 int g_failures = 0;
@@ -181,6 +183,135 @@ int main() {
   float mx, my;
   melee_coords(80, 0, mx, my); CHECK(mx == 1.0f && my == 0.0f);
   melee_coords(100, 100, mx, my); CHECK(std::fabs(mx - 0.7f) < 0.02f);
+
+
+  // ---- more checks ----
+  // Uncalibrated: the reading passes through unfiltered and immediately, as the firmware outputs raw.
+  {
+    Settings t; t.enabled = true; Prepared pt; prepare(t, pt); PortState stt;
+    HardwareInput in; in.ax = 200; in.ay = 60; in.ax0 = 128; in.ay0 = 130;
+    Output o1 = step(pt, stt, in, 1);
+    CHECK(o1.stick_x == 72 && o1.stick_y == -70);
+    in.ax = 128; in.ay = 130;
+    o1 = step(pt, stt, in, 1);
+    CHECK(o1.stick_x == 0 && o1.stick_y == 0);
+  }
+  // Trigger readings under 3 are 0 (readLa).
+  { uint8_t a; bool b; trig(0, 2, false, 49, a, b); CHECK(a == 0); trig(0, 3, false, 49, a, b); CHECK(a == 3); }
+  // L remapped away: its analog is shut off; R remapped onto L's button: R digital only.
+  {
+    Settings t; t.remap[L_REMAP] = 1 << Z_REMAP; Prepared pt; prepare(t, pt); PortState stt;
+    HardwareInput in; in.la = 150; in.ra = 150;
+    const Output out = step(pt, stt, in, 1);
+    CHECK(out.trig_l == 0 && out.trig_r == 150);
+  }
+  // Tourney modes 1 (taunt delayed), 4 (both delayed), 5 (start delayed, taunt disabled).
+  {
+    Settings t; t.tourney = 1; Prepared pt; prepare(t, pt); PortState stt;
+    HardwareInput in; in.buttons = PAD_UP;
+    CHECK(!(step(pt, stt, in, 999).buttons & PAD_UP));
+    CHECK(step(pt, stt, in, 2).buttons & PAD_UP);
+    t.tourney = 4; prepare(t, pt); PortState s4; in.buttons = PAD_START;
+    CHECK(!(step(pt, s4, in, 10).buttons & PAD_START));
+    t.tourney = 5; prepare(t, pt); PortState s5; in.buttons = PAD_UP;
+    CHECK(!(step(pt, s5, in, 2000).buttons & PAD_UP));
+    in.buttons = PAD_START | PAD_UP;   // firmware: Start + D-up together give D-up, no Start
+    const Output both = step(pt, s5, in, 1);
+    CHECK((both.buttons & PAD_UP) && !(both.buttons & PAD_START));
+  }
+  // Multi-millisecond steps equal one-millisecond steps.
+  {
+    Settings f = s; f.x_snapback = 6; f.ax_waveshaping = 9; f.ax_smoothing = 4;
+    Prepared pf; prepare(f, pf);
+    PortState a, b; float rx, ry; stock_reading(4, false, rx, ry);
+    Output oa{}, ob{};
+    oa = step(pf, a, at(rx, ry), 7);
+    for (int i = 0; i < 7; i++) ob = step(pf, b, at(rx, ry), 1);
+    CHECK(oa.stick_x == ob.stick_x && oa.stick_y == ob.stick_y && a.smooth_ax == b.smooth_ax);
+  }
+  // Many random stock sticks: calibration always finishes, hits every cardinal and diagonal, and
+  // the stick has no holes or jumps (neighbouring readings never land far apart).
+  {
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<float> j(-0.03f, 0.03f), u(0, 1);
+    int worst_jump = 0, worst_notch = 0, skipped_ok = 0;
+    for (int trial = 0; trial < 200; trial++) {
+      const float ox = 0.5f + j(rng), oy = 0.5f + j(rng), sx = 0.30f + u(rng) * 0.1f, sy = 0.30f + u(rng) * 0.1f;
+      const bool modder = u(rng) < 0.3f;
+      StickCal cal;
+      CalSession c; cal_begin(c, ASTICK, cal);
+      bool fin = false; int adjust_steps = 0;
+      for (int g = 0; g < 100 && !fin; g++) {
+        float x = ox, y = oy;
+        if (c.step >= kCalPoints) adjust_steps++;
+        if (c.step < kCalPoints) {
+          const CalPrompt pr = cal_prompt(c.step);
+          if (!pr.centre && (!pr.optional || modder)) {
+            const float a = kPi * pr.notch / 8;
+            const float r = pr.notch % 4 == 2 ? 0.93f : 1.0f;
+            x = ox + sx * r * std::cos(a); y = oy + sy * r * std::sin(a);
+          }
+        }
+        fin = cal_advance(c, x + j(rng) * 0.02f, y + j(rng) * 0.02f, cal);
+      }
+      CHECK(fin);
+      // Without modder notches only the 4 diagonals are adjusted; with them all 12.
+      if (adjust_steps == (modder ? 12 : 4)) skipped_ok++;
+      Settings t; t.a_cal = cal; t.x_snapback = t.y_snapback = 0; t.cx_smoothing = t.cy_smoothing = 0;
+      Prepared pt; prepare(t, pt);
+      for (int n = 0; n < 16; n += 2) {
+        const float a = kPi * n / 8, r = n % 4 == 2 ? 0.93f : 1.0f;
+        float tx, ty; calc_stick_values(a, tx, ty);
+        PortState fresh;
+        const Output o2 = step(pt, fresh, at(ox + sx * r * std::cos(a), oy + sy * r * std::sin(a)), 30);
+        worst_notch = std::max(worst_notch, std::max(std::abs(o2.stick_x - (int)std::lround(tx)), std::abs(o2.stick_y - (int)std::lround(ty))));
+      }
+      int prev_x = 0, prev_y = 0; bool have = false;
+      for (int k = 0; k < 720; k++) {   // a slow roll around the rim
+        const float a = kPi * k / 360;
+        PortState fresh;
+        const Output o3 = step(pt, fresh, at(ox + sx * 0.97f * std::cos(a), oy + sy * 0.97f * std::sin(a)), 20);
+        if (have) worst_jump = std::max(worst_jump, std::abs(o3.stick_x - prev_x) + std::abs(o3.stick_y - prev_y));
+        prev_x = o3.stick_x; prev_y = o3.stick_y; have = true;
+      }
+    }
+    std::printf("random sticks: worst notch error %d, worst neighbour jump %d, notch skipping right %d/200\n", worst_notch, worst_jump, skipped_ok);
+    CHECK(worst_notch <= 3);
+    CHECK(worst_jump <= 12);   // cardinal snapping moves up to 6 units at once on each side of an axis
+    CHECK(skipped_ok == 200);
+  }
+  // Notch limits: a diagonal cannot be turned past the firmware's 30% stretch.
+  {
+    CalSession c; CHECK(cal_begin_notch_fix(c, ASTICK, s.a_cal));
+    const int idx = cal_adjust_notch(c.step);   // the first adjust step is the up-right diagonal
+    CHECK(idx == 2);
+    for (int i = 0; i < 200000; ++i) cal_adjust(c, false, true, false, 1.0f);
+    const float hi = c.notch_angles[idx];
+    for (int i = 0; i < 400000; ++i) cal_adjust(c, true, false, false, 1.0f);
+    const float lo = c.notch_angles[idx];
+    CHECK(hi - c.measured_angles[idx] <= 0.3f * (kPi / 4) + 1e-3f);
+    CHECK(c.measured_angles[idx] - lo <= 0.3f * (kPi / 4) + 1e-3f);
+    cal_adjust(c, false, false, true, 1.0f);   // B: back to measured
+    CHECK(c.notch_angles[idx] == c.measured_angles[idx]);
+  }
+  // Undo: back from a notch goes to the centre reading before the previous notch (calibrationUndo).
+  {
+    StickCal cal; CalSession c; cal_begin(c, ASTICK, cal);
+    for (int i = 0; i < 5; i++) cal_advance(c, 0.5f, 0.5f, cal);
+    CHECK(c.step == 5); cal_undo(c); CHECK(c.step == 2);
+    cal_undo(c); CHECK(c.step == 0); cal_undo(c); CHECK(c.step == 0);
+  }
+  // Hysteresis: a reading wobbling under the firmware's 0.3 band does not flicker the output.
+  {
+    Settings t = s; t.x_snapback = t.y_snapback = 0; Prepared pt; prepare(t, pt); PortState stt;
+    float rx, ry; stock_reading(0, false, rx, ry);
+    const Output base = step(pt, stt, at(rx * 0.8f + 0.1f, ry), 30);
+    int changes = 0; int last = base.stick_x;
+    for (int i = 0; i < 200; i++) { const Output o4 = step(pt, stt, at(rx * 0.8f + 0.1f, ry), 1); if (o4.stick_x != last) changes++; last = o4.stick_x; }
+    CHECK(changes == 0);
+  }
+  // A damaged settings file cannot produce NaN calibration.
+  { Settings bad; parse("a_points_x nan nan\n", bad); CHECK(!bad.a_cal.measured); }
 
   if (g_failures) std::printf("%d failure(s)\n", g_failures);
   else std::printf("phob: all checks passed\n");

@@ -26,9 +26,10 @@
 //  - A Phob runs its loop at a fixed 1 kHz. The same loop runs here on a 1 ms clock fed by the
 //    adapter: one step per report from a 1000 Hz adapter (an overclocked or lossless one), and the
 //    held report stepped once per millisecond from a slower one, so every gain is the firmware's.
-//  - A stick with no calibration passes the controller's reading through (relative to the
-//    adapter's neutral point) where the firmware would output its raw sensor value. Filters,
-//    cardinal snapping and radius scaling still apply to it.
+//  - A stick with no calibration outputs its reading unfiltered, as the firmware does; the reading
+//    is the controller's own value around the adapter's neutral point.
+//  - Trigger travel is measured from the trigger's rest as the adapter saw it at connect (a stock
+//    trigger rests above 0, a Phob's sensor at 0).
 //  - Rumble strength, auto-initialize and PhobVision's display offset have nothing to act on
 //    here (the adapter's rumble is on or off), so they are not offered.
 // SPDX-License-Identifier: GPL-3.0-only
@@ -150,6 +151,9 @@ struct Output {
   uint8_t trig_l = 0, trig_r = 0;
 };
 
+// One step of the left stick's filters (smart snapback, waveshaping, smoothing) on a linearized
+// reading; the result is in `st.smooth_ax` / `st.smooth_ay`. Part of step(), exposed for checks.
+void filter_step(const Prepared& p, PortState& st, float lin_x, float lin_y);
 // Runs the firmware's loop `steps` times (one per millisecond since the last report, at least
 // one) on the held input and returns what the controller would send.
 Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps);

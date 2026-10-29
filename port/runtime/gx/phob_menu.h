@@ -5,4 +5,9 @@
 namespace gx {
 // Draws the section for adapter socket `port` (0..3). Returns true when a setting changed.
 bool draw_phob_menu(int port);
+// True while a Phob calibration or remap is listening to the controller. The panel then takes no
+// navigation from the controller, so A, B, X, Y, Z, L and R mean what PhobVision makes them mean.
+bool phob_menu_capturing();
+// Call on a frame the section is not drawn: ends any calibration or remap in progress.
+void phob_menu_not_drawn();
 }  // namespace gx

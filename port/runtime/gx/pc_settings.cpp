@@ -2538,6 +2538,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
 std::atomic<bool> g_textures_dirty{false};
+static bool g_phob_drawn = false;   // the PhobGCC section was drawn this frame
 // "texpackoff <name>" per pack the player switched off, written with the rest of the settings.
 // Tooltips are clipped to the OS window, and the standalone settings window is deliberately narrow,
 // so a long one ran off the right edge. Wrapping them at a fixed width keeps every line on screen
@@ -4719,7 +4720,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 have_pad ? pad.stick_x : 0, have_pad ? pad.stick_y : 0, have_pad ? pad.sub_x : 0, have_pad ? pad.sub_y : 0);
     }
   }
-  if (have_pad && nav_active && state.practice_pad_armed) {
+  // A Phob screen that was not drawn last frame (header closed, tab or page changed, panel shut)
+  // stops listening to the controller.
+  if (!g_phob_drawn) phob_menu_not_drawn();
+  g_phob_drawn = false;
+  // A Phob calibration or remap reads the controller itself: the panel gets none of it.
+  if (have_pad && nav_active && state.practice_pad_armed && phob_menu_capturing()) {
+    auto& io = ImGui::GetIO();
+    for (ImGuiKey k : {ImGuiKey_GamepadStart, ImGuiKey_GamepadBack, ImGuiKey_GamepadFaceDown, ImGuiKey_GamepadFaceRight,
+                       ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight})
+      io.AddKeyEvent(k, false);
+  } else if (have_pad && nav_active && state.practice_pad_armed) {
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -8888,6 +8899,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (manual && g_edit_follow_active) { g_edit_follow_active = false; changed = true; }
         }
     };
+    // Test runs (MELEE_TEST_PHOB): open on adapter socket 1, where the PhobGCC section is.
+    static const bool phob_test = std::getenv("MELEE_TEST_PHOB") != nullptr;
+    if (phob_test) g_edit_follow_active = false;
+    if (family_sel < 0 && phob_test)
+      for (int f = 0; f < kFamilyCount; ++f)
+        if (kFamilies[f].first_tab <= 9 && 9 < kFamilies[f].first_tab + kFamilies[f].count) { family_sel = f; device_sel[f] = 9 - kFamilies[f].first_tab; }
     if (family_sel < 0) {   // open on whatever plays as port 1, else the first family with something connected
       family_sel = 0;
       for (int f = 0; f < kFamilyCount; ++f) if (family_connected(kFamilies[f]) > 0) { family_sel = f; break; }
@@ -9318,10 +9335,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             changed |= binding_level_slider(tab_kind, tab_index, i);
           }
         }
+        if (tab_kind == host::CaptureDevice::GCAdapter && std::getenv("MELEE_TEST_PHOB")) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         if (tab_kind == host::CaptureDevice::GCAdapter && ImGui::CollapsingHeader("PhobGCC")) {
           ImGui::PushID("phob");
+          static int phob_test_scroll = 0;   // test runs: bring the section to the top once it is laid out
+          if (std::getenv("MELEE_TEST_PHOB") && phob_test_scroll++ == 2) ImGui::SetScrollHereY(0.0f);
           draw_phob_menu(tab_index);
           ImGui::PopID();
+          g_phob_drawn = true;
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {
           if (ImGui::Button("B0XX (vJoy / b0xx-ahk)")) { host::g_hid_bindings[tab_index] = host::vjoy_b0xx_bindings(); changed = true; }

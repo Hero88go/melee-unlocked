@@ -7,9 +7,10 @@
 // by greenwave-1): a continuous oscilloscope, a gate visualizer and a CSV export. They are drawn
 // here from the adapter's own report stream; no GTS code is used.
 //
-// Buttons: the menus are ordinary panel controls. Calibration listens to the controller being
-// calibrated, the way PhobVision does, except that B (which closes the panel) does not reset a
-// notch: D-pad down does.
+// Buttons: the menus are ordinary panel controls. Calibration and remapping listen to the
+// controller being set up with PhobVision's buttons (A/L/R next, Z back, X/Y turn a notch, B puts
+// it back); while they do, the panel takes no navigation from the controller (phob_menu_capturing),
+// and Start cancels.
 // SPDX-License-Identifier: GPL-3.0-only
 #include "phob_menu.h"
 #include "host.h"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -98,7 +100,15 @@ struct MenuState {
   std::string status;
 };
 MenuState g_menu[4];
+bool g_capturing = false;
 
+}  // namespace
+// The Controls tab stops drawing the section when its header closes or the tab changes.
+void phob_menu_not_drawn() {
+  g_capturing = false;
+  for (MenuState& m : g_menu) { m.calibrating = false; m.remap_step = -1; }
+}
+namespace {
 void hint(const char* text) { ImGui::TextDisabled("%s", text); }
 
 bool slider(const char* label, int* v, int lo, int hi, int def) {
@@ -194,11 +204,11 @@ bool draw_calibration(int port, MenuState& m, Stick which, bool notch_fix) {
   const uint16_t pressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)(b & ~m.last_buttons);
   m.last_buttons = b;
 
-  const bool advance = (pressed & (PAD_L | PAD_R)) || ImGui::Button("Next (A/L/R)");
+  const bool advance = (pressed & (PAD_A | PAD_L | PAD_R)) || ImGui::Button("Next (A/L/R)");
   ImGui::SameLine();
   const bool back = (pressed & PAD_Z) || ImGui::Button("Back (Z)");
   ImGui::SameLine();
-  if (ImGui::Button("Cancel")) { m.calibrating = false; return false; }
+  if ((pressed & PAD_START) || ImGui::Button("Cancel (Start)")) { m.calibrating = false; return false; }
 
   if (m.cal.step < kCalPoints) {
     ImGui::Text("Measurement Phase   Step: %d / %d", m.cal.step + 1, kCalPoints);
@@ -221,9 +231,9 @@ bool draw_calibration(int port, MenuState& m, Stick which, bool notch_fix) {
     ImGui::Text("Adjusting: %s", notch_name(notch));
     ImGui::TextUnformatted("You can now preview the stick motion. Put the");
     ImGui::TextUnformatted("stick in the indicated notch and press X/Y to");
-    ImGui::TextUnformatted("move its output CW/CCW. D-pad down puts it back.");
+    ImGui::TextUnformatted("move its output CW/CCW. B puts it back.");
     ImGui::TextUnformatted("Press A/L/R to move on.");
-    cal_adjust(m.cal, (b & PAD_X) != 0, (b & PAD_Y) != 0, (b & PAD_DOWN) != 0, dt);
+    cal_adjust(m.cal, (b & PAD_X) != 0, (b & PAD_Y) != 0, (b & PAD_B) != 0, dt);
     // The stick through the calibration as it stands, the way the firmware previews it.
     const float lx = linearize(rx, m.cal.params.fit_x), ly = linearize(ry, m.cal.params.fit_y);
     float ox = 0, oy = 0;
@@ -549,7 +559,8 @@ bool draw_screen(int port, MenuState& m) {
         if (host::gcadapter_phob_raw(port, in)) {
           const uint16_t pressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)(in.buttons & ~m.last_buttons);
           m.last_buttons = in.buttons;
-          for (int i = 0; i < REMAP_COUNT; i++)
+          if (pressed & PAD_START) m.remap_step = -1;
+          for (int i = 0; i < REMAP_COUNT && m.remap_step >= 0; i++)
             if (pressed & bits[i]) { s.remap[m.remap_step] = (uint8_t)(1 << i); m.remap_step = -1; changed = true; break; }
         }
       }
@@ -602,10 +613,19 @@ bool draw_screen(int port, MenuState& m) {
 }
 }  // namespace
 
+bool phob_menu_capturing() { return g_capturing; }
+
 bool draw_phob_menu(int port) {
   if (port < 0 || port > 3) return false;
   MenuState& m = g_menu[port];
-  if (!m.loaded) { m.s = host::gcadapter_phob_get(port); m.loaded = true; }
+  // Only this socket's screen is drawn this frame; the others stop listening when it changes.
+  for (int i = 0; i < 4; i++) if (i != port) { g_menu[i].calibrating = false; g_menu[i].remap_step = -1; }
+  if (!m.loaded) {
+    m.s = host::gcadapter_phob_get(port);
+    m.loaded = true;
+    // Test runs: MELEE_TEST_PHOB=<screen number> opens that screen, so every one can be drawn hidden.
+    if (const char* t = std::getenv("MELEE_TEST_PHOB")) { const int n = std::atoi(t); if (n >= 0 && n < SCREEN_COUNT) m.screen = (Screen)n; }
+  }
   bool changed = false;
   if (ImGui::Checkbox("PhobGCC settings on this socket", &m.s.enabled)) changed = true;
   hint("PhobGCC's stick calibration, notches, snapback filter, trigger modes and lockouts, for any controller on the adapter.");
@@ -632,6 +652,7 @@ bool draw_phob_menu(int port) {
   if (m.screen != MAIN && ImGui::Button("Back")) { m.screen = node(m.screen).parent; m.calibrating = false; }
   if (!m.status.empty()) ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1), "%s", m.status.c_str());
 
+  g_capturing = m.calibrating || m.remap_step >= 0;
   if (changed) {
     clamp(m.s);
     if (!host::phob_store_save(port, m.s)) m.status = "Could not save the settings file.";

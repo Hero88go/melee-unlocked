@@ -564,6 +564,9 @@ std::once_flag g_scanner_started;
 void scanner_thread();
 
 void ensure_scanner_started() {
+  // --no-gc-adapter (and every hidden test run) never opens the adapter, whoever asks: the Controls
+  // tab's status line used to start the scanner and take a real adapter from the player.
+  if (options.no_gc_adapter) return;
   std::call_once(g_scanner_started, [] {
     g_scanner_run.store(true);
     g_scanner = std::thread(scanner_thread);
