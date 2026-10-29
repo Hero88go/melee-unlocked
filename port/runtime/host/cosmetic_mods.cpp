@@ -37,6 +37,9 @@
 #include "nlohmann/json.hpp"
 
 namespace host::cosmetics {
+static bool fighter_sound_identity(const std::string& raw, size_t* kind, const char** character);
+static bool fighter_sound_overlay(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& mod,
+                                  size_t fighter_kind, std::vector<uint8_t>* merged, std::string* error);
 namespace {
 
 using json = nlohmann::json;
@@ -87,9 +90,9 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // verdict taken at scan time. 3: the pack's own portraits, from its character select file. 4: the
 // skeleton check reads the relocation table (a joint at data offset 0 is a joint) and its reason
 // names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
-// the game stops when it draws one. 6: a disc's stage files are listed as stage skins. A disc scanned
+// the game stops when it draws one. 6: stage skins. 7: fighter move sound archives. A disc scanned
 // under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 6;
+constexpr uint32_t kScanRules = 7;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -2228,7 +2231,8 @@ std::string effect_label(const std::string& scope) {
 }
 
 std::string selection_key(const AssetRecord& asset) {
-  return asset.info.target_path + (asset.info.kind == "effect_visual" ? "#" + effect_scope(asset) : "");
+  return asset.info.target_path + (asset.info.kind == "effect_visual" ? "#" + effect_scope(asset) :
+                                   asset.info.kind == "fighter_sound" ? "#sounds" : "");
 }
 
 // A stage archive's metadata names the arena, but the DAT names the exact disc resource.
@@ -2686,6 +2690,77 @@ ImportResult install_asset_locked(const fs::path& source, const std::string& sou
               " (" + dat.target_path + ")" +
               (auto_selected ? " and automatically selected." :
                                "; the existing selection was preserved.");
+  result.ok = true; result.asset_id = id; result.message = g_message;
+  return result;
+}
+
+ImportResult install_fighter_sound_locked(const fs::path& source, const std::string& member,
+                                          const std::vector<uint8_t>& mod_bytes) {
+  ImportResult result;
+  std::string error;
+  if (!mutable_profile_locked(&error)) { result.message = error; return result; }
+  size_t kind = 0; const char* character = nullptr;
+  const std::string target = path_filename_utf8(source);
+  uint32_t offset = 0, size = 0;
+  if (!fighter_sound_identity(member.empty() ? target : member, &kind, &character) ||
+      !host::disc_find_file(target, &offset, &size) || !size || size > kMaxAssetBytes) {
+    result.message = "Choose a fighter animation archive such as PlCa.dat while the matching clean game disc is open.";
+    return result;
+  }
+  std::vector<uint8_t> clean(size), safe;
+  if (!host::disc_read(offset, clean.data(), size) || !fighter_sound_overlay(clean, mod_bytes, kind, &safe, &error)) {
+    result.message = error.empty() ? "The fighter sound edits could not be validated against the active disc." : error;
+    return result;
+  }
+  const std::string digest = sha256(safe);
+  if (digest.empty()) { result.message = "The fighter sound edits could not be hashed."; return result; }
+  const std::string id = "fighter-sound-" + digest;
+  const std::string profile_key = target + "#sounds";
+  auto existing = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& asset) {
+    return asset.info.id == id && asset.info.kind == "fighter_sound";
+  });
+  const bool is_new = existing == g_assets.end();
+  AssetRecord previous;
+  fs::path stored = fs::path(L"assets") / fs::u8path(id) / fs::u8path(target);
+  AssetRecord asset;
+  if (!is_new) { previous = *existing; asset = *existing; }
+  else {
+    asset.info.id = id;
+    asset.info.name = std::string(character) + " move sounds: " + path_filename_utf8(source);
+    asset.info.kind = "fighter_sound";
+    asset.info.target_path = target;
+    asset.info.character = character;
+    asset.info.costume = "Move sounds";
+    asset.info.available = true;
+    asset.info.sha256 = digest;
+    asset.stored_path = stored.generic_u8string();
+    asset.source_kind = "fighter_sound";
+    asset.source_name = path_filename_utf8(source);
+    asset.source_member = member;
+    asset.source_id = id;
+  }
+  if (!write_atomic(g_root / fs::u8path(asset.stored_path), safe.data(), safe.size(), &error)) {
+    result.message = error; return result;
+  }
+  if (is_new) g_assets.push_back(asset);
+  else *existing = asset;
+  if (!save_catalog_locked(&error)) {
+    if (is_new) g_assets.pop_back(); else *existing = previous;
+    result.message = error; return result;
+  }
+  const auto selected = g_profile.selections.find(profile_key);
+  const bool auto_selected = selected == g_profile.selections.end();
+  if (auto_selected) {
+    Profile old = g_profile;
+    g_profile.enabled = true; g_profile.selections[profile_key] = id; ++g_profile.generation;
+    if (!save_profile_locked(&error)) {
+      g_profile = std::move(old);
+      result.message = "Sound edits were imported, but the selection could not be saved: " + error;
+      return result;
+    }
+  }
+  g_message = asset.info.name + (auto_selected ? " imported and selected for " : " imported for ") + target +
+              "; only move sound fields were kept.";
   result.ok = true; result.asset_id = id; result.message = g_message;
   return result;
 }
@@ -3288,6 +3363,22 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
     // refused offline too and the slot keeps the standard costume.
     std::string defect;
     if (!costume_draw_safe(bytes, &defect)) { *error = asset.info.name + ": " + defect; return {}; }
+  } else if (asset.info.kind == "fighter_sound") {
+    size_t kind = 0; const char* character = nullptr;
+    uint32_t offset = 0, size = 0;
+    std::vector<uint8_t> clean;
+    if (!fighter_sound_identity(asset.info.target_path, &kind, &character) ||
+        lower(character) != lower(asset.info.character) ||
+        !host::disc_find_file(asset.info.target_path, &offset, &size) || !size || size > kMaxAssetBytes) {
+      *error = asset.info.name + ": the matching fighter archive is not on the active disc."; return {};
+    }
+    clean.resize(size);
+    std::vector<uint8_t> safe;
+    if (!host::disc_read(offset, clean.data(), size) || !fighter_sound_overlay(clean, bytes, kind, &safe, error)) {
+      if (error->empty()) *error = asset.info.name + ": sound-only validation failed.";
+      return {};
+    }
+    bytes = std::move(safe);
   } else if (asset.info.kind == "stage_visual" || asset.info.kind == "effect_visual") {
     VisualLayout layout;
     if (!parse_visual_layout(bytes, &layout, error)) {
@@ -3320,7 +3411,7 @@ bool refresh_assets_locked(bool prune_invalid_selections, std::string* error) {
       asset.info.available = !load_runtime_asset_locked(asset, &validation_error).empty();
     }
     asset.info.availability_message = asset.info.available ?
-        (asset.info.kind == "character_costume" || asset.info.kind == kPortraitKind ? std::string() :
+        (asset.info.kind == "character_costume" || asset.info.kind == kPortraitKind || asset.info.kind == "fighter_sound" ? std::string() :
          asset.info.kind == "stage_visual" ?
              "Stage replacement is offline unless exact-ISO validation proves texture-only changes." :
              "Exact clean-ISO effect validation and safe materialization are required when selected and repeated at every launch.") :
@@ -3403,6 +3494,11 @@ bool disc_skin_member(const std::string& raw, std::string* variant) {
   return disc_skin_set(name.substr(7), variant);
 }
 
+bool disc_fighter_sound_member(const std::string& raw) {
+  size_t kind = 0; const char* character = nullptr;
+  return fighter_sound_identity(raw, &kind, &character);
+}
+
 // A file name that holds a stage of the game: "GrNBa.dat", the English "GrPs.usd", or a pack's
 // alternate for that stage under another extension ending in "at" ("GrNBa.0at" and "GrNBa.1at" are
 // the 20XX style alternate stages). *target is the stage's file on the game disc and *label its
@@ -3428,8 +3524,7 @@ void note_select_screen(const std::string& name, const fs::path& file, uint64_t 
     *screen = {name, file, offset, length};
 }
 
-// Every file in a disc image whose name is a costume of a slot of the game (disc_skin_member) or one
-// of its stages (disc_stage_member).
+// Every file in a disc image whose name is a costume, fighter sound archive, or stage skin.
 // *screen gets the disc's character select file when it has one.
 bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, DiscCandidate* screen,
                         std::string* error) {
@@ -3447,7 +3542,8 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, Di
     const std::string name = slash == std::string::npos ? file.path : file.path.substr(slash + 1);
     std::string variant, stage, label;
     note_select_screen(name, iso, file.start, file.size, screen);
-    if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant)) continue;
+    if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant) &&
+        !disc_fighter_sound_member(name)) continue;
     out->push_back({name, iso, file.start, file.size});
   }
   return true;
@@ -3462,7 +3558,8 @@ void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out,
     const uint64_t length = it->file_size(ec);
     if (ec) continue;
     note_select_screen(name, it->path(), 0, length, screen);
-    if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant)) continue;
+    if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant) &&
+        !disc_fighter_sound_member(name)) continue;
     out->push_back({name, it->path(), 0, length});
   }
 }
@@ -3768,17 +3865,19 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     return lower(a.member) < lower(b.member);
   });
   std::map<std::string, AssetRecord> fresh;   // by target slot and variant
-  size_t same = 0, skipped = 0, stages = 0;
+  size_t same = 0, skipped = 0, stages = 0, fighter_sounds = 0;
   for (const auto& candidate : candidates) {
     uint32_t retail_offset = 0, retail_size = 0;
     std::vector<uint8_t> bytes, retail;
     std::string variant, stage_path, stage_label;
     const bool stage = disc_stage_member(candidate.member, &stage_path, &stage_label, &variant);
-    if (!stage && !disc_skin_member(candidate.member, &variant)) { ++skipped; continue; }
+    size_t sound_kind = 0; const char* sound_character = nullptr;
+    const bool sound_file = fighter_sound_identity(candidate.member, &sound_kind, &sound_character);
+    if (!stage && !sound_file && !disc_skin_member(candidate.member, &variant)) { ++skipped; continue; }
     // An alternate costume is compared with the slot's own costume on the game disc: that is the
     // file it replaces when chosen, and the skeleton it must keep. An alternate stage likewise.
-    const std::string retail_name = variant.empty() ? candidate.member :
-                                    stage ? stage_path : candidate.member.substr(0, 6) + ".dat";
+    const std::string retail_name = stage ? stage_path : sound_file ? candidate.member :
+                                    variant.empty() ? candidate.member : candidate.member.substr(0, 6) + ".dat";
     if (!host::disc_find_file(retail_name, &retail_offset, &retail_size) || !retail_size ||
         retail_size > kMaxAssetBytes || !read_range(candidate.file, candidate.offset, candidate.length, &bytes)) {
       ++skipped; continue;
@@ -3786,6 +3885,40 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     retail.resize(retail_size);
     if (!host::disc_read(retail_offset, retail.data(), retail_size)) { ++skipped; continue; }
     if (bytes == retail) { ++same; continue; }
+    if (sound_file) {
+      std::vector<uint8_t> safe;
+      std::string detail;
+      if (!fighter_sound_overlay(retail, bytes, sound_kind, &safe, &detail)) { ++skipped; continue; }
+      const std::string digest = sha256(bytes);
+      if (digest.empty()) { ++skipped; continue; }
+      const std::string sound_target = candidate.member;
+      const std::string fresh_key = sound_target + "\n#sounds";
+      AssetRecord asset;
+      asset.info.id = "disc-" + sha256_text(key + "\n" + lower(candidate.member));
+      asset.info.name = std::string(sound_character) + " move sounds: from " + pack_name;
+      asset.info.kind = "fighter_sound";
+      asset.info.target_path = sound_target;
+      asset.info.character = sound_character;
+      asset.info.costume = "Move sounds";
+      asset.info.sha256 = digest;
+      asset.info.available = true;
+      asset.info.source = "disc";
+      asset.info.source_name = pack_name;
+      asset.info.disc_path = candidate.file.u8string();
+      asset.stored_path = "disc/" + asset.info.id + "/" + sound_target;
+      asset.source_kind = kDiscSource;
+      asset.source_name = pack_name;
+      asset.source_member = candidate.member;
+      asset.source_id = key;
+      asset.disc_path = asset.info.disc_path;
+      asset.disc_offset = candidate.offset;
+      asset.disc_length = candidate.length;
+      if (!file_stamp(candidate.file, &asset.disc_size, &asset.disc_mtime)) { ++skipped; continue; }
+      auto have = fresh.find(fresh_key);
+      if (have == fresh.end() || have->second.info.sha256 != digest) fresh[fresh_key] = std::move(asset);
+      if (have == fresh.end()) ++fighter_sounds;
+      continue;
+    }
     if (stage) {
       // The checks a stage DAT added by hand gets: it has a stage map, and the game can draw it.
       VisualLayout layout;
@@ -3923,13 +4056,14 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     result.message = *error; return result;
   }
   result.ok = true;
-  const size_t costumes = fresh.size() - stages;
+  const size_t costumes = fresh.size() - stages - fighter_sounds - portraits;
   result.message = std::to_string(costumes) + " skins" +
-                   (stages ? " and " + std::to_string(stages) + " stage skins" : std::string()) + " from " + pack_name +
+                   (stages ? " and " + std::to_string(stages) + " stage skins" : std::string()) +
+                   (fighter_sounds ? " and " + std::to_string(fighter_sounds) + " fighter sound mods" : std::string()) + " from " + pack_name +
                    " are in the skin list (" + std::to_string(same) + " files are the standard ones, " +
                    std::to_string(skipped) + " not usable).";
-  host::log("cosmetics: scanned %s: %zu skins and %zu stage skins listed, %zu standard, %zu not usable", key.c_str(),
-            costumes, stages, same, skipped);
+  host::log("cosmetics: scanned %s: %zu skins, %zu stage skins and %zu fighter sound mods listed, %zu standard, %zu not usable", key.c_str(),
+            costumes, stages, fighter_sounds, same, skipped);
   if (!select_screen.member.empty())
     host::log("cosmetics: %zu portraits taken from the %s of %s", portraits, select_screen.member.c_str(), key.c_str());
   return result;
@@ -4197,6 +4331,14 @@ ImportResult import_file(const std::string& path_text) {
   }
   if (extension == ".dat" || extension == ".usd") {
     if (!read_bounded(path, kMaxAssetBytes, &bytes, &error)) return {false, false, {}, error};
+    size_t sound_kind = 0; const char* sound_character = nullptr;
+    if (fighter_sound_identity(path_filename_utf8(path), &sound_kind, &sound_character)) {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      ImportResult result = install_fighter_sound_locked(path, path_filename_utf8(path), bytes);
+      if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+      g_message = result.message;
+      return result;
+    }
     dat = inspect_dat_impl(bytes);
     if (!dat.ok) {
       VaultResourcePlan stage;
@@ -5106,6 +5248,131 @@ static std::vector<uint8_t> look_fighter_tables(const std::vector<uint8_t>& clea
     }
   }
   return changed ? merged : std::vector<uint8_t>{};
+}
+
+// Fighter animation archives mix gameplay commands with audio commands. Copy only audio fields
+// when importing a modded file, so changed timing, hitboxes, damage, and other gameplay data stay
+// on the clean disc.
+static bool fighter_sound_identity(const std::string& raw, size_t* kind, const char** character) {
+  static constexpr const char* codes[] = {
+      "Mr", "Fx", "Ca", "Dk", "Kb", "Kp", "Lk", "Sk", "Ns", "Pe", "Pp", "Nn", "Pk", "Ss", "Ys", "Pr",
+      "Mt", "Lg", "Ms", "Zd", "Cl", "Dr", "Fc", "Pc", "Gw", "Gn", "Fe", "Mh", "Ch", "Bo", "Gl", "Gk", "Sb"};
+  static constexpr const char* names[] = {
+      "Mario", "Fox", "Captain Falcon", "Donkey Kong", "Kirby", "Bowser", "Link", "Sheik", "Ness", "Peach",
+      "Popo", "Nana", "Pikachu", "Samus", "Yoshi", "Jigglypuff", "Mewtwo", "Luigi", "Marth", "Zelda",
+      "Young Link", "Dr. Mario", "Falco", "Pichu", "Mr. Game & Watch", "Ganondorf", "Roy", "Master Hand",
+      "Crazy Hand", "Wireframe Male", "Wireframe Female", "Giga Bowser", "Sandbag"};
+  const std::string name = lower(fs::path(raw).filename().string());
+  if (name.size() != 8 || name.compare(0, 2, "pl") != 0 || name.compare(4, 4, ".dat") != 0) return false;
+  for (size_t i = 0; i < std::size(codes); ++i) {
+    if (name.compare(2, 2, lower(codes[i])) == 0) { *kind = i; *character = names[i]; return true; }
+  }
+  return false;
+}
+
+static bool fighter_sound_overlay(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& mod,
+                                  size_t fighter_kind, std::vector<uint8_t>* merged, std::string* error) {
+  static constexpr uint16_t motion_counts[] = {
+      303,327,318,337,479,316,314,317,326,318,321,321,320,313,314,327,314,312,327,311,314,303,327,320,
+      323,318,327,345,344,295,295,316,296};
+  static const auto event_words = [] {
+    std::array<uint8_t, 0x31> words{};
+    words.fill(1);
+    words[0] = 5; words[1] = 5; words[7] = 3; words[0x22 - 0x0A] = 3;
+    words[0x26 - 0x0A] = 7; words[0x27 - 0x0A] = 4;
+    words[0x36 - 0x0A] = 3; words[0x37 - 0x0A] = 3;
+    words[0x38 - 0x0A] = 2; words[0x3A - 0x0A] = 4;
+    return words;
+  }();
+  if (fighter_kind >= std::size(motion_counts) || clean.size() != mod.size() || clean.size() < 0x20 || !merged) {
+    *error = "Fighter sound files do not match a supported archive."; return false;
+  }
+  const uint32_t data_size = be32(clean.data() + 4), relocs = be32(clean.data() + 8), roots = be32(clean.data() + 12),
+                 refs = be32(clean.data() + 16);
+  const uint64_t reloc_start = 0x20ull + data_size, root_start = reloc_start + 4ull * relocs,
+                 strings = root_start + 8ull * (roots + (uint64_t)refs);
+  if (strings > clean.size() || strings > mod.size() || be32(mod.data() + 4) != data_size ||
+      be32(mod.data() + 8) != relocs || be32(mod.data() + 12) != roots || be32(mod.data() + 16) != refs ||
+      !std::equal(clean.begin(), clean.begin() + 0x20, mod.begin()) ||
+      !std::equal(clean.begin() + (ptrdiff_t)reloc_start, clean.end(), mod.begin() + (ptrdiff_t)reloc_start)) {
+    *error = "Fighter sound archive layout changed; only same-layout sound edits can be imported."; return false;
+  }
+  const uint8_t* data = clean.data() + 0x20;
+  const uint8_t* mod_data = mod.data() + 0x20;
+  std::unordered_map<uint32_t, uint32_t> pointers;
+  pointers.reserve(relocs);
+  for (uint32_t i = 0; i < relocs; ++i) {
+    const uint32_t at = be32(clean.data() + reloc_start + 4ull * i);
+    if ((at & 3) || (uint64_t)at + 4 > data_size) { *error = "Fighter sound archive has an invalid relocation."; return false; }
+    pointers.emplace(at, be32(data + at));
+  }
+  uint32_t ftdata = UINT32_MAX;
+  for (uint32_t i = 0; i < roots; ++i) {
+    const uint64_t entry = root_start + 8ull * i;
+    const uint32_t object = be32(clean.data() + entry), name = be32(clean.data() + entry + 4);
+    if ((uint64_t)strings + name + 6 >= clean.size() || object >= data_size) continue;
+    if (std::memcmp(clean.data() + strings + name, "ftData", 6) == 0 &&
+        clean[(size_t)strings + name + 6] == 0) ftdata = object;
+  }
+  auto ptr = [&](uint32_t at, uint32_t* out) {
+    auto found = pointers.find(at);
+    if (found == pointers.end() || found->second >= data_size) return false;
+    *out = found->second; return true;
+  };
+  uint32_t motions = 0;
+  if (ftdata == UINT32_MAX || (uint64_t)ftdata + 0x10 > data_size || !ptr(ftdata + 0x0C, &motions) || !motions ||
+      (uint64_t)motions + (uint64_t)motion_counts[fighter_kind] * 0x18 > data_size) {
+    *error = "Fighter sound archive has no bounded move-script table."; return false;
+  }
+  *merged = clean;
+  bool changed = false;
+  std::vector<uint32_t> queue;
+  std::unordered_map<uint32_t, bool> visited;
+  for (uint32_t i = 0; i < motion_counts[fighter_kind]; ++i) {
+    uint32_t script = 0;
+    if (ptr(motions + i * 0x18 + 0x0C, &script) && script) queue.push_back(script);
+  }
+  auto copy_word = [&](uint32_t at) {
+    if (std::memcmp(merged->data() + 0x20 + at, mod_data + at, 4) == 0) return;
+    std::memcpy(merged->data() + 0x20 + at, mod_data + at, 4); changed = true;
+  };
+  size_t visited_words = 0;
+  while (!queue.empty()) {
+    uint32_t at = queue.back(); queue.pop_back();
+    while ((uint64_t)at + 4 <= data_size && visited.emplace(at, true).second) {
+      if (++visited_words > 250000) { *error = "Fighter move scripts exceed the safe command limit."; return false; }
+      const uint32_t word = be32(data + at), opcode = word >> 26;
+      if (opcode == 0) break;
+      uint32_t words = 1;
+      if (opcode >= 10 && opcode <= 0x3A) words = event_words[opcode - 10];
+      else if (opcode > 9) { *error = "Fighter move script contains an unsupported command."; return false; }
+      else if (opcode == 5 || opcode == 7) words = 2;
+      if ((uint64_t)at + 4ull * words > data_size) { *error = "Fighter move command exceeds its archive."; return false; }
+      if (opcode == 0x0B) {             // hitbox creation: sound kind only
+        const uint32_t clean_word = be32(data + at + 16), mod_word = be32(mod_data + at + 16);
+        const uint32_t value = (clean_word & ~0x1Fu) | (mod_word & 0x1Fu);
+        if (value != clean_word) { put_be32(merged->data() + 0x20 + at + 16, value); changed = true; }
+      } else if (opcode == 0x22) {      // throw hitbox: sound kind only
+        const uint32_t clean_word = be32(data + at + 8), mod_word = be32(mod_data + at + 8);
+        const uint32_t value = (clean_word & ~0xFu) | (mod_word & 0xFu);
+        if (value != clean_word) { put_be32(merged->data() + 0x20 + at + 8, value); changed = true; }
+      } else if (opcode == 0x11) {      // sound ID, volume and pan
+        copy_word(at + 4); copy_word(at + 8);
+      } else if (opcode == 0x26) {      // six random sound IDs; leave RNG range and behavior alone
+        for (uint32_t n = 1; n <= 6; ++n) copy_word(at + 4 * n);
+      }
+      if (opcode == 5 || opcode == 7) {
+        const uint32_t target = be32(data + at + 4);
+        if (pointers.find(at + 4) == pointers.end() || target >= data_size) {
+          *error = "Fighter move script has an invalid branch target."; return false;
+        }
+        queue.push_back(target);
+      }
+      at += words * 4;
+    }
+  }
+  if (!changed) { *error = "Fighter file has no supported move-sound changes."; return false; }
+  return true;
 }
 
 // An effect file whose particle programs are the disc's own, byte for byte: the bank the first word of its
@@ -6525,6 +6792,11 @@ bool inspect_zip(const std::string& path, std::vector<std::string>* names, std::
   if (!parse_zip(fs::u8path(path), &entries, error)) return false;
   names->clear(); for (const auto& entry : entries) names->push_back(entry.name);
   return true;
+}
+bool merge_fighter_sounds(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& mod,
+                          size_t fighter_kind, std::vector<uint8_t>* merged, std::string* error) {
+  std::string local; if (!error) error = &local;
+  return fighter_sound_overlay(clean, mod, fighter_kind, merged, error);
 }
 }  // namespace testing
 

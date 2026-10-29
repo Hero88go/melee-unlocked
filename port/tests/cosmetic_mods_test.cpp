@@ -48,6 +48,7 @@ int failures = 0;
 void check(bool condition, const char* message) {
   if (!condition) { std::fprintf(stderr, "FAIL: %s\n", message); ++failures; }
 }
+uint32_t read_be32(const uint8_t* p);
 void be32(std::vector<uint8_t>& out, size_t offset, uint32_t value) {
   out[offset] = (uint8_t)(value >> 24); out[offset + 1] = (uint8_t)(value >> 16);
   out[offset + 2] = (uint8_t)(value >> 8); out[offset + 3] = (uint8_t)value;
@@ -84,6 +85,72 @@ std::vector<uint8_t> rooted_dat(const std::vector<std::string>& roots) {
   }
   return bytes;
 }
+std::vector<uint8_t> fighter_sound_dat(bool modded) {
+  constexpr uint32_t data_size = 0x100 + 318 * 0x18 + 76;
+  constexpr uint32_t motions = 0x100, script = motions + 318 * 0x18;
+  constexpr uint32_t reloc_count = 319;
+  const size_t reloc_start = 0x20 + data_size;
+  const size_t root_table = reloc_start + reloc_count * 4;
+  const size_t strings = root_table + 8;
+  const std::string root = "ftData";
+  std::vector<uint8_t> bytes(strings + root.size() + 1, 0);
+  be32(bytes, 0, (uint32_t)bytes.size()); be32(bytes, 4, data_size);
+  be32(bytes, 8, reloc_count); be32(bytes, 12, 1); be32(bytes, 16, 0);
+  const size_t data = 0x20;
+  be32(bytes, data + 0x0C, motions);
+  be32(bytes, reloc_start, 0x0C);
+  for (uint32_t i = 0; i < 318; ++i) {
+    const uint32_t at = motions + i * 0x18 + 0x0C;
+    be32(bytes, data + at, script);
+    be32(bytes, reloc_start + 4 + i * 4, at);
+  }
+  be32(bytes, data + script, 0x11u << 26);
+  be32(bytes, data + script + 4, modded ? 0x12345678 : 0x11111111);
+  be32(bytes, data + script + 8, modded ? 0x87654321 : 0x22222222);
+  be32(bytes, data + script + 12, 0x0Bu << 26);
+  be32(bytes, data + script + 16, modded ? 0xDEADBEEF : 0xABCDEF01);
+  be32(bytes, data + script + 20, 0x13572468);
+  be32(bytes, data + script + 24, 0x2468ACE2);
+  be32(bytes, data + script + 28, modded ? 0xFEDCBAA5 : 0x2468ACE2);
+  be32(bytes, data + script + 32, 0x22u << 26);
+  be32(bytes, data + script + 36, 0x10203040);
+  be32(bytes, data + script + 40, modded ? 0xFFEEDDCC : 0x11223344);
+  be32(bytes, data + script + 44, 0x26u << 26);
+  for (uint32_t i = 1; i <= 6; ++i)
+    be32(bytes, data + script + 44 + 4 * i, modded ? 0xA0000000 + i : 0xB0000000 + i);
+  be32(bytes, data + script + 72, 0);
+  be32(bytes, root_table, 0); be32(bytes, root_table + 4, 0);
+  std::memcpy(bytes.data() + strings, root.c_str(), root.size() + 1);
+  return bytes;
+}
+void test_fighter_sound_overlay() {
+  const auto clean = fighter_sound_dat(false), mod = fighter_sound_dat(true);
+  std::vector<uint8_t> merged;
+  std::string error;
+  check(host::cosmetics::testing::merge_fighter_sounds(clean, mod, 2, &merged, &error),
+        "merge fighter sound fields");
+  if (merged.empty()) return;
+  const size_t script = 0x20 + 0x100 + 318 * 0x18;
+  check(read_be32(merged.data() + script + 4) == 0x12345678, "direct sound ID copied");
+  check(read_be32(merged.data() + script + 8) == 0x87654321, "sound volume and pan copied");
+  check(read_be32(merged.data() + script + 28) == 0x2468ACE5,
+        "hitbox sound kind copied without other hitbox flags");
+  check(read_be32(merged.data() + script + 16) == 0xABCDEF01 &&
+        read_be32(merged.data() + script + 24) == 0x2468ACE2,
+        "non-sound hitbox words remain from clean file");
+  check(read_be32(merged.data() + script + 40) == 0x1122334C,
+        "throw hitbox sound kind is copied without gameplay bits");
+  check(read_be32(merged.data() + script + 48) == 0xA0000001 &&
+        read_be32(merged.data() + script + 68) == 0xA0000006,
+        "randomized move sound IDs are copied");
+  check(read_be32(merged.data() + script + 72) == 0, "script terminator preserved");
+  auto invalid = clean;
+  be32(invalid, script, 0x3Fu << 26);
+  const bool invalid_accepted = host::cosmetics::testing::merge_fighter_sounds(invalid, mod, 2, &merged, &error);
+  check(!invalid_accepted,
+        "reject unsupported script opcodes");
+}
+
 std::vector<uint8_t> visual_dat() {
   constexpr uint32_t data_size = 0x400;
   constexpr uint32_t image_pointer = 0x50, palette_pointer = 0x54;
@@ -393,6 +460,7 @@ std::vector<uint8_t> audio_fst(const std::string& bank, uint32_t jp_start, uint3
 }
 
 int main(int argc, char** argv) {
+  test_fighter_sound_overlay();
   wchar_t temp_root[MAX_PATH]; GetTempPathW(MAX_PATH, temp_root);
   fs::path folder = fs::path(temp_root) /
       (L"melee-cosmetic-test-" + std::to_wstring(GetCurrentProcessId()));
@@ -504,6 +572,64 @@ int main(int argc, char** argv) {
     }
     fs::remove_all(folder, ec);
     return imported.ok && stage_ok ? 0 : 1;
+  }
+
+  {
+    const fs::path sound_root = folder / L"fighter-sound-import";
+    const auto clean = fighter_sound_dat(false), mod = fighter_sound_dat(true);
+    fs::create_directories(sound_root, ec);
+    g_disc_table.clear();
+    g_disc_bytes = clean;
+    g_disc_table["PlCa.dat"] = {0, (uint32_t)clean.size()};
+    host::cosmetics::configure((sound_root / L"port-settings.ini").string());
+    const fs::path source = sound_root / L"PlCa.dat";
+    write_file(source, mod);
+    const auto imported = host::cosmetics::import_file(source.string());
+    const auto catalog = host::cosmetics::assets();
+    const auto asset = std::find_if(catalog.begin(), catalog.end(), [](const auto& item) {
+      return item.kind == "fighter_sound" && item.target_path == "PlCa.dat" &&
+             item.character == "Captain Falcon" && item.selected;
+    });
+    check(imported.ok && asset != catalog.end(), "fighter DAT import is cataloged and selected as move sounds");
+    auto fst = one_file_fst(0, (uint32_t)clean.size(), "PlCa.dat");
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    const uint32_t served_size = read_be32(fst.data() + 20);
+    std::vector<uint8_t> served(served_size);
+    const auto result = host::cosmetics::read(0, 0, served.data(), served_size);
+    const size_t script = 0x20 + 0x100 + 318 * 0x18;
+    check(result == host::cosmetics::OverrideRead::Success &&
+          read_be32(served.data() + script + 4) == 0x12345678 &&
+          read_be32(served.data() + script + 28) == 0x2468ACE5,
+          "selected move sounds are served from the imported fighter DAT");
+    check(read_be32(served.data() + script + 16) == 0xABCDEF01,
+          "fighter DAT import leaves gameplay values from the clean game archive");
+
+    const fs::path pack = sound_root / L"sound-pack";
+    fs::create_directories(pack, ec);
+    write_file(pack / L"PlCa.dat", mod);
+    host::cosmetics::configure((sound_root / L"scan-settings.ini").string());
+    std::string scan_error;
+    const auto scan = host::cosmetics::scan_disc_skins(pack.string(), "Sound Pack", &scan_error);
+    auto scanned = host::cosmetics::assets();
+    const auto sound = std::find_if(scanned.begin(), scanned.end(), [](const auto& item) {
+      return item.kind == "fighter_sound" && item.target_path == "PlCa.dat";
+    });
+    check(scan.ok && sound != scanned.end(), "mod folder scan discovers fighter move sound edits");
+    if (sound != scanned.end()) {
+      const std::string sound_slot = "PlCa.dat#sounds";
+      check(host::cosmetics::select_variant(sound_slot, sound->id, &scan_error),
+            "scanned fighter move sounds can be selected from the Mods list");
+      auto scan_fst = one_file_fst(0, (uint32_t)clean.size(), "PlCa.dat");
+      host::cosmetics::apply_to_fst(scan_fst.data(), (uint32_t)scan_fst.size());
+      std::vector<uint8_t> scan_served(read_be32(scan_fst.data() + 20));
+      check(host::cosmetics::read(0, 0, scan_served.data(), (uint32_t)scan_served.size()) ==
+                host::cosmetics::OverrideRead::Success &&
+            read_be32(scan_served.data() + script + 4) == 0x12345678 &&
+            read_be32(scan_served.data() + script + 16) == 0xABCDEF01,
+            "scanned sound mods apply only their sound fields at runtime");
+    }
+    g_disc_table.clear();
+    g_disc_bytes.clear();
   }
 
   const auto dat = fox_dat();
@@ -1570,7 +1696,7 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 6");
+      const size_t at = text.find("\"rules\": 7");
       check(at != std::string::npos, "the scan records the rules it used");
       if (at != std::string::npos) text.replace(at, 10, "\"rules\": 5");
       std::ofstream out(state, std::ios::binary); out << text;

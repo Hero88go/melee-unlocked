@@ -7037,12 +7037,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::map<std::string, std::vector<const CosmeticAsset*>> stages;
           std::map<std::string, std::vector<const CosmeticAsset*>> pictures;   // a costume's own portrait and stock icon
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
+          std::map<std::string, std::vector<const CosmeticAsset*>> fighter_sounds;
           for (const auto& asset : installed_mods) {
             if (asset.kind == "character_costume") characters[asset.character][asset.costume].push_back(&asset);
             // One row per disc file: two imports of the same file can carry different labels.
             else if (asset.kind == "stage_visual" && asset.available) stages[asset.target_path].push_back(&asset);
             else if (asset.kind == "character_portrait") pictures[asset.character + ", " + asset.costume].push_back(&asset);
             else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
+            else if (asset.kind == "fighter_sound") fighter_sounds[asset.character].push_back(&asset);
           }
           static std::string rename_id;
           static std::array<char, 97> rename_text{};
@@ -7318,7 +7320,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           auto draw_resource_slot = [&](const std::string& label,
                                         const std::vector<const CosmeticAsset*>& variants) {
             const std::string target = variants.front()->target_path +
-                (variants.front()->scope.empty() ? "" : "#" + variants.front()->scope);
+                (variants.front()->kind == "fighter_sound" ? "#sounds" :
+                 variants.front()->scope.empty() ? "" : "#" + variants.front()->scope);
             ImGui::PushID(target.c_str());
             ImGui::TextUnformatted(label.c_str());
             int current = 0;
@@ -7365,6 +7368,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             for (const auto& slot : pictures) draw_resource_slot(slot.first, slot.second);
           if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
             for (const auto& stage : stages) draw_resource_slot(stage.second.back()->costume, stage.second);
+          if (!fighter_sounds.empty() && ImGui::CollapsingHeader("Fighter move sounds", ImGuiTreeNodeFlags_DefaultOpen))
+            for (const auto& sounds : fighter_sounds) draw_resource_slot(sounds.first + " move sounds", sounds.second);
           if (!effects.empty() && ImGui::CollapsingHeader("Effects")) {
             if (ImGui::Button("Enable project effects")) {
               std::string error;

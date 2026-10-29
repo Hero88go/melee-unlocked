@@ -17,7 +17,7 @@ constexpr uint32_t kMaxArchiveEntries = 4096;
 struct AssetInfo {
   std::string id;
   std::string name;
-  std::string kind;              // character_costume, stage_visual, or effect_visual
+  std::string kind;              // character_costume, fighter_sound, stage_visual, or effect_visual
   std::string target_path;       // logical GALE01 FST path, e.g. PlFxGr.dat
   std::string character;
   std::string costume;
@@ -389,6 +389,9 @@ bool inspect_zip(const std::string& path, std::vector<std::string>* entries, std
 // The fighter bank a sound bank file is ("fox.ssm") and which of the game's two it fits ("English"
 // or "Japanese"), from its own header. False, with the reason, for anything the importer refuses.
 bool inspect_bank(const std::vector<uint8_t>& bytes, std::string* bank, std::string* language, std::string* error);
+// Merge only audio fields from a fighter animation archive into its clean equivalent.
+bool merge_fighter_sounds(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& mod,
+                          size_t fighter_kind, std::vector<uint8_t>* merged, std::string* error);
 }
 
 }  // namespace host::cosmetics
