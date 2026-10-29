@@ -487,8 +487,12 @@ inline bool lightweight_background(const LightweightFilter& e, const Frame& f, c
     if (z >= limit && (!band || z <= front)) return false;   // something visible is on the play plane: keep it
   }
   if (seen) return true;
-  // Nothing of it in view by its corners: only a dome or backdrop plane far larger than any stage
-  // floor counts as background then (a floor spanning the screen keeps drawing).
+  // Nothing of it in view by its corners: background when all of it lies behind the play plane (in
+  // the band, also wholly in front), or it is a dome or backdrop plane far larger than any stage
+  // floor (a floor spanning the screen keeps drawing). Without the depth test a backdrop smaller
+  // than that, such as Yoshi's Story's sky, was skipped while a corner was in view and drawn while
+  // none was, so it flickered on and off as the camera zoomed.
+  if (hi[2] < limit || (band && lo[2] > front)) return true;
   return hi[0] - lo[0] > 3000.0f || hi[1] - lo[1] > 3000.0f || hi[2] - lo[2] > 3000.0f;
 }
 // The answer of lightweight_background for draw `index` of frame `f`, remembered for that game frame: an
