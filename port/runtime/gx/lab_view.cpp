@@ -373,11 +373,21 @@ void commit(bool native = false) {
 
 }  // namespace
 
+// The fight itself. frame_in_match counts every VS scene from minor 2 on, the results screen
+// (minor 4) included, and there the snapshot carries no ended bit (the VS controller is gone), so the
+// view kept covering it: the results screen was a blank page until the 15 second timeout.
+static bool fight_scene(const gx::Frame& scene) {
+  if (!gx::frame_in_match(scene)) return false;
+  const uint8_t major = scene.scene_major;
+  const bool vs = major == 0x02 || (major >= 0x10 && major <= 0x13) || (major >= 0x1B && major <= 0x1F);
+  return !vs || scene.scene_minor == 2;
+}
+
 void native_frame(const MuLookSnapshot& snapshot, const MuLookItems* items) {
   gx::Frame scene;
   scene.scene_major = (uint8_t)snapshot.major;
   scene.scene_minor = (uint8_t)snapshot.minor;
-  if (!gx::frame_in_match(scene) || (snapshot.major & (MU_LOOK_SCENE_PAUSED | MU_LOOK_SCENE_ENDED))) {
+  if (!fight_scene(scene) || (snapshot.major & (MU_LOOK_SCENE_PAUSED | MU_LOOK_SCENE_ENDED))) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_in_match = false;
     return;
