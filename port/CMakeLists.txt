@@ -442,6 +442,7 @@ add_test(NAME port_nucleus_vault_diagnostic COMMAND "${Python3_EXECUTABLE}" "${C
 add_test(NAME port_stage_cosmetic_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/stage_cosmetic_diagnostic_test.py")
 add_test(NAME port_effect_cosmetic_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/effect_cosmetic_diagnostic_test.py")
 add_test(NAME port_companion_texture_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/companion_texture_diagnostic_test.py")
+add_test(NAME port_shader_auto_fit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/shader_auto_fit_test.py")
 add_executable(port_texture_test tests/texture_snapshot_test.cpp runtime/gx/gx_texture.cpp)
 target_include_directories(port_texture_test PRIVATE runtime/gx)
 target_compile_features(port_texture_test PRIVATE cxx_std_17)

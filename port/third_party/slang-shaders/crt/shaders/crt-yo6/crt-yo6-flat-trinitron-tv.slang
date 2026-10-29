@@ -73,9 +73,20 @@ void main()
   }
   vec2 out_sz = pat_nfo_a[zoom].xy * crt_sz;
 
-  vXY = (TexCoord * params.OutputSize.xy) - floor((params.OutputSize.xy - out_sz) / 2.0);
-  patNFO = pat_nfo_a[zoom];
-  crtSize = vec4(out_sz, crt_sz);
+  // Auto must also work below the shader's minimum integer scale. At 1080p the smallest pattern
+  // is larger than the output viewport; leaving it oversized crops the game picture (including
+  // the HUD). Scale the raster pitch independently on each axis only in Auto mode, so all source
+  // rows and columns remain visible. Explicit V-Zoom values retain their intentional crop/zoom.
+  vec2 raster_scale = vec2(1.0);
+  if (int(params.VZOOM) <= 2) {
+    raster_scale = min(vec2(1.0), params.OutputSize.xy / out_sz);
+  }
+  vec2 raster_pitch = pat_nfo_a[zoom].xy * raster_scale;
+  vec2 fitted_sz = out_sz * raster_scale;
+
+  vXY = (TexCoord * params.OutputSize.xy) - floor((params.OutputSize.xy - fitted_sz) / 2.0);
+  patNFO = vec4(raster_pitch, pat_nfo_a[zoom].z * raster_scale.x, pat_nfo_a[zoom].w);
+  crtSize = vec4(fitted_sz, crt_sz);
   vOff = params.VOFF +
     ((int(params.VOFFC) == 1) ? (floor((params.SourceSize.y - crt_sz.y) / 2.0)) : 0.0);
   gl_Position = global.MVP * Position;
