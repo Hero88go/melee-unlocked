@@ -473,6 +473,27 @@ void snapshot_textures(DrawCall& dc) {
   }
 }
 
+// See DrawCall::frustum_backdrop. One quad with an identity model-view on a perspective camera, no
+// depth write, every corner within 1% of the frustum's edge on both axes.
+static bool frustum_backdrop(const DrawCall& dc, const Frame& f) {
+  if (dc.primitive != 0x80 || dc.vertex_count != 4 || dc.xf_regs[0x26] != 0) return false;
+  if ((dc.components & VB_HAS_POSMTXIDX) || (dc.bp.zmode() & 0x10)) return false;
+  if (dc.first_vertex + 4 > f.vertices.size()) return false;
+  const uint32_t row = dc.matrix_index_a & 63;
+  if (row + 3 > 64) return false;
+  static const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+  for (int i = 0; i < 12; ++i) if (std::fabs(dc.posMatrices[row * 4 + i] - identity[i]) > 1e-5f) return false;
+  const float* p = (const float*)&dc.xf_regs[0x20];
+  for (int i = 0; i < 4; ++i) {
+    const Vertex& v = f.vertices[dc.first_vertex + i];
+    if (!(v.pos[2] < 0.0f)) return false;
+    const float x = (p[0] * v.pos[0] + p[1] * v.pos[2]) / -v.pos[2];
+    const float y = (p[2] * v.pos[1] + p[3] * v.pos[2]) / -v.pos[2];
+    if (std::fabs(std::fabs(x) - 1.0f) > 0.01f || std::fabs(std::fabs(y) - 1.0f) > 0.01f) return false;
+  }
+  return true;
+}
+
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
   host::SimCostScope record_cost(host::SIM_RECORD);
   const bool line = primitive == 0xA8 || primitive == 0xB0;
@@ -486,6 +507,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
       g_frame.segments.push_back({first, count, primitive});
       previous.vertex_count += count;
       ++previous.segment_count;
+      previous.frustum_backdrop = false;
       ++g_draws;
       g_vertices += count;
       return;
@@ -545,6 +567,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
       ++authored_stats().posed_draws;
       if (dc.authored_pose->envelope) ++authored_stats().posed_draws_envelope;
     } }
+  dc.frustum_backdrop = frustum_backdrop(dc, g_frame);   // SkipInit: written every draw
   g_frame.draws.push_back(std::move(dc));
   g_frame.segments.push_back({first, count, primitive});
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});

@@ -785,7 +785,9 @@ void build_projection(const DrawCall& dc, float m[16], const float* override_pro
     // (unwidened) texture matrix. Widening that view independently makes the image
     // disagree with those coordinates and clamps its outer pixels across the water.
     const bool full_viewport = std::fabs(vp[0]) >= 320.0f && std::fabs(vp[1]) >= 240.0f;
-    if (g_true_widescreen.load(std::memory_order_relaxed) && full_viewport &&
+    // A backdrop plane that exactly fills the authored frustum (DrawCall::frustum_backdrop) keeps that
+    // projection too: widened, Poke Floats' sky gradient covered only the middle 4:3 of the picture.
+    if (g_true_widescreen.load(std::memory_order_relaxed) && full_viewport && !dc.frustum_backdrop &&
         !is_authored_fullscreen(authored_proj) && !is_authored_screen_pinned(authored_proj)) {
       const float widen = g_true_widen.load(std::memory_order_relaxed);   // 16:9: (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= widen;
