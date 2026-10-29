@@ -92,7 +92,7 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
 // the game stops when it draws one. 6: stage skins. 7: fighter move sound archives. A disc scanned
 // under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 7;
+constexpr uint32_t kScanRules = 8;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -131,7 +131,7 @@ constexpr const char* kLookFileKind = "look_file";   // an exact look's HUD, pau
 // The online rule a saved stage verdict was made under. 2 (0.9.0): a skin's gameplay values are put
 // back to the original's (stage_safety::restore_gameplay) before it is judged. 3 (0.9.63): a joint's
 // behavior flags are put back too (exporters set or clear CLASSICAL_SCALE on every joint).
-constexpr int kOnlineRule = 3;
+constexpr int kOnlineRule = 4;
 
 // One disc bank file ("audio/us/fox.ssm") that at least one installed skin has a fitting bank for.
 // The candidates are fixed at startup; plan_match_voices picks among them.

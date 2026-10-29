@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <vector>
 #include "dxgi_paced_mode.h"
+#include "fullscreen_state.h"
 #include "vrr_detect.h"
 #include "temporal_history.h"
 #include "vblank_clock.h"
@@ -663,6 +664,7 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12CommandQueue> queue_;
   ComPtr<IDXGIFactory4> factory_;   // kept: the swap chain is created again when exclusive fullscreen toggles
   ComPtr<IDXGISwapChain3> swapchain_;
+  FullscreenState fullscreen_state_;
   // Frame latency. Without a limit DXGI lets three finished frames wait in line for the display,
   // and whenever the GPU is the bottleneck every one of them is input delay. The swap chain is
   // created with the frame latency waitable object, its maximum latency set to one, and the render
@@ -1185,6 +1187,7 @@ void D3D12Backend::apply_fullscreen_mode() {
   if (!swapchain_) return;
   BOOL was_exclusive = FALSE;
   swapchain_->GetFullscreenState(&was_exclusive, nullptr);
+  fullscreen_state_.exclusive_active = was_exclusive != FALSE;
   // Exclusive fullscreen needs a swap chain without the frame latency waitable object, and a swap
   // chain cannot change that after it is made. Making a second one for the same window in the
   // middle of a session was refused on players' machines ("Access is denied": the first one is
@@ -1198,7 +1201,7 @@ void D3D12Backend::apply_fullscreen_mode() {
   if (!opts_.exclusive_fullscreen) exclusive_deferred_ = false;
   const bool want_exclusive = opts_.exclusive_fullscreen && !exclusive_deferred_;
   if ((was_exclusive != FALSE) == want_exclusive) {
-    if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen || exclusive_deferred_);
+    if (!want_exclusive) host::window_set_fullscreen(fullscreen_state_.borderless(opts_, exclusive_deferred_));
     return;
   }
   pause_frame_generation_for_resize();
@@ -1206,6 +1209,7 @@ void D3D12Backend::apply_fullscreen_mode() {
   for (auto& buffer : backbuffers_) buffer.Reset();
   if (was_exclusive) {
     HRESULT hr = swapchain_->SetFullscreenState(FALSE, nullptr);
+    fullscreen_state_.exclusive_active = FAILED(hr);
     if (FAILED(hr)) host::log("d3d12: leaving exclusive fullscreen failed (0x%08X)", (unsigned)hr);
   }
   if (host::window_is_fullscreen()) host::window_set_fullscreen(false);
@@ -1229,12 +1233,14 @@ void D3D12Backend::apply_fullscreen_mode() {
         swapchain_->ResizeTarget(&mode);
       }
     }
-    const HRESULT hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+    HRESULT hr;
+    fullscreen_state_.enter_exclusive([&] {
+      hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+      return SUCCEEDED(hr);
+    });
     if (FAILED(hr)) {
       host::log("d3d12: exclusive fullscreen unavailable (0x%08X); using borderless fullscreen", (unsigned)hr);
-      opts_.exclusive_fullscreen = false;
-      opts_.fullscreen = true;
-      host::window_set_fullscreen(true);
+      host::window_set_fullscreen(fullscreen_state_.borderless(opts_));
       RECT client{}; if (GetClientRect(hwnd_, &client)) { client_w_ = client.right; client_h_ = client.bottom; }
     } else {
       ComPtr<IDXGIOutput> output;
@@ -3641,7 +3647,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // game (NVIDIA: V-Sync for it belongs in the driver).
       const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
       const double present_call = Stopwatch::now();
-      swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      swapchain_->Present(synced ? 1 : 0, (!synced && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
       present_wait_ += Stopwatch::now() - present_call;   // a synced Present waits for the display (see gx_d3d11.cpp)
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());

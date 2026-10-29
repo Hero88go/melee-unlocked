@@ -294,6 +294,46 @@ int unit_test() {
     CHECK(frame_box(IM_COL32(255, 0, 0, 255), W, H).n == 0);       // removed projectile leaves no ghost
     feed(end);
   }
+  // The same match scene continues while paused and during Game!/match teardown.
+  // The replacement must release both its opaque cover and the backend's scene-skip decision.
+  {
+    lab::set_style(2, 1);
+    MuLookSnapshot snapshot{};
+    snapshot.major = 2; snapshot.minor = 2; snapshot.stage = 32; snapshot.frame = 100;
+    auto& fighter = snapshot.fighters[0][0];
+    fighter.present = 1; fighter.kind = 18; fighter.external = 9; fighter.stocks = 4;
+    fighter.facing = 1; fighter.action = 14;
+    fighter.capsule_count = 1; fighter.capsules[0] = {0,2,0,10,2};
+    lab::native_frame(snapshot);
+    CHECK(draw_vertex_count(W,H) > 0 && lab::covering());
+    snapshot.major |= MU_LOOK_SCENE_PAUSED;
+    lab::native_frame(snapshot);
+    CHECK(draw_vertex_count(W,H) == 0 && !lab::covering());
+    snapshot.major = 2;
+    lab::native_frame(snapshot);
+    CHECK(draw_vertex_count(W,H) > 0 && lab::covering());
+    snapshot.major |= MU_LOOK_SCENE_ENDED;
+    lab::native_frame(snapshot);
+    CHECK(draw_vertex_count(W,H) == 0 && !lab::covering());
+    // Returning to a new live match reactivates the style. A sword bone outside
+    // every hurtbox contributes geometry instead of becoming invisible.
+    snapshot.major = 2; ++snapshot.frame;
+    fighter.bone_count = 0;
+    lab::native_frame(snapshot);
+    const int body_vertices = draw_vertex_count(W,H);
+    fighter.bone_count = 1; fighter.bones[0] = {0,10,18,15};
+    lab::native_frame(snapshot);
+    CHECK(draw_vertex_count(W,H) > body_vertices);
+    feed(end);
+  }
+  {
+    const float bone[3][4] = {{0.1f,0,0,100},{0,0.1f,0,200},{0,0,0.1f,0}};
+    CHECK(std::fabs(mu_look_world_radius(20, bone) - 2) < 0.0001f);
+    const float rotated[3][4] = {{0,-0.1f,0,100},{0.1f,0,0,200},{0,0,0.1f,0}};
+    CHECK(std::fabs(mu_look_world_radius(20, rotated) - 2) < 0.0001f);
+    const float ordinary[3][4] = {{1,0,0,100},{0,1,0,200},{0,0,1,0}};
+    CHECK(mu_look_world_radius(2, ordinary) == 2);
+  }
   lab::set_style(0, 0);
   fs::remove_all(dir, ec);
   if (g_failures) std::printf("%d failure(s)\n", g_failures);

@@ -2,6 +2,7 @@
  * the console's ssize_t conflicts with the Windows host ABI headers there. */
 #include <melee/gm/gm_1A3F.h>
 #include <melee/gm/gmvs.h>
+#include <melee/gm/gmscene.h>
 #include <melee/pl/player.h>
 #include <melee/ft/types.h>
 #include <melee/it/types.h>
@@ -56,7 +57,11 @@ MU_EXPORT void mu_look_snapshot_v1(MuLookSnapshot* out)
     out->frame = gm_GetFrameCount();
     {
         VsSceneController* vs = gmVs_GetSceneController();
-        if (vs && mu_is_game_memory(vs, sizeof *vs)) out->stage = vs->start.stkind;
+        if (vs && mu_is_game_memory(vs, sizeof *vs)) {
+            out->stage = vs->start.stkind;
+            if (vs->state.match_result != OUTCOME_NONE) out->major |= MU_LOOK_SCENE_ENDED;
+        }
+        if (gm_GetDbPauseFlag(1)) out->major |= MU_LOOK_SCENE_PAUSED;
     }
     {
         MapCollData* map = mpLib_8004D164();
@@ -105,6 +110,8 @@ MU_EXPORT void mu_look_snapshot_v1(MuLookSnapshot* out)
                 const HurtCapsule* h = &fp->hurt_capsules[i].capsule;
                 MuLookCapsule* c = &dst->capsules[dst->capsule_count++];
                 c->ax = h->a_pos.x; c->ay = h->a_pos.y; c->bx = h->b_pos.x; c->by = h->b_pos.y; c->radius = h->scale;
+                if (h->bone && mu_is_game_memory(h->bone, sizeof *h->bone))
+                    c->radius = mu_look_world_radius(h->scale, h->bone->mtx);
             }
             if (gobj->hsd_obj && mu_is_game_memory(gobj->hsd_obj, sizeof(HSD_JObj)))
                 stack[top++] = (struct Node){ gobj->hsd_obj, 0 };

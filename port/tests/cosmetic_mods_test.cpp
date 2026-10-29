@@ -1696,7 +1696,7 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 7");
+      const size_t at = text.find("\"rules\": 8");
       check(at != std::string::npos, "the scan records the rules it used");
       if (at != std::string::npos) text.replace(at, 10, "\"rules\": 5");
       std::ofstream out(state, std::ios::binary); out << text;

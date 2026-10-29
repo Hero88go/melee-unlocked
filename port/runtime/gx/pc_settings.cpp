@@ -5688,7 +5688,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
     {
-      const std::string current = options.shader_preset.empty() ? std::string("None") : options.shader_preset;
       ImGui::TextUnformatted("Shader preset");
       ImGui::SameLine();
       if (ImGui::SmallButton("+ Open Shaders folder")) user_shader::open_folder();
@@ -5701,28 +5700,87 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (!user_shader::available()) {
         ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
       } else {
-        static char shader_filter[64] = "";
-        ImGui::SetNextItemWidth(260.0f);
-        ImGui::InputTextWithHint("##shaderfilter", "type to search presets", shader_filter, sizeof shader_filter);
-        ImGui::SameLine();
-        ImGui::TextUnformatted(current.c_str());
-        const std::vector<std::string> found = user_shader::presets();
-        if (found.empty()) ImGui::TextDisabled("Nothing in the Shaders folder yet. Put a shader pack folder in it.");
-        if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, found.empty() ? 30.0f : 150.0f))) {
-          if (ImGui::Selectable("None", options.shader_preset.empty()) && !options.shader_preset.empty()) { options.shader_preset.clear(); changed = true; }
-          std::string needle = shader_filter;
-          for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
-          int shown = 0;
-          for (const std::string& name : found) {
-            if (!needle.empty()) {
-              std::string lower = name;
-              for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
-              if (lower.find(needle) == std::string::npos) continue;
-            }
-            if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
-            if (ImGui::Selectable(name.c_str(), name == options.shader_preset) && name != options.shader_preset) { options.shader_preset = name; changed = true; }
+        struct ShaderEntry { std::string path, label, search; int group; };
+        static std::vector<ShaderEntry> entries;
+        static bool listed = false;
+        static bool recommended_present = false;
+        static bool pending_initialized = false;
+        static std::string pending_shader, observed_shader;
+        constexpr const char* recommended = "slang-shaders/crt/crt-yo6-flat-trinitron-tv.slangp";
+        if (observed_shader != options.shader_preset) {
+          pending_shader = observed_shader = options.shader_preset;
+        }
+        auto friendly = [](const std::string& path) {
+          std::string label = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+          const size_t dot = label.rfind('.');
+          if (dot != std::string::npos) label.resize(dot);
+          if (label.rfind("crt-", 0) == 0) label.erase(0, 4);
+          for (char& ch : label) if (ch == '-' || ch == '_') ch = ' ';
+          if (!label.empty()) label[0] = (char)std::toupper((unsigned char)label[0]);
+          return label;
+        };
+        if (!listed) {
+          entries.clear();
+          recommended_present = false;
+          for (const std::string& path : user_shader::presets()) {
+            const int group = path == recommended ? 0 : path.find("/crt/") != std::string::npos ? 1
+                            : path.size() >= 6 && path.substr(path.size() - 6) == ".slang" ? 3 : 2;
+            std::string label = path == recommended ? "Flat Trinitron TV (recommended)" : friendly(path);
+            std::string search = label + " " + path;
+            for (char& ch : search) ch = (char)std::tolower((unsigned char)ch);
+            entries.push_back({path, std::move(label), std::move(search), group});
+            if (path == recommended) recommended_present = true;
           }
-          ImGui::EndListBox();
+          std::stable_sort(entries.begin(), entries.end(), [](const ShaderEntry& a, const ShaderEntry& b) {
+            return a.group < b.group || (a.group == b.group && a.label < b.label);
+          });
+          listed = true;
+        }
+        if (!pending_initialized) {
+          pending_shader = options.shader_preset.empty() && recommended_present ? recommended : options.shader_preset;
+          observed_shader = options.shader_preset;
+          pending_initialized = true;
+        }
+        if (ImGui::SmallButton("Refresh presets")) { user_shader::refresh_presets(); listed = false; }
+        if (ImGui::CollapsingHeader("Browse shader presets")) {
+          static char shader_filter[64] = "";
+          ImGui::SetNextItemWidth(260.0f);
+          ImGui::InputTextWithHint("##shaderfilter", "type to search presets", shader_filter, sizeof shader_filter);
+          if (entries.empty()) ImGui::TextDisabled("Nothing in the Shaders folder yet. Put a shader pack folder in it.");
+          if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, entries.empty() ? 30.0f : 150.0f))) {
+            if (ImGui::Selectable("None (unfiltered)", pending_shader.empty())) pending_shader.clear();
+            std::string needle = shader_filter;
+            for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
+            int shown = 0, last_group = -1;
+            for (const ShaderEntry& entry : entries) {
+              if (!needle.empty() && entry.search.find(needle) == std::string::npos) continue;
+              if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
+              if (entry.group != last_group) {
+                static const char* groups[] = {"Recommended", "CRT presets", "Other presets", "Single shaders"};
+                ImGui::TextDisabled("%s", groups[entry.group]);
+                last_group = entry.group;
+              }
+              ImGui::PushID(entry.path.c_str());
+              if (ImGui::Selectable(entry.label.c_str(), entry.path == pending_shader)) pending_shader = entry.path;
+              if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entry.path.c_str());
+              ImGui::PopID();
+            }
+            ImGui::EndListBox();
+          }
+        }
+        if (recommended_present && ImGui::SmallButton("Select recommended Trinitron")) pending_shader = recommended;
+        const std::string applied = options.shader_preset.empty() ? "None" : friendly(options.shader_preset);
+        const std::string selected = pending_shader.empty() ? "None" : friendly(pending_shader);
+        ImGui::TextWrapped("Applied: %s", applied.c_str());
+        if (pending_shader != options.shader_preset) {
+          ImGui::TextWrapped("Selected: %s", selected.c_str());
+          if (ImGui::Button("Apply shader preset")) {
+            options.shader_preset = observed_shader = pending_shader;
+            changed = true;
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Cancel selection")) pending_shader = options.shader_preset;
+          ImGui::TextDisabled("Applying a preset may pause briefly while its shaders compile.");
         }
         const std::string why = user_shader::status();
         if (!options.shader_preset.empty() && !why.empty()) ImGui::TextWrapped("This preset is not running: %s", why.c_str());
@@ -8411,13 +8469,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #else
     ImGui::TextUnformatted("Slippi's codes, built in");
 #endif
-    // The same setting as Video > Widescreen, which is True widescreen only since 0.9.63.
-    if (settings_toggle("Widescreen 16:9", &options.true_widescreen)) {
-      options.widescreen = false;
-      if (options.true_widescreen) options.true_aspect = TrueAspect::Wide16_9;
-      changed = true;
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The same as Video > Widescreen: True 16:9. Online safe. Applies at once.");
     if (settings_toggle("Disable Screen Shake", &gecko::option_no_screen_shake)) {
       te_follow_ours(options, kTeNoScreenRumble, gecko::option_no_screen_shake);
       changed = true;

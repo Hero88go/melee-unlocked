@@ -2,6 +2,7 @@
 // preset, a texture pack folder with a space) must not shift the settings after it.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx/pc_settings.h"
+#include "gx/fullscreen_state.h"
 #include "host/window.h"
 #include "host/host.h"
 #include "host/input_bindings.h"
@@ -471,6 +472,39 @@ int main() {
     CHECK(gx::presented_aspect(o, 1920, 1080) == 16.0f / 9.0f);
     std::error_code ec;
     fs::remove(pair_path, ec);
+  }
+  // A transient DXGI refusal must not make the next unrelated settings save turn exclusive off.
+  // Both renderers use this session state for the fallback window and Present's tearing flag.
+  {
+    const fs::path display_path = fs::temp_directory_path() / "melee_unlocked_exclusive_retry_test.ini";
+    gx::RenderOptions requested;
+    requested.settings_path = display_path.string();
+    requested.exclusive_fullscreen = true;
+    requested.fullscreen = false;
+    gx::FullscreenState actual;
+    CHECK(!actual.enter_exclusive([] { return false; }));   // Windows refuses this attempt
+    CHECK(!actual.exclusive_active && actual.borderless(requested));
+    requested.show_fps = true;   // saving an unrelated change while using the fallback
+    CHECK(gx::save_pc_settings(requested, 80));
+    gx::RenderOptions next_launch;
+    next_launch.settings_path = display_path.string();
+    int vol = 0;
+    gx::load_pc_settings(next_launch, vol);
+    CHECK(next_launch.exclusive_fullscreen && !next_launch.fullscreen && next_launch.show_fps);
+    CHECK(actual.enter_exclusive([] { return true; }));   // a later activation/relaunch can retry
+    CHECK(actual.exclusive_active && !actual.borderless(next_launch));
+    CHECK(!actual.enter_exclusive([] { return false; }));
+    CHECK(actual.borderless(next_launch));   // another refusal still preserves the user's choice
+    CHECK(next_launch.exclusive_fullscreen && !next_launch.fullscreen);
+    next_launch.exclusive_fullscreen = false;   // an explicit Window choice takes effect
+    CHECK(!actual.borderless(next_launch));
+    next_launch.fullscreen = true;
+    CHECK(actual.borderless(next_launch));
+    next_launch.fullscreen = false;
+    next_launch.exclusive_fullscreen = true;
+    CHECK(actual.borderless(next_launch, true));   // D3D12 defers a mid-session request until launch
+    std::error_code ec;
+    fs::remove(display_path, ec);
   }
   // Widescreen is True widescreen only (0.9.63): a saved Slippi code choice loads as True 16:9 and
   // is saved that way, so a player who had it keeps a wide picture.

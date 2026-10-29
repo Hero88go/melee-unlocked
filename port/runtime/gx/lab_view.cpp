@@ -317,6 +317,13 @@ void read_capsules(Frame& f) {
       for (uint32_t i = 0; i < n && i < 15; ++i) {
         const uint32_t c = fp + 0x11A0 + 0x4C * i;
         Frame::Capsule cap{guestf(c + 0x28), guestf(c + 0x2C), guestf(c + 0x34), guestf(c + 0x38), guestf(c + 0x1C)};
+        const uint32_t bone = guest32(c + 0x20);
+        if (guest_span(bone, 0x88)) {
+          float matrix[3][4];
+          for (unsigned row = 0; row < 3; ++row) for (unsigned col = 0; col < 4; ++col)
+            matrix[row][col] = guestf(bone + 0x44 + 16 * row + 4 * col);
+          cap.r = mu_look_world_radius(cap.r, matrix);
+        }
         if (!std::isfinite(cap.ax) || !std::isfinite(cap.ay) || !std::isfinite(cap.bx) || !std::isfinite(cap.by) ||
             !std::isfinite(cap.r) || cap.r <= 0 || cap.r > 50) continue;
         out.push_back(cap);
@@ -370,7 +377,7 @@ void native_frame(const MuLookSnapshot& snapshot, const MuLookItems* items) {
   gx::Frame scene;
   scene.scene_major = (uint8_t)snapshot.major;
   scene.scene_minor = (uint8_t)snapshot.minor;
-  if (!gx::frame_in_match(scene)) {
+  if (!gx::frame_in_match(scene) || (snapshot.major & (MU_LOOK_SCENE_PAUSED | MU_LOOK_SCENE_ENDED))) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_in_match = false;
     return;
@@ -946,17 +953,34 @@ void draw_stick_figure(ImDrawList* dl, const View& v, const std::vector<Frame::C
   }
 }
 
-// Capsules: each one filled, round ends, a little transparent so overlaps read as one body.
-void draw_capsule_fighter(ImDrawList* dl, const View& v, const std::vector<Frame::Capsule>& caps, ImU32 col) {
+// Keep each capsule's contour readable where large hurtboxes overlap (notably Bowser's shell).
+void draw_capsule_fighter(ImDrawList* dl, const View& v, const std::vector<Frame::Capsule>& caps,
+                          const std::vector<Frame::Bone>& bones, ImU32 col) {
   const ImU32 fill = (col & 0x00FFFFFFu) | 0xD0000000u;
+  const ImU32 edge = (col & 0x00FFFFFFu) | 0xFF000000u;
   for (const auto& c : caps) {
     const float r = std::max(1.0f, c.r * v.px);
-    dl->AddCircleFilled(v(c.ax, c.ay), r, fill, 0);
-    if (std::hypot(c.bx - c.ax, c.by - c.ay) >= 0.5f) {
-      dl->AddCircleFilled(v(c.bx, c.by), r, fill, 0);
-      dl->AddLine(v(c.ax, c.ay), v(c.bx, c.by), fill, 2 * r);
+    const ImVec2 a = v(c.ax, c.ay), b = v(c.bx, c.by);
+    if (std::hypot(c.bx - c.ax, c.by - c.ay) < 0.5f) {
+      dl->AddCircleFilled(a, r, fill);
+      dl->AddCircle(a, r, edge, 0, 1.0f);
+      continue;
     }
+    // One convex shape avoids accumulating alpha at the line/circle joins.
+    const float angle = std::atan2(b.y - a.y, b.x - a.x);
+    ImVec2 contour[26];
+    for (int i = 0; i <= 12; ++i) {
+      const float t = angle + 1.570796327f + i * 3.141592654f / 12;
+      contour[i] = ImVec2(a.x + r * std::cos(t), a.y + r * std::sin(t));
+      contour[13 + i] = ImVec2(b.x - r * std::cos(t), b.y - r * std::sin(t));
+    }
+    dl->AddConvexPolyFilled(contour, 26, fill);
+    dl->AddPolyline(contour, 26, edge, ImDrawFlags_Closed, 1.0f);
   }
+  // Weapons have skeleton joints but no hurtboxes. Preserve their visible extent,
+  // including Marth/Roy's swords, instead of dropping everything outside the body.
+  for (const auto& b : bones)
+    dl->AddLine(v(b.ax, b.ay), v(b.bx, b.by), col, std::max(1.5f, 0.35f * v.px));
 }
 
 // Blocks: floors and platforms as solid slabs hanging below their line (platforms thin, floors deep),
@@ -1230,7 +1254,7 @@ void draw(bool enabled, float width, float height) {
       const auto& caps = f.capsules[port][fol];
       if (fighter_style != 0 && !caps.empty()) {
         if (fighter_style == 1) draw_stick_figure(dl, v, caps, f.bones[port][fol], player_color(info, port, fol == 1));
-        else draw_capsule_fighter(dl, v, caps, rgb(player_color(info, port, fol == 1)));
+        else draw_capsule_fighter(dl, v, caps, f.bones[port][fol], rgb(player_color(info, port, fol == 1)));
       } else {
         draw_player(dl, v, info, p, port, fol == 1);
       }
