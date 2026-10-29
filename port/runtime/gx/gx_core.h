@@ -510,8 +510,13 @@ inline bool skip_for_lightweight(const LightweightFilter& e, const Frame& f, con
   lightweight_count(skip);
   return skip;
 }
-// Level 3 and up: no textures on world draws (every slot reads one white texel).
-inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 3 && lightweight_world_draw(e, d); }
+// Level 3 and up: no textures on world draws (every slot reads one white texel). A blended draw
+// that writes no depth (smoke, sparks, the stars of a KO) keeps its texture: its shape is the
+// texture's alpha, and with one white texel each one was drawn as a solid square.
+inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) {
+  if ((d.bp.blendmode() & 1) && !(d.bp.zmode() & 0x10)) return false;
+  return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 3 && lightweight_world_draw(e, d);
+}
 // Level 5: world draws as lines.
 inline bool lightweight_wire(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 5 && lightweight_world_draw(e, d); }
 // Visual effects in force: Lightweight 3 and up holds them at Minimal.

@@ -98,6 +98,7 @@ int main() {
       check(!gx::skip_for_effects(gx::effects_filter(f, level), model_effect), "model effects retain current visual-effects behavior");
     check(!gx::lightweight_flat(five, model_effect) && !gx::lightweight_wire(five, model_effect), "model effects retain current look behavior");
     check(gx::look_surface(five, model_effect) == gx::Surface::Textured, "model effects retain their current textures");
+    check(!gx::lightweight_flat(five, smoke), "a blended particle keeps its texture's shape");
     smoke.xf_regs[0x20] = 0x9999;
     check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps another camera's HUD");
     gx::RenderOptions particles; particles.effects_level = 3; gx::publish_look(particles);
