@@ -189,6 +189,11 @@ struct HudPlayerSnapshot {
   int damage = 0, stocks = 0;
   float tag_x = 0, tag_y = 0; // Melee's 640x480 screen coordinates
   bool present = false, tag_visible = false;
+  // The Arcade look's combo counter: the player this one's combo link holds right after a hit (Fighter
+  // x2094, -1 none), this player's percent, and whether it cannot act (hitlag, damage, down, grabbed).
+  int combo_link = -1;
+  float percent = 0;
+  bool stunned = false;
 };
 
 struct Frame {
@@ -272,19 +277,30 @@ bool css_background_free_active();
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);
 bool player_tags_always_active();
+// "Shield colours" (VIDEO): per port -1 for the port's colour, else one of the 18 colours below (the same
+// table as 20XX TE's, shim/mu_te_menus.c). The shield bubble and the KO blast take it; team matches keep
+// the team colours. Display only. Packed for MuHostApi.shield_colors: 5 bits a port, 0 = the port's own.
+constexpr int kShieldColorCount = 18;
+extern const uint8_t kShieldColorRgb[kShieldColorCount][3];
+extern const char* const kShieldColorNames[kShieldColorCount];
+void set_shield_colors(const int choice[4]);
+uint32_t shield_colors_packed();
+int shield_color(int port);   // -1 the port's own
 // "Arcade look" bits (MU_DISPLAY_OPTION_HITBOXES and the next two, and the renderer's 2D camera), from
 // four places: the saved settings, the Practice menu's Tools rows for this session, a recognised mod
 // disc while its profile is active, and a pasted always-display hitbox code that is switched on. The
 // native game reads their union each draw.
 enum class ArcadeSource { Settings, Practice, Pack, Codes, Count };
 // The same values as MU_DISPLAY_OPTION_HITBOXES and the next two (source_host.cpp asserts it); the
-// game reads only these. The renderer's own: the 2D camera.
-constexpr uint32_t kArcadeHitboxes = 0x20u, kArcadeProjectileHitboxes = 0x40u, kArcadeHitboxesBehind = 0x80u;
-constexpr uint32_t kArcadeGameBits = kArcadeHitboxes | kArcadeProjectileHitboxes | kArcadeHitboxesBehind;
-constexpr uint32_t kArcadeCamera2d = 0x100u;
+// game reads only these (and the grid). The host's own: the 2D camera and the combo counter.
+constexpr uint32_t kArcadeHitboxes = 0x20u, kArcadeProjectileHitboxes = 0x40u, kArcadeHitboxesBehind = 0x80u,
+                   kArcadeGrid = 0x100u;
+constexpr uint32_t kArcadeGameBits = kArcadeHitboxes | kArcadeProjectileHitboxes | kArcadeHitboxesBehind | kArcadeGrid;
+constexpr uint32_t kArcadeCamera2d = 0x10000u, kArcadeComboCounter = 0x20000u;
 template <class Options> uint32_t arcade_settings_bits(const Options& o) {
   return (o.arcade_hitboxes ? kArcadeHitboxes : 0u) | (o.arcade_projectile_hitboxes ? kArcadeProjectileHitboxes : 0u) |
-         (o.arcade_hitboxes_behind ? kArcadeHitboxesBehind : 0u) | (o.arcade_camera_2d ? kArcadeCamera2d : 0u);
+         (o.arcade_hitboxes_behind ? kArcadeHitboxesBehind : 0u) | (o.arcade_camera_2d ? kArcadeCamera2d : 0u) |
+         (o.arcade_combo_counter ? kArcadeComboCounter : 0u) | (o.arcade_backdrop == 2 ? kArcadeGrid : 0u);
 }
 void set_arcade_display(ArcadeSource source, uint32_t bits);
 uint32_t arcade_display();
@@ -292,6 +308,13 @@ uint32_t arcade_display();
 // same HUD objects from guest RAM (capture_match_hud). Simulation thread.
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
                            bool tag_visible);
+void set_native_hud_combo(int slot, int link, float percent, bool stunned);   // MuHostApi.hud_combo, simulation thread
+// The actions in which a fighter cannot act for the combo counter: damage and tumble, down and tech,
+// grabbed, thrown and carried (ftCo_MS_* ids; the game's mu_combo_stun_action is the same list).
+inline bool combo_stun_action(uint32_t a) {
+  return a == 38 || (a >= 75 && a <= 91) || (a >= 183 && a <= 204) || (a >= 223 && a <= 232) ||
+         (a >= 239 && a <= 243) || (a >= 266 && a <= 296);
+}
 
 // Whether a frame certainly shows a running match. Anything else counts as a menu: the character and
 // stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.
@@ -563,6 +586,12 @@ int8_t& lightweight_skip_slot(const Frame& f, size_t index, int level);
 // One call per draw in every backend: skip it or not, and count it for the settings hint.
 inline bool skip_for_lightweight(const LightweightFilter& e, const Frame& f, const DrawCall& d) {
   if (e.level <= 0 && !e.backdrop_off) return false;
+  // The Arcade look's plain background also drops the planes made to fill the camera's view behind
+  // the stage (DrawCall::frustum_backdrop: a sky or gradient), which Lightweight keeps.
+  if (e.in_match && d.frustum_backdrop && arcade_backdrop_slot().load(std::memory_order_relaxed) != 0) {
+    lightweight_count(true);
+    return true;
+  }
   const size_t index = (size_t)(&d - f.draws.data());
   bool skip;
   if (index < f.draws.size()) {

@@ -245,6 +245,47 @@ float g_overlay_game_aspect = 73.0f / 60.0f;
 std::array<HudPlayerSnapshot, 4> g_hud_players{};
 std::array<std::string, 4> g_hud_player_names{};
 bool g_hud_match = false;
+// The Arcade look's combo counter, counted per player hit, once per game frame (a frame presented again
+// on a fast display counts nothing twice). A hit is a rise of that player's percent; it goes to the
+// player whose combo link (Fighter x2094) holds them, or to the only opponent. The combo lives while
+// the player hit keeps getting hit before they have been able to act for 45 frames, and ends at once
+// when their percent drops (a KO).
+struct ComboTrack { int attacker = -1; float percent = 0; int hits = 0, free_frames = 0; bool live = false;
+                    double changed = 0, ended = -1; };
+std::array<ComboTrack, 4> g_combo{};   // by the player hit
+uint64_t g_combo_sequence = ~0ull;
+void combo_track(uint64_t sequence) {
+  if (sequence == g_combo_sequence) return;
+  g_combo_sequence = sequence;
+  const double now = ImGui::GetTime();
+  static const bool log = [] { const char* v = std::getenv("MELEE_TEST_COMBO_LOG"); return v && *v == '1'; }();
+  if (log && sequence % 120 == 0) host::log("combo: frame %llu match %d P1 %.0f%% stun %d link %d, P2 %.0f%% stun %d link %d", (unsigned long long)sequence, g_hud_match ? 1 : 0, g_hud_players[0].percent, g_hud_players[0].stunned ? 1 : 0, g_hud_players[0].combo_link, g_hud_players[1].percent, g_hud_players[1].stunned ? 1 : 0, g_hud_players[1].combo_link);
+  for (int slot = 0; slot < 4; ++slot) {   // `slot` is the player hit
+    const HudPlayerSnapshot& p = g_hud_players[slot];
+    ComboTrack& c = g_combo[slot];
+    if (!g_hud_match || !p.present) { if (c.live) { c.live = false; c.ended = now; } c.percent = 0; continue; }
+    if (p.percent > c.percent + 0.01f) {
+      int attacker = -1, others = 0, other = -1;
+      for (int a = 0; a < 4; ++a) {
+        if (a == slot || !g_hud_players[a].present) continue;
+        ++others; other = a;
+        if (g_hud_players[a].combo_link == slot) attacker = a;
+      }
+      if (attacker < 0) attacker = others == 1 ? other : c.attacker;
+      if (c.live && attacker == c.attacker) ++c.hits;
+      else { c.hits = 1; c.attacker = attacker; }
+      c.live = attacker >= 0; c.free_frames = 0; c.changed = now;
+      if (log) host::log("combo: P%d hits %d on P%d at %.0f%%", attacker + 1, c.hits, slot + 1, p.percent);
+    } else if (c.live) {
+      c.free_frames = p.stunned ? 0 : c.free_frames + 1;
+      if (c.free_frames >= 45 || p.percent + 0.01f < c.percent) {
+        c.live = false; c.ended = now;
+        if (log) host::log("combo: P%d's combo on P%d ended at %d hits", c.attacker + 1, slot + 1, c.hits);
+      }
+    }
+    c.percent = p.percent;
+  }
+}
 
 struct OverlayBounds { float left, top, right, bottom; };
 
@@ -277,6 +318,46 @@ void settings_set_hud_snapshot(const Frame& frame) {
   g_hud_match = frame_in_match(frame);
   g_hud_players = frame.hud_players;
   g_hud_player_names = frame.player_names;
+  combo_track(frame.sequence);
+}
+
+// The Arcade look's combo counter (counted in combo_track): "N HITS" over the attacker, in the game's
+// font and the port's colour, from the second hit. Offline matches and replays only.
+static void draw_combo_counter() {
+  if (!g_hud_match || slippi::online::is_online_match() || !(arcade_display() & kArcadeComboCounter)) return;
+  const OverlayBounds bounds = overlay_bounds();
+  const float width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+  const double now = ImGui::GetTime();
+  static constexpr uint32_t colors[4] = {IM_COL32(255, 92, 92, 255), IM_COL32(96, 150, 255, 255),
+                                         IM_COL32(255, 214, 72, 255), IM_COL32(88, 214, 120, 255)};
+  ImDrawList* draw = ImGui::GetForegroundDrawList();
+  draw->PushClipRect(ImVec2(bounds.left, bounds.top), ImVec2(bounds.right, bounds.bottom), true);
+  for (int victim = 0; victim < 4; ++victim) {
+    const ComboTrack& c = g_combo[victim];
+    if (c.hits < 2 || c.attacker < 0) continue;
+    const int slot = c.attacker;
+    const HudPlayerSnapshot& p = g_hud_players[slot];
+    if (!p.present) continue;
+    // Holds while the combo lives, then fades over a third of a second.
+    const float fade = c.live ? 1.0f : 1.0f - (float)std::clamp((now - c.ended) / 0.35, 0.0, 1.0);
+    if (fade <= 0.0f) continue;
+    // Each hit pops the number: a little larger, settling back over a tenth of a second.
+    const float pop = 1.0f + 0.35f * (1.0f - (float)std::clamp((now - c.changed) / 0.12, 0.0, 1.0));
+    const float px = std::clamp(height / 18.0f, 18.0f, 44.0f) * pop;
+    char label[24];
+    std::snprintf(label, sizeof label, "%d HITS", c.hits);
+    const float w = practice_menu::text_width(px, label);
+    // Over the attacker's damage display: the game lays the four out by port, P1 a fifth of the way
+    // across and each next one 151 of 640 further (measured on its HUD), widened like the HUD under True 16:9.
+    const float hud_x = 128.0f + 151.0f * slot;
+    const float at_x = true_widescreen_active() ? 320.0f + (hud_x - 320.0f) * true_widescreen_factor() : hud_x;
+    const float x = std::clamp(bounds.left + at_x / 640.0f * width - w * 0.5f, bounds.left + 4.0f,
+                               std::max(bounds.left + 4.0f, bounds.right - w - 4.0f));
+    const float y = bounds.top + height * 0.775f - px;
+    const uint32_t color = (colors[slot] & 0x00FFFFFFu) | ((uint32_t)(255.0f * fade) << 24);
+    practice_menu::text(draw, x, y, px, color, label, 0.12f);
+  }
+  draw->PopClipRect();
 }
 
 static void draw_player_nicknames() {
@@ -2136,7 +2217,11 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "arcade_projectile_hitboxes") options.arcade_projectile_hitboxes = value == "1";
       else if (key == "arcade_hitboxes_behind") options.arcade_hitboxes_behind = value == "1";
       else if (key == "arcade_camera_2d") options.arcade_camera_2d = value == "1";
-      else if (key == "arcade_backdrop") options.arcade_backdrop = std::clamp(std::atoi(value.c_str()), 0, 1);
+      else if (key == "arcade_combo_counter") options.arcade_combo_counter = value == "1";
+      else if (key.size() == 14 && key.compare(0, 13, "shield_colorp") == 0 && key[13] >= '1' && key[13] <= '4')
+        options.shield_color[key[13] - '1'] = std::clamp(std::atoi(value.c_str()), -1, kShieldColorCount - 1);
+      else if (key == "arcade_backdrop") options.arcade_backdrop = std::clamp(std::atoi(value.c_str()), 0, 2);
+      else if (key == "arcade_grid_rgb") options.arcade_grid_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
       else if (key == "arcade_background_rgb") options.arcade_background_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
       else if (key == "retro") options.retro = value == "1";
@@ -4102,8 +4187,12 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\narcade_projectile_hitboxes " << (options.arcade_projectile_hitboxes ? 1 : 0)
        << "\narcade_hitboxes_behind " << (options.arcade_hitboxes_behind ? 1 : 0)
        << "\narcade_camera_2d " << (options.arcade_camera_2d ? 1 : 0)
+       << "\narcade_combo_counter " << (options.arcade_combo_counter ? 1 : 0)
+       << "\nshield_colorp1 " << options.shield_color[0] << "\nshield_colorp2 " << options.shield_color[1]
+       << "\nshield_colorp3 " << options.shield_color[2] << "\nshield_colorp4 " << options.shield_color[3]
        << "\narcade_backdrop " << options.arcade_backdrop
        << "\narcade_background_rgb " << std::hex << options.arcade_background_rgb << std::dec
+       << "\narcade_grid_rgb " << std::hex << options.arcade_grid_rgb << std::dec
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
        << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
@@ -4649,7 +4738,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   set_fod_reflections(options.fod_reflections);
   set_css_background_free(options.css_background_free);
   set_player_tags_always(options.player_tags_always != 0);
-  set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(options));
+  set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(options)); set_shield_colors(options.shield_color);
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
@@ -5712,6 +5801,35 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       float used = 0, total = 0;
       if (vram_usage(&used, &total)) settings_hint("Video memory in use: %.1f / %.1f GB", used, total);
     }
+    // ---- Shield colours ----
+    // Each port's own shield (and KO blast) colour, on this screen only: online too, and in replays.
+    if (ImGui::CollapsingHeader("Shield colours##shields")) {
+      ImGui::Indent(8.0f);
+      static const char* const ports[4] = {"P1 shield", "P2 shield", "P3 shield", "P4 shield"};
+      for (int port = 0; port < 4; ++port) {
+        ImGui::PushID(port);
+        const int current = options.shield_color[port];
+        const char* preview = current < 0 ? "Port colour" : kShieldColorNames[current];
+        if (current >= 0) {
+          const uint8_t* c = kShieldColorRgb[current];
+          ImGui::ColorButton("##swatch", ImVec4(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip);
+          ImGui::SameLine();
+        }
+        if (ImGui::BeginCombo(ports[port], preview)) {
+          if (ImGui::Selectable("Port colour", current < 0)) { options.shield_color[port] = -1; changed = true; }
+          for (int i = 0; i < kShieldColorCount; ++i) {
+            const uint8_t* c = kShieldColorRgb[i];
+            ImGui::ColorButton("##c", ImVec4(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
+            ImGui::SameLine();
+            if (ImGui::Selectable(kShieldColorNames[i], current == i)) { options.shield_color[port] = i; changed = true; }
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::PopID();
+      }
+      settings_hint("Your shield and KO blast colour for each port, on your screen only (online too). Team matches keep team colours.");
+      ImGui::Unindent(8.0f);
+    }
     // ---- Get mod looks ----
     // One click each: the authors' own download, checked against its published file and built from the
     // player's own disc (host::cosmetics::install_official_look). Open until both are installed; once
@@ -6045,19 +6163,24 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Hitboxes show around the fighter instead of covering it, so the\n"
                         "character stays easy to read. Also applies to the Practice menu's hitboxes.");
+    changed |= settings_toggle("Combo counter", &options.arcade_combo_counter);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Counts the hits of a combo over the attacker, from the second hit until the other\n"
+                        "player can act again. Offline matches and replays only.");
     changed |= settings_toggle("2D camera", &options.arcade_camera_2d);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("The match camera loses its perspective: fighters and platforms keep their\n"
                         "size and place, and depth no longer shrinks the stage, like a 2D fighter.\n"
                         "The camera itself moves as normal. Display only: safe online.");
     {
-      const char* backdrops[] = {"Stage", "Plain colour"};
-      if (settings_combo("Background##arcade", &options.arcade_backdrop, backdrops, 2)) changed = true;
+      const char* backdrops[] = {"Stage", "Plain colour", "Grid"};
+      if (settings_combo("Background##arcade", &options.arcade_backdrop, backdrops, 3)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Plain colour hides the stage's scenery behind the fighting area (sky, crowds,\n"
                           "far buildings) and shows one colour instead. Platforms, ledges and items stay.\n"
+                          "Grid adds lines every 5 units behind the stage (Source Port; the Static Recomp shows the plain colour).\n"
                           "Display only: safe online.");
-      if (options.arcade_backdrop == 1) {
+      if (options.arcade_backdrop >= 1) {
         const uint32_t c = options.arcade_background_rgb;
         float rgb[3] = {((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f};
         if (ImGui::ColorEdit3("Background colour##arcade", rgb, ImGuiColorEditFlags_DisplayRGB)) {
@@ -6067,12 +6190,23 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
         ImGui::SameLine();
         if (ImGui::Button("Reset colour##arcade")) { options.arcade_background_rgb = RenderOptions{}.arcade_background_rgb; changed = true; }
+        if (options.arcade_backdrop == 2) {
+          const uint32_t g = options.arcade_grid_rgb;
+          float grid[3] = {((g >> 16) & 0xFF) / 255.0f, ((g >> 8) & 0xFF) / 255.0f, (g & 0xFF) / 255.0f};
+          if (ImGui::ColorEdit3("Grid colour##arcade", grid, ImGuiColorEditFlags_DisplayRGB)) {
+            options.arcade_grid_rgb = ((uint32_t)(grid[0] * 255 + 0.5f) << 16) | ((uint32_t)(grid[1] * 255 + 0.5f) << 8) |
+                                      (uint32_t)(grid[2] * 255 + 0.5f);
+            changed = true;
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Reset##arcadegrid")) { options.arcade_grid_rgb = RenderOptions{}.arcade_grid_rgb; changed = true; }
+        }
       }
     }
     auto set_all = [&](bool on) {
       options.arcade_hitboxes = options.arcade_projectile_hitboxes = options.arcade_hitboxes_behind = on;
-      options.arcade_camera_2d = on;
-      options.arcade_backdrop = on ? 1 : 0;
+      options.arcade_camera_2d = options.arcade_combo_counter = on;
+      options.arcade_backdrop = on ? 2 : 0;
       changed = true;
     };
     if (ImGui::Button("Arcade preset##arcade")) set_all(true);
@@ -9806,6 +9940,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                              state.practice_release_capture || replay_bar::wants_cursor());
   if (!state.fill_window && !state.open && !state.menu_open && options.show_player_nicknames)
     draw_player_nicknames();
+  if (!state.fill_window && !state.open && !state.menu_open) draw_combo_counter();
   {
     // Menu sounds: a tick when the highlighted category or control changes, a brighter one when
     // a page opens or the panel opens, a lower one when a page or the panel closes.

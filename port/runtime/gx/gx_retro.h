@@ -30,6 +30,7 @@ struct LookLive {
   std::atomic<uint8_t> background{0};                    // 0 the stage's own, 1 black, 2 plain colour
   std::atomic<uint32_t> background_rgb{0x000000};
   std::atomic<uint32_t> arcade_rgb{0x1E2430};                // Arcade look "Background" colour (gx_core.h arcade_backdrop_slot)
+  std::atomic<uint32_t> arcade_grid_rgb{0x3A4458};           // its grid lines (MU_DISPLAY_OPTION_GRID, drawn by the game)
   std::atomic<bool> retro{false};                        // the original "Retro (64 style)" switch
   std::atomic<bool> exact{false};                        // an exact look's pack is served: the game's art is theirs, no treatment
   std::atomic<bool> exact_low_poly{true};                // that look's own fighters are the low poly ones (Diet Classic, Diet 64; not Crystal)
@@ -50,6 +51,7 @@ template <class Options> inline void publish_look(const Options& o) {
   l.background_rgb.store(o.look_background_rgb, std::memory_order_relaxed);
   arcade_backdrop_slot().store((uint8_t)o.arcade_backdrop, std::memory_order_relaxed);
   l.arcade_rgb.store(o.arcade_background_rgb, std::memory_order_relaxed);
+  l.arcade_grid_rgb.store(o.arcade_grid_rgb, std::memory_order_relaxed);
   // An exact look draws its own art: the renderer's stand-in treatments step aside (port colours and the
   // Lightweight speed options still apply).
   if (l.exact.load(std::memory_order_relaxed)) {

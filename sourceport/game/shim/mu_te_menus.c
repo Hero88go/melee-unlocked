@@ -8,6 +8,7 @@
 #include <melee/gm/gmvs.h>
 #include <melee/gm/types.h>
 #include <melee/mn/types.h>
+#include <melee/pl/player.h>
 
 #include "mu_native.h"
 
@@ -26,10 +27,27 @@ static const char* const shield_names[] = {
 /* Per port: -1 = the game's own color, else an index into the table. */
 static signed char shield_choice[4] = {-1, -1, -1, -1};
 
+int mu_port_shield_color(int slot, unsigned int* rgb)
+{
+    extern unsigned int mu_shield_colors(void);   /* mu_entry.c */
+    int index;
+    /* Only where the player wears its own port colour: team matches keep the team colours. */
+    if (slot < 0 || slot >= 4 || Player_GetUnk45(slot) != (u32) slot) {
+        return 0;
+    }
+    index = (int) ((mu_shield_colors() >> (5 * slot)) & 31u) - 1;
+    if (index < 0 || index >= SHIELD_COUNT) {
+        return 0;
+    }
+    *rgb = (unsigned int) shield_rgb[index][0] << 16 | (unsigned int) shield_rgb[index][1] << 8 | shield_rgb[index][2];
+    return 1;
+}
+
 int mu_te_shield_color(int slot, unsigned int* rgb)
 {
+    /* 20XX TE's own choice wins while its save is loaded; otherwise the player's Shield colours. */
     if (slot < 0 || slot >= 4 || shield_choice[slot] < 0 || !mu_te2(MU_TE2_SHIELD_COLORS)) {
-        return 0;
+        return mu_port_shield_color(slot, rgb);
     }
     {
         const u8* c = shield_rgb[(int) shield_choice[slot]];

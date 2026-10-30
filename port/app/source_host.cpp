@@ -36,6 +36,7 @@
 #include "audio_core.h"
 #include "ax_ucode.h"
 #include "gx_core.h"
+#include "gx_retro.h"
 #include "gx_shader.h"
 #include "render_options.h"
 #include "training_overlay.h"
@@ -1004,7 +1005,8 @@ static_assert(gx::kArcadeHitboxes == 0x20u && gx::kArcadeProjectileHitboxes == 0
               "user_gecko::arcade_bits_of_codes");
 static_assert(gx::kArcadeHitboxes == MU_DISPLAY_OPTION_HITBOXES &&
               gx::kArcadeProjectileHitboxes == MU_DISPLAY_OPTION_PROJECTILE_HITBOXES &&
-              gx::kArcadeHitboxesBehind == MU_DISPLAY_OPTION_HITBOXES_BEHIND, "Arcade look bits");
+              gx::kArcadeHitboxesBehind == MU_DISPLAY_OPTION_HITBOXES_BEHIND && gx::kArcadeGrid == MU_DISPLAY_OPTION_GRID,
+              "Arcade look bits");
 // Display-only options (MU_DISPLAY_OPTION_*), read live by the native game's draw code. Never part
 // of a replay or of the match the opponent plays: the viewer's own, as the HUD sizes are.
 uint32_t h_display_options() {
@@ -1013,8 +1015,15 @@ uint32_t h_display_options() {
          (gx::fod_reflections_active() ? MU_DISPLAY_OPTION_FOD_REFLECTIONS : 0u) |
          (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u) |
          (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u) |
-         // The Arcade look's hitboxes: never in a network match (the game also checks).
-         (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits);
+         // The Arcade look's hitboxes: never in a network match (the game also checks). Its grid is a
+         // picture like the rest of the background, so it stays.
+         (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |
+         (gx::arcade_display() & gx::kArcadeGrid);
+}
+uint32_t h_shield_colors() { return gx::shield_colors_packed(); }
+uint32_t h_grid_color() { return gx::look_live().arcade_grid_rgb.load(std::memory_order_relaxed) & 0xFFFFFFu; }
+void h_hud_combo(int32_t slot, int32_t link_slot, float percent, int32_t stunned) {
+  gx::set_native_hud_combo(slot, link_slot, percent, stunned != 0);
 }
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
@@ -2981,6 +2990,9 @@ MuHostApi make_host() {
   h.display_options = h_display_options;
   h.audio_options = h_audio_options;
   h.picture_widen = h_picture_widen;
+  h.hud_combo = h_hud_combo;
+  h.shield_colors = h_shield_colors;
+  h.grid_color = h_grid_color;
   return h;
 }
 

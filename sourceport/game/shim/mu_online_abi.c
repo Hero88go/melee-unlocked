@@ -30,6 +30,13 @@ void mu_hud_player_abi(int slot, int present, int damage, int stocks, float tag_
     }
 }
 
+void mu_hud_combo_abi(int slot, int link, float percent, int stunned)
+{
+    if (mu_host->version >= 21 && mu_host->hud_combo != NULL) {
+        mu_host->hud_combo(slot, link, percent, stunned);
+    }
+}
+
 void mu_online_abi_resim_phase(int entering)
 {
     if (mu_host->version >= 13 && mu_host->resim_phase != NULL) {

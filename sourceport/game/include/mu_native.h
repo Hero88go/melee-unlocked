@@ -130,6 +130,14 @@ int mu_freeze_fd(void);
 int mu_arcade_hitboxes(void);
 int mu_arcade_projectile_hitboxes(void);
 int mu_arcade_hitboxes_behind(void);
+/* Arcade look background "Grid" (MU_DISPLAY_OPTION_GRID): drawn by the match camera before the stage
+ * (cm/camera.c fn_800301D0, shim/mu_arcade.c). Display only, online too. */
+#define MU_DISPLAY_GRID 0x100u
+void mu_arcade_grid(void);
+/* "Shield colours" (MuHostApi.shield_colors): this player's own colour for its shield bubble and KO
+ * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
+ * Team matches keep the team colours. */
+int mu_port_shield_color(int slot, unsigned int* rgb);
 int mu_lagless_fod_begin(void);   /* decides it for the stage being set up */
 int mu_lagless_fod(void);
 /* The Lossless adapter lag test (shim/mu_lagtest.c): the host's --lag-test launch. */

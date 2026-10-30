@@ -136,6 +136,24 @@ void capture_match_hud(Frame& frame) {
                           out.tag_x >= 0 && out.tag_x <= 640 && out.tag_y >= 0 && out.tag_y <= 480;
       }
     }
+    // The combo link (Fighter x2094) of this player's fighter, and the linked player's slot and percent:
+    // StaticPlayer 0x80453080 + 0xE90 * slot, its entity at +0xB0 (the transformed one by +0x0C).
+    // Fighter +0x10 action, +0x1830 percent, +0x195C hitlag frames, +0x2094 the combo link.
+    out.combo_link = -1; out.percent = 0; out.stunned = false;
+    {
+      const uint32_t player = 0x80453080u + slot * 0xE90u;
+      const uint32_t gobj = host::rd32(player + 0xB0u + 4u * (host::rd8(player + 0x0Cu) & 1u));
+      const uint32_t fp = guest_object(gobj, 0x30) ? host::rd32(gobj + 0x2C) : 0u;
+      if (guest_object(fp, 0x2098)) {
+        out.percent = guest_float(fp + 0x1830);
+        if (!std::isfinite(out.percent)) out.percent = 0;
+        out.stunned = guest_float(fp + 0x195C) > 0.0f || combo_stun_action(host::rd32(fp + 0x10));
+        const uint32_t link = host::rd32(fp + 0x2094);
+        const uint32_t vfp = guest_object(link, 0x30) ? host::rd32(link + 0x2C) : 0u;
+        const int victim = guest_object(vfp, 0x10) ? host::rd8(vfp + 0x0C) : -1;
+        if (victim >= 0 && victim < 4 && victim != slot) out.combo_link = victim;
+      }
+    }
     if (out.present) {
       if (!g_pal_stock_hud.load(std::memory_order_relaxed))
         scale_hud_root(stock_gobj, g_stock_hud_scale.load(std::memory_order_relaxed), g_stock_roots[slot]);
@@ -939,6 +957,28 @@ void set_css_background_free(bool on) { g_css_background_free.store(on, std::mem
 bool css_background_free_active() { return g_css_background_free.load(std::memory_order_relaxed); }
 void set_player_tags_always(bool on) { g_player_tags_always.store(on, std::memory_order_relaxed); }
 bool player_tags_always_active() { return g_player_tags_always.load(std::memory_order_relaxed); }
+const uint8_t kShieldColorRgb[kShieldColorCount][3] = {
+    {0xF2, 0x59, 0x59}, {0x66, 0x66, 0xFF}, {0xFF, 0xBF, 0x40}, {0x4D, 0xE6, 0x4D}, {0x4D, 0xE6, 0xE6},
+    {0xF2, 0x59, 0xF2}, {0xFF, 0x9C, 0x00}, {0xAF, 0xFF, 0x25}, {0xFF, 0x76, 0xFA}, {0xA0, 0x49, 0xE2},
+    {0x5E, 0x1C, 0xF2}, {0x65, 0x00, 0x00}, {0x18, 0x44, 0x18}, {0x14, 0x23, 0x94}, {0x50, 0x37, 0x06},
+    {0xDD, 0xDD, 0xDD}, {0x33, 0x33, 0x33}, {0x80, 0x80, 0x80},
+};
+const char* const kShieldColorNames[kShieldColorCount] = {
+    "Red", "Blue", "Yellow", "Green", "Cyan", "Magenta", "Orange", "Lime", "Pink",
+    "Purple", "Indigo", "Dark red", "Dark green", "Dark blue", "Brown", "White", "Dark gray", "Gray",
+};
+std::atomic<uint32_t> g_shield_colors{0};
+void set_shield_colors(const int choice[4]) {
+  uint32_t packed = 0;
+  for (int i = 0; i < 4; ++i)
+    if (choice[i] >= 0 && choice[i] < kShieldColorCount) packed |= (uint32_t)(choice[i] + 1) << (5 * i);
+  g_shield_colors.store(packed, std::memory_order_relaxed);
+}
+uint32_t shield_colors_packed() { return g_shield_colors.load(std::memory_order_relaxed); }
+int shield_color(int port) {
+  if (port < 0 || port >= 4) return -1;
+  return (int)((shield_colors_packed() >> (5 * port)) & 31u) - 1;
+}
 std::atomic<uint32_t> g_arcade_display[(int)ArcadeSource::Count] = {};
 void set_arcade_display(ArcadeSource source, uint32_t bits) {
   g_arcade_display[(int)source].store(bits, std::memory_order_relaxed);
@@ -960,6 +1000,14 @@ void set_native_hud_player(int slot, bool present, int damage, int stocks, float
   out.tag_x = tag_x; out.tag_y = tag_y;
   out.tag_visible = out.present && tag_visible && std::isfinite(tag_x) && std::isfinite(tag_y) &&
                     tag_x >= 0 && tag_x <= 640 && tag_y >= 0 && tag_y <= 480;
+}
+
+void set_native_hud_combo(int slot, int link, float percent, bool stunned) {
+  if (slot < 0 || slot >= 4) return;
+  auto& out = g_native_hud[slot];
+  out.combo_link = link >= 0 && link < 4 && link != slot ? link : -1;
+  out.percent = std::isfinite(percent) ? percent : 0.0f;
+  out.stunned = stunned;
 }
 
 uint32_t hud_scales_packed() {

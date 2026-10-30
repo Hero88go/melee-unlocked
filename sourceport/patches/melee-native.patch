@@ -48299,7 +48299,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..107f6fbb7 100644
+index 1a8206270..5aa99bc6b 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -48993,7 +48993,15 @@ index 1a8206270..107f6fbb7 100644
      lbShadow_8000F38C(game_camera.x399_b7);
      if (HSD_CObjSetCurrent(cobj) != 0) {
          if (!game_camera.x398_b5) {
-@@ -4017,6 +4098,13 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4013,10 +4094,21 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+             HSD_SetEraseColor(0, 0, 0, 0xFF);
+         }
+         HSD_CObjEraseScreen(cobj, 1, 0, 0);
++#ifdef MU_NATIVE
++        /* Arcade look background "Grid", behind the stage (shim/mu_arcade.c). */
++        mu_arcade_grid();
++#endif
+         Ground_801C4FAC(cobj);
          HSD_LObjDeleteCurrentAll(NULL);
  
          Camera_800310A0(2);
@@ -49007,7 +49015,7 @@ index 1a8206270..107f6fbb7 100644
          prio8_a = gxlink_prio8();
          prio1_a = gxlink_prio1();
          gobj->gxlink_prios = prio1_a | prio8_a;
-@@ -4154,6 +4242,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
+@@ -4154,6 +4246,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
      return (fwd_z * dir_z) > 0.0L;
  }
  
@@ -49030,7 +49038,7 @@ index 1a8206270..107f6fbb7 100644
  bool Camera_800307D0(f32* left, f32* center, f32* right)
  {
      HSD_CObj* cobj;
-@@ -4172,8 +4276,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
+@@ -4172,8 +4280,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
      f32 edge_z2;
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49045,7 +49053,7 @@ index 1a8206270..107f6fbb7 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4423,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4427,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49083,7 +49091,7 @@ index 1a8206270..107f6fbb7 100644
  
      if ((point.x > 2.1474836e9f) || (point.x < -2.1474836e9f) ||
          (point.y > 2.1474836e9f) || (point.y < -2.1474836e9f))
-@@ -4343,6 +4481,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
+@@ -4343,6 +4485,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
      return Camera_80030BBC(&arg0->bone_pos, arg1);
  }
  
@@ -49109,7 +49117,7 @@ index 1a8206270..107f6fbb7 100644
  /// Camera_IsSubjectOnScreen
  bool Camera_80030CFC(CmSubject* cam_box, f32 tolerance)
  {
-@@ -4381,6 +4538,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
+@@ -4381,6 +4542,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
  
  void Camera_80030DF8(void)
  {
@@ -49126,7 +49134,7 @@ index 1a8206270..107f6fbb7 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4568,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4572,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -49139,7 +49147,7 @@ index 1a8206270..107f6fbb7 100644
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4802,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4806,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };
@@ -54608,7 +54616,7 @@ index fc9191492..11f5f1a7d 100644
      }
  }
 diff --git a/src/melee/ft/ft_0D31.c b/src/melee/ft/ft_0D31.c
-index 8f66740f5..8b8392846 100644
+index 8f66740f5..feba159fd 100644
 --- a/src/melee/ft/ft_0D31.c
 +++ b/src/melee/ft/ft_0D31.c
 @@ -27,10 +27,18 @@
@@ -54721,7 +54729,7 @@ index 8f66740f5..8b8392846 100644
  }
  
  void ftCo_800D35FC(Fighter* fp)
-@@ -169,99 +188,106 @@ void ftCo_800D35FC(Fighter* fp)
+@@ -169,99 +188,115 @@ void ftCo_800D35FC(Fighter* fp)
      cur_gobj = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER];
      while (cur_gobj != NULL) {
          Fighter* cur_fp = GET_FIGHTER(cur_gobj);
@@ -54811,14 +54819,7 @@ index 8f66740f5..8b8392846 100644
 -    ftCo_800D38B8(temp_r27_2, temp_r28_2->x8);
 +    playDeadSfx(fp, sfx);
 +}
- 
--    ft_PlaySFX(temp_r31, 0x88, 0x7F, 0x40);
--    ft_8008805C(temp_r31, 0x88);
--    sp2C = temp_r31->cur_pos;
--    temp_f31 = Stage_GetBlastZoneTopOffset();
--    temp_f1 = Stage_GetBlastZoneBottomOffset();
--    if (sp2C.y > temp_f31) {
--        sp2C.y = temp_f31;
++
 +static inline void enterDead(Fighter_GObj* gobj, FtMotionId msid)
 +{
 +    Fighter* fp = GET_FIGHTER(gobj);
@@ -54829,7 +54830,14 @@ index 8f66740f5..8b8392846 100644
 +    pl_8003DF44(fp->player_idx, fp->is_sub_fighter);
 +    processDeath(gobj);
 +}
-+
+ 
+-    ft_PlaySFX(temp_r31, 0x88, 0x7F, 0x40);
+-    ft_8008805C(temp_r31, 0x88);
+-    sp2C = temp_r31->cur_pos;
+-    temp_f31 = Stage_GetBlastZoneTopOffset();
+-    temp_f1 = Stage_GetBlastZoneBottomOffset();
+-    if (sp2C.y > temp_f31) {
+-        sp2C.y = temp_f31;
 +static inline void clampDeadPos(f32* v, f32 min, f32 max)
 +{
 +    if (*v > max) {
@@ -54850,13 +54858,7 @@ index 8f66740f5..8b8392846 100644
 +    u8* color1 = Fighter_804D650C + offset;
 +    u8* color2 = Fighter_804D6508 + offset;
 +    int rgb1 = (color1[0] << 16) | (color1[1] << 8) | color1[2];
-+    int rgb2 = (color2[0] << 16) | (color2[1] << 8) | color2[2];
-+    int kind;
-+    if (gm_801693BC(fp->player_idx)) {
-+        kind = 0x42C;
-+    } else {
-+        kind = 0x42B;
-+    }
++#ifdef MU_NATIVE
      {
 -        s32 var_r3;
 -        temp_r28_3 = gobj->user_data;
@@ -54866,7 +54868,11 @@ index 8f66740f5..8b8392846 100644
 -            u8* base2 = Fighter_804D6508 + offset;
 -            color1 = (base1[0] << 16) | (base1[1] << 8) | base1[2];
 -            color2 = (base2[0] << 16) | (base2[1] << 8) | base2[2];
--        }
++        /* "Shield colours": the KO blast takes this player's own colour too (shim/mu_te_menus.c). */
++        unsigned int own;
++        if (mu_port_shield_color(fp->player_idx, &own)) {
++            rgb1 = (int) own;
+         }
 -        if (gm_801693BC(temp_r28_3->player_id)) {
 -            var_r3 = 0x42C;
 -        } else {
@@ -54874,11 +54880,21 @@ index 8f66740f5..8b8392846 100644
 -        }
 -        efSync_Spawn(var_r3, gobj, &sp2C, &sp24, &p_ftCommonData->x4F4, color1,
 -                     color2);
-+        f32 x4F4_scale = p_ftCommonData->x4F4;
-+        efSync_Spawn(kind, gobj, pos, &angle, &x4F4_scale, rgb1, rgb2);
      }
 -    sp2C.x = Stage_GetBlastZoneLeftOffset();
 -    ftCo_800D4E50(temp_r31, &sp2C, 1, 0.0F);
++#endif
++    int rgb2 = (color2[0] << 16) | (color2[1] << 8) | color2[2];
++    int kind;
++    if (gm_801693BC(fp->player_idx)) {
++        kind = 0x42C;
++    } else {
++        kind = 0x42B;
++    }
++    {
++        f32 x4F4_scale = p_ftCommonData->x4F4;
++        efSync_Spawn(kind, gobj, pos, &angle, &x4F4_scale, rgb1, rgb2);
++    }
  }
  
 -#ifdef MUST_MATCH
@@ -54903,7 +54919,7 @@ index 8f66740f5..8b8392846 100644
  
  void ftCo_800D38B8(Fighter* fp, int arg1)
  {
-@@ -282,93 +308,23 @@ void ftCo_DeadLeft_Anim(Fighter_GObj* gobj)
+@@ -282,93 +317,23 @@ void ftCo_DeadLeft_Anim(Fighter_GObj* gobj)
  
  void ftCo_DeadLeft_Cam(Fighter_GObj* gobj) {}
  
@@ -55010,7 +55026,7 @@ index 8f66740f5..8b8392846 100644
  void ftCo_DeadRight_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -380,94 +336,25 @@ void ftCo_DeadRight_Anim(Fighter_GObj* gobj)
+@@ -380,94 +345,25 @@ void ftCo_DeadRight_Anim(Fighter_GObj* gobj)
  
  void ftCo_DeadRight_Cam(Fighter_GObj* gobj) {}
  
@@ -55120,7 +55136,7 @@ index 8f66740f5..8b8392846 100644
  void ftCo_DeadDown_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -479,94 +366,25 @@ void ftCo_DeadDown_Anim(Fighter_GObj* gobj)
+@@ -479,94 +375,25 @@ void ftCo_DeadDown_Anim(Fighter_GObj* gobj)
  
  void ftCo_DeadDown_Cam(Fighter_GObj* gobj) {}
  
@@ -55230,7 +55246,7 @@ index 8f66740f5..8b8392846 100644
  void ftCo_DeadUp_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -580,33 +398,26 @@ void ftCo_DeadUp_Cam(Fighter_GObj* gobj) {}
+@@ -580,33 +407,26 @@ void ftCo_DeadUp_Cam(Fighter_GObj* gobj) {}
  
  static inline void ftCo_800D40B8_inline(Fighter_GObj* gobj)
  {
@@ -55270,7 +55286,7 @@ index 8f66740f5..8b8392846 100644
      fp->mv.co.unk_deadup.x68 = 0;
  }
  
-@@ -616,10 +427,10 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
+@@ -616,10 +436,10 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
      Fighter* new_var;
      fp->x2227_b6 = 1;
      {
@@ -55284,7 +55300,7 @@ index 8f66740f5..8b8392846 100644
          fp2->mv.co.unk_deadup.x44 = 0;
          Fighter_ChangeMotionState(gobj, ftCo_MS_DeadUpStarIce, 0, 0.0F, 1.0F,
                                    0.0F, NULL);
-@@ -629,8 +440,8 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
+@@ -629,8 +449,8 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
          new_var++;
          new_var--;
  
@@ -55295,7 +55311,7 @@ index 8f66740f5..8b8392846 100644
      }
      ftCo_80090AC0(fp);
      ftCommon_8007EBAC(fp, 1, 0);
-@@ -640,12 +451,12 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
+@@ -640,12 +460,12 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
  void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55310,7 +55326,7 @@ index 8f66740f5..8b8392846 100644
              HSD_JObj* jobj =
                  fp->parts[ftParts_GetBoneIndex(fp, FtPart_XRotN)].joint;
              HSD_JObjAddRotationX(jobj, rot_speed);
-@@ -661,11 +472,11 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
+@@ -661,11 +481,11 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
          switch (fp->mv.co.unk_deadup.x44) {
          case 0:
              fp->self_vel.y =
@@ -55326,7 +55342,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 1;
              return;
          case 1:
-@@ -684,7 +495,7 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
+@@ -684,7 +504,7 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
              ft_PlaySFX(fp, 0x83, 0x7F, 0x40);
              ft_8008805C(fp, 0x83);
              ftCo_800D34E0(gobj);
@@ -55335,7 +55351,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 2;
              return;
          case 2:
-@@ -706,19 +517,19 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
+@@ -706,19 +526,19 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
      u8 _[20];
      Fighter* fp;
      Fighter_GObj* new_var;
@@ -55359,7 +55375,7 @@ index 8f66740f5..8b8392846 100644
      fp->mv.co.common.x24 = 0.0f;
      fp->mv.co.common.x20 = 0.0f;
      fp->mv.co.common.x1C = 0.0f;
-@@ -744,7 +555,7 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
+@@ -744,7 +564,7 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
      ft_80088C5C(new_var);
      ftCommon_8007EFC0(fp, true);
      ftCo_800BFFD0(fp, 0x2B, 0);
@@ -55368,7 +55384,7 @@ index 8f66740f5..8b8392846 100644
  }
  
  void ftCo_800D4780(Fighter_GObj* gobj)
-@@ -799,14 +610,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
+@@ -799,14 +619,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
              Fighter* other = GET_FIGHTER(cur);
              if (((!fp) && (!fp)) && (!fp)) {
              };
@@ -55385,7 +55401,7 @@ index 8f66740f5..8b8392846 100644
      ftCo_800D4E50(fp, &fp->cur_pos, 0, 1.5707964f);
      fp->accessory4_cb = fn_800D4DD4;
  }
-@@ -814,14 +625,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
+@@ -814,14 +634,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
  void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55402,7 +55418,7 @@ index 8f66740f5..8b8392846 100644
              HSD_JObj* jobj =
                  fp->parts[ftParts_GetBoneIndex(fp, FtPart_XRotN)].joint;
              HSD_JObjAddRotationX(jobj, rot_speed);
-@@ -835,9 +646,9 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -835,9 +655,9 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
      if (fp->mv.co.unk_deadup.x40 == 0) {
          switch (fp->mv.co.unk_deadup.x44) {
          case 0:
@@ -55414,7 +55430,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 1;
              return;
          case 1:
-@@ -850,14 +661,25 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -850,14 +670,25 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
              } else {
                  ftCo_800D481C(gobj, 7);
              }
@@ -55444,7 +55460,7 @@ index 8f66740f5..8b8392846 100644
              return;
          case 3:
              ftCommon_8007E2FC(gobj);
-@@ -872,7 +694,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -872,7 +703,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
              ft_8008805C(fp, 0x61);
              ftCommon_8007EBAC(fp, 0xD, 0);
              Camera_RequestQuake(QuakeKind_Large, &fp->cur_pos);
@@ -55453,7 +55469,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 4;
              return;
          case 4:
-@@ -885,7 +707,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -885,7 +716,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
  void ftCo_DeadUpFall_Phys(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55462,7 +55478,7 @@ index 8f66740f5..8b8392846 100644
  
      switch (fp->mv.co.unk_deadup.x44) {
      case 1:
-@@ -894,12 +716,35 @@ void ftCo_DeadUpFall_Phys(Fighter_GObj* gobj)
+@@ -894,12 +725,35 @@ void ftCo_DeadUpFall_Phys(Fighter_GObj* gobj)
                  break;
              }
          }

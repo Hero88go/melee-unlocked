@@ -389,6 +389,7 @@ HLE(PADRead) {
   host::apply_low_poly_fighters();
   host::apply_player_tags_always();
   host::apply_arcade_hitboxes();
+  host::apply_shield_colors();
   host::install_sub_color_guard();
   host::install_cobj_guard();
   host::apply_freeze_final_destination();

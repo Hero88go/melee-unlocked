@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 20
+#define MU_HOST_API_VERSION 21
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -358,6 +358,19 @@ typedef struct MuHostApi {
      * that renders into a texture the stage maps back onto the scene (Fountain of Dreams' reflection)
      * widens by this so the image covers the widened water. Display only. */
     float (*picture_widen)(void);
+
+    /* Version 21. The Arcade look's combo counter, each game frame per player: the player its combo
+     * link holds right after a hit (Fighter x2094, -1 none), its own percent, and whether it cannot act
+     * (hitlag, or a damage, down, grabbed or thrown action). Display only: the host counts the hits. */
+    void (*hud_combo)(int32_t slot, int32_t link_slot, float percent, int32_t stunned);
+
+    /* Version 21. Each player's own shield colour (VIDEO > Shield colours), 5 bits per port from bit 0:
+     * 0 the port's colour, else 1 + an index into the 18 colours of shim/mu_te_menus.c. It colours
+     * the shield bubble and the KO blast as they spawn: picture only, each player's own screen. */
+    uint32_t (*shield_colors)(void);
+
+    /* Version 21. The colour of the Arcade look's grid (MU_DISPLAY_OPTION_GRID), 0xRRGGBB. */
+    uint32_t (*grid_color)(void);
 } MuHostApi;
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):
@@ -383,6 +396,9 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_HITBOXES 0x20u
 #define MU_DISPLAY_OPTION_PROJECTILE_HITBOXES 0x40u
 #define MU_DISPLAY_OPTION_HITBOXES_BEHIND 0x80u
+/* Arcade look background "Grid": the game draws a grid behind the stage, every 5 units over the
+ * stage's camera bounds, in MuHostApi.grid_color (the host hides the scenery as for "Plain colour"). */
+#define MU_DISPLAY_OPTION_GRID 0x100u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

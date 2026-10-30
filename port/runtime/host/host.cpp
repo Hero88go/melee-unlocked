@@ -1569,6 +1569,31 @@ void apply_player_tags_always() {
   for (uint32_t i = 0; i < 6; ++i) wr8(kShowAllTags + i, on ? 1 : 0);
   held = on;
 }
+// "Shield colours" on the Static Recomp: the port colour table the shield bubble and the KO blast read
+// (Fighter_804D650C, 4 bytes a colour index) holds the player's own colour at that player's index while
+// one is chosen, and its own colour comes back when it is not. Only where the player wears its own port
+// colour (StaticPlayer +0x45, Player_GetUnk45): team matches keep the team colours. Retail game only.
+void apply_shield_colors() {
+  static uint32_t table = 0;
+  static uint8_t original[4][3];
+  static bool changed[4] = {};
+  if (!ram || mod_disc_active()) return;
+  const uint32_t now = rd32(0x804D650Cu);
+  if (now != table) { table = now; for (bool& c : changed) c = false; }   // a new table (a new match): its own colours
+  if (!table || table < 0x80000000u || table >= 0x81800000u) return;
+  for (int port = 0; port < 4; ++port) {
+    const uint32_t at = table + 4u * port;
+    const int choice = gx::shield_color(port);
+    const bool own = rd8(0x80453080u + 0xE90u * port + 0x45u) == port;
+    if (choice >= 0 && own) {
+      if (!changed[port]) { for (int k = 0; k < 3; ++k) original[port][k] = rd8(at + k); changed[port] = true; }
+      for (int k = 0; k < 3; ++k) if (rd8(at + k) != gx::kShieldColorRgb[choice][k]) wr8(at + k, gx::kShieldColorRgb[choice][k]);
+    } else if (changed[port]) {
+      for (int k = 0; k < 3; ++k) wr8(at + k, original[port][k]);
+      changed[port] = false;
+    }
+  }
+}
 // The Arcade look's hitbox switches on the Static Recomp: the always-display hitbox code's own five
 // words, written into the game's code while a switch is on and the retail words put back when it goes
 // off. The three functions run from RAM once any of them has been written (as low poly fighters does),

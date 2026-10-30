@@ -334,7 +334,7 @@ class D3D12Backend : public Backend {
     set_fod_reflections(opts_.fod_reflections);
     set_css_background_free(opts_.css_background_free);
     set_player_tags_always(opts_.player_tags_always != 0);
-    set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_));
+    set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_)); set_shield_colors(opts_.shield_color);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");

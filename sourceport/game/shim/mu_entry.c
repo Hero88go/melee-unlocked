@@ -116,6 +116,12 @@ _Static_assert(MU_DISPLAY_PLAYER_TAGS == MU_DISPLAY_OPTION_PLAYER_TAGS, "display
 _Static_assert(MU_DISPLAY_FOD_REFLECTIONS == MU_DISPLAY_OPTION_FOD_REFLECTIONS, "display option bits");
 _Static_assert(MU_DISPLAY_FREEZE_FD == MU_DISPLAY_OPTION_FREEZE_FD, "display option bits");
 
+/* "Shield colours" (MuHostApi.shield_colors): 0 from a host before version 21. */
+unsigned int mu_shield_colors(void)
+{
+    return mu_host && mu_host->version >= 21 && mu_host->shield_colors ? mu_host->shield_colors() : 0;
+}
+
 /* The Arcade look's hitbox switches: offline only, so nobody sees bubbles in a network match. */
 static int mu_arcade_display(unsigned int bit)
 {
@@ -146,6 +152,13 @@ int mu_arcade_hitboxes_behind(void)
 _Static_assert(MU_DISPLAY_HITBOXES == MU_DISPLAY_OPTION_HITBOXES, "display option bits");
 _Static_assert(MU_DISPLAY_PROJECTILE_HITBOXES == MU_DISPLAY_OPTION_PROJECTILE_HITBOXES, "display option bits");
 _Static_assert(MU_DISPLAY_HITBOXES_BEHIND == MU_DISPLAY_OPTION_HITBOXES_BEHIND, "display option bits");
+_Static_assert(MU_DISPLAY_GRID == MU_DISPLAY_OPTION_GRID, "display option bits");
+
+/* The Arcade look grid's colour (0 from a host before version 21: the default). */
+unsigned int mu_grid_color(void)
+{
+    return mu_host && mu_host->version >= 21 && mu_host->grid_color ? mu_host->grid_color() : 0x3A4458u;
+}
 _Static_assert(MU_DISPLAY_CSS_BACKGROUND_FREE == MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE, "display option bits");
 
 _Static_assert(MU_CPU_TECH_MASK == MU_GAME_OPTION3_CPU_TECH_MASK && MU_CPU_TECH_SHIFT == MU_GAME_OPTION3_CPU_TECH_SHIFT &&

@@ -261,7 +261,7 @@ class D3D11Backend : public Backend {
       set_fod_reflections(opts_.fod_reflections);
       set_css_background_free(opts_.css_background_free);
       set_player_tags_always(opts_.player_tags_always != 0);
-      set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_));
+      set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_)); set_shield_colors(opts_.shield_color);
     } catch (...) { stop_shader_workers(); throw; }   // the worker threads must not outlive a failed start
     starting_ = false;
   }

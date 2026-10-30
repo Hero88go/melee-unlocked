@@ -9,8 +9,11 @@
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/gobj.h>
 #include <sysdolphin/baselib/wobj.h>
+#include <melee/lb/lbcollision.h>
 
 int mu_option2_offline(unsigned int bit);
+unsigned int mu_display_options(void);
+unsigned int mu_grid_color(void);
 
 int mu_arcade_pack(void)
 {
@@ -43,4 +46,37 @@ void mu_arcade_pack_camera(HSD_GObj* gobj)
     stage_info.cam_info.cam_fixed_zoom = 0.5F;
     stage_info.cam_info.cam_track_smooth = 0.66F;
     stage_info.cam_info.cam_zoom_rate = 125.0F;
+}
+
+/* Arcade look background "Grid": lines every 5 units on a plane 30 units behind the play plane (in
+ * front of nothing the stage needs: the host has hidden the scenery further back), over the stage's
+ * camera bounds and a margin. Each line is a thin rectangle drawn with the match camera (the game's own
+ * debug rectangle, lbColl_80009DD4), before the stage, so the stage and the fighters cover it. */
+void mu_arcade_grid(void)
+{
+    const StageBlastZone* b = &stage_info.cam_info.cam_bounds;
+    const unsigned int rgb = mu_grid_color();
+    GXColor color;
+    Vec3 v0, v1;
+    f32 x, y, left, right, top, bottom;
+    if (!(mu_display_options() & MU_DISPLAY_GRID)) {
+        return;
+    }
+    color.r = (u8) (rgb >> 16); color.g = (u8) (rgb >> 8); color.b = (u8) rgb; color.a = 0xFF;
+    left = (f32) (5 * (int) ((b->left - 120.0F) / 5.0F));
+    right = b->right + 120.0F;
+    bottom = (f32) (5 * (int) ((b->bottom - 120.0F) / 5.0F));
+    top = b->top + 120.0F;
+    if (!(right > left) || !(top > bottom) || right - left > 2000.0F || top - bottom > 2000.0F) {
+        return;
+    }
+    v0.z = v1.z = -30.0F;
+    for (x = left; x <= right; x += 5.0F) {
+        v0.x = x - 0.12F; v1.x = x + 0.12F; v0.y = bottom; v1.y = top;
+        lbColl_80009DD4(&v0, &v1, &color);
+    }
+    for (y = bottom; y <= top; y += 5.0F) {
+        v0.y = y - 0.12F; v1.y = y + 0.12F; v0.x = left; v1.x = right;
+        lbColl_80009DD4(&v0, &v1, &color);
+    }
 }
