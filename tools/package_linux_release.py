@@ -150,7 +150,7 @@ def main():
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build-linux/port/linux/full')
     parser.add_argument('--game-build-dir', type=Path, default=ROOT / 'build-linux-game')
     parser.add_argument('--out', type=Path, default=ROOT / 'release')
-    parser.add_argument('--ghost-ai-dir', type=Path, default=ROOT / 'release/ghost-ai',
+    parser.add_argument('--ghost-ai-dir', type=Path, default=None,
                         help='ghost_ai_<pro>.bin for each released pro plus ghost_ai_models.json (Fight a pro)')
     args = parser.parse_args()
     if sys.platform != 'linux':
@@ -196,7 +196,7 @@ def main():
                     'melee_game.so'], cwd=folder, check=True)
 
     # Fight a pro: one network per released pro beside the Source Port, as in the Windows zip.
-    for pro_file in [f'ghost_ai_{pro}.bin' for pro in ('mang0', 'zain', 'cody', 'amsa')] + ['ghost_ai_models.json']:
+    for pro_file in [] if args.ghost_ai_dir is None else [f'ghost_ai_{pro}.bin' for pro in ('mang0', 'zain', 'cody', 'amsa')] + ['ghost_ai_models.json']:
         source = args.ghost_ai_dir / pro_file
         if not source.is_file():
             raise SystemExit(f'missing {source} (the pro AI files for Fight a pro)')

@@ -440,15 +440,9 @@ std::vector<Row> rows_for(Page p) {
                                                                     : "Find a match while you train."));
       const practice_cpu::Status st = practice_cpu::status();
       std::string cpu = !c.enabled ? "Off" : (st.driving ? plan_text(st.plan) : "On");
-      {
-        const bool neural = neural_ghosts();
-        bool any = false;
-        for (int i = 0; i < kGhostCount; ++i) any |= ghost_offered(i, neural);
-        if (any)
-          rows.push_back(page_row("Fight a pro", Page::Ghosts, active_pro(c),
-                                  neural ? "Play an AI that learned from a top player's own games."
-                                         : "A top player's habits on the CPU, on their own character."));
-      }
+      // Fight a pro is not ready to ship: a row that says it is coming instead of the page.
+      rows.push_back(action_row("Fight a pro", kActNone, "Coming soon",
+                                "Play AIs that learned from top players' own games. Coming in a later update.", false));
       rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Practice CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),
                               "What it does when you attack near it."));

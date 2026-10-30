@@ -254,6 +254,8 @@ def main():
                     help="the pro AI network (ghost_ai.bin); default: beside --source-exe")
     ap.add_argument("--ghost-ai-dir", type=Path, default=None,
                     help="directory containing the released player-specific models ghost_ai_{mang0,zain,cody,amsa}.bin")
+    ap.add_argument("--no-ghost-ai", action="store_true",
+                    help="ship no pro AI files (Fight a pro not in this release)")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.compat_exe and not args.skip_compat_exe:
@@ -338,6 +340,8 @@ def main():
                 raise SystemExit(f"missing verified pro AI provenance manifest: {model_manifest}")
             shutil.copy2(model_manifest, folder / model_manifest.name)
             print("source port pro ghosts: " + ", ".join(specialists))
+        elif args.no_ghost_ai:
+            print("source port pro ghosts: none (Fight a pro shows as coming soon)")
         else:
             ghost = args.ghost_ai or args.source_exe.parent / "ghost_ai.bin"
             if not ghost.is_file():

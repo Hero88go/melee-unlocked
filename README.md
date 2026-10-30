@@ -105,7 +105,7 @@ are included with Melee Unlocked.
   Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
   CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
-- Practice menu in Training (Start + D-pad Up + Z): your own CPU, Fight a pro, frame advance,
+- Practice menu in Training (Start + D-pad Up + Z): your own CPU, frame advance,
   save states, and searching for a match while you train. See [Practice](#practice).
 - Optional launcher with self-update
 
@@ -233,9 +233,7 @@ In Training, press **Start + D-pad Up + Z** to open the Practice menu (keyboard:
 few times you enter Training a banner shows those buttons. Everything works with the controller alone,
 and none of it runs online.
 
-- **Fight a pro**: play against an AI that learned from Mang0's Falco, Zain's Marth, Cody Schwab's Fox
-  or aMSa's Yoshi, from their own games. Pick one and the CPU becomes that player's character. Source
-  Port; on the Static Recomp the CPU plays their habits instead.
+- **Fight a pro**: coming in a later update.
 - **CPU**: decide how the Training CPU moves, attacks, shields, DIs, techs, gets up and uses the ledge.
   Presets cover common drills, and three slots keep your own setups.
 - **Tools**: frame advance (L + R + Z freezes the game, Z steps one frame). On the Source Port also
