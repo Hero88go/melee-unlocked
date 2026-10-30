@@ -1027,6 +1027,7 @@ uint32_t h_game_options2() {
 // them when a match is picked and they ride in the same word, so a replay records and replays them.
 // Faster sound effects (MU_AUDIO_OPTION_EARLY_KEYON): MELEE_AUDIO_EARLY_KEYON=0|1 over the setting;
 // never during an online match or a replay (see mu_host.h).
+float h_picture_widen() { return gx::true_widescreen_active() ? 1.0f / gx::true_widescreen_factor() : 1.0f; }
 uint32_t h_audio_options() {
   if (g_replaying || slippi::online::session_mode() >= 0 || source_p2p::requested()) return 0;
   static const int env = [] { const char* v = std::getenv("MELEE_AUDIO_EARLY_KEYON"); return v && *v ? (*v == '1' ? 1 : 0) : -1; }();
@@ -2868,6 +2869,7 @@ MuHostApi make_host() {
   h.game_options3 = h_game_options3;
   h.display_options = h_display_options;
   h.audio_options = h_audio_options;
+  h.picture_widen = h_picture_widen;
   return h;
 }
 

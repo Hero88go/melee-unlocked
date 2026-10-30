@@ -127506,7 +127506,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..51ac212a1 100644
+index 536bb3b2b..a71862cdd 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -127704,7 +127704,23 @@ index 536bb3b2b..51ac212a1 100644
  {
      Mtx mtx;
      Vec3 vec;
-@@ -849,12 +914,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -762,7 +827,15 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+                 HSD_CObjSetNear(dst, HSD_CObjGetNear(src));
+                 HSD_CObjSetFar(dst, HSD_CObjGetFar(src));
+                 HSD_CObjSetFov(dst, HSD_CObjGetFov(src));
++#ifdef MU_NATIVE
++                /* True widescreen widens the picture in the renderer, not the game's camera: the
++                 * reflection is widened the same way here, so its image covers the widened water
++                 * and the texture matrix below (built from this aspect) still matches it. Without
++                 * it the sides of the water stretched the reflection's outer pixels. */
++                HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src) * mu_picture_widen());
++#else
+                 HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src));
++#endif
+                 HSD_CObjGetEyePosition(src, &vec);
+                 vec.y = -vec.y;
+                 HSD_CObjSetEyePosition(dst, &vec);
+@@ -849,12 +922,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -127726,7 +127742,7 @@ index 536bb3b2b..51ac212a1 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +952,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +960,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }
@@ -205955,7 +205971,7 @@ index 90de5e6fc..8f9a71211 100644
  typedef struct _HSD_Class {
      struct _HSD_ClassInfo* class_info;
 diff --git a/src/sysdolphin/baselib/cobj.c b/src/sysdolphin/baselib/cobj.c
-index a1b904ed3..fda38cd7e 100644
+index a1b904ed3..5e7b90201 100644
 --- a/src/sysdolphin/baselib/cobj.c
 +++ b/src/sysdolphin/baselib/cobj.c
 @@ -110,9 +110,9 @@ void HSD_CObjAddAnim(HSD_CObj* cobj, HSD_CameraAnim* canim)
@@ -206114,7 +206130,21 @@ index a1b904ed3..fda38cd7e 100644
          break;
      case PROJ_ORTHO:
          HSD_CObjSetOrtho(cobj, desc->ortho.top, desc->ortho.bottom,
-@@ -1321,8 +1351,8 @@ HSD_CObj* HSD_CObjLoadDesc(HSD_CObjDesc* desc)
+@@ -1301,7 +1331,13 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
+                            desc->frustum.left, desc->frustum.right);
+         break;
+     default:
++#ifdef MU_NATIVE
++        /* A mod's camera with a projection type none of the three: perspective, the common case,
++         * instead of stopping the game. */
++        HSD_CObjSetPerspective(cobj, desc->perspective.fov, desc->perspective.aspect);
++#else
+         HSD_ASSERT(0x7D0, 0);
++#endif
+         break;
+     }
+     return 0;
+@@ -1321,8 +1357,8 @@ HSD_CObj* HSD_CObjLoadDesc(HSD_CObjDesc* desc)
      HSD_CObj* cobj;
  
      if (desc != NULL) {
@@ -206125,7 +206155,7 @@ index a1b904ed3..fda38cd7e 100644
          {
              cobj = HSD_CObjAlloc();
          } else {
-@@ -1342,7 +1372,7 @@ static int CObjInit(HSD_Class* o)
+@@ -1342,7 +1378,7 @@ static int CObjInit(HSD_Class* o)
      if (status < 0) {
          return status;
      }
@@ -206134,7 +206164,7 @@ index a1b904ed3..fda38cd7e 100644
      if (cobj != NULL) {
          HSD_CObjSetMtxDirty(cobj);
      }
-@@ -1355,23 +1385,13 @@ void CObjRelease(HSD_Class* o)
+@@ -1355,23 +1391,13 @@ void CObjRelease(HSD_Class* o)
  {
      HSD_WObj* eyepos;
      HSD_WObj* interest;

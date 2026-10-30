@@ -387,6 +387,7 @@ HLE(PADRead) {
   host::apply_low_poly_fighters();
   host::apply_player_tags_always();
   host::install_sub_color_guard();
+  host::install_cobj_guard();
   host::apply_freeze_final_destination();
   host::apply_final_destination_guard();
   uint32_t base = ARG0, mask = 0;

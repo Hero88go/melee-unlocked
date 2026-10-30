@@ -219,6 +219,7 @@ void install_language_override();  // Static Recomp: the functions that read the
 void install_low_poly_fighters();  // Static Recomp: the fighter parts hook behind "Low poly fighters" (gx::low_poly_fighters_active)
 void apply_player_tags_always();   // Static Recomp, once per game frame: keeps the P1 / P2 markers up while the option is on
 void apply_low_poly_fighters();    // Static Recomp, once per game frame: runs the fighter draw from RAM while the option is on
+void install_cobj_guard();        // Static Recomp: an unknown camera projection type no longer stops the game (cobj.c:2000)
 void install_sub_color_guard();   // Static Recomp: a tint index past 4 no longer stops the game (fighter.c:828)
 void apply_freeze_final_destination();   // Static Recomp, once per game frame: "Freeze Final Destination" on or off
 void apply_final_destination_guard();   // Static Recomp, once per game frame: a Final Destination skin without its background animation does not stop the game

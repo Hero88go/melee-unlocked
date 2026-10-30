@@ -462,6 +462,7 @@ void h_disc_read(uint32_t offset, void* dst, uint32_t size, MuDiscDone done, voi
 }
 int32_t h_zero_i32() { return 0; }
 uint32_t h_zero_u32() { return 0; }
+float h_one_f32() { return 1.0f; }
 uint32_t h_disc_id(void* out, uint32_t size) {
   const uint32_t n = out ? std::min<uint32_t>(size, 0x20) : 0;
   if (n) std::memcpy(out, disc_header.data(), n);
@@ -810,7 +811,7 @@ MuHostApi make_api() {
   h.card_write=h_card_write; h.card_stat=h_card_stat; h.card_set_stat=h_card_set_stat;
   h.card_free_blocks=h_card_free; h.card_format=h_card_format;
   h.ai_init_dma=h_ai_dma; h.ai_start_dma=h_ai_start; h.ai_set_sample_rate=h_ai_rate;
-  h.ai_set_stream_volume=h_ai_volume; h.dsp_mail=h_dsp_mail; h.dsp_mail_pending=h_zero_u32;
+  h.ai_set_stream_volume=h_ai_volume; h.dsp_mail=h_dsp_mail; h.dsp_mail_pending=h_zero_u32; h.picture_widen=h_one_f32;
   h.aram_base=h_aram; h.aram_size=h_aram_size; h.aram_dma=h_aram_dma;
   h.native_alloc=h_alloc; h.native_free=h_free;
   h.mem1_size=h_mem1; h.sound_mode=h_sound; h.set_sound_mode=h_set_sound;

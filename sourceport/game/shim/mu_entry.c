@@ -73,6 +73,14 @@ unsigned int mu_game_options3(void)
     return mu_host && mu_host->version >= 17 && mu_host->game_options3 ? mu_host->game_options3() : 0;
 }
 
+/* The presented picture's widening over the game's camera (1 with no True widescreen, or a host
+ * before version 20). */
+float mu_picture_widen(void)
+{
+    const float w = mu_host && mu_host->version >= 20 && mu_host->picture_widen ? mu_host->picture_widen() : 1.0f;
+    return w >= 1.0f && w <= 4.0f ? w : 1.0f;
+}
+
 /* Display-only options, read live (a host before version 18 has none). */
 unsigned int mu_display_options(void)
 {
