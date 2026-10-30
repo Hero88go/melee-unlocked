@@ -27,6 +27,7 @@ static std::map<std::string, std::pair<uint32_t, uint32_t>> g_disc_table;
 // cosmetic_mods.cpp only needs runtime logging; keep this unit target independent of generated
 // guest code and the rest of the Windows renderer/runtime.
 namespace host {
+void request_exit(int) {}   // updater.cpp (downloads are unpacked by it) refers to it
 void log(const char* format, ...) {
   va_list args; va_start(args, format); std::vfprintf(stdout, format, args); va_end(args);
   std::fputc('\n', stdout);
