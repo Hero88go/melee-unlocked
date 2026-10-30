@@ -25,7 +25,8 @@ typedef __UINT32_TYPE__ mu_pc_u32;
 typedef __INT32_TYPE__ mu_pc_s32;
 #endif
 
-#define MU_PC_CONFIG_VERSION 1u
+#define MU_PC_CONFIG_VERSION 2u
+#define MU_PC_CONFIG_V1_SIZE 90u   /* a version 1 setting: the prefix of version 2 */
 
 /* preset values for the pro AI: one pro, or (replay takeover) the pro who plays the fighter's character. */
 #define MU_PC_PRESET_PRO(i) (0x80u | (unsigned) (i))
@@ -156,6 +157,33 @@ enum {
 
 enum { MU_PC_RECOVER_GAME, MU_PC_RECOVER_HIGH, MU_PC_RECOVER_LOW, MU_PC_RECOVER_MIX, MU_PC_RECOVER_COUNT };
 
+/* More movement (version 2), weighted together with MU_PC_MOVE_* as one group. */
+enum {
+    MU_PC_MOVE2_WAVELAND,     /* a short hop, then an air dodge into the floor */
+    MU_PC_MOVE2_SHIELD_DROP,  /* on a platform: shield, then down through it */
+    MU_PC_MOVE2_DASH_JUMP,    /* a dash, then a jump out of it */
+    MU_PC_MOVE2_RUN_PAST,     /* runs through to the opponent's other side */
+    MU_PC_MOVE2_TURN,         /* turns around in place */
+    MU_PC_MOVE2_COUNT
+};
+
+/* Its throw once it holds the opponent (version 2). Directions are relative to its facing. */
+enum { MU_PC_THROW_FORWARD, MU_PC_THROW_BACK, MU_PC_THROW_UP, MU_PC_THROW_DOWN, MU_PC_THROW_COUNT };
+
+/* Which way its hops and aerials drift. */
+enum { MU_PC_DRIFT_MIX, MU_PC_DRIFT_TOWARD, MU_PC_DRIFT_AWAY, MU_PC_DRIFT_NONE, MU_PC_DRIFT_COUNT };
+
+/* When in the jump its aerial comes out. */
+enum { MU_PC_TIMING_MIX, MU_PC_TIMING_RISING, MU_PC_TIMING_FALLING, MU_PC_TIMING_COUNT };
+
+/* Training's random numbers (items, Peach's turnips, Game & Watch's hammer...). */
+enum {
+    MU_PC_RNG_GAME,     /* the game's own */
+    MU_PC_RNG_SAME,     /* the same seed as each Training match starts and after a state load */
+    MU_PC_RNG_FROZEN,   /* the same seed every frame: every random pick comes out the same */
+    MU_PC_RNG_COUNT
+};
+
 /* Everything the player sets. Odds are relative weights 0..100 within each group; a group whose
  * weights are all 0 never acts. Bump MU_PC_CONFIG_VERSION when the layout changes. */
 typedef struct MuPcConfig {
@@ -184,6 +212,17 @@ typedef struct MuPcConfig {
     mu_pc_u8 preset;             /* 1 + the preset last applied; 0 once anything was changed by hand;
                                   * MU_PC_PRESET_PRO(i): a pro AI plays (mu_ghost_ai.h) */
     mu_pc_u8 reserved[4];
+    /* ---- version 2 (the Preflight mod's options), after version 1's 90 bytes ---- */
+    mu_pc_u8 move2_odds[MU_PC_MOVE2_COUNT];
+    mu_pc_u8 throw_odds[MU_PC_THROW_COUNT];
+    mu_pc_u8 floorhug;           /* 0..100: chance it holds down through a hit on the ground (ASDI down) */
+    mu_pc_u8 jump_drift;         /* MU_PC_DRIFT_* */
+    mu_pc_u8 double_jump;        /* 0..100: chance a hop or aerial takes its double jump at the peak */
+    mu_pc_u8 fast_fall_delay;    /* frames after the peak before it fast falls */
+    mu_pc_u8 aerial_timing;      /* MU_PC_TIMING_* */
+    mu_pc_u8 rng_mode;           /* MU_PC_RNG_* (the engine adapters apply it, not the model) */
+    mu_pc_u8 rng_seed;           /* 0..255, the seed MU_PC_RNG_SAME and _FROZEN write */
+    mu_pc_u8 reserved2[5];
 } MuPcConfig;
 
 /* Training tools (Source Port's lab, shim/mu_lab.c, and the host overlay). */
@@ -231,7 +270,10 @@ typedef struct MuPcState {
     mu_pc_s32 di, sdi_left, tech_choice, tech_pressed, after_choice;
     mu_pc_s32 ledge_wait, opp_attack_seen, opp_attack_t, opp_motion;
     mu_pc_s32 idle_wait, last_logged;
-    mu_pc_s32 reserved[8];
+    mu_pc_s32 throw_choice, throw_wait;   /* the grab hold: its throw (-1 none) and the frames before it */
+    mu_pc_s32 floorhug, fall_t;           /* holding down through this hit; frames falling in this plan */
+    mu_pc_s32 holding;                    /* in the grab hold last frame */
+    mu_pc_s32 reserved[3];
 } MuPcState;
 
 void mu_pc_reset(MuPcState* s, mu_pc_u32 seed);
@@ -240,6 +282,11 @@ void mu_pc_reset(MuPcState* s, mu_pc_u32 seed);
 int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput* out);
 /* The defaults a fresh setting starts from, and the built-in presets (0 = default). */
 void mu_pc_defaults(MuPcConfig* c);
+/* A saved setting (raw bytes) into `c`: the current version, or a version 1 block (its 90 bytes, with
+ * the version 2 fields at their defaults). Returns 0 for anything else. */
+int mu_pc_load(const unsigned char* bytes, unsigned int size, MuPcConfig* c);
+/* The seed MU_PC_RNG_SAME and _FROZEN write for a seed number. */
+mu_pc_u32 mu_pc_rng_seed(int number);
 int mu_pc_preset_count(void);
 const char* mu_pc_preset_name(int index);
 void mu_pc_preset(int index, MuPcConfig* c);

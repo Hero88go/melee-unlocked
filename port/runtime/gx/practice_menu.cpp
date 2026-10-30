@@ -220,6 +220,11 @@ const char* const kGetup[MU_PC_GETUP_COUNT] = {"Stand", "Roll in", "Roll away", 
 const char* const kLedge[MU_PC_LEDGE_COUNT] = {"Getup", "Roll", "Jump", "Attack", "Drop and jump", "Ledgedash"};
 const char* const kAfter[MU_PC_AFTER_COUNT] = {"Nothing", "Jump", "Air dodge", "Neutral air", "Up B"};
 const char* const kRecovery[MU_PC_RECOVER_COUNT] = {"Game's own", "High", "Low", "Mix"};
+const char* const kMoves2[MU_PC_MOVE2_COUNT] = {"Waveland", "Shield drop", "Dash jump", "Run past", "Turn around"};
+const char* const kThrows[MU_PC_THROW_COUNT] = {"Forward throw", "Back throw", "Up throw", "Down throw"};
+const char* const kDrift[MU_PC_DRIFT_COUNT] = {"Mix", "Toward you", "Away", "Straight"};
+const char* const kTiming[MU_PC_TIMING_COUNT] = {"Mix", "Rising", "Falling"};
+const char* const kRng[MU_PC_RNG_COUNT] = {"Game's own", "Same each start", "Frozen"};
 const char* const kSdi[] = {"None", "Light", "Medium", "Heavy"};
 const char* const kPresetAbout[] = {
     "Moves, attacks and shields. All-round.",   "Stands still; DIs and techs. Combos.",
@@ -248,7 +253,7 @@ std::string active_pro(const MuPcConfig& c) {
 
 enum class Page : int {
   Root, Queue, Code, Blocked, Cpu, Moves, Attacks, Defense, Oos, Hit, Di, Tech, Getup, After, Ledge, Tools,
-  Presets, Setups, Replay, ReplaySettings, Ghosts, Count
+  Presets, Setups, Replay, ReplaySettings, Ghosts, Jumps, Throws, Count
 };
 // The character select's number for a character name (a ghost's character), or -1.
 int css_kind_of(const char* name) {
@@ -283,6 +288,8 @@ const char* page_title(Page p) {
     case Page::Replay: return "Replay";
     case Page::ReplaySettings: return "Settings";
     case Page::Ghosts: return "Fight a pro";
+    case Page::Jumps: return "Jumps";
+    case Page::Throws: return "Throws";
     default: return "";
   }
 }
@@ -290,7 +297,8 @@ const char* page_title(Page p) {
 // any preset.
 bool cpu_page(Page p) {
   return p == Page::Cpu || p == Page::Moves || p == Page::Attacks || p == Page::Defense || p == Page::Oos ||
-         p == Page::Hit || p == Page::Di || p == Page::Tech || p == Page::Getup || p == Page::After || p == Page::Ledge;
+         p == Page::Hit || p == Page::Di || p == Page::Tech || p == Page::Getup || p == Page::After || p == Page::Ledge ||
+         p == Page::Jumps || p == Page::Throws;
 }
 
 enum class Kind { Page, Toggle, Percent, Number, Choice, Odds, Flag, Action, Info };
@@ -306,6 +314,8 @@ struct Row {
   uint8_t* byte = nullptr;                // the setting (Toggle, Percent, Number, Choice, Odds, Flag)
   const uint8_t* group = nullptr;         // Odds: the whole group, for the share
   int group_count = 0;
+  const uint8_t* group2 = nullptr;        // Odds: a second group weighed with it (the two movement groups)
+  int group2_count = 0;
   int low = 0, high = 100, step = 1;
   const char* format = "%d";
   const char* const* names = nullptr;     // Choice
@@ -335,9 +345,10 @@ std::string g_kb_text;
 int g_kb_cursor = 0;          // 0..36 characters, 37 Delete, 38 Paste, 39 OK
 std::string g_last_direct, g_last_teams;
 
-int share_of(const uint8_t* group, int count, int index) {
+int share_of(const uint8_t* group, int count, int index, const uint8_t* group2 = nullptr, int count2 = 0) {
   int total = 0;
   for (int i = 0; i < count; ++i) total += group[i];
+  for (int i = 0; i < count2; ++i) total += group2[i];
   return total > 0 ? (group[index] * 100 + total / 2) / total : 0;
 }
 // The option a group picks most, with its share ("Shield 40%").
@@ -347,6 +358,20 @@ std::string top_of(const char* const* names, const uint8_t* group, int count) {
   if (best < 0) return "Never";
   char buf[64];
   std::snprintf(buf, sizeof buf, "%s %d%%", names[best], share_of(group, count, best));
+  return buf;
+}
+
+// The same over the two movement groups, which are picked from as one.
+std::string top_of_moves(const MuPcConfig& c, const char* const* names, const char* const* names2) {
+  int best = -1, best2 = -1;
+  for (int i = 0; i < MU_PC_MOVE_COUNT; ++i) if (c.move_odds[i] && (best < 0 || c.move_odds[i] > c.move_odds[best])) best = i;
+  for (int i = 0; i < MU_PC_MOVE2_COUNT; ++i) if (c.move2_odds[i] && (best2 < 0 || c.move2_odds[i] > c.move2_odds[best2])) best2 = i;
+  if (best < 0 && best2 < 0) return "Never";
+  char buf[64];
+  if (best2 >= 0 && (best < 0 || c.move2_odds[best2] > c.move_odds[best]))
+    std::snprintf(buf, sizeof buf, "%s %d%%", names2[best2], share_of(c.move2_odds, MU_PC_MOVE2_COUNT, best2, c.move_odds, MU_PC_MOVE_COUNT));
+  else
+    std::snprintf(buf, sizeof buf, "%s %d%%", names[best], share_of(c.move_odds, MU_PC_MOVE_COUNT, best, c.move2_odds, MU_PC_MOVE2_COUNT));
   return buf;
 }
 
@@ -375,10 +400,11 @@ Row page_row(const char* label, Page target, std::string value, const char* abou
   Row r; r.kind = Kind::Page; r.label = label; r.target = target; r.value_override = std::move(value); r.about = about;
   return r;
 }
-Row odds_row(const char* label, uint8_t* group, int count, int index) {
+Row odds_row(const char* label, uint8_t* group, int count, int index, const uint8_t* group2 = nullptr, int count2 = 0) {
   Row r; r.kind = Kind::Odds; r.label = label; r.byte = &group[index]; r.group = group; r.group_count = count;
+  r.group2 = group2; r.group2_count = count2;
   r.low = 0; r.high = 100; r.step = 5;
-  const int share = share_of(group, count, index);
+  const int share = share_of(group, count, index, group2, count2);
   char buf[96];
   if (!group[index]) std::snprintf(buf, sizeof buf, "%s: never.", label);
   else if (share >= 100) std::snprintf(buf, sizeof buf, "%s every time.", label);
@@ -422,7 +448,7 @@ std::string value_of(const Row& r) {
     case Kind::Choice: return (*r.byte < r.name_count) ? r.names[*r.byte] : "";
     case Kind::Odds: {
       if (!*r.byte) return "Never";
-      std::snprintf(buf, sizeof buf, "%d%%", share_of(r.group, r.group_count, (int)(r.byte - r.group)));
+      std::snprintf(buf, sizeof buf, "%d%%", share_of(r.group, r.group_count, (int)(r.byte - r.group), r.group2, r.group2_count));
       return buf;
     }
     default: return r.value_override;
@@ -490,7 +516,7 @@ std::vector<Row> rows_for(Page p) {
     case Page::Cpu:
       rows.push_back(toggle_row("Practice CPU", &c.enabled, "On: the CPU follows these pages. Never online."));
       rows.push_back(toggle_row("Only react", &c.freeze, "It stands still and only DIs, techs and recovers."));
-      rows.push_back(page_row("Movement", Page::Moves, top_of(kMoves, c.move_odds, MU_PC_MOVE_COUNT), "What it does between attacks."));
+      rows.push_back(page_row("Movement", Page::Moves, top_of_moves(c, kMoves, kMoves2), "What it does between attacks."));
       {
         const practice_cpu::Status st = practice_cpu::status();
         const char* names[MU_PC_ATK_COUNT];
@@ -500,15 +526,35 @@ std::vector<Row> rows_for(Page p) {
           if (const char* name = practice_cpu::special_name(st.kind, k)) { special[k] = name; names[MU_PC_ATK_NEUTRAL_B + k] = special[k].c_str(); }
         rows.push_back(page_row("Attacks", Page::Attacks, top_of(names, c.attack_odds, MU_PC_ATK_COUNT), "Picked when you are in range."));
       }
+      rows.push_back(page_row("Throws", Page::Throws, top_of(kThrows, c.throw_odds, MU_PC_THROW_COUNT), "Its throw once it grabs you."));
+      rows.push_back(page_row("Jumps", Page::Jumps, kDrift[c.jump_drift < MU_PC_DRIFT_COUNT ? c.jump_drift : 0],
+                              "Drift, double jumps, fast fall timing and when its aerials come out."));
       rows.push_back(percent_row("Aggression", &c.aggression, "How often it attacks rather than moves when you are in range."));
       rows.push_back(number_row("Attack range", &c.attack_range, 10, 80, 5, "%d", "How close you must be before it attacks."));
       rows.push_back(number_row("Reaction", &c.reaction_frames, 0, 40, 1, "%df", "Frames before it answers. People take 15 to 25."));
-      rows.push_back(percent_row("Full hop", &c.full_hop_aerials, "Chance an aerial is full hopped, not short hopped."));
-      rows.push_back(percent_row("Fast fall", &c.fast_fall, "Chance it fast falls its aerials."));
       rows.push_back(percent_row("L-cancel", &c.l_cancel, "Chance it L-cancels."));
       break;
     case Page::Moves:
-      for (int i = 0; i < MU_PC_MOVE_COUNT; ++i) rows.push_back(odds_row(kMoves[i], c.move_odds, MU_PC_MOVE_COUNT, i));
+      // The two movement groups are picked from as one, so every share is of all of them.
+      for (int i = 0; i < MU_PC_MOVE_COUNT; ++i)
+        rows.push_back(odds_row(kMoves[i], c.move_odds, MU_PC_MOVE_COUNT, i, c.move2_odds, MU_PC_MOVE2_COUNT));
+      for (int i = 0; i < MU_PC_MOVE2_COUNT; ++i) {
+        rows.push_back(odds_row(kMoves2[i], c.move2_odds, MU_PC_MOVE2_COUNT, i, c.move_odds, MU_PC_MOVE_COUNT));
+        if (i == MU_PC_MOVE2_SHIELD_DROP) rows.back().about += " Only on a platform; on the stage it shields.";
+      }
+      break;
+    case Page::Throws:
+      for (int i = 0; i < MU_PC_THROW_COUNT; ++i) rows.push_back(odds_row(kThrows[i], c.throw_odds, MU_PC_THROW_COUNT, i));
+      break;
+    case Page::Jumps:
+      rows.push_back(choice_row("Drift", &c.jump_drift, kDrift, MU_PC_DRIFT_COUNT,
+                                "Which way its hops and aerials drift. Mix: hops either way, aerials toward you."));
+      rows.push_back(percent_row("Double jump", &c.double_jump, "Chance a hop or an aerial takes its double jump at the top."));
+      rows.push_back(number_row("Fast fall delay", &c.fast_fall_delay, 0, 30, 1, "%df", "Frames after the top of the jump before it fast falls."));
+      rows.push_back(choice_row("Aerial timing", &c.aerial_timing, kTiming, MU_PC_TIMING_COUNT,
+                                "Rising: the aerial as it leaves the ground. Falling: after the top of the jump."));
+      rows.push_back(percent_row("Full hop", &c.full_hop_aerials, "Chance an aerial is full hopped, not short hopped."));
+      rows.push_back(percent_row("Fast fall", &c.fast_fall, "Chance it fast falls its hops and aerials."));
       break;
     case Page::Attacks: {
       const practice_cpu::Status st = practice_cpu::status();
@@ -531,6 +577,7 @@ std::vector<Row> rows_for(Page p) {
     case Page::Hit:
       rows.push_back(page_row("DI", Page::Di, top_of(kDi, c.di_odds, MU_PC_DI_COUNT), "Picked for each hit. In and out are toward and away from you."));
       rows.push_back(choice_row("Smash DI", &c.sdi_amount, kSdi, 4, "How hard it smash DIs multi-hit moves."));
+      rows.push_back(percent_row("Floorhug", &c.floorhug, "Chance it holds down when hit on the ground, so weak hits leave it standing."));
       rows.push_back(page_row("Tech", Page::Tech, top_of(kTech, c.tech_odds, MU_PC_TECH_COUNT), "When it lands in tumble."));
       rows.push_back(page_row("Missed tech", Page::Getup, top_of(kGetup, c.getup_odds, MU_PC_GETUP_COUNT), "After a missed tech."));
       rows.push_back(page_row("Leaving hitstun", Page::After, top_of(kAfter, c.after_odds, MU_PC_AFTER_COUNT), "As hitstun ends in the air."));
@@ -565,6 +612,10 @@ std::vector<Row> rows_for(Page p) {
           {"Combo counter", MU_PC_TOOL_COMBO_COUNTER, "Counts the hits of each combo over your damage."},
           {"Inputs", MU_PC_TOOL_OVERLAY, "Both players' inputs and your frame advantage."},
       };
+      rows.push_back(choice_row("Random numbers", &c.rng_mode, kRng, MU_PC_RNG_COUNT,
+                                "Same each start: items, turnips and hammers come out the same each match. Frozen: every time."));
+      if (c.rng_mode != MU_PC_RNG_GAME)
+        rows.push_back(number_row("Seed", &c.rng_seed, 0, 255, 1, "%d", "Another seed gives other random picks."));
       {
         Row r; r.kind = Kind::Flag; r.label = "Frame advance"; r.byte = &c.tools; r.mask = MU_PC_TOOL_FRAME_ADVANCE;
         r.about = "In Training, L + R + Z freezes the game. Z steps a frame; the D-pad moves the CPU.";

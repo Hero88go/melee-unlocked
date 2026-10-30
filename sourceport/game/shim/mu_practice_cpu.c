@@ -21,6 +21,7 @@
 #include <melee/mp/types.h>
 #include <melee/pl/player.h>
 #include <sysdolphin/baselib/gobj.h>
+#include <sysdolphin/baselib/random.h>
 
 #include "mu_native.h"
 #include "mu_practice_cpu_impl.inl"
@@ -48,6 +49,8 @@ _Static_assert(ftCo_MS_DownBoundD == MU_PC_MS_DOWN_BOUND_D && ftCo_MS_DownWaitD 
 _Static_assert(ftCo_MS_Catch == MU_PC_MS_CATCH && ftCo_MS_CatchDash == MU_PC_MS_CATCH_DASH, "motion ids");
 _Static_assert(ftCo_MS_CliffCatch == MU_PC_MS_CLIFF_CATCH && ftCo_MS_CliffWait == MU_PC_MS_CLIFF_WAIT, "motion ids");
 _Static_assert(ftCo_MS_Entry == MU_PC_MS_ENTRY, "motion ids");
+_Static_assert(ftCo_MS_CatchWait == MU_PC_MS_CATCH_WAIT && ftCo_MS_ThrowLw == MU_PC_MS_THROW_LW, "motion ids");
+_Static_assert(ftCo_MS_Pass == MU_PC_MS_PASS, "motion ids");
 _Static_assert(Gr_Kind_Story == 0x0A && Gr_Kind_Izumi == 0x0C && Gr_Kind_PStadium == 0x10, "stage ids");
 _Static_assert(Gr_Kind_OldPupupu == 0x1C && Gr_Kind_Battle == 0x24 && Gr_Kind_Last == 0x25, "stage ids");
 _Static_assert(sizeof(MuPcConfig) <= 256, "practice CPU settings fit one host reply");
@@ -91,7 +94,9 @@ static int pc_can_act(const Fighter* fp)
     if (fp->dmg.x195c_hitlag_frames > 0.0f || fp->x221C_b6) return 0;
     if (fp->allow_interrupt) return 1;
     return (m >= ftCo_MS_Wait && m <= ftCo_MS_Run) || (m >= ftCo_MS_JumpAerialF && m <= ftCo_MS_FallAerialB) ||
-           m == ftCo_MS_Squat || m == ftCo_MS_SquatWait || m == ftCo_MS_DamageFall || m == ftCo_MS_Guard;
+           m == ftCo_MS_Squat || m == ftCo_MS_SquatWait || m == ftCo_MS_DamageFall || m == ftCo_MS_Guard ||
+           /* teetering at an edge: free, and the CPU stood there for the rest of the match without it */
+           m == ftCo_MS_Ottotto || m == ftCo_MS_OttottoWait;
 }
 
 static void pc_read(const Fighter* fp, MuPcFighter* f)
@@ -178,6 +183,26 @@ static int pc_allowed(void)
 }
 
 static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out, int report);
+
+/* Training's random numbers (the CPU page's RNG setting), whether or not the Practice CPU is on: the
+ * seed as each match starts and whenever the match's frame count goes back (a state load), or every
+ * frame when frozen. Once per game frame. */
+static void pc_rng(void)
+{
+    static int last = -1;
+    const int now = (int) gm_GetFrameCount();
+    const MuPcConfig* c;
+    int start;
+    if (now == last) return;
+    start = last < 0 || now < last;
+    last = now;
+    c = pc_settings();
+    if (c->rng_mode == MU_PC_RNG_FROZEN || (c->rng_mode == MU_PC_RNG_SAME && start)) {
+        *HSD_RandSeedPtr = mu_pc_rng_seed(c->rng_seed);
+        if (start) OSReport("[pc] rng seed %08X (%s)\n", (unsigned int) *HSD_RandSeedPtr,
+                            c->rng_mode == MU_PC_RNG_FROZEN ? "frozen" : "same each start");
+    }
+}
 static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out);
 
 /* Nonzero when the practice CPU set this fighter's controller for the frame. */
@@ -207,6 +232,7 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
             return g != NULL && g->user_data != NULL && pc_drive(fp, g->user_data, &t, out, 0);
         }
     }
+    if (fp != NULL && pc_allowed()) pc_rng();
     if (fp == NULL || fp->is_sub_fighter || !ftCo_IsCpuControlled(fp) || !pc_allowed()) return 0;
     c = pc_settings();
     if (!c->enabled) return 0;

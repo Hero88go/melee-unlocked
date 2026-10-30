@@ -40,6 +40,9 @@ enum {
     MU_PC_MS_DOWN_WAIT_D = 192,
     MU_PC_MS_CATCH = 212,
     MU_PC_MS_CATCH_DASH = 214,
+    MU_PC_MS_CATCH_WAIT = 216,   /* holding the opponent */
+    MU_PC_MS_THROW_LW = 222,     /* ThrowF 219 .. ThrowLw 222 */
+    MU_PC_MS_PASS = 244,         /* dropping through a platform */
     MU_PC_MS_CLIFF_CATCH = 252,
     MU_PC_MS_CLIFF_WAIT = 253,
     MU_PC_MS_CLIFF_LAST = 263,   /* CliffCatch .. CliffJumpQuick2: on or leaving the ledge by its own options */
@@ -71,13 +74,20 @@ enum {
     PC_P_GETUP,
     PC_P_LEDGE,
     PC_P_AFTER,
+    PC_P_WAVELAND,
+    PC_P_SHIELD_DROP,
+    PC_P_DASH_JUMP,
+    PC_P_RUN_PAST,
+    PC_P_TURN,
+    PC_P_THROW,
     PC_P_COUNT
 };
 
 static const char* const pc_plan_names[PC_P_COUNT] = {
     "ready", "standing", "walk", "dash dance", "approach", "run away", "hop", "wavedash", "crouch",
     "ground attack", "aerial", "special", "shield", "spot dodge", "roll", "jump away",
-    "out of shield", "getup", "ledge", "after hitstun"};
+    "out of shield", "getup", "ledge", "after hitstun", "waveland", "shield drop", "dash jump", "run past",
+    "turn around", "throw"};
 
 const char* mu_pc_plan_name(int plan)
 {
@@ -117,6 +127,7 @@ void mu_pc_reset(MuPcState* s, mu_pc_u32 seed)
     for (i = 0; i < sizeof *s; i++) p[i] = 0;
     s->rng = seed ? seed : 0x2545F491u;
     s->last_logged = -1;
+    s->throw_choice = -1;
 }
 
 static int pc_between(int v, int lo, int hi) { return v >= lo && v <= hi; }
@@ -149,6 +160,26 @@ static void pc_start(MuPcState* s, int plan, int dir, int arg, int len)
     s->plan_dir = dir;
     s->plan_arg = arg;
     s->plan_len = len;
+    s->fall_t = 0;
+}
+
+/* The drift of a hop (`hop`) or an aerial: "Mix" keeps the old ways (hops either way, aerials toward). */
+static int pc_drift(const MuPcConfig* c, MuPcState* s, int toward, int hop)
+{
+    switch (c->jump_drift) {
+    case MU_PC_DRIFT_TOWARD: return toward;
+    case MU_PC_DRIFT_AWAY: return -toward;
+    case MU_PC_DRIFT_NONE: return 0;
+    default: return hop ? ((int) pc_rand(s, 2) ? toward : -toward) : toward;
+    }
+}
+
+/* Fast fall once it has been falling for the set delay; counts the falling frames. */
+static int pc_fast_fall_due(const MuPcConfig* c, MuPcState* s, const MuPcFighter* f)
+{
+    if (f->vy >= 0.0f) return 0;
+    s->fall_t++;
+    return s->fall_t > (int) c->fast_fall_delay;
 }
 
 /* Toward the opponent (+1 right, -1 left); facing when they overlap. */
@@ -243,8 +274,20 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         o->lx = (float) dir;
         return t < s->plan_len;
     case PC_P_HOP:
+        /* plan_len bits: 2 fast fall, 16 fell, 64 double jump, 128 double jumped */
         if (t == 0 || (s->plan_arg && t < 8 && !f->airborne)) o->buttons |= MU_PC_X;
-        if (f->airborne) o->lx = 0.6f * (float) dir;
+        if (f->airborne) {
+            o->lx = 0.6f * (float) dir;
+            if ((s->plan_len & 64) && !(s->plan_len & 128) && f->vy <= 0.0f && f->jumps_left > 0) {
+                o->buttons |= MU_PC_X;   /* the double jump at the peak */
+                s->plan_len |= 128;
+                s->fall_t = 0;
+            } else if ((s->plan_len & 2) && !(s->plan_len & 16) && pc_fast_fall_due(c, s, f)) {
+                o->lx = 0.0f;
+                o->ly = -1.0f;
+                s->plan_len |= 16;
+            }
+        }
         return t < 4 || f->airborne || t < 6;
     case PC_P_WAVEDASH:
         if (t == 0) {
@@ -309,7 +352,8 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         return t < 4 || (!f->can_act && t < 180);
     }
     case PC_P_AERIAL: {
-        /* plan_arg: the aerial; plan_len bits: 1 full hop, 2 fast fall, 4 L-cancel, 8 pressed, 16 fell */
+        /* plan_arg: the aerial; plan_len bits: 1 full hop, 2 fast fall, 4 L-cancel, 8 pressed, 16 fell,
+         * 32 waits for the fall, 64 double jump, 128 double jumped; plan_dir: the drift */
         const int full = s->plan_len & 1;
         if (t == 0) {
             o->buttons |= MU_PC_X;
@@ -322,16 +366,25 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         if (f->airborne && !(s->plan_len & 8)) {
             if (full && t < 8) {   /* rise a little before a full hop aerial */
                 o->buttons |= MU_PC_X;
-                o->lx = 0.6f * (float) toward;
+                o->lx = 0.6f * (float) dir;
                 return 1;
             }
+            o->lx = 0.5f * (float) dir;
+            if ((s->plan_len & 64) && !(s->plan_len & 128) && f->jumps_left > 0) {
+                if (f->vy <= 0.0f) {
+                    o->buttons |= MU_PC_X;   /* the double jump at the peak, then the aerial */
+                    s->plan_len |= 128;
+                }
+                return t < 120;
+            }
+            if ((s->plan_len & 32) && f->vy > 0.0f && t < 90) return 1;   /* a late aerial waits for the fall */
             pc_aerial_press(s->plan_arg, pc_sign(f->facing), o);
             s->plan_len |= 8;
             return 1;
         }
         if (f->airborne) {
-            o->lx = 0.5f * (float) toward;
-            if ((s->plan_len & 2) && !(s->plan_len & 16) && f->vy < 0.0f) {
+            o->lx = 0.5f * (float) dir;
+            if ((s->plan_len & 2) && !(s->plan_len & 16) && pc_fast_fall_due(c, s, f)) {
                 o->lx = 0.0f;
                 o->ly = -1.0f;   /* fast fall */
                 s->plan_len |= 16;
@@ -431,6 +484,47 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         }
         return 1;
     }
+    case PC_P_WAVELAND:
+        /* A short hop, then an air dodge down and along into the floor just before landing. */
+        if (t == 0) { o->buttons |= MU_PC_X; return 1; }
+        if (!s->plan_len && f->airborne && f->vy < 0.0f && v->land_frames >= 0 && v->land_frames <= 2) {
+            pc_air_dodge(o, 0.95f * (float) dir, -0.31f);
+            s->plan_len = 1;
+            return 1;
+        }
+        if (!s->plan_len && t > 6 && !f->airborne) return 0;   /* never left the ground */
+        if (s->plan_len && !f->airborne && f->motion != MU_PC_MS_LANDING_FALL_SPECIAL) return 0;
+        return t < 60;
+    case PC_P_SHIELD_DROP:
+        /* Shield, then the stick flicked down to the shield drop notch: through the platform. */
+        pc_shield(o);
+        if (t >= 6 && t < 10) o->ly = -0.75f;
+        if (f->motion == MU_PC_MS_PASS || (t > 10 && f->airborne)) return 0;
+        return t < 24;
+    case PC_P_DASH_JUMP:
+        if (t < 5) { o->lx = (float) dir; return 1; }
+        if (t == 5) { o->buttons |= MU_PC_X; o->lx = (float) dir; return 1; }
+        o->lx = 0.6f * (float) dir;
+        return t < 60 && (t < 10 || f->airborne);
+    case PC_P_RUN_PAST:
+        /* Runs at the opponent and on past them; stops at the edge or once well past. */
+        if (pc_abs(f->x) > v->ledge_x - 18.0f && pc_sign(f->x) == (float) dir) return 0;
+        if ((v->opp.x - f->x) * (float) dir < -18.0f) return 0;
+        o->lx = (float) dir;
+        return t < 120;
+    case PC_P_TURN:
+        if (t < 2) o->lx = -0.4f * pc_sign(f->facing);   /* a soft tilt: turns without a dash */
+        return t < 10;
+    case PC_P_THROW:
+        /* Holding the opponent: the throw after a short wait; plan_dir is the facing it holds with. */
+        if (t < s->plan_len) return f->motion == MU_PC_MS_CATCH_WAIT;
+        switch (s->plan_arg) {
+        case MU_PC_THROW_BACK: o->lx = (float) -dir; break;
+        case MU_PC_THROW_UP: o->ly = 1.0f; break;
+        case MU_PC_THROW_DOWN: o->ly = -1.0f; break;
+        default: o->lx = (float) dir; break;
+        }
+        return t < s->plan_len + 3 && f->motion == MU_PC_MS_CATCH_WAIT;
     default:
         return 0;
     }
@@ -516,8 +610,15 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         if (s->di < 0) s->di = MU_PC_DI_NONE;
         s->sdi_left = c->sdi_amount * 2;
         s->tech_pressed = 0;
+        s->floorhug = !f->airborne && pc_chance(s, c->floorhug);   /* rolled for each hit on the ground */
     }
     s->was_hitlag = f->hitlag;
+    if (f->hitlag && s->floorhug) {
+        o->ly = -1.0f;   /* floorhug: both sticks held down, so the hit's ASDI keeps it on the ground */
+        o->cy = -1.0f;
+        s->was_hitstun = 1;
+        return 1;
+    }
     if (f->hitlag) {
         float lx, ly;
         pc_di_stick(s->di, toward, f->x, &lx, &ly);
@@ -625,6 +726,14 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         }
     }
 
+    /* ---- holding the opponent: its throw ---- */
+    if (f->motion == MU_PC_MS_CATCH_WAIT && !s->holding && s->plan != PC_P_THROW) {
+        const int choice = pc_pick(s, c->throw_odds, MU_PC_THROW_COUNT);
+        s->throw_choice = choice;
+        if (choice >= 0) pc_start(s, PC_P_THROW, (int) pc_sign(f->facing), choice, 4 + (int) pc_rand(s, 9));
+    }
+    s->holding = f->motion == MU_PC_MS_CATCH_WAIT;
+
     /* ---- the running plan ---- */
     if (s->plan != PC_P_NONE) {
         const int going = pc_run_plan(c, s, v, o);
@@ -646,6 +755,10 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         const float dist = pc_abs(v->opp.x - f->x);
         int atk = -1;
         if (dist < (float) c->attack_range && pc_chance(s, c->aggression)) atk = pc_pick(s, c->attack_odds, MU_PC_ATK_COUNT);
+        /* A ground attack only reaches an opponent on its own floor: with them on a platform above (or
+         * below) it grabbed and jabbed at the air under them for as long as they stood there. It moves
+         * instead; aerials and specials still go. */
+        if (atk >= 0 && (atk <= MU_PC_ATK_BOOST_GRAB || atk == MU_PC_ATK_WAVEDASH_FTILT) && pc_abs(v->opp.y - f->y) > 12.0f) atk = -1;
         if (atk >= 0) {
             switch (atk) {
             case MU_PC_ATK_NAIR: case MU_PC_ATK_FAIR: case MU_PC_ATK_BAIR: case MU_PC_ATK_UAIR: case MU_PC_ATK_DAIR: {
@@ -653,6 +766,8 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
                 if (pc_chance(s, c->full_hop_aerials)) flags |= 1;
                 if (pc_chance(s, c->fast_fall)) flags |= 2;
                 if (pc_chance(s, c->l_cancel)) flags |= 4;
+                if (c->aerial_timing == MU_PC_TIMING_FALLING || (c->aerial_timing == MU_PC_TIMING_MIX && pc_rand(s, 2))) flags |= 32;
+                if (pc_chance(s, c->double_jump)) flags |= 64;
                 /* forward and back airs come out facing the right way: turn first when needed */
                 if ((atk == MU_PC_ATK_FAIR && pc_sign(f->facing) != (float) toward) ||
                     (atk == MU_PC_ATK_BAIR && pc_sign(f->facing) == (float) toward))
@@ -660,7 +775,7 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
                     o->lx = 0.35f * (atk == MU_PC_ATK_FAIR ? (float) toward : (float) -toward);
                     return 1;
                 }
-                pc_start(s, PC_P_AERIAL, toward, atk, flags);
+                pc_start(s, PC_P_AERIAL, pc_drift(c, s, toward, 0), atk, flags);
                 break;
             }
             case MU_PC_ATK_NEUTRAL_B: case MU_PC_ATK_SIDE_B: case MU_PC_ATK_UP_B: case MU_PC_ATK_DOWN_B:
@@ -680,22 +795,42 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
                 break;
             }
         } else {
-            const int move = pc_pick(s, c->move_odds, MU_PC_MOVE_COUNT);
+            /* Both movement groups weigh as one. */
+            mu_pc_u8 all[MU_PC_MOVE_COUNT + MU_PC_MOVE2_COUNT];
+            int move, i;
+            for (i = 0; i < MU_PC_MOVE_COUNT; i++) all[i] = c->move_odds[i];
+            for (i = 0; i < MU_PC_MOVE2_COUNT; i++) all[MU_PC_MOVE_COUNT + i] = c->move2_odds[i];
+            move = pc_pick(s, all, MU_PC_MOVE_COUNT + MU_PC_MOVE2_COUNT);
             switch (move) {
             case MU_PC_MOVE_WALK: pc_start(s, PC_P_WALK, (int) pc_rand(s, 3) ? toward : -toward, 0, 20 + (int) pc_rand(s, 40)); break;
             case MU_PC_MOVE_DASH_DANCE: pc_start(s, PC_P_DASH_DANCE, toward, (int) pc_rand(s, 5), 40 + (int) pc_rand(s, 60)); break;
             case MU_PC_MOVE_APPROACH: pc_start(s, PC_P_APPROACH, toward, 0, 90); break;
             case MU_PC_MOVE_RUN_AWAY: pc_start(s, PC_P_RUN_AWAY, -toward, 0, 30 + (int) pc_rand(s, 40)); break;
-            case MU_PC_MOVE_SHORT_HOP: pc_start(s, PC_P_HOP, (int) pc_rand(s, 2) ? toward : -toward, 0, 0); break;
-            case MU_PC_MOVE_FULL_HOP: pc_start(s, PC_P_HOP, (int) pc_rand(s, 2) ? toward : -toward, 1, 0); break;
+            case MU_PC_MOVE_SHORT_HOP:
+            case MU_PC_MOVE_FULL_HOP: {
+                const int dir = pc_drift(c, s, toward, 1);
+                const int flags = (pc_chance(s, c->fast_fall) ? 2 : 0) | (pc_chance(s, c->double_jump) ? 64 : 0);
+                pc_start(s, PC_P_HOP, dir, move == MU_PC_MOVE_FULL_HOP, flags);
+                break;
+            }
             case MU_PC_MOVE_WAVEDASH_IN: pc_start(s, PC_P_WAVEDASH, toward, 0, 0); break;
             case MU_PC_MOVE_WAVEDASH_OUT: pc_start(s, PC_P_WAVEDASH, -toward, 0, 0); break;
             case MU_PC_MOVE_CROUCH: pc_start(s, PC_P_CROUCH, toward, 0, 20 + (int) pc_rand(s, 40)); break;
+            case MU_PC_MOVE_COUNT + MU_PC_MOVE2_WAVELAND: pc_start(s, PC_P_WAVELAND, (int) pc_rand(s, 2) ? toward : -toward, 0, 0); break;
+            case MU_PC_MOVE_COUNT + MU_PC_MOVE2_SHIELD_DROP:
+                /* Only a platform can be dropped through: on the main stage it is a short shield. */
+                if (f->y > v->ledge_y + 5.0f) pc_start(s, PC_P_SHIELD_DROP, toward, 0, 0);
+                else pc_start(s, PC_P_SHIELD, toward, 0, 10);
+                break;
+            case MU_PC_MOVE_COUNT + MU_PC_MOVE2_DASH_JUMP: pc_start(s, PC_P_DASH_JUMP, (int) pc_rand(s, 2) ? toward : -toward, 0, 0); break;
+            case MU_PC_MOVE_COUNT + MU_PC_MOVE2_RUN_PAST: pc_start(s, PC_P_RUN_PAST, toward, 0, 0); break;
+            case MU_PC_MOVE_COUNT + MU_PC_MOVE2_TURN: pc_start(s, PC_P_TURN, toward, 0, 0); break;
             default: pc_start(s, PC_P_IDLE, toward, 0, 15 + (int) pc_rand(s, 30)); break;
             }
             /* Near a ledge it never walks, dashes, hops or wavedashes outward: that only throws it off
              * the stage (a wavedash out from the ledge slid it off). Running away stops at the edge. */
-            if ((s->plan == PC_P_WALK || s->plan == PC_P_DASH_DANCE || s->plan == PC_P_HOP || s->plan == PC_P_WAVEDASH) &&
+            if ((s->plan == PC_P_WALK || s->plan == PC_P_DASH_DANCE || s->plan == PC_P_HOP || s->plan == PC_P_WAVEDASH ||
+                 s->plan == PC_P_WAVELAND || s->plan == PC_P_DASH_JUMP) &&
                 pc_abs(f->x) > v->ledge_x - 30.0f && (float) s->plan_dir == pc_sign(f->x))
             {
                 s->plan_dir = -s->plan_dir;
@@ -782,7 +917,33 @@ void mu_pc_defaults(MuPcConfig* c)
     c->recovery = MU_PC_RECOVER_MIX;
     c->freeze = 0;
     c->ledge_delay = 30;
+    /* version 2: the new movement stays off unless set, so the presets move as before */
+    pc_fill(c->throw_odds, MU_PC_THROW_COUNT, 25);
+    c->jump_drift = MU_PC_DRIFT_MIX;
+    c->aerial_timing = MU_PC_TIMING_RISING;
+    c->rng_mode = MU_PC_RNG_GAME;
     c->preset = 1;   /* these are the "Balanced" preset */
+}
+
+int mu_pc_load(const unsigned char* bytes, unsigned int size, MuPcConfig* c)
+{
+    MuPcConfig out;
+    unsigned char* p = (unsigned char*) &out;
+    unsigned int i;
+    if (bytes == 0 || size == 0) return 0;
+    if (!(bytes[0] == MU_PC_CONFIG_VERSION && size == sizeof out) &&
+        !(bytes[0] == 1u && size == MU_PC_CONFIG_V1_SIZE))   /* version 1: version 2's fields keep their defaults */
+        return 0;
+    mu_pc_defaults(&out);
+    for (i = 0; i < size; i++) p[i] = bytes[i];
+    out.version = (mu_pc_u8) MU_PC_CONFIG_VERSION;
+    *c = out;
+    return 1;
+}
+
+mu_pc_u32 mu_pc_rng_seed(int number)
+{
+    return (mu_pc_u32) number * 2654435761u + 1u;
 }
 
 static const char* const pc_preset_names[] = {

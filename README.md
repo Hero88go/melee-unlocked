@@ -269,8 +269,12 @@ and none of it runs online.
 
 - **Fight a pro**: coming in a later update.
 - **CPU**: decide how the Training CPU moves, attacks, shields, DIs, techs, gets up and uses the ledge.
+  Movement includes wavelands, shield drops (on platforms), dash jumps, running past you and turning
+  around; Throws picks its throw once it grabs you; Jumps sets its drift, double jumps, fast fall
+  timing and whether its aerials come out rising or falling; Hit reactions has floorhugging.
   Presets cover common drills, and three slots keep your own setups.
-- **Tools**: frame advance (L + R + Z freezes the game, Z steps one frame). On the Source Port also
+- **Tools**: random numbers set to the same seed each Training start, or frozen, so items, turnips
+  and hammers come out the same every time. Frame advance (L + R + Z freezes the game, Z steps one frame). On the Source Port also
   save states on the D-pad (right saves, left loads), recording the CPU (down records, up plays it
   back), hitboxes and an input display.
 - **Search**: start an Unranked, Direct or Teams search and keep training; the match starts by itself

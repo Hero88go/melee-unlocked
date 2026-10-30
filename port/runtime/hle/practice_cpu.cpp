@@ -104,16 +104,18 @@ std::string to_text(const MuPcConfig& c) {
   return s;
 }
 bool from_text(const std::string& text, MuPcConfig& c) {
-  if (text.size() != sizeof(MuPcConfig) * 2) return false;
-  MuPcConfig out;
-  auto* p = reinterpret_cast<uint8_t*>(&out);
-  for (size_t i = 0; i < sizeof out; ++i) {
+  // This version's settings, or a version 1 setting (its fields first, the newer ones at their defaults).
+  if (text.empty() || text.size() % 2 || text.size() > sizeof(MuPcConfig) * 2) return false;
+  uint8_t bytes[sizeof(MuPcConfig)];
+  const size_t n = text.size() / 2;
+  for (size_t i = 0; i < n; ++i) {
     auto nib = [](char h) -> int { return h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : -1; };
     const int hi = nib(text[i * 2]), lo = nib(text[i * 2 + 1]);
     if (hi < 0 || lo < 0) return false;
-    p[i] = (uint8_t)(hi << 4 | lo);
+    bytes[i] = (uint8_t)(hi << 4 | lo);
   }
-  if (out.version != MU_PC_CONFIG_VERSION) return false;
+  MuPcConfig out;
+  if (!mu_pc_load(bytes, (unsigned)n, &out)) return false;
   c = out;
   return true;
 }
@@ -205,7 +207,8 @@ bool can_act(uint32_t fp, int motion, bool hitlag, bool hitstun) {
   if (hitlag || hitstun) return false;
   if (host::rd8(fp + 0x2218) & 0x80) return true;   // allow_interrupt
   return (motion >= 14 && motion <= 21) || (motion >= 27 && motion <= 34) || motion == 39 || motion == 40 ||
-         motion == 38 || motion == 179;
+         motion == 38 || motion == 179 ||
+         motion == 245 || motion == 246;   // teetering at an edge (Ottotto, OttottoWait): free, or the CPU stood there
 }
 
 void read_fighter(uint32_t fp, MuPcFighter& f) {
@@ -237,6 +240,23 @@ int8_t stick8(float v) {
 
 MuPcState g_state[4];
 uint32_t g_state_session[4];
+uint32_t g_rng_retrace = 0, g_rng_session = 0;
+
+// Training's random numbers (the CPU page's RNG setting), with the Practice CPU on or off: the seed as
+// each Training match starts, or every frame when frozen. Once per frame.
+void apply_rng(const MuPcConfig& cfg, uint32_t session) {
+  const uint32_t now = host::retrace_count();
+  if (now == g_rng_retrace) return;
+  g_rng_retrace = now;
+  const bool start = g_rng_session != session;
+  g_rng_session = session;
+  if (cfg.rng_mode != MU_PC_RNG_FROZEN && !(cfg.rng_mode == MU_PC_RNG_SAME && start)) return;
+  const uint32_t seed_addr = host::rd32(0x804D5F94u);   // HSD_RandSeedPtr
+  if (!seed_addr || !host::try_ptr(seed_addr, 4)) return;
+  host::wr32(seed_addr, mu_pc_rng_seed(cfg.rng_seed));
+  if (start) host::log("practice cpu: rng seed %08X (%s)", mu_pc_rng_seed(cfg.rng_seed),
+                       cfg.rng_mode == MU_PC_RNG_FROZEN ? "frozen" : "same each start");
+}
 uint32_t g_session = 0;
 uint8_t g_last_major = 0;
 int g_logs = 0;
@@ -253,6 +273,7 @@ void on_proc_input(ppc::Context& c) {
   if (major != kTrainingMajor && !any_mode) return;
   if (slippi::online::is_online_match() || slippi::playback::enabled()) return;
   const MuPcConfig cfg = config();
+  apply_rng(cfg, g_session);
   if (!cfg.enabled) return;
   const uint32_t fp = fighter_of(c.r[3]);
   if (!fp) return;

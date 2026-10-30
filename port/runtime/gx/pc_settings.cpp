@@ -3570,6 +3570,11 @@ const char* const kGetup[MU_PC_GETUP_COUNT] = {"Stand", "Roll in", "Roll away", 
 const char* const kLedge[MU_PC_LEDGE_COUNT] = {"Getup", "Roll", "Jump", "Attack", "Drop and jump", "Ledgedash"};
 const char* const kAfter[MU_PC_AFTER_COUNT] = {"Nothing", "Jump", "Air dodge", "Neutral air", "Up B"};
 const char* const kRecovery[MU_PC_RECOVER_COUNT] = {"Game's own CPU", "High", "Low", "Mix high and low"};
+const char* const kMoves2[MU_PC_MOVE2_COUNT] = {"Waveland", "Shield drop (platforms)", "Dash jump", "Run past you", "Turn around"};
+const char* const kThrows[MU_PC_THROW_COUNT] = {"Forward throw", "Back throw", "Up throw", "Down throw"};
+const char* const kDrift[MU_PC_DRIFT_COUNT] = {"Mix (hops either way, aerials toward you)", "Toward you", "Away from you", "Straight up"};
+const char* const kTiming[MU_PC_TIMING_COUNT] = {"Mix", "Rising (as it leaves the ground)", "Falling (after the top)"};
+const char* const kRng[MU_PC_RNG_COUNT] = {"Game's own", "Same each Training start", "Frozen (the same every frame)"};
 const char* const kTabs[] = {"Queue", "CPU", "Defense", "Hit reactions", "Ledge", "Tools", "Presets"};
 constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
 int g_tab = 1;
@@ -3622,7 +3627,14 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     changed |= number_row("Attack range", &c.attack_range, 10, 80, "%d units", "How close you must be before it attacks.");
     changed |= number_row("Reaction time", &c.reaction_frames, 0, 40, "%d frames", "Frames before it answers an attack. People react in 15 to 25.");
     heading("Movement", "What it does between attacks. Weights within the group.");
-    changed |= odds_group(kMoves, c.move_odds, MU_PC_MOVE_COUNT);
+    {
+      // The two movement groups are picked from as one.
+      int total = 0;
+      for (int i = 0; i < MU_PC_MOVE_COUNT; ++i) total += c.move_odds[i];
+      for (int i = 0; i < MU_PC_MOVE2_COUNT; ++i) total += c.move2_odds[i];
+      for (int i = 0; i < MU_PC_MOVE_COUNT; ++i) changed |= odds_row(kMoves[i], &c.move_odds[i], total);
+      for (int i = 0; i < MU_PC_MOVE2_COUNT; ++i) changed |= odds_row(kMoves2[i], &c.move2_odds[i], total);
+    }
     heading("Attacks", "Picked when you are in range.");
     {
       // The special moves show the CPU's own names once its character is known (Fox: Reflector).
@@ -3637,9 +3649,19 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
         }
       changed |= odds_group(labels, c.attack_odds, MU_PC_ATK_COUNT);
     }
-    heading("Aerials");
+    heading("Throws", "Once it grabs you.");
+    changed |= odds_group(kThrows, c.throw_odds, MU_PC_THROW_COUNT);
+    heading("Jumps and aerials");
+    {
+      int d = c.jump_drift < MU_PC_DRIFT_COUNT ? c.jump_drift : 0;
+      if (settings_combo("Drift", &d, kDrift, MU_PC_DRIFT_COUNT)) { c.jump_drift = (uint8_t)d; changed = true; }
+      int tm = c.aerial_timing < MU_PC_TIMING_COUNT ? c.aerial_timing : 0;
+      if (settings_combo("Aerial timing", &tm, kTiming, MU_PC_TIMING_COUNT)) { c.aerial_timing = (uint8_t)tm; changed = true; }
+    }
     changed |= percent_row("Full hop", &c.full_hop_aerials, "Chance an aerial is full hopped instead of short hopped.");
-    changed |= percent_row("Fast fall", &c.fast_fall, nullptr);
+    changed |= percent_row("Double jump", &c.double_jump, "Chance a hop or an aerial takes its double jump at the top.");
+    changed |= percent_row("Fast fall", &c.fast_fall, "Chance it fast falls its hops and aerials.");
+    changed |= number_row("Fast fall delay", &c.fast_fall_delay, 0, 30, "%d frames", "Frames after the top of the jump before it fast falls.");
     changed |= percent_row("L-cancel", &c.l_cancel, nullptr);
     ImGui::EndDisabled();
     break;
@@ -3659,6 +3681,7 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     static const char* const sdi[] = {"None", "Light", "Medium", "Heavy"};
     int s = c.sdi_amount;
     if (settings_combo("Smash DI", &s, sdi, 4)) { c.sdi_amount = (uint8_t)s; changed = true; }
+    changed |= percent_row("Floorhug", &c.floorhug, "Chance it holds down when hit on the ground (ASDI down), so weak hits leave it standing.");
     heading("Tech", "When it lands in tumble.");
     changed |= odds_group(kTech, c.tech_odds, MU_PC_TECH_COUNT);
     heading("After a missed tech");
@@ -3689,6 +3712,16 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
                         "Down records your controller as the CPU; up plays that back while you practice.");
     changed |= flag_row("Loop the recording", &c.tools, MU_PC_TOOL_LOOP, "A played back recording starts again from the kept moment.");
     ImGui::EndDisabled();
+    {
+      int r = c.rng_mode < MU_PC_RNG_COUNT ? c.rng_mode : 0;
+      if (settings_combo("Random numbers", &r, kRng, MU_PC_RNG_COUNT)) { c.rng_mode = (uint8_t)r; changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Training's random picks (items, Peach's turnips, Game & Watch's hammer).\n"
+                          "Same each start: every Training match (and state load) starts from the same seed.\n"
+                          "Frozen: the seed is put back every frame, so every random pick is the same.");
+      if (c.rng_mode != MU_PC_RNG_GAME)
+        changed |= number_row("Seed", &c.rng_seed, 0, 255, "%d", "Another seed gives other random picks.");
+    }
     changed |= flag_row("Frame advance", &c.tools, MU_PC_TOOL_FRAME_ADVANCE,
                         "In Training, L + R + Z freezes the game; then Z steps one frame, held Z keeps stepping,\n"
                         "and the D-pad moves the CPU.");
