@@ -155,6 +155,21 @@ struct RenderOptions {
   // off screen, or with a name tag). Display only, so it is each player's own online. Both engines
   // (if/ifnametag.c; host.cpp apply_player_tags_always).
   int player_tags_always = 0;
+  // "Arcade look" (Looks): attack hitboxes on every fighter with no hurtboxes, projectile hitboxes,
+  // and the bubbles drawn behind the fighter. Display only and offline: the game ignores them in a
+  // network match (MU_DISPLAY_OPTION_HITBOXES and the next two bits).
+  bool arcade_hitboxes = false, arcade_projectile_hitboxes = false, arcade_hitboxes_behind = false;
+  // "2D camera": the match camera stops perspective, keeping fighters and the stage the size and place
+  // the normal camera gives them on the play plane (gx_shader.cpp build_projection). Display only.
+  bool arcade_camera_2d = false;
+  // "Combo counter": "N HITS" over the attacker while the game's combo link holds (offline and replays).
+  bool arcade_combo_counter = false;
+  // "Shield colours": per port -1 the port's own, else one of gx::kShieldColorRgb. Display only.
+  int shield_color[4] = {-1, -1, -1, -1};
+  // "Background": 0 the stage's own, 1 a plain colour (Lightweight level 2's backdrop skip on its own,
+  // the colour behind). Display only.
+  int arcade_backdrop = 0;      // 2 "Grid": the same, with a grid behind the stage (the Source Port draws it)
+  uint32_t arcade_background_rgb = 0x1E2430, arcade_grid_rgb = 0x3A4458;
   // "Low spec": one switch that puts every setting which costs frames at its cheapest, for
   // integrated graphics and older laptops. Turning it off must give the player their own settings
   // back rather than a hardcoded default, so what they had is kept here while it is on. Both the

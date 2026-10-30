@@ -667,6 +667,20 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
     if (c.enabled) host::log("gecko: on: \"%s\" (%zu lines)", c.name.c_str(), c.lines.size());
 }
 
+uint32_t arcade_bits_of_codes() {
+  // gx::kArcadeHitboxes, kArcadeProjectileHitboxes and kArcadeHitboxesBehind (source_host.cpp checks).
+  uint32_t bits = 0;
+  for (const Code& c : g_codes) {
+    if (!c.enabled || native_equivalent(c) != kArcadeHitboxCodeLabel) continue;
+    for (const auto& line : c.lines) {
+      if (line == std::make_pair(0x040805FCu, 0x60000000u)) bits |= 0x20u;
+      if (line == std::make_pair(0x0426ED50u, 0x60000000u)) bits |= 0x40u;
+      if (line == std::make_pair(0x04009430u, 0x38600001u)) bits |= 0x80u;
+    }
+  }
+  return bits;
+}
+
 const char* native_equivalent(const Code& c) {
   // Slippi's optional codes (GALE01r2.ini) that the Source Port carries as C, by the code's first
   // line. Never by its name: a code is what its lines do, and one that only shares a name with a
@@ -677,6 +691,8 @@ const char* native_equivalent(const Code& c) {
       {0x04030E44u, 0x4E800020u, "Disable Screen Shake"},
       {0xC20C0148u, 0x0000000Cu, "Flash Red on Failed L-Cancel"},
       {0xC21CBB90u, 0x00000005u, "Lagless FoD"},
+      // The always-display hitbox code (its first line): Looks > Arcade look's hitbox switches.
+      {0x040805FCu, 0x60000000u, kArcadeHitboxCodeLabel},
   };
   for (const Known& k : known)
     if (!c.lines.empty() && c.lines[0].first == k.w && c.lines[0].second == k.v) return k.label;

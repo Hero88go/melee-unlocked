@@ -11,6 +11,11 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <bcrypt.h>
+#ifdef _WIN32
+#include <winhttp.h>   // one-click mod looks (install_official_look)
+#pragma comment(lib, "winhttp.lib")
+#endif
+#include <thread>
 
 #include <algorithm>
 #include <functional>
@@ -6752,6 +6757,209 @@ bool build_look_packs(const std::string& patcher_folder, const std::string& reta
   *message = "Mod artwork is ready. Choose a mod look above, then restart to apply it.";
   host::log("looks: %s", message->c_str());
   return true;
+#endif
+}
+
+// ---- One-click mod looks: the authors' own downloads ----
+// The owner's call (10-29): Diet Melee and Animelee install from Settings in one click. Each comes
+// from its authors' own download (nothing is re-hosted), is checked against the SHA-256 of the
+// published file before anything is unpacked, and is built from the player's own disc with the
+// shipped patch tool, as the authors' patchers do.
+namespace {
+struct OfficialFile { const char* page; const char* file; uint64_t size; const char* sha; };
+// Diet Melee's patcher (linked from diet.melee.tv/download): its Linux archive holds the same three
+// patches as the Windows one, in one file. Animelee Complete Edition, patch 1.0 (animelee.xyz).
+const OfficialFile kDietArchive = {"https://www.mediafire.com/file/v6v5yuqd9le7jav/DietMeleeLinuxPatcher.tar.gz/file",
+                                   "DietMeleeLinuxPatcher.tar.gz", 196228815, "3f27e034447aa9cdf93b401d78dc5c8f802cb504d416370e55dfb600b2af0a31"};
+const OfficialFile kAnimeleeArchive = {"https://www.mediafire.com/file/2ztqob93nrug8yg/ANIMELEE_-_COMPLETE_EDITION_-_PATCH_1.0.zip/file",
+                                       "Animelee CE 1.0.zip", 31549722, "8ed24c56cbcb46a7030fd56560563b85836cd7f44fc547de23fa5aa7a1621a3c"};
+const LookDiff kAnimeleePatch = {"ANIMELEE - COMPLETE EDITION.xdelta", 13882404, "4a3fde4a2119ce57e7894de99fce640063052f051c2395168c492fcc606d5b76"};
+const LookPin kAnimeleeDisc = {"Animelee", "Animelee CE 1.0.iso", 1434723876, "77607e4624f6576f2da35584e71116809db44863ecd768c9d94c0e742da1a94d"};
+
+std::mutex g_official_mutex;
+int g_official_busy = -1;                // the look being installed, -1 none
+float g_official_progress = 0;           // its download, 0 to 1
+std::string g_official_message[2];
+
+void official_status(int which, const std::string& text, float progress = -1) {
+  std::lock_guard<std::mutex> lock(g_official_mutex);
+  g_official_message[which] = text;
+  if (progress >= 0) g_official_progress = progress;
+}
+
+void official_progress(float progress) {
+  std::lock_guard<std::mutex> lock(g_official_mutex);
+  g_official_progress = progress;
+}
+
+fs::path official_disc(const std::string& mods_folder) {
+  return fs::u8path(mods_folder) / L"Discs" / fs::u8path(kAnimeleeDisc.disc);
+}
+
+#ifdef _WIN32
+// One HTTPS GET, redirects followed but never down to HTTP. With `out` the body streams to that file
+// (at most `limit` bytes, progress reported to `which`); without it, into `text`.
+bool https_get(const std::string& url, const fs::path* out, std::string* text, uint64_t limit, std::string* error) {
+  const std::wstring wurl(url.begin(), url.end());
+  URL_COMPONENTS uc{}; uc.dwStructSize = sizeof uc;
+  wchar_t host[256]{}, path[4096]{};
+  uc.lpszHostName = host; uc.dwHostNameLength = 256; uc.lpszUrlPath = path; uc.dwUrlPathLength = 4096;
+  if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS) { *error = "The download address is not valid."; return false; }
+  HINTERNET session = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) MeleeUnlocked", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) { *error = "The internet could not be reached."; return false; }
+  WinHttpSetTimeouts(session, 10000, 10000, 30000, 120000);
+  bool ok = false;
+  HINTERNET conn = WinHttpConnect(session, host, uc.nPort, 0);
+  HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
+  if (req) {
+    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+    WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof redirect);
+    if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, nullptr)) {
+      DWORD code = 0, size = sizeof code;
+      WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
+      std::ofstream file;
+      if (out) file.open(*out, std::ios::binary | std::ios::trunc);
+      uint64_t got_total = 0;
+      bool complete = code == 200 && (!out || file.good());
+      while (complete) {
+        DWORD avail = 0;
+        if (!WinHttpQueryDataAvailable(req, &avail)) { complete = false; break; }
+        if (!avail) break;
+        std::string chunk(avail, 0); DWORD got = 0;
+        if (!WinHttpReadData(req, chunk.data(), avail, &got) || !got) { complete = false; break; }
+        got_total += got;
+        if (got_total > limit) { complete = false; break; }
+        if (out) { file.write(chunk.data(), got); official_progress((float)got_total / (float)limit); }
+        else text->append(chunk.data(), got);
+      }
+      ok = complete && (!out || file.good());
+      if (!ok) *error = code == 200 ? "The download stopped before it finished." : "The download page answered " + std::to_string(code) + ".";
+    } else {
+      *error = "The download could not be reached.";
+    }
+  } else {
+    *error = "The download could not be reached.";
+  }
+  if (req) WinHttpCloseHandle(req);
+  if (conn) WinHttpCloseHandle(conn);
+  WinHttpCloseHandle(session);
+  return ok;
+}
+
+// The authors' Mediafire page names the file's current download address; only that address is
+// followed, and only on Mediafire's own download hosts. The file must then match its pin exactly.
+bool fetch_official(const OfficialFile& f, const fs::path& out, std::string* error) {
+  std::string page;
+  if (!https_get(f.page, nullptr, &page, 4u << 20, error)) return false;
+  const size_t at = page.find("href=\"https://download");
+  const size_t end = at == std::string::npos ? at : page.find('"', at + 6);
+  const std::string link = at == std::string::npos || end == std::string::npos ? std::string() : page.substr(at + 6, end - at - 6);
+  const size_t host_end = link.find('/', 8);
+  if (link.empty() || host_end == std::string::npos || host_end < 22 || link.compare(host_end - 14, 14, ".mediafire.com") != 0) {
+    *error = "The authors' download page has changed; get it from their site for now."; return false;
+  }
+  if (!https_get(link, &out, nullptr, f.size, error)) return false;
+  if (!file_matches(out, f.size, f.sha)) { *error = "The downloaded file is not the one the authors published; nothing was installed."; return false; }
+  return true;
+}
+
+// Windows' own tar (10 and 11) unpacks both the .tar.gz and the .zip; it refuses absolute paths and
+// "..", and every file used afterwards is checked against its pin anyway.
+bool unpack_with_tar(const fs::path& archive, const fs::path& dest, std::string* error) {
+  wchar_t system[MAX_PATH] = {};
+  if (!GetSystemDirectoryW(system, MAX_PATH)) { *error = "Windows' unpacking tool was not found."; return false; }
+  const fs::path tar = fs::path(system) / L"tar.exe";
+  std::wstring command = quote_windows_arg(tar.wstring()) + L" -xf " + quote_windows_arg(archive.wstring()) + L" -C " + quote_windows_arg(dest.wstring());
+  STARTUPINFOW startup{}; startup.cb = sizeof startup;
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(tar.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+    *error = "Windows' unpacking tool (tar) could not be started."; return false;
+  }
+  const DWORD wait = WaitForSingleObject(process.hProcess, 300000);
+  if (wait == WAIT_TIMEOUT) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
+  DWORD code = 1; GetExitCodeProcess(process.hProcess, &code);
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  if (wait != WAIT_OBJECT_0 || code != 0) { *error = "The download could not be unpacked."; return false; }
+  return true;
+}
+
+bool install_official(int which, const fs::path& retail, const fs::path& xdelta, const std::string& mods_folder, std::string* message) {
+  fs::path dir;
+  { std::lock_guard<std::mutex> lock(g_mutex); if (!g_configured) { *message = "The skin catalog is not running."; return false; } dir = looks_dir_locked(); }
+  const fs::path work = dir / L".download";
+  std::error_code ec;
+  fs::remove_all(work, ec);
+  fs::create_directories(work / L"files", ec);
+  if (look_file_sha256(retail) != kRetailSha) { *message = "Your game disc is not the clean NTSC 1.02 disc these are made from."; return false; }
+  const OfficialFile& f = which == 0 ? kDietArchive : kAnimeleeArchive;
+  const fs::path archive = work / fs::u8path(f.file);
+  official_status(which, "Downloading from the authors' page...", 0);
+  bool ok = fetch_official(f, archive, message);
+  if (ok) { official_status(which, "Unpacking..."); ok = unpack_with_tar(archive, work / L"files", message); }
+  if (ok && which == 0) {
+    official_status(which, "Building Diet Classic, Diet 64 and Crystal from your disc (a few minutes)...");
+    ok = build_look_packs((work / L"files").u8string(), retail.u8string(), xdelta.u8string(), message);
+    if (ok) *message = "Installed. Choose Look > Diet Classic, Diet 64 or Crystal, then restart.";
+  } else if (ok) {
+    official_status(which, "Building Animelee from your disc...");
+    const fs::path patch = find_named(work / L"files", kAnimeleePatch.file);
+    const fs::path out = official_disc(mods_folder), part = out.wstring() + L".part";
+    fs::create_directories(out.parent_path(), ec);
+    if (patch.empty() || !file_matches(patch, kAnimeleePatch.size, kAnimeleePatch.sha)) { *message = "The Animelee patch inside the download is missing or different."; ok = false; }
+    else if (!run_xdelta(xdelta, retail, patch, part, message)) ok = false;
+    else if (!file_matches(part, kAnimeleeDisc.size, kAnimeleeDisc.sha)) { fs::remove(part, ec); *message = "The built disc did not come out as expected."; ok = false; }
+    else {
+      fs::rename(part, out, ec);
+      ok = !ec;
+      *message = ok ? "Installed. It is turned on in Game mods; restart to play with it." : "The built disc could not be put in the Mods folder.";
+    }
+  }
+  fs::remove_all(work, ec);
+  return ok;
+}
+#endif
+}  // namespace
+
+OfficialLookState official_look_state(int which, const std::string& mods_folder) {
+  OfficialLookState s;
+  if (which == 0) {
+    s.installed = true;
+    for (const auto& pack : look_packs()) s.installed &= pack.built;
+  } else {
+    std::error_code ec;
+    const fs::path disc = official_disc(mods_folder);
+    s.installed = fs::is_regular_file(disc, ec) && fs::file_size(disc, ec) == kAnimeleeDisc.size;
+    s.disc = disc.u8string();
+  }
+  std::lock_guard<std::mutex> lock(g_official_mutex);
+  s.busy = g_official_busy == which;
+  s.any_busy = g_official_busy >= 0;
+  s.progress = g_official_progress;
+  s.message = g_official_message[which];
+  return s;
+}
+
+void install_official_look(int which, const std::string& retail_disc, const std::string& xdelta_tool, const std::string& mods_folder) {
+  if (which < 0 || which > 1) return;
+  {
+    std::lock_guard<std::mutex> lock(g_official_mutex);
+    if (g_official_busy >= 0) return;
+    g_official_busy = which; g_official_progress = 0; g_official_message[which].clear();
+  }
+#ifndef _WIN32
+  (void)retail_disc; (void)xdelta_tool; (void)mods_folder;
+  official_status(which, "Installing from Settings is Windows only for now.");
+  std::lock_guard<std::mutex> lock(g_official_mutex); g_official_busy = -1;
+#else
+  std::thread([which, retail_disc, xdelta_tool, mods_folder] {
+    std::string message;
+    const bool ok = install_official(which, fs::u8path(retail_disc), fs::u8path(xdelta_tool), mods_folder, &message);
+    host::log("looks: %s install %s: %s", which == 0 ? "Diet Melee" : "Animelee", ok ? "done" : "failed", message.c_str());
+    official_status(which, message, ok ? 1.0f : -1.0f);
+    std::lock_guard<std::mutex> lock(g_official_mutex);
+    g_official_busy = -1;
+  }).detach();
 #endif
 }
 

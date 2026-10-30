@@ -227,6 +227,33 @@ While the view is showing, the game's own 3D scene is not drawn, since it would 
 That makes the Lab view much lighter on the graphics card than the normal game, which helps on weak
 laptops. "Skip the 3D scene underneath" under the Lab view checkbox turns that off.
 
+## Arcade look
+
+PC settings (F1) > Video > Arcade look gives the match a 2D-fighter look, one switch each, with an
+**Arcade preset** button that turns them all on:
+
+- **Show attack hitboxes** on every fighter (hurtboxes stay off; the Practice menu has those), and
+  **Projectile hitboxes too**. **Draw hitboxes behind the fighter** shows them around the model
+  instead of over it. Offline matches and replays only. Both engines.
+- **Combo counter:** "N HITS" over the attacker's damage, from the second hit until the other player
+  can act again. Offline matches and replays only. Both engines.
+- **2D camera:** the match camera loses its perspective. Fighters and platforms keep the size and
+  place the normal camera gives them; depth no longer shrinks the stage. Display only, online too.
+- **Background:** *Plain colour* hides the scenery behind the fighting area; *Grid* adds lines every
+  five units behind the stage (the Source Port draws the grid; the Static Recomp shows the plain
+  colour). Display only, online too.
+
+**Shield colours** (Video) sets each port's shield and KO blast colour on your own screen. Team
+matches keep team colours.
+
+**Get mod looks** (Video) installs Diet Melee (Classic, 64 and Crystal) and Animelee Complete Edition
+in one click. Each is downloaded from its authors' own page, checked against the file they
+published, and built from your own Melee disc; nothing is re-hosted.
+
+An imported 2D-style m-ex build (its demo 2.0 disc) runs on the Source Port: its skins and stages
+load as files, its camera and HUD codes run natively, and its hitbox look turns on with the profile.
+A pasted always-display hitbox code turns on the same switches on the Source Port.
+
 ## Practice
 
 In Training, press **Start + D-pad Up + Z** to open the Practice menu (keyboard: **Tab**). The first

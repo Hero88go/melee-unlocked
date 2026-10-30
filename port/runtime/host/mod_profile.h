@@ -79,6 +79,7 @@ struct Status {
   bool tmce = false;                 // Training Mode CE's disc files (TM/), on the vanilla game
   bool rogue = false;                // rogueMelee's disc (GALERM); its code is native
   bool maker = false;                // Melee Maker's disc (its supported release); its code is native
+  bool arcade = false;               // the 2D-style m-ex build (its demo 2.0 disc); its codes are native
   // The 20XX Hack Pack's disc files (StageSwapTable.bin and its stage, music and costume files) are
   // loaded as an overlay. None of its code runs: the retail menu files stay, and its features are
   // native rewrites (run-source/rel09-hackpack/PLAN.md section 3), offline only.

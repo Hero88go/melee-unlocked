@@ -14,6 +14,7 @@ _Static_assert(MU_OPTION_TE == MU_GAME_OPTION_TE && MU_OPTION_TE_TOURNAMENT == M
                MU_TE_HOLD_START_PAUSE == MU_GAME_OPTION_TE_HOLD_START_PAUSE &&
                MU_TE_FROZEN_STAGES == MU_GAME_OPTION_TE_FROZEN_STAGES &&
                MU_TE2_STADIUM_FROZEN == MU_GAME_OPTION2_STADIUM_FROZEN &&
+               MU_TE2_ARCADE_PACK == MU_GAME_OPTION2_ARCADE_PACK &&
                MU_TE_NO_STAR_KO == MU_GAME_OPTION_TE_NO_STAR_KO &&
                MU_TE_INFINITE_SHIELDS == MU_GAME_OPTION_TE_INFINITE_SHIELDS &&
                MU_TE_TAUNT_CANCEL == MU_GAME_OPTION_TE_TAUNT_CANCEL &&
@@ -114,6 +115,50 @@ int mu_player_tags_always(void)
 _Static_assert(MU_DISPLAY_PLAYER_TAGS == MU_DISPLAY_OPTION_PLAYER_TAGS, "display option bits");
 _Static_assert(MU_DISPLAY_FOD_REFLECTIONS == MU_DISPLAY_OPTION_FOD_REFLECTIONS, "display option bits");
 _Static_assert(MU_DISPLAY_FREEZE_FD == MU_DISPLAY_OPTION_FREEZE_FD, "display option bits");
+
+/* "Shield colours" (MuHostApi.shield_colors): 0 from a host before version 21. */
+unsigned int mu_shield_colors(void)
+{
+    return mu_host && mu_host->version >= 21 && mu_host->shield_colors ? mu_host->shield_colors() : 0;
+}
+
+/* The Arcade look's hitbox switches: offline only, so nobody sees bubbles in a network match. */
+static int mu_arcade_display(unsigned int bit)
+{
+    static unsigned int logged = ~0u;
+    const unsigned int bits = mu_display_options() & (MU_DISPLAY_HITBOXES | MU_DISPLAY_PROJECTILE_HITBOXES | MU_DISPLAY_HITBOXES_BEHIND);
+    const int online = mu_online_active() || mu_online_pending();
+    if (bits != logged) {
+        logged = bits;
+        OSReport("[arcade] hitbox switches %02X%s\n", bits, online ? " (off: online)" : "");
+    }
+    return (bits & bit) != 0 && !online;
+}
+
+int mu_arcade_hitboxes(void)
+{
+    return mu_arcade_display(MU_DISPLAY_HITBOXES);
+}
+
+int mu_arcade_projectile_hitboxes(void)
+{
+    return mu_arcade_display(MU_DISPLAY_PROJECTILE_HITBOXES);
+}
+
+int mu_arcade_hitboxes_behind(void)
+{
+    return mu_arcade_display(MU_DISPLAY_HITBOXES_BEHIND);
+}
+_Static_assert(MU_DISPLAY_HITBOXES == MU_DISPLAY_OPTION_HITBOXES, "display option bits");
+_Static_assert(MU_DISPLAY_PROJECTILE_HITBOXES == MU_DISPLAY_OPTION_PROJECTILE_HITBOXES, "display option bits");
+_Static_assert(MU_DISPLAY_HITBOXES_BEHIND == MU_DISPLAY_OPTION_HITBOXES_BEHIND, "display option bits");
+_Static_assert(MU_DISPLAY_GRID == MU_DISPLAY_OPTION_GRID, "display option bits");
+
+/* The Arcade look grid's colour (0 from a host before version 21: the default). */
+unsigned int mu_grid_color(void)
+{
+    return mu_host && mu_host->version >= 21 && mu_host->grid_color ? mu_host->grid_color() : 0x3A4458u;
+}
 _Static_assert(MU_DISPLAY_CSS_BACKGROUND_FREE == MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE, "display option bits");
 
 _Static_assert(MU_CPU_TECH_MASK == MU_GAME_OPTION3_CPU_TECH_MASK && MU_CPU_TECH_SHIFT == MU_GAME_OPTION3_CPU_TECH_SHIFT &&

@@ -105,20 +105,25 @@ float3 crt_pixel(float2 pos, float2 uv, out float2 picture_uv) {
 }
 )";
 
-// The picture's height on the display while the model is on. A scanline pitch that is not a whole
+// The scanlines the model draws over the picture's full height. A scanline pitch that is not a whole
 // number of pixels beats against the pixel grid (bands that crawl when the picture moves), and below
-// four pixels per scanline the beam cannot be integrated finely enough to hide it, so the pitch is
-// rounded down to whole pixels there: 960 rows for 480 lines on a 1080p display. `shift` moves the
-// raster half a pixel when the pitch is even, so that a pixel row lies on each beam's centre (with
+// four pixels per scanline the beam cannot be integrated finely enough to hide it, so there the pitch
+// is rounded down to whole pixels and the picture keeps its height with more, finer lines: 540 lines
+// of 2 pixels on a 1080p display rather than the console's 480 (which shrank the picture to 960 rows
+// with a black border all round). Each line still averages the rendered rows inside it. `shift` moves
+// the raster half a pixel when the pitch is even, so that a pixel row lies on each beam's centre (with
 // two rows per line, both would otherwise sit equally far from it and show no lines at all).
-struct CrtFit { float height, shift; };
+struct CrtFit { float height, shift, lines; };
 inline CrtFit crt_fit(float height, float lines) {
-  if (lines < 1.0f) return {height, 0.0f};
+  if (lines < 1.0f) return {height, 0.0f, lines};
   float per_line = height / lines;
-  if (per_line >= 2.0f && per_line < 4.0f) per_line = (float)(int)(per_line + 0.01f);
+  if (per_line >= 2.0f && per_line < 4.0f) {
+    per_line = (float)(int)(per_line + 0.01f);
+    lines = height / per_line;
+  }
   const int whole = (int)(per_line + 0.5f);
   const bool even = per_line >= 2.0f && per_line - (float)whole < 0.01f && (float)whole - per_line < 0.01f && whole % 2 == 0;
-  return {per_line * lines, even ? 0.5f / per_line : 0.0f};
+  return {height, even ? 0.5f / per_line : 0.0f, lines};
 }
 
 // Scanline depth, mask depth, curvature and halation of each setting. 0 is off. `curve` scales the

@@ -120,6 +120,24 @@ int mu_player_tags_always(void);
  * DesyncProofBGTransformations), and replay playback restores the seed after the stage runs. */
 #define MU_DISPLAY_FREEZE_FD 0x10u
 int mu_freeze_fd(void);
+/* Arcade look: attack hitboxes on every fighter (hurtboxes stay off), item hitboxes, and the
+ * hitbox capsules drawn behind the fighter (front faces culled, so the model stays readable). Only
+ * the draw tests widen (ftdrawcommon.c, itdraw.c, lbcollision.c); no flag in the match changes.
+ * Offline matches and replays; never in a network match. */
+#define MU_DISPLAY_HITBOXES 0x20u
+#define MU_DISPLAY_PROJECTILE_HITBOXES 0x40u
+#define MU_DISPLAY_HITBOXES_BEHIND 0x80u
+int mu_arcade_hitboxes(void);
+int mu_arcade_projectile_hitboxes(void);
+int mu_arcade_hitboxes_behind(void);
+/* Arcade look background "Grid" (MU_DISPLAY_OPTION_GRID): drawn by the match camera before the stage
+ * (cm/camera.c fn_800301D0, shim/mu_arcade.c). Display only, online too. */
+#define MU_DISPLAY_GRID 0x100u
+void mu_arcade_grid(void);
+/* "Shield colours" (MuHostApi.shield_colors): this player's own colour for its shield bubble and KO
+ * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
+ * Team matches keep the team colours. */
+int mu_port_shield_color(int slot, unsigned int* rgb);
 int mu_lagless_fod_begin(void);   /* decides it for the stage being set up */
 int mu_lagless_fod(void);
 /* The Lossless adapter lag test (shim/mu_lagtest.c): the host's --lag-test launch. */
@@ -197,6 +215,13 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out);
 /* (0x80000 to 0x400000 hold the L-cancel flash choices, port/runtime/abi/mu_lcancel_flash.h.) */
 #define MU_TE2_20XX_CPUS 0x800000u   /* "20XX CPUs" (Game tab): not a TE feature, carried in this word */
 #define MU_TE2_STADIUM_FROZEN 0x1000000u   /* "Freeze Pokemon Stadium": likewise a plain option */
+/* The recognised 2D-style mod build is the active profile: its own codes run natively (shim/mu_arcade.c):
+ * its camera (cm/camera.c), the HUD's high-damage colour (if/ifstatus.c) and straight back to character
+ * select after a VS match (gm/gmvsmelee.c). Offline, and in replays recorded with it. */
+#define MU_TE2_ARCADE_PACK 0x2000000u
+int mu_arcade_pack(void);
+struct HSD_GObj;
+void mu_arcade_pack_camera(struct HSD_GObj* gobj);
 /* 20XX Hack Pack CPU AI (shim/mu_20xx_ai.c). mu_20xx_ai_enabled() is nonzero when the plain "20XX
  * CPUs" option is in effect (mu_option2_offline: offline, no TE save needed, never online), or when
  * MELEE_TEST_20XX_AI=1 forces it for a hidden test run; never online. mu_20xx_ai() is called

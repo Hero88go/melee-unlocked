@@ -48299,7 +48299,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..51ffa67ef 100644
+index 1a8206270..5aa99bc6b 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -48980,7 +48980,28 @@ index 1a8206270..51ffa67ef 100644
  {
      s64 prio8_a;
      s64 prio1_a;
-@@ -4017,6 +4092,13 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4003,6 +4078,12 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+     cobj = gobj->hsd_obj;
+     lbRefract_8002247C(cobj);
+     Camera_8002A4AC(gobj);
++#ifdef MU_NATIVE
++    /* The recognised 2D-style mod build's camera code (fn_800301D0+0x2C), shim/mu_arcade.c. */
++    if (mu_arcade_pack()) {
++        mu_arcade_pack_camera(gobj);
++    }
++#endif
+     lbShadow_8000F38C(game_camera.x399_b7);
+     if (HSD_CObjSetCurrent(cobj) != 0) {
+         if (!game_camera.x398_b5) {
+@@ -4013,10 +4094,21 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+             HSD_SetEraseColor(0, 0, 0, 0xFF);
+         }
+         HSD_CObjEraseScreen(cobj, 1, 0, 0);
++#ifdef MU_NATIVE
++        /* Arcade look background "Grid", behind the stage (shim/mu_arcade.c). */
++        mu_arcade_grid();
++#endif
+         Ground_801C4FAC(cobj);
          HSD_LObjDeleteCurrentAll(NULL);
  
          Camera_800310A0(2);
@@ -48994,7 +49015,7 @@ index 1a8206270..51ffa67ef 100644
          prio8_a = gxlink_prio8();
          prio1_a = gxlink_prio1();
          gobj->gxlink_prios = prio1_a | prio8_a;
-@@ -4154,6 +4236,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
+@@ -4154,6 +4246,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
      return (fwd_z * dir_z) > 0.0L;
  }
  
@@ -49017,7 +49038,7 @@ index 1a8206270..51ffa67ef 100644
  bool Camera_800307D0(f32* left, f32* center, f32* right)
  {
      HSD_CObj* cobj;
-@@ -4172,8 +4270,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
+@@ -4172,8 +4280,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
      f32 edge_z2;
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49032,7 +49053,7 @@ index 1a8206270..51ffa67ef 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4417,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4427,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49070,7 +49091,7 @@ index 1a8206270..51ffa67ef 100644
  
      if ((point.x > 2.1474836e9f) || (point.x < -2.1474836e9f) ||
          (point.y > 2.1474836e9f) || (point.y < -2.1474836e9f))
-@@ -4343,6 +4475,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
+@@ -4343,6 +4485,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
      return Camera_80030BBC(&arg0->bone_pos, arg1);
  }
  
@@ -49096,7 +49117,7 @@ index 1a8206270..51ffa67ef 100644
  /// Camera_IsSubjectOnScreen
  bool Camera_80030CFC(CmSubject* cam_box, f32 tolerance)
  {
-@@ -4381,6 +4532,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
+@@ -4381,6 +4542,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
  
  void Camera_80030DF8(void)
  {
@@ -49113,7 +49134,7 @@ index 1a8206270..51ffa67ef 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4562,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4572,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -49126,7 +49147,7 @@ index 1a8206270..51ffa67ef 100644
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4796,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4806,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };
@@ -54595,7 +54616,7 @@ index fc9191492..11f5f1a7d 100644
      }
  }
 diff --git a/src/melee/ft/ft_0D31.c b/src/melee/ft/ft_0D31.c
-index 8f66740f5..8b8392846 100644
+index 8f66740f5..feba159fd 100644
 --- a/src/melee/ft/ft_0D31.c
 +++ b/src/melee/ft/ft_0D31.c
 @@ -27,10 +27,18 @@
@@ -54708,7 +54729,7 @@ index 8f66740f5..8b8392846 100644
  }
  
  void ftCo_800D35FC(Fighter* fp)
-@@ -169,99 +188,106 @@ void ftCo_800D35FC(Fighter* fp)
+@@ -169,99 +188,115 @@ void ftCo_800D35FC(Fighter* fp)
      cur_gobj = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER];
      while (cur_gobj != NULL) {
          Fighter* cur_fp = GET_FIGHTER(cur_gobj);
@@ -54798,14 +54819,7 @@ index 8f66740f5..8b8392846 100644
 -    ftCo_800D38B8(temp_r27_2, temp_r28_2->x8);
 +    playDeadSfx(fp, sfx);
 +}
- 
--    ft_PlaySFX(temp_r31, 0x88, 0x7F, 0x40);
--    ft_8008805C(temp_r31, 0x88);
--    sp2C = temp_r31->cur_pos;
--    temp_f31 = Stage_GetBlastZoneTopOffset();
--    temp_f1 = Stage_GetBlastZoneBottomOffset();
--    if (sp2C.y > temp_f31) {
--        sp2C.y = temp_f31;
++
 +static inline void enterDead(Fighter_GObj* gobj, FtMotionId msid)
 +{
 +    Fighter* fp = GET_FIGHTER(gobj);
@@ -54816,7 +54830,14 @@ index 8f66740f5..8b8392846 100644
 +    pl_8003DF44(fp->player_idx, fp->is_sub_fighter);
 +    processDeath(gobj);
 +}
-+
+ 
+-    ft_PlaySFX(temp_r31, 0x88, 0x7F, 0x40);
+-    ft_8008805C(temp_r31, 0x88);
+-    sp2C = temp_r31->cur_pos;
+-    temp_f31 = Stage_GetBlastZoneTopOffset();
+-    temp_f1 = Stage_GetBlastZoneBottomOffset();
+-    if (sp2C.y > temp_f31) {
+-        sp2C.y = temp_f31;
 +static inline void clampDeadPos(f32* v, f32 min, f32 max)
 +{
 +    if (*v > max) {
@@ -54837,13 +54858,7 @@ index 8f66740f5..8b8392846 100644
 +    u8* color1 = Fighter_804D650C + offset;
 +    u8* color2 = Fighter_804D6508 + offset;
 +    int rgb1 = (color1[0] << 16) | (color1[1] << 8) | color1[2];
-+    int rgb2 = (color2[0] << 16) | (color2[1] << 8) | color2[2];
-+    int kind;
-+    if (gm_801693BC(fp->player_idx)) {
-+        kind = 0x42C;
-+    } else {
-+        kind = 0x42B;
-+    }
++#ifdef MU_NATIVE
      {
 -        s32 var_r3;
 -        temp_r28_3 = gobj->user_data;
@@ -54853,7 +54868,11 @@ index 8f66740f5..8b8392846 100644
 -            u8* base2 = Fighter_804D6508 + offset;
 -            color1 = (base1[0] << 16) | (base1[1] << 8) | base1[2];
 -            color2 = (base2[0] << 16) | (base2[1] << 8) | base2[2];
--        }
++        /* "Shield colours": the KO blast takes this player's own colour too (shim/mu_te_menus.c). */
++        unsigned int own;
++        if (mu_port_shield_color(fp->player_idx, &own)) {
++            rgb1 = (int) own;
+         }
 -        if (gm_801693BC(temp_r28_3->player_id)) {
 -            var_r3 = 0x42C;
 -        } else {
@@ -54861,11 +54880,21 @@ index 8f66740f5..8b8392846 100644
 -        }
 -        efSync_Spawn(var_r3, gobj, &sp2C, &sp24, &p_ftCommonData->x4F4, color1,
 -                     color2);
-+        f32 x4F4_scale = p_ftCommonData->x4F4;
-+        efSync_Spawn(kind, gobj, pos, &angle, &x4F4_scale, rgb1, rgb2);
      }
 -    sp2C.x = Stage_GetBlastZoneLeftOffset();
 -    ftCo_800D4E50(temp_r31, &sp2C, 1, 0.0F);
++#endif
++    int rgb2 = (color2[0] << 16) | (color2[1] << 8) | color2[2];
++    int kind;
++    if (gm_801693BC(fp->player_idx)) {
++        kind = 0x42C;
++    } else {
++        kind = 0x42B;
++    }
++    {
++        f32 x4F4_scale = p_ftCommonData->x4F4;
++        efSync_Spawn(kind, gobj, pos, &angle, &x4F4_scale, rgb1, rgb2);
++    }
  }
  
 -#ifdef MUST_MATCH
@@ -54890,7 +54919,7 @@ index 8f66740f5..8b8392846 100644
  
  void ftCo_800D38B8(Fighter* fp, int arg1)
  {
-@@ -282,93 +308,23 @@ void ftCo_DeadLeft_Anim(Fighter_GObj* gobj)
+@@ -282,93 +317,23 @@ void ftCo_DeadLeft_Anim(Fighter_GObj* gobj)
  
  void ftCo_DeadLeft_Cam(Fighter_GObj* gobj) {}
  
@@ -54997,7 +55026,7 @@ index 8f66740f5..8b8392846 100644
  void ftCo_DeadRight_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -380,94 +336,25 @@ void ftCo_DeadRight_Anim(Fighter_GObj* gobj)
+@@ -380,94 +345,25 @@ void ftCo_DeadRight_Anim(Fighter_GObj* gobj)
  
  void ftCo_DeadRight_Cam(Fighter_GObj* gobj) {}
  
@@ -55107,7 +55136,7 @@ index 8f66740f5..8b8392846 100644
  void ftCo_DeadDown_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -479,94 +366,25 @@ void ftCo_DeadDown_Anim(Fighter_GObj* gobj)
+@@ -479,94 +375,25 @@ void ftCo_DeadDown_Anim(Fighter_GObj* gobj)
  
  void ftCo_DeadDown_Cam(Fighter_GObj* gobj) {}
  
@@ -55217,7 +55246,7 @@ index 8f66740f5..8b8392846 100644
  void ftCo_DeadUp_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -580,33 +398,26 @@ void ftCo_DeadUp_Cam(Fighter_GObj* gobj) {}
+@@ -580,33 +407,26 @@ void ftCo_DeadUp_Cam(Fighter_GObj* gobj) {}
  
  static inline void ftCo_800D40B8_inline(Fighter_GObj* gobj)
  {
@@ -55257,7 +55286,7 @@ index 8f66740f5..8b8392846 100644
      fp->mv.co.unk_deadup.x68 = 0;
  }
  
-@@ -616,10 +427,10 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
+@@ -616,10 +436,10 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
      Fighter* new_var;
      fp->x2227_b6 = 1;
      {
@@ -55271,7 +55300,7 @@ index 8f66740f5..8b8392846 100644
          fp2->mv.co.unk_deadup.x44 = 0;
          Fighter_ChangeMotionState(gobj, ftCo_MS_DeadUpStarIce, 0, 0.0F, 1.0F,
                                    0.0F, NULL);
-@@ -629,8 +440,8 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
+@@ -629,8 +449,8 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
          new_var++;
          new_var--;
  
@@ -55282,7 +55311,7 @@ index 8f66740f5..8b8392846 100644
      }
      ftCo_80090AC0(fp);
      ftCommon_8007EBAC(fp, 1, 0);
-@@ -640,12 +451,12 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
+@@ -640,12 +460,12 @@ void ftCo_800D41C4(Fighter_GObj* gobj)
  void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55297,7 +55326,7 @@ index 8f66740f5..8b8392846 100644
              HSD_JObj* jobj =
                  fp->parts[ftParts_GetBoneIndex(fp, FtPart_XRotN)].joint;
              HSD_JObjAddRotationX(jobj, rot_speed);
-@@ -661,11 +472,11 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
+@@ -661,11 +481,11 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
          switch (fp->mv.co.unk_deadup.x44) {
          case 0:
              fp->self_vel.y =
@@ -55313,7 +55342,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 1;
              return;
          case 1:
-@@ -684,7 +495,7 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
+@@ -684,7 +504,7 @@ void ftCo_DeadUpStar_Anim(Fighter_GObj* gobj)
              ft_PlaySFX(fp, 0x83, 0x7F, 0x40);
              ft_8008805C(fp, 0x83);
              ftCo_800D34E0(gobj);
@@ -55322,7 +55351,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 2;
              return;
          case 2:
-@@ -706,19 +517,19 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
+@@ -706,19 +526,19 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
      u8 _[20];
      Fighter* fp;
      Fighter_GObj* new_var;
@@ -55346,7 +55375,7 @@ index 8f66740f5..8b8392846 100644
      fp->mv.co.common.x24 = 0.0f;
      fp->mv.co.common.x20 = 0.0f;
      fp->mv.co.common.x1C = 0.0f;
-@@ -744,7 +555,7 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
+@@ -744,7 +564,7 @@ void ftCo_800D4580(Fighter_GObj* gobj, int arg1)
      ft_80088C5C(new_var);
      ftCommon_8007EFC0(fp, true);
      ftCo_800BFFD0(fp, 0x2B, 0);
@@ -55355,7 +55384,7 @@ index 8f66740f5..8b8392846 100644
  }
  
  void ftCo_800D4780(Fighter_GObj* gobj)
-@@ -799,14 +610,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
+@@ -799,14 +619,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
              Fighter* other = GET_FIGHTER(cur);
              if (((!fp) && (!fp)) && (!fp)) {
              };
@@ -55372,7 +55401,7 @@ index 8f66740f5..8b8392846 100644
      ftCo_800D4E50(fp, &fp->cur_pos, 0, 1.5707964f);
      fp->accessory4_cb = fn_800D4DD4;
  }
-@@ -814,14 +625,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
+@@ -814,14 +634,14 @@ void ftCo_800D481C(Fighter_GObj* gobj, s32 arg1)
  void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55389,7 +55418,7 @@ index 8f66740f5..8b8392846 100644
              HSD_JObj* jobj =
                  fp->parts[ftParts_GetBoneIndex(fp, FtPart_XRotN)].joint;
              HSD_JObjAddRotationX(jobj, rot_speed);
-@@ -835,9 +646,9 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -835,9 +655,9 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
      if (fp->mv.co.unk_deadup.x40 == 0) {
          switch (fp->mv.co.unk_deadup.x44) {
          case 0:
@@ -55401,7 +55430,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 1;
              return;
          case 1:
-@@ -850,14 +661,25 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -850,14 +670,25 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
              } else {
                  ftCo_800D481C(gobj, 7);
              }
@@ -55431,7 +55460,7 @@ index 8f66740f5..8b8392846 100644
              return;
          case 3:
              ftCommon_8007E2FC(gobj);
-@@ -872,7 +694,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -872,7 +703,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
              ft_8008805C(fp, 0x61);
              ftCommon_8007EBAC(fp, 0xD, 0);
              Camera_RequestQuake(QuakeKind_Large, &fp->cur_pos);
@@ -55440,7 +55469,7 @@ index 8f66740f5..8b8392846 100644
              fp->mv.co.unk_deadup.x44 = 4;
              return;
          case 4:
-@@ -885,7 +707,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
+@@ -885,7 +716,7 @@ void ftCo_DeadUpFall_Anim(Fighter_GObj* gobj)
  void ftCo_DeadUpFall_Phys(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55449,7 +55478,7 @@ index 8f66740f5..8b8392846 100644
  
      switch (fp->mv.co.unk_deadup.x44) {
      case 1:
-@@ -894,12 +716,35 @@ void ftCo_DeadUpFall_Phys(Fighter_GObj* gobj)
+@@ -894,12 +725,35 @@ void ftCo_DeadUpFall_Phys(Fighter_GObj* gobj)
                  break;
              }
          }
@@ -62243,7 +62272,7 @@ index 2b0f190f4..22a6c7b46 100644
  
  #endif
 diff --git a/src/melee/ft/ftdrawcommon.c b/src/melee/ft/ftdrawcommon.c
-index cd8f9169e..ad3e85d5c 100644
+index cd8f9169e..ae3818f06 100644
 --- a/src/melee/ft/ftdrawcommon.c
 +++ b/src/melee/ft/ftdrawcommon.c
 @@ -1,3 +1,6 @@
@@ -62282,7 +62311,7 @@ index cd8f9169e..ad3e85d5c 100644
  static const GXColor ftDrawCommon_804D836C = { 0xFF, 0xFF, 0xFF, 0xFE };
  static const GXColor ftDrawCommon_804D8370 = { 0xFF, 0xFF, 0xFF, 0xFF };
  
-@@ -98,13 +116,41 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -98,13 +116,51 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
  
      fighter = GET_FIGHTER(gobj);
      do_invalidate = false;
@@ -62290,7 +62319,14 @@ index cd8f9169e..ad3e85d5c 100644
 +    /* The "Always Display Hitboxes" gecko code (040805FC 60000000) nops the
 +     * retail branch at 0x800805FC; this function is rebuilt in the overlay,
 +     * so honor that patch here. */
-+    if ((fighter->x21FC_flag.b6 != 0 || *(volatile u32*) 0x800805FC == 0x60000000) && Bam_DrawHitboxes()) {
++    /* Arcade look "Show attack hitboxes" (the always-display hitbox code's first two lines): the
++     * attack bubbles of every fighter; the hurtbox, reflect, absorb and shield bubbles below keep
++     * their own flag. The flag byte is match state and stays as it is. */
++    if ((fighter->x21FC_flag.b6 != 0 || *(volatile u32*) 0x800805FC == 0x60000000 || mu_arcade_hitboxes()) &&
++        Bam_DrawHitboxes()) {
++#elif defined(MU_NATIVE)
++    /* Arcade look "Show attack hitboxes": as in the branch above. */
++    if (fighter->x21FC_flag.b6 != 0 || mu_arcade_hitboxes()) {
 +#else
      if (fighter->x21FC_flag.b6 != 0) {
 +#endif
@@ -62320,11 +62356,14 @@ index cd8f9169e..ad3e85d5c 100644
 +#if MU_ROGUE  /* rogueMelee + Melee Maker */
 +    }
 +    if ((fighter->x21FC_flag.b6 != 0 || *(volatile u32*) 0x800805FC == 0x60000000) && Bam_DrawHurtboxes()) {
++#elif defined(MU_NATIVE)
++    }
++    if (fighter->x21FC_flag.b6 != 0) {
 +#endif
          if (fighter->x221D_b6) {
              for (i = 0; i < (unsigned) fighter->hurt_capsules_len; i++) {
                  if (lbColl_8000A584(&fighter->hurt_capsules[i].capsule, 1,
-@@ -117,6 +163,12 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -117,6 +173,12 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
          } else {
              fighter_2 = fighter->x1988;
              if (fighter_2 == 0 && fighter->x198C == 0) {
@@ -62337,7 +62376,7 @@ index cd8f9169e..ad3e85d5c 100644
                  for (i = 0; i < (unsigned) fighter->hurt_capsules_len; i++) {
                      if (lbColl_8000A244(&fighter->hurt_capsules[i].capsule,
                                          arg1, ftCommon_8007F804(fighter),
-@@ -125,6 +177,11 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -125,6 +187,11 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
                          do_invalidate = true;
                      }
                  }
@@ -62349,7 +62388,7 @@ index cd8f9169e..ad3e85d5c 100644
              } else {
                  if (fighter->x198C == 2 || fighter_2 == 2) {
                      phi_r24 = 2;
-@@ -187,21 +244,23 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -187,21 +254,23 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      }
      if (fighter->x21FC_flag.b2 != 0) {
          itPickup* temp_r24 = &fighter->x294_itPickup;
@@ -62377,7 +62416,7 @@ index cd8f9169e..ad3e85d5c 100644
                                   arg1, fighter->facing_dir))
          {
              do_invalidate = true;
-@@ -231,6 +290,29 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -231,6 +300,29 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      }
  
      if (!fighter->invisible && !fighter->x221E_b5 && arg2) {
@@ -62407,7 +62446,7 @@ index cd8f9169e..ad3e85d5c 100644
          ftParts_800750C8(fighter, 1, 0);
          ftParts_800750C8(fighter, 4, 0);
          if (fighter->is_metal || fighter->x2226_b5 || fighter->x2227_b3) {
-@@ -240,6 +322,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -240,6 +332,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
              ftParts_800750C8(fighter, 2, 0);
              ftParts_800750C8(fighter, 0, 1);
          }
@@ -62415,7 +62454,7 @@ index cd8f9169e..ad3e85d5c 100644
          ftCo_8009F5AC(fighter);
          fighter->x2223_b2 = false;
          fighter->x2227_b7 = true;
-@@ -247,9 +330,22 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -247,9 +340,22 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
  
          mtx = ftDrawCommon_8008051C_inline(gobj, &sp54, &v, sp18, sp78);
  
@@ -62438,7 +62477,7 @@ index cd8f9169e..ad3e85d5c 100644
          }
          ftCo_800C8AF0(fighter);
          ftCo_8009F7F8(fighter);
-@@ -261,7 +357,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -261,7 +367,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      ftCo_800C2600(gobj, arg1);
  }
  
@@ -62447,7 +62486,7 @@ index cd8f9169e..ad3e85d5c 100644
  {
      Mtx sp70;
      Mtx sp18;
-@@ -293,9 +389,22 @@ void ftDrawCommon_80080C28(HSD_GObj* gobj, int flag_index)
+@@ -293,9 +399,22 @@ void ftDrawCommon_80080C28(HSD_GObj* gobj, int flag_index)
              vmtx = ftDrawCommon_8008051C_inline(gobj, &v1, &v2, sp18, sp70);
  
              jobj = GET_JOBJ(gobj);
@@ -62470,7 +62509,7 @@ index cd8f9169e..ad3e85d5c 100644
              }
              ftCo_800C8AF0(fighter);
              ftCo_8009F7F8(fighter);
-@@ -368,6 +477,17 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
+@@ -368,6 +487,17 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
      Vec3* pos;
  
      MtxPtr matrix = HSD_CObjGetInvViewingMtxPtr(Camera_800310B8());
@@ -62488,7 +62527,7 @@ index cd8f9169e..ad3e85d5c 100644
      /// @todo this seems to be using the wrong common attributes
      PSMTXMultVec(matrix, (Vec3*) &old->mv.co.walk.fast_anim_frame,
                   &fp->cur_pos);
-@@ -376,11 +496,111 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
+@@ -376,11 +506,111 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
      HSD_JObjSetTranslate(jobj, pos);
  }
  
@@ -62554,8 +62593,7 @@ index cd8f9169e..ad3e85d5c 100644
 +        }
 +    }
 +}
- 
--    if (!fp->x221F_b3 && ftLib_80086A8C(gobj)) {
++
 +static bool ftDrawCommon_SnapshotTake(HSD_GObj* gobj, Fighter* fp)
 +{
 +    memcpy(ft_snapshot_fighter, fp, sizeof(Fighter));
@@ -62564,7 +62602,8 @@ index cd8f9169e..ad3e85d5c 100644
 +    ftDrawCommon_SnapshotTree(fp->x20A0_accessory);
 +    return ft_snapshot_count < FT_SNAPSHOT_JOBJS;
 +}
-+
+ 
+-    if (!fp->x221F_b3 && ftLib_80086A8C(gobj)) {
 +static void ftDrawCommon_SnapshotRestore(Fighter* fp)
 +{
 +    int i;
@@ -62603,7 +62642,7 @@ index cd8f9169e..ad3e85d5c 100644
          switch (Camera_80031060()) {
          case 1:
              if (fp->x2220_b7) {
-@@ -397,7 +617,15 @@ void ftDrawCommon_80080E18(HSD_GObj* gobj, int arg1)
+@@ -397,7 +627,15 @@ void ftDrawCommon_80080E18(HSD_GObj* gobj, int arg1)
              ftDrawCommon_800805C8(gobj, arg1,
                                    fp->x5AC.xC[4] != NULL ? false : true);
          }
@@ -62619,7 +62658,7 @@ index cd8f9169e..ad3e85d5c 100644
  }
  
  void ftDrawCommon_80081118(void)
-@@ -412,10 +640,22 @@ void ftDrawCommon_80081118(void)
+@@ -412,10 +650,22 @@ void ftDrawCommon_80081118(void)
  void ftDrawCommon_80081140(void)
  {
      HSD_GObj* gobj = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER];
@@ -120832,7 +120871,7 @@ index edf865c17..df647f993 100644
  /* 16CF4C */ void fn_8016CF4C(int, MatchOutcome);
  /* 16CFE0 */ void fn_8016CFE0(void);
 diff --git a/src/melee/gm/gmvsmelee.c b/src/melee/gm/gmvsmelee.c
-index 61bebcfb0..f65d9b110 100644
+index 61bebcfb0..f44f601bd 100644
 --- a/src/melee/gm/gmvsmelee.c
 +++ b/src/melee/gm/gmvsmelee.c
 @@ -18,6 +18,13 @@
@@ -120939,12 +120978,16 @@ index 61bebcfb0..f65d9b110 100644
      gm_SetupSubColors(start);
      gm_LoadRumbleEnabled(start);
      gm_LoadAnnouncer();
-@@ -210,6 +282,42 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
+@@ -210,6 +282,46 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
  {
      MatchExitInfo* exit = gm_GetGameModeStateExitData(state);
      ssize_t i;
 +#ifdef MU_NATIVE
 +    const u8 results_id = id0;
++    /* The recognised 2D-style mod build (04 801A5B00 3B600000): straight back to character select. */
++    if (mu_arcade_pack()) {
++        id0 = 0;
++    }
 +#endif
 +
 +#ifdef MU_NATIVE
@@ -120982,7 +121025,7 @@ index 61bebcfb0..f65d9b110 100644
  
      for (i = 0; i < GM_MAX_PLAYERS; i++) {
          if (exit->match_end.player_standings[i].pkind == Gm_PKind_Human) {
-@@ -225,6 +333,15 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
+@@ -225,6 +337,15 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
                                        gm_80162800(&exit->match_end));
      }
  
@@ -120998,7 +121041,7 @@ index 61bebcfb0..f65d9b110 100644
      if (!gm_MatchHasMultipleWinners(&exit->match_end)) {
          gm_SetNextGameModeStateId(id0);
      } else {
-@@ -300,21 +417,21 @@ void gmVsMelee_ExitResults(GameModeState* state, VsModeData* vs, u8 state_id)
+@@ -300,21 +421,21 @@ void gmVsMelee_ExitResults(GameModeState* state, VsModeData* vs, u8 state_id)
              unk = gm_80172DD4(gmMainLib_8015ED98()->x0);
              if (unk != ChKind_None) {
                  gm_InitChallengerData(match_end->player_standings[idx].ckind,
@@ -143771,7 +143814,7 @@ index 8020cdad3..413b811a1 100644
          HSD_SisLib_803A62A0(2, "SdPrize.usd", "SIS_PrizeData");
      } else {
 diff --git a/src/melee/if/ifstatus.c b/src/melee/if/ifstatus.c
-index a6068103c..e27dcdf3c 100644
+index a6068103c..481e0b740 100644
 --- a/src/melee/if/ifstatus.c
 +++ b/src/melee/if/ifstatus.c
 @@ -26,29 +26,9 @@
@@ -143905,7 +143948,18 @@ index a6068103c..e27dcdf3c 100644
      HSD_TObjReqAnimAll(hundreds_jobj->u.dobj->mobj->tobj, 2.0F * digit);
      HSD_AObjSetRate(hundreds_jobj->u.dobj->mobj->tobj->aobj, 0.0F);
  }
-@@ -375,7 +352,7 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
+@@ -288,6 +265,10 @@ static inline void ifStatus_UpdateDamageDisplay(IfDamageState* state,
+     }
+ 
+     if (state->old_damage != state->damage_percent) {
++#ifdef MU_NATIVE
++        /* The recognised 2D-style mod build's main.dol byte at 804D57AC: high damage turns bright red. */
++        ifStatus_804D57AC[0] = mu_arcade_pack() ? 0xFF : 0x50;
++#endif
+         if (Player_GetMoreFlagsBit2((s8) state->player_slot)) {
+             if ((clamped_damage = state->damage_percent) > 100) {
+                 clamped_damage = 100;
+@@ -375,7 +356,7 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
      GXColor normal_color;
      UNUSED u8 pad_c[24];
      HSD_TObj* tobj;
@@ -143914,7 +143968,7 @@ index a6068103c..e27dcdf3c 100644
      s32 i;
      u8 digit;
      f32 ones_offset;
-@@ -402,7 +379,7 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
+@@ -402,7 +383,7 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
  
      /* Check for death animation flag (bit 7 of flags byte at offset 0x10) */
      if (state->flags.explode_animation) {
@@ -143923,7 +143977,7 @@ index a6068103c..e27dcdf3c 100644
          return;
      }
  
-@@ -416,10 +393,9 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
+@@ -416,10 +397,9 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
  
          HSD_JObjRemoveAnim(jobj);
  
@@ -143937,7 +143991,7 @@ index a6068103c..e27dcdf3c 100644
          HSD_JObjReqAnimAll(jobj, 0.0F);
  
          digit_jobj = state->jobjs[Percent];
-@@ -427,8 +403,7 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
+@@ -427,8 +407,7 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
              tobj = digit_jobj->u.dobj->mobj->tobj;
              HSD_TObjAddAnimAll(
                  tobj,
@@ -143947,7 +144001,7 @@ index a6068103c..e27dcdf3c 100644
              if (Player_GetMoreFlagsBit2((s8) state->player_slot)) {
                  HSD_TObjReqAnimAll(tobj, 1.0F);
              } else {
-@@ -445,22 +420,20 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
+@@ -445,22 +424,20 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
      HSD_JObjAnimAll(jobj);
  
      {
@@ -143975,7 +144029,7 @@ index a6068103c..e27dcdf3c 100644
          HSD_TObjReqAnimAll(post_digit_jobj->u.dobj->mobj->tobj, 2.0F * digit);
          HSD_AObjSetRate(post_digit_jobj->u.dobj->mobj->tobj->aobj, 0.0F);
  
-@@ -474,9 +447,8 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
+@@ -474,9 +451,8 @@ void ifStatus_802F4EDC(HSD_GObj* gobj)
  
          post_digit_jobj = state->jobjs[Hundreds];
          digit = (state->damage_percent % 1000) / 100;
@@ -143987,7 +144041,7 @@ index a6068103c..e27dcdf3c 100644
          HSD_TObjReqAnimAll(post_digit_jobj->u.dobj->mobj->tobj, 2.0F * digit);
          HSD_AObjSetRate(post_digit_jobj->u.dobj->mobj->tobj->aobj, 0.0F);
      }
-@@ -597,7 +569,7 @@ void ifStatus_802F5B48(HSD_GObj* gobj)
+@@ -597,7 +573,7 @@ void ifStatus_802F5B48(HSD_GObj* gobj)
              p->flags.unk10 = 0;
          }
          if (p->old_damage == 0) {
@@ -143996,7 +144050,7 @@ index a6068103c..e27dcdf3c 100644
                  ifStatus_802F6948((s8) p->player_slot);
              }
          }
-@@ -639,9 +611,12 @@ static inline IfDamageState* getPlayerByHUDParent(HSD_GObj* parent)
+@@ -639,9 +615,12 @@ static inline IfDamageState* getPlayerByHUDParent(HSD_GObj* parent)
      return NULL;
  }
  
@@ -144010,7 +144064,7 @@ index a6068103c..e27dcdf3c 100644
          HSD_GObj_JObjCallback(player, arg1);
      }
  }
-@@ -657,7 +632,7 @@ static inline IfDamageState* getPlayerByNext(HSD_GObj* gobj)
+@@ -657,7 +636,7 @@ static inline IfDamageState* getPlayerByNext(HSD_GObj* gobj)
      return NULL;
  }
  
@@ -144019,7 +144073,7 @@ index a6068103c..e27dcdf3c 100644
  {
      IfDamageState* player = getPlayerByNext(gobj);
      if (!player->flags.hide_all_digits) {
-@@ -667,19 +642,19 @@ void ifStatus_802F5E50(HSD_GObj* gobj, s32 arg1)
+@@ -667,19 +646,19 @@ void ifStatus_802F5E50(HSD_GObj* gobj, s32 arg1)
  
  static inline HSD_JObj* ifStatus_GetDamageJObj(HSD_JObj* jobj, s32 i)
  {
@@ -144043,7 +144097,7 @@ index a6068103c..e27dcdf3c 100644
      HSD_JObj* jobj;
      Vec3* vec;
      HSD_TObj* tobj;
-@@ -690,8 +665,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -690,8 +669,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
          gobj = GObj_Create(0xE, 0xF, 0);
          jobj = ifStatus_LoadDamageJObj(hud);
          HSD_GObjObject_80390A70(gobj, HSD_GObj_JObjKind, jobj);
@@ -144053,7 +144107,7 @@ index a6068103c..e27dcdf3c 100644
          HSD_GObj_SetupProc(gobj, ifStatus_802F5B48, 0x11);
          HSD_GObj_SetupProc(gobj, ifStatus_802F4EDC, 0x11);
          state->HUD_parent_entity = gobj;
-@@ -700,10 +674,9 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -700,10 +678,9 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
      }
      state->flags.animation_status_id = 0;
      HSD_JObjRemoveAnim(jobj);
@@ -144067,7 +144121,7 @@ index a6068103c..e27dcdf3c 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_JObjAnimAll(jobj);
      vec = ifAll_GetPlayerHUDPosition((u8) player_idx);
-@@ -716,8 +689,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -716,8 +693,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
      if (state->jobjs[3] != NULL) {
          tobj = state->jobjs[3]->u.dobj->mobj->tobj;
          HSD_TObjAddAnimAll(
@@ -144077,7 +144131,7 @@ index a6068103c..e27dcdf3c 100644
          if (Player_GetMoreFlagsBit2((s8) state->player_slot) != 0) {
              HSD_TObjReqAnimAll(tobj, 1.0f);
          } else {
-@@ -733,11 +705,11 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -733,11 +709,11 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
      return state->HUD_parent_entity;
  }
  
@@ -144093,7 +144147,7 @@ index a6068103c..e27dcdf3c 100644
      s32 i;
      if ((node == NULL) || (n < 0)) {
          return NULL;
-@@ -745,32 +717,21 @@ HSD_GObj* ifStatus_802F6194(HSD_GObj* node, s32 n)
+@@ -745,32 +721,21 @@ HSD_GObj* ifStatus_802F6194(HSD_GObj* node, s32 n)
      if (node == NULL) {
          gx_head = NULL;
      } else {
@@ -144135,7 +144189,7 @@ index a6068103c..e27dcdf3c 100644
  {
      *gobj = GObj_Create(0xE, 0xF, 0);
  }
-@@ -803,33 +764,46 @@ HSD_GObj* ifStatus_802F61FC(IfDamageState* state, s32 player_idx)
+@@ -803,33 +768,46 @@ HSD_GObj* ifStatus_802F61FC(IfDamageState* state, s32 player_idx)
              HSD_ASSERTREPORT(0x30A, 0,
                               "Error : gobj dont't get (ifAddMark)\n");
          }
@@ -144189,7 +144243,7 @@ index a6068103c..e27dcdf3c 100644
                                  gm_8016B168(), Player_GetPlayerSlotType(idx)));
      mobj = HSD_JObjGetChild(jobj)->u.dobj->mobj;
      mobj->mat->diffuse.r = color.r;
-@@ -885,6 +859,11 @@ void ifStatus_802F665C(int arg0)
+@@ -885,6 +863,11 @@ void ifStatus_802F665C(int arg0)
      for (i = 0; i < 6; i++) {
          ifStatus_802F6508(i);
      }
@@ -144201,7 +144255,7 @@ index a6068103c..e27dcdf3c 100644
  }
  
  void ifStatus_802F66A4(void)
-@@ -892,27 +871,27 @@ void ifStatus_802F66A4(void)
+@@ -892,27 +875,27 @@ void ifStatus_802F66A4(void)
      HudIndex* hud = ifStatus_GetHUDInfo();
      s32 pad0;
      s32 pad1;
@@ -144241,7 +144295,7 @@ index a6068103c..e27dcdf3c 100644
  #ifdef MUST_MATCH
          }
      }
-@@ -940,8 +919,7 @@ void ifStatus_802F6804(void)
+@@ -940,8 +923,7 @@ void ifStatus_802F6804(void)
      s32 i;
      IfDamageState* v;
  
@@ -144251,7 +144305,7 @@ index a6068103c..e27dcdf3c 100644
          v = &ifStatus_GetHUDInfo()->players[i & 0xFF];
          if (v->HUD_parent_entity != NULL) {
              HSD_GObjFree(v->HUD_parent_entity);
-@@ -952,8 +930,7 @@ void ifStatus_802F6804(void)
+@@ -952,8 +934,7 @@ void ifStatus_802F6804(void)
              v->next = NULL;
          }
          ifStock_802FB650((s8) i & 0xFF);
@@ -144261,7 +144315,7 @@ index a6068103c..e27dcdf3c 100644
  }
  
  /// Hide Percentage Digits
-@@ -1002,8 +979,8 @@ static inline void ifStatus_TriggerStockLoss(s32 player_idx,
+@@ -1002,8 +983,8 @@ static inline void ifStatus_TriggerStockLoss(s32 player_idx,
      struct StartMeleeRules* small_thing;
      IfDamageFlags* hud_player_flags;
  
@@ -144272,7 +144326,7 @@ index a6068103c..e27dcdf3c 100644
      small_thing = gm_GetStartMeleeRules();
      hud_player = &ifStatus_GetHUDInfo()->players[player_idx];
      hud_player_flags = &hud_player->flags;
-@@ -1033,7 +1010,7 @@ void ifStatus_802F69C0(s32 player_idx, s32 arg1)
+@@ -1033,7 +1014,7 @@ void ifStatus_802F69C0(s32 player_idx, s32 arg1)
  {
      VsSceneController* big_thing;
  
@@ -151726,7 +151780,7 @@ index 3b65e74db..499048c13 100644
              index++;
              cnt++;
 diff --git a/src/melee/it/itdraw.c b/src/melee/it/itdraw.c
-index b44a82383..c7a4dcdf2 100644
+index b44a82383..4ba27b686 100644
 --- a/src/melee/it/itdraw.c
 +++ b/src/melee/it/itdraw.c
 @@ -1,3 +1,6 @@
@@ -151736,9 +151790,21 @@ index b44a82383..c7a4dcdf2 100644
  #include "itdraw.h"
  
  #include "inlines.h"
-@@ -91,7 +94,11 @@ u32 it_8026ECE0(Item_GObj* gobj, u32 arg1)
+@@ -90,8 +93,23 @@ u32 it_8026ECE0(Item_GObj* gobj, u32 arg1)
+             ret = 1;
          }
      } else {
++#ifdef MU_NATIVE
++        /* Arcade look "Projectile hitboxes too": an item's attack bubbles without its debug flags
++         * (the always-display code's item lines); its hurtboxes keep theirs. */
++        if (!(ip->xDAA_flag.b6 && ip->xDAA_flag.b2) && mu_arcade_projectile_hitboxes()) {
++            for (idx = 0U; idx < 4U; idx++) {
++                if (lbColl_80009F54(&ip->x5D4_hitboxes[idx].hit, arg1, ip->scl) != false) {
++                    ret = 1;
++                }
++            }
++        }
++#endif
          if (ip->xDAA_flag.b6) {
 +#if MU_ROGUE  /* rogueMelee + Melee Maker */
 +            if (ip->xDAA_flag.b2 && Bam_DrawHitboxes()) {
@@ -151748,7 +151814,7 @@ index b44a82383..c7a4dcdf2 100644
                  idx = 0U;
                  while (idx < 4U) {
                      if (lbColl_80009F54(&ip->x5D4_hitboxes[idx].hit, arg1,
-@@ -102,7 +109,11 @@ u32 it_8026ECE0(Item_GObj* gobj, u32 arg1)
+@@ -102,7 +120,11 @@ u32 it_8026ECE0(Item_GObj* gobj, u32 arg1)
                      idx++;
                  }
              }
@@ -151760,7 +151826,7 @@ index b44a82383..c7a4dcdf2 100644
                  if (ip->xD0C == 0) {
                      idx = 0U;
                      while (idx < ip->xAC8_hurtboxNum) {
-@@ -142,8 +153,24 @@ u32 it_8026ECE0(Item_GObj* gobj, u32 arg1)
+@@ -142,8 +164,24 @@ u32 it_8026ECE0(Item_GObj* gobj, u32 arg1)
      return ret;
  }
  
@@ -151785,7 +151851,7 @@ index b44a82383..c7a4dcdf2 100644
  
  static inline void it_8026EECC_inline_1(HSD_GObj* gobj, s32 arg1, Vec3* pos)
  {
-@@ -151,11 +178,11 @@ static inline void it_8026EECC_inline_1(HSD_GObj* gobj, s32 arg1, Vec3* pos)
+@@ -151,11 +189,11 @@ static inline void it_8026EECC_inline_1(HSD_GObj* gobj, s32 arg1, Vec3* pos)
  
      ip->xDCF_flag.b4 = 1;
      ip->xDCF_flag.b5 = 0;
@@ -151801,7 +151867,7 @@ index b44a82383..c7a4dcdf2 100644
  }
  
  static inline void it_8026EECC_inline_2(HSD_GObj* gobj, s32 arg1, Vec3* pos)
-@@ -173,11 +200,11 @@ static inline void it_8026EECC_inline_3(HSD_GObj* gobj, s32 arg1, Vec3* pos)
+@@ -173,11 +211,11 @@ static inline void it_8026EECC_inline_3(HSD_GObj* gobj, s32 arg1, Vec3* pos)
  
      ip->xDCF_flag.b4 = 1;
      ip->xDCF_flag.b5 = 1;
@@ -151817,7 +151883,7 @@ index b44a82383..c7a4dcdf2 100644
  }
  
  static inline Item* it_8026EECC_inline_0(HSD_GObj* gobj, Vec3* pos)
-@@ -213,7 +240,7 @@ static inline void it_8026EECC_inline_sw(HSD_GObj* gobj, s32 arg1, Vec3* pos)
+@@ -213,7 +251,7 @@ static inline void it_8026EECC_inline_sw(HSD_GObj* gobj, s32 arg1, Vec3* pos)
      }
  }
  
@@ -172842,7 +172908,7 @@ index 000000000..94dae33b6
 +
 +#endif
 diff --git a/src/melee/lb/lbcollision.c b/src/melee/lb/lbcollision.c
-index affc43a9c..9507d20f7 100644
+index affc43a9c..6448b82c7 100644
 --- a/src/melee/lb/lbcollision.c
 +++ b/src/melee/lb/lbcollision.c
 @@ -13,6 +13,9 @@
@@ -172989,7 +173055,21 @@ index affc43a9c..9507d20f7 100644
                       f32 arg4)
  {
      Mtx sp104;
-@@ -2180,7 +2258,7 @@ void lbColl_80008FC8(Vec3 arg0, Vec3 arg1, GXColor* arg2, GXColor* arg3,
+@@ -2128,7 +2206,13 @@ void lbColl_80008FC8(Vec3 arg0, Vec3 arg1, GXColor* arg2, GXColor* arg3,
+     PSMTXTrans(sp44, 0.5 * (arg0.x + arg1.x), 0.5 * (arg0.y + arg1.y),
+                0.5 * (arg0.z + arg1.z));
+     PSMTXConcat(sp44, sp74, sp74);
++#ifdef MU_NATIVE
++    /* Arcade look "Draw hitboxes behind the fighter" (the always-display code's 80009430 line):
++     * only the far half of the bubble draws, so it shows around the model instead of over it. */
++    GXSetCullMode(mu_arcade_hitboxes_behind() ? GX_CULL_FRONT : GX_CULL_BACK);
++#else
+     GXSetCullMode(GX_CULL_BACK);
++#endif
+     GXClearVtxDesc();
+     GXSETARRAY(GX_VA_POS, lbColl_SpherePositions,
+                sizeof(lbColl_SpherePositions), 6, true);
+@@ -2180,7 +2264,7 @@ void lbColl_80008FC8(Vec3 arg0, Vec3 arg1, GXColor* arg2, GXColor* arg3,
      HSD_StateInitTev();
  }
  
@@ -172998,7 +173078,7 @@ index affc43a9c..9507d20f7 100644
                       GXColor* arg4, f32 arg5)
  {
      Mtx sp108;
-@@ -2367,6 +2445,11 @@ bool lbColl_80009F54(HitCapsule* hit, u32 arg1, float arg8)
+@@ -2367,6 +2451,11 @@ bool lbColl_80009F54(HitCapsule* hit, u32 arg1, float arg8)
      float var_f1;
      u32 var_r0;
  

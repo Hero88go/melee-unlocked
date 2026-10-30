@@ -29,6 +29,8 @@ struct LookLive {
   std::atomic<bool> effect_owners{false};                // Visual effects at No decorative particles: effect draws are marked
   std::atomic<uint8_t> background{0};                    // 0 the stage's own, 1 black, 2 plain colour
   std::atomic<uint32_t> background_rgb{0x000000};
+  std::atomic<uint32_t> arcade_rgb{0x1E2430};                // Arcade look "Background" colour (gx_core.h arcade_backdrop_slot)
+  std::atomic<uint32_t> arcade_grid_rgb{0x3A4458};           // its grid lines (MU_DISPLAY_OPTION_GRID, drawn by the game)
   std::atomic<bool> retro{false};                        // the original "Retro (64 style)" switch
   std::atomic<bool> exact{false};                        // an exact look's pack is served: the game's art is theirs, no treatment
   std::atomic<bool> exact_low_poly{true};                // that look's own fighters are the low poly ones (Diet Classic, Diet 64; not Crystal)
@@ -47,6 +49,9 @@ template <class Options> inline void publish_look(const Options& o) {
   l.effect_owners.store(o.effects_level > 0 || o.lightweight > 0 || o.look_stage != 0 || o.look_fighter != 0, std::memory_order_relaxed);
   l.background.store((uint8_t)o.look_background, std::memory_order_relaxed);
   l.background_rgb.store(o.look_background_rgb, std::memory_order_relaxed);
+  arcade_backdrop_slot().store((uint8_t)o.arcade_backdrop, std::memory_order_relaxed);
+  l.arcade_rgb.store(o.arcade_background_rgb, std::memory_order_relaxed);
+  l.arcade_grid_rgb.store(o.arcade_grid_rgb, std::memory_order_relaxed);
   // An exact look draws its own art: the renderer's stand-in treatments step aside (port colours and the
   // Lightweight speed options still apply).
   if (l.exact.load(std::memory_order_relaxed)) {
@@ -168,6 +173,8 @@ inline uint32_t unfiltered_mode0(uint32_t mode0) { return mode0 & ~((1u << 4) | 
 // The background clear in a match: the game's colour, black, or the plain colour (alpha kept).
 inline uint32_t look_clear_colour(bool in_match, uint32_t colour) {
   const LookLive& l = look_live();
+  if (in_match && arcade_backdrop_slot().load(std::memory_order_relaxed) != 0)   // the Arcade look's own colour wins
+    return (colour & 0xFF000000u) | (l.arcade_rgb.load(std::memory_order_relaxed) & 0xFFFFFF);
   const uint8_t b = l.background.load(std::memory_order_relaxed);
   if (!in_match || b == 0) return colour;
   const uint32_t rgb = b == 1 ? 0 : (l.background_rgb.load(std::memory_order_relaxed) & 0xFFFFFF);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -188,6 +189,11 @@ struct HudPlayerSnapshot {
   int damage = 0, stocks = 0;
   float tag_x = 0, tag_y = 0; // Melee's 640x480 screen coordinates
   bool present = false, tag_visible = false;
+  // The Arcade look's combo counter: the player this one's combo link holds right after a hit (Fighter
+  // x2094, -1 none), this player's percent, and whether it cannot act (hitlag, damage, down, grabbed).
+  int combo_link = -1;
+  float percent = 0;
+  bool stunned = false;
 };
 
 struct Frame {
@@ -271,10 +277,44 @@ bool css_background_free_active();
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);
 bool player_tags_always_active();
+// "Shield colours" (VIDEO): per port -1 for the port's colour, else one of the 18 colours below (the same
+// table as 20XX TE's, shim/mu_te_menus.c). The shield bubble and the KO blast take it; team matches keep
+// the team colours. Display only. Packed for MuHostApi.shield_colors: 5 bits a port, 0 = the port's own.
+constexpr int kShieldColorCount = 18;
+extern const uint8_t kShieldColorRgb[kShieldColorCount][3];
+extern const char* const kShieldColorNames[kShieldColorCount];
+void set_shield_colors(const int choice[4]);
+uint32_t shield_colors_packed();
+int shield_color(int port);   // -1 the port's own
+// "Arcade look" bits (MU_DISPLAY_OPTION_HITBOXES and the next two, and the renderer's 2D camera), from
+// four places: the saved settings, the Practice menu's Tools rows for this session, a recognised mod
+// disc while its profile is active, and a pasted always-display hitbox code that is switched on. The
+// native game reads their union each draw.
+enum class ArcadeSource { Settings, Practice, Pack, Codes, Count };
+// The same values as MU_DISPLAY_OPTION_HITBOXES and the next two (source_host.cpp asserts it); the
+// game reads only these (and the grid). The host's own: the 2D camera and the combo counter.
+constexpr uint32_t kArcadeHitboxes = 0x20u, kArcadeProjectileHitboxes = 0x40u, kArcadeHitboxesBehind = 0x80u,
+                   kArcadeGrid = 0x100u;
+constexpr uint32_t kArcadeGameBits = kArcadeHitboxes | kArcadeProjectileHitboxes | kArcadeHitboxesBehind | kArcadeGrid;
+constexpr uint32_t kArcadeCamera2d = 0x10000u, kArcadeComboCounter = 0x20000u;
+template <class Options> uint32_t arcade_settings_bits(const Options& o) {
+  return (o.arcade_hitboxes ? kArcadeHitboxes : 0u) | (o.arcade_projectile_hitboxes ? kArcadeProjectileHitboxes : 0u) |
+         (o.arcade_hitboxes_behind ? kArcadeHitboxesBehind : 0u) | (o.arcade_camera_2d ? kArcadeCamera2d : 0u) |
+         (o.arcade_combo_counter ? kArcadeComboCounter : 0u) | (o.arcade_backdrop == 2 ? kArcadeGrid : 0u);
+}
+void set_arcade_display(ArcadeSource source, uint32_t bits);
+uint32_t arcade_display();
 // The native game's players (MuHostApi.hud_player), each drawn frame: the Static Recomp reads the
 // same HUD objects from guest RAM (capture_match_hud). Simulation thread.
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
                            bool tag_visible);
+void set_native_hud_combo(int slot, int link, float percent, bool stunned);   // MuHostApi.hud_combo, simulation thread
+// The actions in which a fighter cannot act for the combo counter: damage and tumble, down and tech,
+// grabbed, thrown and carried (ftCo_MS_* ids; the game's mu_combo_stun_action is the same list).
+inline bool combo_stun_action(uint32_t a) {
+  return a == 38 || (a >= 75 && a <= 91) || (a >= 183 && a <= 204) || (a >= 223 && a <= 232) ||
+         (a >= 239 && a <= 243) || (a >= 266 && a <= 296);
+}
 
 // Whether a frame certainly shows a running match. Anything else counts as a menu: the character and
 // stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.
@@ -403,7 +443,18 @@ struct LightweightFilter {
   float fighter_far = 0;        // the farthest fighter's view-space z (negative, the camera looks down -z)
   bool have_fighters = false;
   bool in_match = false;        // a running match with a world camera (projection is set): looks apply to it
+  float plane_z = 0;            // Arcade look "2D camera": the fighters' view-space z (median of their bones), 0 = none yet
+  bool backdrop_off = false;    // stage backdrops are skipped: Lightweight 2 and up, or the Arcade look's background
 };
+// Arcade look "2D camera" (gx_shader.cpp build_projection): the world camera becomes orthographic,
+// matching the perspective picture on the plane the fighters stand on. Display only. Header only, like
+// look_filter_slot: tests link the frame filter without the rest of gx.
+inline std::atomic<bool>& arcade_camera_2d_slot() { static std::atomic<bool> on{false}; return on; }
+inline void set_arcade_camera_2d(bool on) { arcade_camera_2d_slot().store(on, std::memory_order_relaxed); }
+inline bool arcade_camera_2d_active() { return arcade_camera_2d_slot().load(std::memory_order_relaxed); }
+// Arcade look "Background" (0 the stage's own, 1 plain colour): the backdrop skip of Lightweight level 2
+// on its own, with the colour (gx_retro.h look_clear_colour) behind. Display only.
+inline std::atomic<uint8_t>& arcade_backdrop_slot() { static std::atomic<uint8_t> mode{0}; return mode; }
 // A stage piece counts as background when all of it lies this many world units behind the
 // farthest fighter. Melee plays on the z = 0 plane: platforms, ledges and walls sit within a few
 // units of it, scenery is tens to thousands of units back.
@@ -418,8 +469,11 @@ inline float lightweight_view_z(const DrawCall& d, const Vertex& v) {
 }
 // MELEE_TEST_LIGHTWEIGHT_LOG=1 (tests): every 600th match frame, the depths the background rule sees.
 void lightweight_debug(const Frame& f, const LightweightFilter& e);
+// MELEE_TEST_ARCADE_LOG=1 (tests): on the 200th match frame with the 2D camera on, every draw of the
+// world camera's projection with its depth, so the draws the camera must leave alone can be told apart.
+void arcade_debug(const Frame& f, const LightweightFilter& e);
 inline bool lightweight_world_draw(const LightweightFilter& e, const DrawCall& d) {
-  return e.level > 0 && d.xf_regs[0x26] == 0 &&
+  return (e.level > 0 || e.backdrop_off) && d.xf_regs[0x26] == 0 &&
          std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) == 0;
 }
 inline LightweightFilter lightweight_filter_build(const Frame& f, int level) {
@@ -432,9 +486,31 @@ inline LightweightFilter lightweight_filter_build(const Frame& f, int level) {
   // with the Lightweight level at 0.
   std::memcpy(e.projection, &scene->xf_regs[0x20], sizeof e.projection);
   e.in_match = true;
-  if (level <= 0) return e;
-  e.level = level;
-  if (level >= 2) {
+  if (arcade_camera_2d_active()) {
+    // The 2D camera keeps the picture exact on the fighters' plane: the median depth of the world
+    // camera's skinned bones (fighters, and the odd skinned stage piece, which the median outvotes).
+    // With nothing skinned in view (a cut-in) the last plane is kept, so the picture does not jump.
+    static float last_plane = 0;
+    static std::vector<float> depths;
+    depths.clear();
+    for (const auto& d : f.draws) {
+      if (!d.skinned || d.xf_regs[0x26] != 0 || std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) != 0) continue;
+      const int row = (int)(d.matrix_index_a & 0x3F);
+      if (row + 2 >= 64) continue;
+      const float z = d.posMatrices[(row + 2) * 4 + 3];
+      if (std::isfinite(z) && z < -1.0f) depths.push_back(z);
+    }
+    if (!depths.empty()) {
+      std::nth_element(depths.begin(), depths.begin() + depths.size() / 2, depths.end());
+      last_plane = depths[depths.size() / 2];
+    }
+    e.plane_z = last_plane;
+    arcade_debug(f, e);
+  }
+  e.backdrop_off = level >= 2 || arcade_backdrop_slot().load(std::memory_order_relaxed) != 0;
+  if (level <= 0 && !e.backdrop_off) return e;
+  e.level = std::max(level, 0);
+  if (e.backdrop_off) {
     // The play plane's depth: the nearest skinned model of the world camera, which is a fighter
     // (draw owners are only tracked for the L-cancel indicator, so they cannot be relied on here).
     // A skinned piece of scenery further back (Whispy, a crowd) only moves this nearer the camera
@@ -466,7 +542,7 @@ inline LightweightFilter lightweight_filter(const Frame& f, int level) {
 // (they have an owner or are skinned) never count, nor does anything off the world camera. With no
 // fighter in view (a cut-in, the results walk-off) nothing is skipped.
 inline bool lightweight_background(const LightweightFilter& e, const Frame& f, const DrawCall& d) {
-  if (e.level < 2 || !e.have_fighters || d.owner_player != 0xFF || d.skinned || !lightweight_world_draw(e, d)) return false;
+  if (!e.backdrop_off || !e.have_fighters || d.owner_player != 0xFF || d.skinned || !lightweight_world_draw(e, d)) return false;
   // The frame's own vertices: a stage piece is rigid, so the sub-frame solver never rewrites them.
   const Vertex* v = d.first_vertex + (size_t)d.vertex_count <= f.vertices.size() ? f.vertices.data() + d.first_vertex : nullptr;
   if (!v || d.vertex_count == 0) return false;
@@ -509,11 +585,17 @@ inline bool lightweight_background(const LightweightFilter& e, const Frame& f, c
 int8_t& lightweight_skip_slot(const Frame& f, size_t index, int level);
 // One call per draw in every backend: skip it or not, and count it for the settings hint.
 inline bool skip_for_lightweight(const LightweightFilter& e, const Frame& f, const DrawCall& d) {
-  if (e.level <= 0) return false;
+  if (e.level <= 0 && !e.backdrop_off) return false;
+  // The Arcade look's plain background also drops the planes made to fill the camera's view behind
+  // the stage (DrawCall::frustum_backdrop: a sky or gradient), which Lightweight keeps.
+  if (e.in_match && d.frustum_backdrop && arcade_backdrop_slot().load(std::memory_order_relaxed) != 0) {
+    lightweight_count(true);
+    return true;
+  }
   const size_t index = (size_t)(&d - f.draws.data());
   bool skip;
   if (index < f.draws.size()) {
-    int8_t& slot = lightweight_skip_slot(f, index, e.level);
+    int8_t& slot = lightweight_skip_slot(f, index, e.level + (e.backdrop_off ? 16 : 0));
     if (slot < 0) slot = lightweight_background(e, f, d) ? 1 : 0;
     skip = slot != 0;
   } else {

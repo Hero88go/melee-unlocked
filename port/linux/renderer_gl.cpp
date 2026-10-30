@@ -787,9 +787,9 @@ void main() {
 #endif
     const bool crt_on = o && o->crt_filter && !shader_on;
     float vh = float(ph), vw = float(pw);
-    gx::CrtFit fit{vh, 0.0f};
-    // Only the built-in CRT model snaps to whole pixels per line; a preset smooths its own lines: no border.
-    if (crt_on) { fit = gx::crt_fit(vh, lines); vh = fit.height; vw = vh * float(pw) / float(std::max(ph, 1)); }
+    gx::CrtFit fit{vh, 0.0f, lines};
+    // Only the built-in CRT model lays its lines on whole pixels (crt_fit: more, finer lines, no border).
+    if (crt_on) fit = gx::crt_fit(vh, lines);
     const float vx = std::floor((w - vw) * 0.5f), vy = std::floor((h - vh) * 0.5f);
     const uint32_t sw = std::max(c.src_w, 1u), sh = uint32_t(std::max(std::lround(lines), 1L));
     if (shader_on) {
@@ -814,8 +814,8 @@ void main() {
     const float by = float(std::clamp(int(std::lround(double(c.src_h) * scale_ / std::max(out_h, 1.0f))), 1, 4));
     glUniform4f(u("box"), bx, by, 0, 0);
     glUniform4f(u("col"), o ? o->brightness : 1.0f, o ? o->contrast : 1.0f, o ? o->vibrance : 1.0f, 0.0f);
-    glUniform4f(u("crt"), look.scan, look.mask, look.curve, lines);
-    glUniform4f(u("crt2"), float(c.src_w), vh / lines, look.halation, fit.shift);
+    glUniform4f(u("crt"), look.scan, look.mask, look.curve, fit.lines);
+    glUniform4f(u("crt2"), float(c.src_w), vh / fit.lines, look.halation, fit.shift);
     glUniform1i(u("crt_on"), crt_on ? 1 : 0);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 #ifdef GX_PC_SETTINGS

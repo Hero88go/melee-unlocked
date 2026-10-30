@@ -245,6 +245,47 @@ float g_overlay_game_aspect = 73.0f / 60.0f;
 std::array<HudPlayerSnapshot, 4> g_hud_players{};
 std::array<std::string, 4> g_hud_player_names{};
 bool g_hud_match = false;
+// The Arcade look's combo counter, counted per player hit, once per game frame (a frame presented again
+// on a fast display counts nothing twice). A hit is a rise of that player's percent; it goes to the
+// player whose combo link (Fighter x2094) holds them, or to the only opponent. The combo lives while
+// the player hit keeps getting hit before they have been able to act for 45 frames, and ends at once
+// when their percent drops (a KO).
+struct ComboTrack { int attacker = -1; float percent = 0; int hits = 0, free_frames = 0; bool live = false;
+                    double changed = 0, ended = -1; };
+std::array<ComboTrack, 4> g_combo{};   // by the player hit
+uint64_t g_combo_sequence = ~0ull;
+void combo_track(uint64_t sequence) {
+  if (sequence == g_combo_sequence) return;
+  g_combo_sequence = sequence;
+  const double now = ImGui::GetTime();
+  static const bool log = [] { const char* v = std::getenv("MELEE_TEST_COMBO_LOG"); return v && *v == '1'; }();
+  if (log && sequence % 120 == 0) host::log("combo: frame %llu match %d P1 %.0f%% stun %d link %d, P2 %.0f%% stun %d link %d", (unsigned long long)sequence, g_hud_match ? 1 : 0, g_hud_players[0].percent, g_hud_players[0].stunned ? 1 : 0, g_hud_players[0].combo_link, g_hud_players[1].percent, g_hud_players[1].stunned ? 1 : 0, g_hud_players[1].combo_link);
+  for (int slot = 0; slot < 4; ++slot) {   // `slot` is the player hit
+    const HudPlayerSnapshot& p = g_hud_players[slot];
+    ComboTrack& c = g_combo[slot];
+    if (!g_hud_match || !p.present) { if (c.live) { c.live = false; c.ended = now; } c.percent = 0; continue; }
+    if (p.percent > c.percent + 0.01f) {
+      int attacker = -1, others = 0, other = -1;
+      for (int a = 0; a < 4; ++a) {
+        if (a == slot || !g_hud_players[a].present) continue;
+        ++others; other = a;
+        if (g_hud_players[a].combo_link == slot) attacker = a;
+      }
+      if (attacker < 0) attacker = others == 1 ? other : c.attacker;
+      if (c.live && attacker == c.attacker) ++c.hits;
+      else { c.hits = 1; c.attacker = attacker; }
+      c.live = attacker >= 0; c.free_frames = 0; c.changed = now;
+      if (log) host::log("combo: P%d hits %d on P%d at %.0f%%", attacker + 1, c.hits, slot + 1, p.percent);
+    } else if (c.live) {
+      c.free_frames = p.stunned ? 0 : c.free_frames + 1;
+      if (c.free_frames >= 45 || p.percent + 0.01f < c.percent) {
+        c.live = false; c.ended = now;
+        if (log) host::log("combo: P%d's combo on P%d ended at %d hits", c.attacker + 1, slot + 1, c.hits);
+      }
+    }
+    c.percent = p.percent;
+  }
+}
 
 struct OverlayBounds { float left, top, right, bottom; };
 
@@ -277,6 +318,46 @@ void settings_set_hud_snapshot(const Frame& frame) {
   g_hud_match = frame_in_match(frame);
   g_hud_players = frame.hud_players;
   g_hud_player_names = frame.player_names;
+  combo_track(frame.sequence);
+}
+
+// The Arcade look's combo counter (counted in combo_track): "N HITS" over the attacker, in the game's
+// font and the port's colour, from the second hit. Offline matches and replays only.
+static void draw_combo_counter() {
+  if (!g_hud_match || slippi::online::is_online_match() || !(arcade_display() & kArcadeComboCounter)) return;
+  const OverlayBounds bounds = overlay_bounds();
+  const float width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+  const double now = ImGui::GetTime();
+  static constexpr uint32_t colors[4] = {IM_COL32(255, 92, 92, 255), IM_COL32(96, 150, 255, 255),
+                                         IM_COL32(255, 214, 72, 255), IM_COL32(88, 214, 120, 255)};
+  ImDrawList* draw = ImGui::GetForegroundDrawList();
+  draw->PushClipRect(ImVec2(bounds.left, bounds.top), ImVec2(bounds.right, bounds.bottom), true);
+  for (int victim = 0; victim < 4; ++victim) {
+    const ComboTrack& c = g_combo[victim];
+    if (c.hits < 2 || c.attacker < 0) continue;
+    const int slot = c.attacker;
+    const HudPlayerSnapshot& p = g_hud_players[slot];
+    if (!p.present) continue;
+    // Holds while the combo lives, then fades over a third of a second.
+    const float fade = c.live ? 1.0f : 1.0f - (float)std::clamp((now - c.ended) / 0.35, 0.0, 1.0);
+    if (fade <= 0.0f) continue;
+    // Each hit pops the number: a little larger, settling back over a tenth of a second.
+    const float pop = 1.0f + 0.35f * (1.0f - (float)std::clamp((now - c.changed) / 0.12, 0.0, 1.0));
+    const float px = std::clamp(height / 18.0f, 18.0f, 44.0f) * pop;
+    char label[24];
+    std::snprintf(label, sizeof label, "%d HITS", c.hits);
+    const float w = practice_menu::text_width(px, label);
+    // Over the attacker's damage display: the game lays the four out by port, P1 a fifth of the way
+    // across and each next one 151 of 640 further (measured on its HUD), widened like the HUD under True 16:9.
+    const float hud_x = 128.0f + 151.0f * slot;
+    const float at_x = true_widescreen_active() ? 320.0f + (hud_x - 320.0f) * true_widescreen_factor() : hud_x;
+    const float x = std::clamp(bounds.left + at_x / 640.0f * width - w * 0.5f, bounds.left + 4.0f,
+                               std::max(bounds.left + 4.0f, bounds.right - w - 4.0f));
+    const float y = bounds.top + height * 0.775f - px;
+    const uint32_t color = (colors[slot] & 0x00FFFFFFu) | ((uint32_t)(255.0f * fade) << 24);
+    practice_menu::text(draw, x, y, px, color, label, 0.12f);
+  }
+  draw->PopClipRect();
 }
 
 static void draw_player_nicknames() {
@@ -2132,6 +2213,16 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "practicestyle") { const int n = std::atoi(value.c_str()); if (n >= 0 && n < practice_menu::kStyleCount) options.practice_style = n; }
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 3) options.effects_level = n; }
       else if (key == "playertags") options.player_tags_always = value == "1";
+      else if (key == "arcade_hitboxes") options.arcade_hitboxes = value == "1";
+      else if (key == "arcade_projectile_hitboxes") options.arcade_projectile_hitboxes = value == "1";
+      else if (key == "arcade_hitboxes_behind") options.arcade_hitboxes_behind = value == "1";
+      else if (key == "arcade_camera_2d") options.arcade_camera_2d = value == "1";
+      else if (key == "arcade_combo_counter") options.arcade_combo_counter = value == "1";
+      else if (key.size() == 14 && key.compare(0, 13, "shield_colorp") == 0 && key[13] >= '1' && key[13] <= '4')
+        options.shield_color[key[13] - '1'] = std::clamp(std::atoi(value.c_str()), -1, kShieldColorCount - 1);
+      else if (key == "arcade_backdrop") options.arcade_backdrop = std::clamp(std::atoi(value.c_str()), 0, 2);
+      else if (key == "arcade_grid_rgb") options.arcade_grid_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
+      else if (key == "arcade_background_rgb") options.arcade_background_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
       else if (key == "retro") options.retro = value == "1";
       else if (key == "look_fighter") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kSurfaceCount) options.look_fighter = n; }
@@ -4092,6 +4183,16 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nlab_colour_background " << lab_colour_text(options.lab_colour_background)
        << "\nlab_colour_stage " << lab_colour_text(options.lab_colour_stage)
        << "\nplayertags " << options.player_tags_always
+       << "\narcade_hitboxes " << (options.arcade_hitboxes ? 1 : 0)
+       << "\narcade_projectile_hitboxes " << (options.arcade_projectile_hitboxes ? 1 : 0)
+       << "\narcade_hitboxes_behind " << (options.arcade_hitboxes_behind ? 1 : 0)
+       << "\narcade_camera_2d " << (options.arcade_camera_2d ? 1 : 0)
+       << "\narcade_combo_counter " << (options.arcade_combo_counter ? 1 : 0)
+       << "\nshield_colorp1 " << options.shield_color[0] << "\nshield_colorp2 " << options.shield_color[1]
+       << "\nshield_colorp3 " << options.shield_color[2] << "\nshield_colorp4 " << options.shield_color[3]
+       << "\narcade_backdrop " << options.arcade_backdrop
+       << "\narcade_background_rgb " << std::hex << options.arcade_background_rgb << std::dec
+       << "\narcade_grid_rgb " << std::hex << options.arcade_grid_rgb << std::dec
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
        << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
@@ -4637,6 +4738,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   set_fod_reflections(options.fod_reflections);
   set_css_background_free(options.css_background_free);
   set_player_tags_always(options.player_tags_always != 0);
+  set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(options)); set_shield_colors(options.shield_color);
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
@@ -5699,6 +5801,106 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       float used = 0, total = 0;
       if (vram_usage(&used, &total)) settings_hint("Video memory in use: %.1f / %.1f GB", used, total);
     }
+    // ---- Shield colours ----
+    // Each port's own shield (and KO blast) colour, on this screen only: online too, and in replays.
+    if (ImGui::CollapsingHeader("Shield colours##shields")) {
+      ImGui::Indent(8.0f);
+      static const char* const ports[4] = {"P1 shield", "P2 shield", "P3 shield", "P4 shield"};
+      for (int port = 0; port < 4; ++port) {
+        ImGui::PushID(port);
+        const int current = options.shield_color[port];
+        const char* preview = current < 0 ? "Port colour" : kShieldColorNames[current];
+        if (current >= 0) {
+          const uint8_t* c = kShieldColorRgb[current];
+          ImGui::ColorButton("##swatch", ImVec4(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip);
+          ImGui::SameLine();
+        }
+        if (ImGui::BeginCombo(ports[port], preview)) {
+          if (ImGui::Selectable("Port colour", current < 0)) { options.shield_color[port] = -1; changed = true; }
+          for (int i = 0; i < kShieldColorCount; ++i) {
+            const uint8_t* c = kShieldColorRgb[i];
+            ImGui::ColorButton("##c", ImVec4(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
+            ImGui::SameLine();
+            if (ImGui::Selectable(kShieldColorNames[i], current == i)) { options.shield_color[port] = i; changed = true; }
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::PopID();
+      }
+      settings_hint("Your shield and KO blast colour for each port, on your screen only (online too). Team matches keep team colours.");
+      ImGui::Unindent(8.0f);
+    }
+    // ---- Get mod looks ----
+    // One click each: the authors' own download, checked against its published file and built from the
+    // player's own disc (host::cosmetics::install_official_look). Open until both are installed; once
+    // Animelee is built the Mods folder is scanned again and it is switched on.
+    {
+      namespace mods = source_port::mods;
+      const std::string mods_dir = mods::mods_folder().u8string();
+      const auto diet = host::cosmetics::official_look_state(0, mods_dir);
+      const auto anim = host::cosmetics::official_look_state(1, mods_dir);
+      static bool was_busy[2] = {false, false};
+      static bool enable_animelee = false;
+      if (was_busy[1] && !anim.busy && anim.installed) { mods::rescan_async(); enable_animelee = true; }
+      was_busy[0] = diet.busy; was_busy[1] = anim.busy;
+      if (enable_animelee) {
+        const auto view = mods::panel_view();
+        if (!view.scanning) {
+          for (const auto& d : view.result.items)
+            if (d.can_enable && !d.enabled && d.path.filename() == std::filesystem::u8path(anim.disc).filename()) mods::choose(d.key, true);
+          enable_animelee = false;
+        }
+      }
+      if (ImGui::CollapsingHeader("Get mod looks##official", diet.installed && anim.installed ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent(8.0f);
+        struct Card { const char* name; const char* credit; const char* page; const char* size; };
+        static const Card cards[2] = {
+            {"Diet Melee (Classic, 64 and Crystal)", "By the Diet Melee team", "https://diet.melee.tv", "about 200 MB"},
+            {"Animelee (Complete Edition)", "By the Animelee team", "https://www.animelee.xyz", "about 30 MB"},
+        };
+        for (int which = 0; which < 2; ++which) {
+          const auto& s = which == 0 ? diet : anim;
+          const Card& card = cards[which];
+          ImGui::PushID(which);
+          ImGui::TextUnformatted(card.name);
+          ImGui::SameLine();
+          ImGui::TextDisabled("%s", card.credit);
+          if (s.busy) {
+            ImGui::ProgressBar(s.progress, ImVec2(-1.0f, 0.0f));
+            if (!s.message.empty()) settings_hint("%s", s.message.c_str());
+          } else if (s.installed) {
+            ImGui::TextColored(ImVec4(.37f, .84f, .53f, 1), "Installed");
+            settings_hint("%s", which == 0 ? "Pick Look > Diet Classic, Diet 64 or Crystal under Low-Detail Modes, then restart."
+                                           : "On in Game mods (MODS tab). Restart to play with it.");
+          } else {
+            ImGui::BeginDisabled(s.any_busy);
+            if (ImGui::Button("Install")) {
+              const std::string disc = host::options.mod_base_iso.empty() ? host::options.iso : host::options.mod_base_iso;
+              std::string tool;
+#ifdef _WIN32
+              wchar_t exe[MAX_PATH] = {};
+              if (GetModuleFileNameW(nullptr, exe, MAX_PATH))
+                tool = (std::filesystem::path(exe).parent_path() / L"tools" / L"xdelta3.exe").u8string();
+#endif
+              host::cosmetics::install_official_look(which, disc, tool, mods_dir);
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+              ImGui::SetTooltip("Downloads it from its authors' own page (%s), checks it is the file they published,\n"
+                                "and builds it from your Melee disc on this PC. Nothing else is installed.", card.size);
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s download", card.size);
+            if (!s.message.empty()) ImGui::TextWrapped("%s", s.message.c_str());
+          }
+#ifdef _WIN32
+          if (ImGui::SmallButton("Authors' page")) ShellExecuteA(nullptr, "open", card.page, nullptr, nullptr, SW_SHOWNORMAL);
+#endif
+          ImGui::PopID();
+          if (which == 0) ImGui::Separator();
+        }
+        ImGui::Unindent(8.0f);
+      }
+    }
     // ---- Low poly and lightweight ----
     // Every setting that trades looks for frame rate on slow PCs, in one sub-section: Look, Visual effects and
     // the Lightweight ladder up front, the exact looks and the fine controls folded under them. Open by default.
@@ -5942,6 +6144,76 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
       ImGui::TreePop();
     }
+    ImGui::Unindent(8.0f);
+    }
+    // ---- Arcade look ----
+    // Picture-only switches for a 2D-fighter look. The hitboxes widen the game's own debug draw tests
+    // (MU_DISPLAY_OPTION_HITBOXES and the next two); the game ignores them in a network match.
+    if (ImGui::CollapsingHeader("Arcade look##arcade")) {
+    if (std::getenv("MELEE_TEST_ARCADE_MENU")) ImGui::SetScrollHereY(0.05f);   // hidden capture hook
+    ImGui::Indent(8.0f);
+    changed |= settings_toggle("Show attack hitboxes", &options.arcade_hitboxes);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Attack hitboxes show on every fighter in offline matches and replays.\n"
+                        "Hurtboxes stay off; the Practice menu has those. Never shown online.");
+    changed |= settings_toggle("Projectile hitboxes too", &options.arcade_projectile_hitboxes);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Lasers, bombs, items and other projectiles show their hitboxes as well.");
+    changed |= settings_toggle("Draw hitboxes behind the fighter", &options.arcade_hitboxes_behind);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Hitboxes show around the fighter instead of covering it, so the\n"
+                        "character stays easy to read. Also applies to the Practice menu's hitboxes.");
+    changed |= settings_toggle("Combo counter", &options.arcade_combo_counter);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Counts the hits of a combo over the attacker, from the second hit until the other\n"
+                        "player can act again. Offline matches and replays only.");
+    changed |= settings_toggle("2D camera", &options.arcade_camera_2d);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The match camera loses its perspective: fighters and platforms keep their\n"
+                        "size and place, and depth no longer shrinks the stage, like a 2D fighter.\n"
+                        "The camera itself moves as normal. Display only: safe online.");
+    {
+      const char* backdrops[] = {"Stage", "Plain colour", "Grid"};
+      if (settings_combo("Background##arcade", &options.arcade_backdrop, backdrops, 3)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Plain colour hides the stage's scenery behind the fighting area (sky, crowds,\n"
+                          "far buildings) and shows one colour instead. Platforms, ledges and items stay.\n"
+                          "Grid adds lines every 5 units behind the stage (Source Port; the Static Recomp shows the plain colour).\n"
+                          "Display only: safe online.");
+      if (options.arcade_backdrop >= 1) {
+        const uint32_t c = options.arcade_background_rgb;
+        float rgb[3] = {((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f};
+        if (ImGui::ColorEdit3("Background colour##arcade", rgb, ImGuiColorEditFlags_DisplayRGB)) {
+          options.arcade_background_rgb = ((uint32_t)(rgb[0] * 255 + 0.5f) << 16) | ((uint32_t)(rgb[1] * 255 + 0.5f) << 8) |
+                                          (uint32_t)(rgb[2] * 255 + 0.5f);
+          changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset colour##arcade")) { options.arcade_background_rgb = RenderOptions{}.arcade_background_rgb; changed = true; }
+        if (options.arcade_backdrop == 2) {
+          const uint32_t g = options.arcade_grid_rgb;
+          float grid[3] = {((g >> 16) & 0xFF) / 255.0f, ((g >> 8) & 0xFF) / 255.0f, (g & 0xFF) / 255.0f};
+          if (ImGui::ColorEdit3("Grid colour##arcade", grid, ImGuiColorEditFlags_DisplayRGB)) {
+            options.arcade_grid_rgb = ((uint32_t)(grid[0] * 255 + 0.5f) << 16) | ((uint32_t)(grid[1] * 255 + 0.5f) << 8) |
+                                      (uint32_t)(grid[2] * 255 + 0.5f);
+            changed = true;
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Reset##arcadegrid")) { options.arcade_grid_rgb = RenderOptions{}.arcade_grid_rgb; changed = true; }
+        }
+      }
+    }
+    auto set_all = [&](bool on) {
+      options.arcade_hitboxes = options.arcade_projectile_hitboxes = options.arcade_hitboxes_behind = on;
+      options.arcade_camera_2d = options.arcade_combo_counter = on;
+      options.arcade_backdrop = on ? 2 : 0;
+      changed = true;
+    };
+    if (ImGui::Button("Arcade preset##arcade")) set_all(true);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset##arcade")) set_all(false);
+    if (gx::arcade_display() & ~arcade_settings_bits(options))
+      settings_hint("Some of these are on for now from the Practice menu or the active mod.");
     ImGui::Unindent(8.0f);
     }
     // Creating a device and a swapchain on another API means restarting; the choice is saved and
@@ -6316,6 +6588,30 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::SetTooltip("Soft shadow: the game picture casts a gradient shadow on the art beside it.\nSharp: the art is cut off at the picture's edge.");
       }
     }
+    // Two different things draw a CRT here: the game's own tube model (crt_shader.h) and a RetroArch
+    // preset of the player's choice. Each has its own heading so nobody mistakes one for the other.
+    ImGui::SeparatorText("Built-in CRT");
+    settings_hint("Melee Unlocked's own tube model, made for Melee. Light on frame time.");
+    ImGui::BeginDisabled(!options.shader_preset.empty());
+    static const char* crt_looks[] = {"Off", "Studio monitor", "Home television"};
+    if (settings_combo("Built-in CRT look", &options.crt_filter, crt_looks, 3)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Shows the picture the way a tube display draws it: scanline beams that widen with brightness,\n"
+                        "a phosphor mask sized to this screen's pixels, and a little glow in the glass.\n"
+                        "Studio monitor is flat and sharp. Home television is softer, with curved glass.\n"
+                        "Scanlines are clearest at 1440p and above; at 1080p they are kept faint so they do not shimmer.\n"
+                        "Sharpening is not applied while this is on.");
+    if (options.crt_filter == 2) {
+      int curve = (int)std::lround(options.crt_curve * 100.0f);
+      if (settings_slider("Screen curve", &curve, 0, 300, "%d%%")) { options.crt_curve = curve / 100.0f; changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How curved the home television's glass is. 0%% is flat, 100%% is the default.");
+    }
+    ImGui::EndDisabled();
+    if (!options.shader_preset.empty() && options.crt_filter)
+      settings_hint("Off while a RetroArch shader preset is applied (set the preset to None to use it).");
+    ImGui::SeparatorText("RetroArch shader presets");
+    settings_hint("Community shaders, grouped by the people who made them. Applying one turns the built-in CRT off.");
     // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
     {
       ImGui::TextUnformatted("Shader preset");
@@ -6326,11 +6622,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Put the whole slang shader pack in the Shaders folder with its subfolders, then pick a preset below.\n"
                           "A preset only lists shader files, so a .slangp copied on its own cannot run.\n"
                           "A single .slang shader placed directly in the Shaders folder can be picked too.\n"
-                          "A preset takes the place of the CRT display setting. Heavy presets cost frame time.");
+                          "A preset takes the place of the built-in CRT. Heavy presets cost frame time.");
       if (!user_shader::available()) {
         ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
       } else {
-        struct ShaderEntry { std::string path, label, search; int group; };
+        struct ShaderEntry { std::string path, label, search, heading; int group; };
         static std::vector<ShaderEntry> entries;
         static bool listed = false;
         static bool recommended_present = false;
@@ -6352,17 +6648,59 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (!listed) {
           entries.clear();
           recommended_present = false;
+          // Grouped by shader family, with the people the shader files themselves credit (their
+          // headers); a family whose files name nobody is listed without a name.
+          struct Family { const char* prefix; const char* heading; };
+          static const Family families[] = {
+              {"crt-maximus-royale", "CRT-Maximus-Royale (DigiDwrf)"}, {"crt-royale", "CRT-Royale (TroggleMonkey)"},
+              {"crt-guest-advanced", "Guest Advanced (guest.r)"}, {"crt-gdv-mini", "GDV Mini (DariusG, after guest.r)"},
+              {"crt-geom", "CRT-Geom (cgwg, Themaister and DOLLS)"}, {"crt-interlaced-halation", "CRT-Geom (cgwg, Themaister and DOLLS)"},
+              {"crt-cgwg", "CRT-Geom (cgwg, Themaister and DOLLS)"}, {"fake-crt-geom", "Fake CRT-Geom (hunterk, DariusG)"},
+              {"crt-hyllian", "Hyllian (Hyllian)"}, {"crt-nobody", "Hyllian (Hyllian)"}, {"crt-super-xbr", "Hyllian (Hyllian)"},
+              {"crt-yah", "CRT-Yah (Jezze, after Hyllian)"}, {"crt-caligari", "Caligari (caligari)"},
+              {"crt-lottes", "Lottes (Timothy Lottes)"}, {"lottesRVM", "Lottes (Timothy Lottes)"}, {"fakelottes", "Fake Lottes (hunterk)"},
+              {"crt-easymode", "EasyMode (EasyMode)"}, {"crt-aperture", "EasyMode (EasyMode)"},
+              {"crt-1tap", "1-tap and 2-tap (fishku)"}, {"crt-2tap", "1-tap and 2-tap (fishku)"},
+              {"zfast-crt", "zfast (Greg Hogan)"}, {"newpixie", "newpixie (Mattias Gustavsson)"}, {"crt-mattias", "Mattias (Mattias)"},
+              {"crt-potato", "Potato (Brad Parker, DariusG)"}, {"crt-simple", "CRT Simple (DariusG)"},
+              {"gizmo", "Gizmo (gizmo98)"}, {"crt-CreativeForce", "CreativeForce (djayjp)"}, {"crt-blurPi", "blurPi (Oriol Ferrer Mesia)"},
+              {"crt-pi", "crt-pi (davej)"}, {"crt-torridgristle", "torridgristle (torridgristle)"}, {"GritsScanlines", "torridgristle (torridgristle)"},
+              {"gtu", "GTU (aliaspider)"}, {"tvout-tweaks", "GTU (aliaspider)"}, {"vt220", "VT220 (sprash3)"}, {"monoCRT", "monoCRT (hunterk)"},
+              {"crt-yo6", "crt-yo6"}, {"crt-beans", "crt-beans"}, {"crt-consumer", "Consumer"},
+          };
           for (const std::string& path : user_shader::presets()) {
-            const int group = path == recommended ? 0 : path.find("/crt/") != std::string::npos ? 1
-                            : path.size() >= 6 && path.substr(path.size() - 6) == ".slang" ? 3 : 2;
-            std::string label = path == recommended ? "Flat Trinitron TV (recommended)" : friendly(path);
-            std::string search = label + " " + path;
+            const std::string file = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+            const bool single = path.size() >= 6 && path.substr(path.size() - 6) == ".slang";
+            const size_t lola = path.find("/lola-retro/");
+            int group = 4;
+            std::string heading = "Other presets", label = friendly(path);
+            if (path == recommended) { group = 0; heading = "Recommended"; label = "Flat Trinitron TV (crt-yo6)"; }
+            else if (lola != std::string::npos) {
+              // Lola Retro (Zoki, MIT): its Melee presets first, then each display flat and curved.
+              const std::string rest = path.substr(lola + 12);
+              std::string folder = rest.substr(0, rest.find('/'));
+              if (!folder.empty()) folder[0] = (char)std::toupper((unsigned char)folder[0]);
+              group = 1; heading = "Lola Retro (Zoki)"; label = folder + ": " + label;
+            } else if (single) { group = 5; heading = "Single shaders"; }
+            else if (path.find("/crt/") != std::string::npos) {
+              group = 3; heading = "Other CRT presets";
+              size_t best = 0;
+              for (const Family& f : families) {
+                const size_t n = std::strlen(f.prefix);
+                if (n > best && file.compare(0, n, f.prefix) == 0) { best = n; group = 2; heading = f.heading; }
+              }
+            }
+            std::string search = label + " " + heading + " " + path;
             for (char& ch : search) ch = (char)std::tolower((unsigned char)ch);
-            entries.push_back({path, std::move(label), std::move(search), group});
+            entries.push_back({path, std::move(label), std::move(search), std::move(heading), group});
             if (path == recommended) recommended_present = true;
           }
           std::stable_sort(entries.begin(), entries.end(), [](const ShaderEntry& a, const ShaderEntry& b) {
-            return a.group < b.group || (a.group == b.group && a.label < b.label);
+            if (a.group != b.group) return a.group < b.group;
+            if (a.heading != b.heading) return a.heading < b.heading;
+            const bool am = a.label.compare(0, 6, "Melee:") == 0, bm = b.label.compare(0, 6, "Melee:") == 0;
+            if (am != bm) return am;   // Lola Retro's Melee presets first
+            return a.label < b.label;
           });
           listed = true;
         }
@@ -6381,14 +6719,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             if (ImGui::Selectable("None (unfiltered)", pending_shader.empty())) pending_shader.clear();
             std::string needle = shader_filter;
             for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
-            int shown = 0, last_group = -1;
+            int shown = 0;
+            const std::string* last_heading = nullptr;
             for (const ShaderEntry& entry : entries) {
               if (!needle.empty() && entry.search.find(needle) == std::string::npos) continue;
               if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
-              if (entry.group != last_group) {
-                static const char* groups[] = {"Recommended", "CRT presets", "Other presets", "Single shaders"};
-                ImGui::TextDisabled("%s", groups[entry.group]);
-                last_group = entry.group;
+              if (!last_heading || *last_heading != entry.heading) {
+                ImGui::SeparatorText(entry.heading.c_str());
+                last_heading = &entry.heading;
               }
               ImGui::PushID(entry.path.c_str());
               if (ImGui::Selectable(entry.label.c_str(), entry.path == pending_shader)) pending_shader = entry.path;
@@ -6415,20 +6753,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         const std::string why = user_shader::status();
         if (!options.shader_preset.empty() && !why.empty()) ImGui::TextWrapped("This preset is not running: %s", why.c_str());
       }
-    }
-    static const char* crt_looks[] = {"Off", "Studio monitor", "Home television"};
-    if (settings_combo("CRT display", &options.crt_filter, crt_looks, 3)) changed = true;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Shows the picture the way a tube display draws it: scanline beams that widen with brightness,\n"
-                        "a phosphor mask sized to this screen's pixels, and a little glow in the glass.\n"
-                        "Studio monitor is flat and sharp. Home television is softer, with curved glass.\n"
-                        "Scanlines are clearest at 1440p and above; at 1080p they are kept faint so they do not shimmer.\n"
-                        "Sharpening is not applied while this is on.");
-    if (options.crt_filter == 2) {
-      int curve = (int)std::lround(options.crt_curve * 100.0f);
-      if (settings_slider("Screen curve", &curve, 0, 300, "%d%%")) { options.crt_curve = curve / 100.0f; changed = true; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How curved the home television's glass is. 0%% is flat, 100%% is the default.");
     }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (settings_slider("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
@@ -9167,11 +9491,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (user_gecko::Code& c : user_gecko::codes()) {
         ImGui::PushID(&c);
         const char* built_in = user_gecko::native_equivalent(c);
-        const bool runs_here = c.supported && !built_in;
+        // The always-display hitbox code keeps its switch: on, it turns on the Arcade look's hitboxes.
+        const bool arcade_code = built_in == user_gecko::kArcadeHitboxCodeLabel;
+        const bool runs_here = (c.supported && !built_in) || arcade_code;
         ImGui::BeginDisabled(!runs_here);
         if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
-        if (built_in)
+        if (arcade_code) {
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Runs natively: while it is on, attack hitboxes show as with VIDEO > Arcade look.\n"
+                              "Offline matches and replays only.");
+        } else if (built_in)
           engine_only_reason("Built in: \"%s\" above is the switch that applies here.", built_in);
         else if (!runs_here)
           engine_only_reason("Cannot run in this build: this code %s.", c.reason.c_str());
@@ -9196,11 +9526,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         const char* built_in = user_gecko::native_equivalent(c);
         // A code that only writes variables this build can place runs here too (user_gecko.h);
         // the rest keep the rule above.
-        const bool runs_here = c.supported && !built_in;
+        // The always-display hitbox code keeps its switch: on, it turns on the Arcade look's hitboxes.
+        const bool arcade_code = built_in == user_gecko::kArcadeHitboxCodeLabel;
+        const bool runs_here = (c.supported && !built_in) || arcade_code;
         ImGui::BeginDisabled(!runs_here);
         if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
-        if (built_in)
+        if (arcade_code) {
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Runs natively: while it is on, attack hitboxes show as with VIDEO > Arcade look.\n"
+                              "Offline matches and replays only.");
+        } else if (built_in)
           engine_only_reason("Built into the Source Port: \"%s\" above is the switch that applies here.\n"
                              "This one is your setting for the Static Recomp.", built_in);
         else if (!runs_here)
@@ -9604,6 +9940,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                              state.practice_release_capture || replay_bar::wants_cursor());
   if (!state.fill_window && !state.open && !state.menu_open && options.show_player_nicknames)
     draw_player_nicknames();
+  if (!state.fill_window && !state.open && !state.menu_open) draw_combo_counter();
   {
     // Menu sounds: a tick when the highlighted category or control changes, a brighter one when
     // a page opens or the panel opens, a lower one when a page or the panel closes.

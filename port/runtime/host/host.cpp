@@ -24,6 +24,7 @@
 #include "netplay_state.h"   // the same names, answered from the neutral netplay state
 #else
 #include "exi_slippi.h"
+#include "slippi_playback.h"
 #include "jukebox.h"
 #include "slippi_online.h"
 #endif
@@ -1567,6 +1568,65 @@ void apply_player_tags_always() {
   if (!on && !held) return;
   for (uint32_t i = 0; i < 6; ++i) wr8(kShowAllTags + i, on ? 1 : 0);
   held = on;
+}
+// "Shield colours" on the Static Recomp: the port colour table the shield bubble and the KO blast read
+// (Fighter_804D650C, 4 bytes a colour index) holds the player's own colour at that player's index while
+// one is chosen, and its own colour comes back when it is not. Only where the player wears its own port
+// colour (StaticPlayer +0x45, Player_GetUnk45): team matches keep the team colours. Retail game only.
+void apply_shield_colors() {
+  static uint32_t table = 0;
+  static uint8_t original[4][3];
+  static bool changed[4] = {};
+  if (!ram || mod_disc_active()) return;
+  const uint32_t now = rd32(0x804D650Cu);
+  if (now != table) { table = now; for (bool& c : changed) c = false; }   // a new table (a new match): its own colours
+  if (!table || table < 0x80000000u || table >= 0x81800000u) return;
+  for (int port = 0; port < 4; ++port) {
+    const uint32_t at = table + 4u * port;
+    const int choice = gx::shield_color(port);
+    const bool own = rd8(0x80453080u + 0xE90u * port + 0x45u) == port;
+    if (choice >= 0 && own) {
+      if (!changed[port]) { for (int k = 0; k < 3; ++k) original[port][k] = rd8(at + k); changed[port] = true; }
+      for (int k = 0; k < 3; ++k) if (rd8(at + k) != gx::kShieldColorRgb[choice][k]) wr8(at + k, gx::kShieldColorRgb[choice][k]);
+    } else if (changed[port]) {
+      for (int k = 0; k < 3; ++k) wr8(at + k, original[port][k]);
+      changed[port] = false;
+    }
+  }
+}
+// The Arcade look's hitbox switches on the Static Recomp: the always-display hitbox code's own five
+// words, written into the game's code while a switch is on and the retail words put back when it goes
+// off. The three functions run from RAM once any of them has been written (as low poly fighters does),
+// so what runs is whatever words are there. Offline matches only: not online and not in replays.
+// Retail code only, like the player tags.
+void apply_arcade_hitboxes() {
+  struct Patch { uint32_t addr, word, retail, bit; };
+  static const Patch kPatches[] = {
+      {0x800805FCu, 0x60000000u, 0x41820210u, gx::kArcadeHitboxes},             // ftDrawCommon_800805C8+0x34: every fighter's bubbles
+      {0x80080638u, 0x480001D4u, 0x881F221Du, gx::kArcadeHitboxes},             // +0x70: over the hurtbox, reflect, absorb and shield block
+      {0x8026ED50u, 0x60000000u, 0x418200F8u, gx::kArcadeProjectileHitboxes},   // it_8026ECE0+0x70: item bubbles
+      {0x8026ED58u, 0x60000000u, 0x4182003Cu, gx::kArcadeProjectileHitboxes},   // +0x78
+      {0x80009430u, 0x38600001u, 0x38600002u, gx::kArcadeHitboxesBehind},       // lbColl_80008FC8+0x468: cull front faces
+  };
+  static bool redirected = false, logged_mismatch = false;
+  if (!ram || mod_disc_active()) return;
+  const bool offline = slippi::online::session_mode() < 0 && !slippi::playback::enabled();
+  const uint32_t bits = offline ? gx::arcade_display() & gx::kArcadeGameBits : 0u;
+  if (!bits && !redirected) return;
+  for (const auto& p : kPatches) {
+    const uint32_t now = rd32(p.addr), want = (bits & p.bit) ? p.word : p.retail;
+    if (now == want) continue;
+    if (now != p.word && now != p.retail) {   // another code owns these bytes: leave them
+      if (!logged_mismatch) { log("arcade: %08X holds %08X, not the retail word; hitbox switches left alone there", p.addr, now); logged_mismatch = true; }
+      continue;
+    }
+    wr32(p.addr, want);
+    if (!redirected) {
+      for (const auto& q : kPatches) ppc::redirect_function_at(q.addr);
+      redirected = true;
+      log("arcade: the hitbox draws run from RAM");
+    }
+  }
 }
 void apply_low_poly_fighters() {
   apply_test_adventure_scene();
