@@ -1611,6 +1611,33 @@ void install_sub_color_guard() {
     if (!logged) { logged = true; log("fighters: player %u had tint %d, past the game's 4; loaded without a tint", slot + 1, tint); }
   });
 }
+// A camera description whose projection type is none of the game's three (a mod's stage or menu
+// file can carry one) stops the game at cobj.c:2000. It is read as a perspective camera, the
+// common case, and the game carries on.
+void install_cobj_guard() {
+  static bool done = false;
+  if (done || !ram) return;
+  done = true;
+  ppc::add_entry_hook(0x8036A2ECu, [](ppc::Context& c) {   // CObjLoad(HSD_CObj*, HSD_CObjDesc*)
+    if (!try_ptr(c.r[4], 8)) return;
+    const uint32_t at = c.r[4] + 6;                        // HSD_CameraDescCommon::projection_type
+    const uint32_t type = rd16(at);
+    if (type >= 1 && type <= 3) return;
+    wr16(at, 1);
+    static bool logged = false;
+    if (!logged) { logged = true; log("cameras: a camera had projection type %u; loaded as perspective", type); }
+  });
+  // Fountain of Dreams' reflection camera copies the main camera's aspect (grIzumi_801CCEA0) and
+  // builds the water's texture matrix from it. True widescreen widens the picture in the renderer,
+  // not that camera, so the reflection covered only the 4:3 middle and the water's sides stretched
+  // its outer pixels. The copied aspect is widened the same way, which keeps both in step.
+  ppc::add_entry_hook(0x80369C30u, [](ppc::Context& c) {   // HSD_CObjSetAspect(cobj, f1 aspect)
+    if (c.lr < 0x801CCEA0u || c.lr >= 0x801CCEA0u + 0x1F0u) return;
+    if (!gx::true_widescreen_active() || gecko::option_widescreen) return;
+    const float widen = gx::true_widescreen_factor();
+    if (widen > 0.2f && widen < 1.0f) c.f[1].ps0 = (double)(float)(c.f[1].ps0 / widen);
+  });
+}
 void apply_freeze_final_destination() {
   constexpr uint32_t kThink = 0x8021B2E8u, kReturn = 0x4E800020u;
   static bool frozen = false;

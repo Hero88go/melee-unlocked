@@ -15,7 +15,8 @@
 namespace host {
 namespace {
 
-// Dolphin's setting for each action, in BindAction order (controller_profiles.cpp kActions).
+// Dolphin's setting for each action, in BindAction order (controller_profiles.cpp kActions). The
+// actions past these (the travel and modifier actions) have no Dolphin setting and stay null.
 constexpr const char* kDolphinKeys[kProfileActions] = {
     "Buttons/A", "Buttons/B", "Buttons/X", "Buttons/Y", "Buttons/Z", "Buttons/Start", "Triggers/L", "Triggers/R",
     "D-Pad/Up", "D-Pad/Down", "D-Pad/Left", "D-Pad/Right",
@@ -92,7 +93,7 @@ DolphinProfile dolphin_profile_read(const std::string& text) {
     const std::string key = trim(line.substr(0, eq)), value = trim(line.substr(eq + 1));
     if (key == "Device") device = value;
     for (int i = 0; i < kProfileActions; ++i)
-      if (key == kDolphinKeys[i]) values[i] = value;
+      if (kDolphinKeys[i] && key == kDolphinKeys[i]) values[i] = value;
   }
   if (device.empty()) { out.message = "This is not a Dolphin controller profile (no Device line)."; return out; }
   const bool keyboard = device.find("Keyboard") != std::string::npos;

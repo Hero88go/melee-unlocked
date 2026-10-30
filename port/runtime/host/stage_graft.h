@@ -1,8 +1,9 @@
 // A stage skin drawn over the original stage's gameplay. The served file is the original archive with
 // only the meshes changed: every joint, transform, animation, collision line, gameplay table and
 // pointer the game simulates with stays the original's, and each joint shows the skin's mesh (its
-// display lists, materials and textures) from the skin's matching joint. A joint the skin removed
-// shows nothing; a skin's added scenery is not carried over. The result is checked against the
+// display lists, materials and textures) with its rendering flags. Paired envelope bindings use
+// the original bones. Supported trailing scenery and visual-only models are copied too.
+// The result is checked against the
 // original by stage_safety::matches, the same strict gameplay comparison every online stage passes,
 // so it can only be used when the simulation provably cannot tell it from the original.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -124,16 +125,23 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     };
     const std::vector<uint32_t> ca = children(a, ja), cb = children(b, jb);
     std::vector<bool> used(cb.size(), false);
-    auto same = [&](uint32_t x, uint32_t y) {
-      return (a.get(x + 4) & ~kDrawFlags) == (b.get(y + 4) & ~kDrawFlags) &&
+    auto same = [&](uint32_t x, uint32_t y, bool flags) {
+      const uint32_t mask = flags ? ~kDrawFlags : kBehaviourJoint;
+      return (a.get(x + 4) & mask) == (b.get(y + 4) & mask) &&
              !std::memcmp(a.bytes.data() + 32ull + x + 20, b.bytes.data() + 32ull + y + 20, 36);
     };
     size_t next = 0;
     const bool child_tail = tail && !a.pointers.count(ja + 12);
     for (uint32_t x : ca) {
       uint32_t match = 0;
-      for (size_t k = next; k < cb.size(); ++k)
-        if (!used[k] && same(x, cb[k])) { match = cb[k]; used[k] = true; next = k + 1; break; }
+      // Prefer an exact flag match. Exporters also change transform/visibility
+      // flags while retaining the same local transform; grafting never copies
+      // those flags, so they must not prevent the matching mesh from drawing.
+      for (bool flags : {true, false}) {
+        for (size_t k = next; k < cb.size(); ++k)
+          if (!used[k] && same(x, cb[k], flags)) { match = cb[k]; used[k] = true; next = k + 1; break; }
+        if (match) break;
+      }
       walk(x, match, depth + 1, child_tail);
     }
   };
@@ -194,9 +202,15 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     walk(a.get(pa), b.pointers.count(pb) ? b.get(pb) : 0, 0, true);
   }
 
-  // 2. Which skin meshes to bring over: everything reachable from the paired joints' +16, as long as
-  //    it reaches no joint and no gameplay table of the skin (a skinned mesh bound to the skin's own
-  //    bones would follow bones the game never moves); such a joint keeps the original mesh.
+  // 2. Skin meshes may bind to joints, as envelope-weighted stage geometry does.
+  // Redirect those bindings to their paired original joints; never copy the skin's
+  // gameplay skeleton. Unpaired bones and gameplay tables remain unsupported.
+  std::map<uint32_t, uint32_t> original_joint;
+  std::set<uint32_t> ambiguous_joints;
+  for (const auto& [ja, jb] : pairs) if (jb) {
+    if (!original_joint.emplace(jb, ja).second) ambiguous_joints.insert(jb);
+  }
+  for (uint32_t jb : ambiguous_joints) original_joint.erase(jb);
   std::map<uint32_t, uint32_t> mesh_of;   // original joint -> skin mesh offset, or UINT32_MAX for none
   for (const auto& [ja, jb] : pairs) {
     if (a.get(ja + 4) & kBehaviourJoint) continue;   // behaviour, not a mesh: untouched
@@ -206,7 +220,11 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     bool ok = true;
     while (!pending.empty() && ok) {
       const uint32_t at = pending.back(); pending.pop_back();
-      if (b.joint_offsets.count(at) || gameplay_b.count(at) || at >= b.size) { ok = false; break; }
+      if (gameplay_b.count(at) || at >= b.size) { ok = false; break; }
+      if (b.joint_offsets.count(at)) {
+        if (!original_joint.count(at)) ok = false;
+        continue;
+      }
       if (!reach.insert(at).second) continue;
       const uint32_t n = b.extent(at);
       // A slot the loader fills in from another file would arrive empty in the copy.
@@ -271,8 +289,12 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     for (auto p = b.pointers.lower_bound(from); p != b.pointers.end() && *p < uint64_t(from) + n; ++p) {
       const uint32_t at = to + (*p - from);
       const auto target = moved.find(b.get(*p));
-      if (target == moved.end()) { *note = "a skin mesh points outside what was copied"; return false; }
-      put(data, at, target->second);
+      if (target != moved.end()) put(data, at, target->second);
+      else {
+        const auto joint = original_joint.find(b.get(*p));
+        if (joint == original_joint.end()) { *note = "a skin mesh points outside what was copied"; return false; }
+        put(data, at, joint->second);
+      }
       relocs.insert(at);
     }
   }
@@ -282,6 +304,13 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     if (a.get(ja + 4) & kBehaviourJoint) continue;
     const auto m = mesh_of.find(ja);
     if (m == mesh_of.end()) { ++kept; continue; }
+    if (jb) {
+      // Opaque/translucent draw masks and other render flags determine which
+      // branches HSD traverses. Keeping the original masks drew scenery the
+      // skin deliberately excluded, producing a mixture of both stages online.
+      // HIDDEN, transform flags and every behavior flag remain the original's.
+      put(data, ja + 4, (a.get(ja + 4) & ~kDrawFlags) | (b.get(jb + 4) & kDrawFlags));
+    }
     if (a.pointers.count(ja + 16)) unhooked.insert(a.get(ja + 16));
     if (m->second == UINT32_MAX) {
       put(data, ja + 16, 0); relocs.erase(ja + 16); ++hidden;
@@ -347,17 +376,13 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     if (!(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) all.insert(b.get(j + 16));
   for (const auto* joints : {&whole_joints, &scenery_joints})   // models taken whole and added scenery draw every mesh they have
     for (uint32_t j : *joints)
-      if (b.joint_offsets.count(j) && !(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) used.insert(b.get(j + 16));
-  // Most of the skin has to make it. A skin whose meshes mostly found no joint of the original to
-  // sit on drew a near-empty stage online (20XX's Battlefield alt 8AT showed its platforms offline
-  // and nothing online; its Luigi's Mansion Fountain of Dreams showed only the sky): the original
-  // stage is served instead, as for any skin that cannot be drawn over it. 85% is enough: a
-  // Battlefield skin whose main model is rebuilt draws 17 of its 19 meshes and looks whole.
-  if (!all.empty() && used.size() * 20 < all.size() * 17) {
-    *note = "only " + std::to_string(used.size()) + " of the skin's " + std::to_string(all.size()) +
-            " meshes could be drawn over the original stage";
-    return false;
+      if (moved.count(j) && b.joint_offsets.count(j) && !(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) used.insert(b.get(j + 16));
+  for (auto it = used.begin(); it != used.end();) {
+    if (!all.count(*it)) it = used.erase(it);
+    else ++it;
   }
+  // Coverage describes appearance; it is not a gameplay-equivalence test.
+  // The proof above decides whether the online form can be served.
   *out = std::move(file);
   *note = std::to_string(shown) + " joints show the skin, " + std::to_string(hidden) + " the skin removed, " +
           std::to_string(kept) + " keep the original mesh; " + std::to_string(used.size()) + " of the skin's " +

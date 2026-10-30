@@ -19,6 +19,7 @@
 #include "window.h"
 #include "replay_control.h"
 #include "input_bindings.h"
+#include "controller_relay.h"
 #include "settings_chord.h"
 #include "hid_pad.h"
 #include "playstation_pad.h"
@@ -620,6 +621,21 @@ void hidraw_stop() { linux_hid::stop(); }
 static bool xinput_state(int idx, XINPUT_STATE* state);   // below, with the helper thread for empty slots
 void ds4_bindings_defaults() { ds4_init_defaults(); }
 
+namespace {
+uint32_t relay_switch_poll(PadState out[4], uint16_t buttons[4]) {
+  if (!controller_relay::active()) return switchpro_poll(out, buttons);
+  uint32_t raw[4]{}; const auto mask=controller_relay::poll(CaptureDevice::SwitchPro,out,raw);
+  for(int i=0;i<4;++i) buttons[i]=(uint16_t)raw[i]; return mask;
+}
+uint32_t relay_hid_poll(PadState out[4], uint32_t buttons[4]) {
+  return controller_relay::active() ? controller_relay::poll(CaptureDevice::HidPad,out,buttons) : hidpad_poll(out,buttons);
+}
+bool relay_ps(int index, PadState& pad, uint16_t& buttons) {
+  controller_relay::Sample sample;
+  if (!controller_relay::sample(CaptureDevice::DS4Pad,index,sample)) return false;
+  pad=controller_relay::raw_pad(sample); buttons=(uint16_t)sample.buttons; return true;
+}
+}
 namespace { CaptureDevice g_capture_want = CaptureDevice::None; int g_capture_want_index = 0; }
 void input_begin_capture(CaptureDevice want, int want_index) {
   g_capture_want = want; g_capture_want_index = want_index;
@@ -641,17 +657,17 @@ void input_begin_capture() {
                                xs.Gamepad.bRightTrigger, 140, 140) : 0;
     g_capture_gc_baseline[idx] = gc[idx];
   }
-  { std::lock_guard<std::mutex> lock(g_ds4_mutex); for (int idx = 0; idx < 4; ++idx) g_capture_ds4_baseline[idx] = g_ds4_buttons[idx]; }
+  { std::lock_guard<std::mutex> lock(g_ds4_mutex); for (int idx = 0; idx < 4; ++idx) { PadState raw{}; uint16_t buttons=0; g_capture_ds4_baseline[idx] = controller_relay::active() ? (relay_ps(idx,raw,buttons),buttons) : g_ds4_buttons[idx]; } }
   {
     PadState swpro[4]; for (auto& s : swpro) { s = {}; s.err = -1; }
     uint16_t buttons[4]{};
-    switchpro_poll(swpro, buttons);
+    relay_switch_poll(swpro, buttons);
     for (int idx = 0; idx < 4; ++idx) g_capture_swpro_baseline[idx] = buttons[idx];
   }
   {
     PadState hid[4]; for (auto& s : hid) { s = {}; s.err = -1; }
     uint32_t buttons[4]{};
-    hidpad_poll(hid, buttons);
+    relay_hid_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) g_capture_hid_baseline[idx] = buttons[idx];
   }
   g_capturing.store(true);
@@ -711,7 +727,9 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     std::lock_guard<std::mutex> lock(g_ds4_mutex);
     for (int idx = 0; idx < 4; ++idx) {
       if (!wanted(CaptureDevice::DS4Pad, idx)) continue;
-      uint16_t newly = g_ds4_buttons[idx] & ~g_capture_ds4_baseline[idx];
+      PadState raw{}; uint16_t buttons=g_ds4_buttons[idx];
+      if (controller_relay::active() && !relay_ps(idx,raw,buttons)) continue;
+      uint16_t newly = buttons & ~g_capture_ds4_baseline[idx];
       if (newly) {
         uint16_t lowest = newly & (uint16_t)(~(newly - 1));
         g_capturing.store(false); device = CaptureDevice::DS4Pad; value = lowest; device_index = idx; return true;
@@ -721,7 +739,7 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
   {
     PadState swpro[4]; for (auto& s : swpro) { s = {}; s.err = -1; }
     uint16_t buttons[4]{};
-    uint32_t mask = switchpro_poll(swpro, buttons);
+    uint32_t mask = relay_switch_poll(swpro, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(mask & (1u << idx)) || !wanted(CaptureDevice::SwitchPro, idx)) continue;
       uint16_t newly = buttons[idx] & ~g_capture_swpro_baseline[idx];
@@ -734,7 +752,7 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
   {
     PadState hid[4]; for (auto& s : hid) { s = {}; s.err = -1; }
     uint32_t buttons[4]{};
-    uint32_t mask = hidpad_poll(hid, buttons);
+    uint32_t mask = relay_hid_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(mask & (1u << idx)) || !wanted(CaptureDevice::HidPad, idx)) continue;
       // Bit 31 is the hat's Left (HID_HAT_LEFT), so it must be capturable: leaving it out made
@@ -988,12 +1006,14 @@ static DWORD xinput_ask(int idx, XINPUT_STATE* state) {
   return result;
 }
 static void xinput_probe_start() {
+  if (controller_relay::active()) return;
   static std::once_flag once;
   std::call_once(once, [] {
     std::thread([] {
       bool reported = false;
       for (;;) {
         for (int idx = 0; idx < 4; ++idx) {
+          if (controller_relay::active()) return;
           if (g_xinput_present[idx].load(std::memory_order_relaxed)) continue;
           XINPUT_STATE state{};
           const double before = now_seconds();
@@ -1011,6 +1031,12 @@ static void xinput_probe_start() {
   });
 }
 static bool xinput_state(int idx, XINPUT_STATE* state) {
+  if (controller_relay::active()) {
+    *state={}; controller_relay::Sample s;
+    if (!controller_relay::sample(CaptureDevice::XInputPad,idx,s)) return false;
+    auto& g=state->Gamepad; g.wButtons=(uint16_t)s.buttons; g.bLeftTrigger=s.left; g.bRightTrigger=s.right;
+    g.sThumbLX=s.axes[0]; g.sThumbLY=s.axes[1]; g.sThumbRX=s.axes[2]; g.sThumbRY=s.axes[3]; return true;
+  }
   static const bool every_read = [] { const char* v = std::getenv("MELEE_TEST_XINPUT_EVERY_READ"); return v && *v == '1'; }();
   if (every_read) return xinput_ask(idx, state) == ERROR_SUCCESS;
   xinput_probe_start();
@@ -1168,7 +1194,7 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
     std::lock_guard<std::mutex> lock(g_ds4_mutex);
     for (int idx = 0; idx < 4; ++idx) {
       ds4_buttons[idx] = g_ds4_buttons[idx]; ds4[idx] = g_ds4_pads[idx];
-      ds4_connected[idx] = g_ds4_devices[idx] != nullptr;
+      ds4_connected[idx] = controller_relay::active() ? relay_ps(idx,ds4[idx],ds4_buttons[idx]) : g_ds4_devices[idx] != nullptr;
       ds4[idx].err = ds4_connected[idx] ? 0 : -1;
       if (!ds4_connected[idx]) continue;
       debug.ds4_actions[idx] = ds4_apply_bindings(g_ds4_bindings[idx], ds4_buttons[idx], ds4[idx]);
@@ -1181,7 +1207,7 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
   {
     for (auto& s : swpro) { s = {}; s.err = -1; }
     uint16_t buttons[4]{};
-    uint32_t swpro_mask = switchpro_poll(swpro, buttons);
+    uint32_t swpro_mask = relay_switch_poll(swpro, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(swpro_mask & (1u << idx))) { swpro[idx] = {}; swpro[idx].err = -1; continue; }
       swpro_connected[idx] = true;
@@ -1195,7 +1221,7 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
   {
     for (auto& s : hid) { s = {}; s.err = -1; }
     uint32_t buttons[4]{};
-    uint32_t hid_mask = hidpad_poll(hid, buttons);
+    uint32_t hid_mask = relay_hid_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
       apply_known_box_layout(idx);
@@ -1444,6 +1470,7 @@ void input_rumble(int game_port, bool on) {
   if (!g_rumble_enabled.load()) on = false;
   const PortSource& src = g_port_feeding[game_port];   // where the input came from, fallback included
   const bool valid = src.index >= 0 && src.index < 4;
+  if (valid && controller_relay::rumble(src.kind,src.index,on)) return;
   if (src.kind == DeviceKind::GCAdapter && valid) { gcadapter_rumble(src.index, on); if (on) log_first_rumble(game_port, "GameCube adapter"); }
   else if (src.kind == DeviceKind::XInputPad && valid) { xinput_rumble(src.index, on); if (on) log_first_rumble(game_port, "Xbox controller"); }
   else if (on) log_first_rumble(game_port, "a controller without rumble support (keyboard, PlayStation, Switch or box)");
@@ -1465,6 +1492,7 @@ void input_rumble_local(bool on) {
     const PortSource& src = g_port_feeding[port];
     const bool valid = src.index >= 0 && src.index < 4;
     if (!valid) continue;
+    if (controller_relay::rumble(src.kind,src.index,on)) return;
     if (src.kind == DeviceKind::GCAdapter) {
       gcadapter_rumble(src.index, on);
       if (on) log_first_rumble(-1, "GameCube adapter");
@@ -1482,6 +1510,7 @@ void input_rumble_local(bool on) {
 void input_stop_all_rumble() {
   std::lock_guard<std::mutex> lock(g_rumble_mutex);
   for (int index = 0; index < 4; ++index) {
+    for (auto kind : {DeviceKind::XInputPad,DeviceKind::DS4Pad,DeviceKind::SwitchPro,DeviceKind::HidPad}) controller_relay::rumble(kind,index,false);
     gcadapter_rumble(index, false);
     xinput_rumble(index, false);
   }
@@ -1528,7 +1557,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   for (int idx = 0; idx < 4; ++idx) {
     std::lock_guard<std::mutex> lock(g_ds4_mutex);
     ds4_buttons[idx] = g_ds4_buttons[idx]; ds4[idx] = g_ds4_pads[idx];
-    if (!g_ds4_devices[idx]) { ds4[idx].err = -1; continue; }
+    if (controller_relay::active() ? !relay_ps(idx,ds4[idx],ds4_buttons[idx]) : !g_ds4_devices[idx]) { ds4[idx].err = -1; continue; }
     snapshot.ds4_connected[idx] = true; ds4[idx].err = 0;
     snapshot.ds4_actions[idx] = ds4_apply_bindings(g_ds4_bindings[idx], ds4_buttons[idx], ds4[idx]);
   }
@@ -1537,7 +1566,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     for (auto& s : swpro) { s = {}; s.err = -1; }
     uint16_t buttons[4]{};
-    uint32_t swpro_mask = switchpro_poll(swpro, buttons);
+    uint32_t swpro_mask = relay_switch_poll(swpro, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(swpro_mask & (1u << idx))) { swpro[idx] = {}; swpro[idx].err = -1; continue; }
       snapshot.swpro_connected[idx] = true;
@@ -1555,7 +1584,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     for (auto& s : hid) { s = {}; s.err = -1; }
     uint32_t buttons[4]{};
-    uint32_t hid_mask = hidpad_poll(hid, buttons);
+    uint32_t hid_mask = relay_hid_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
       snapshot.hid_connected[idx] = true;

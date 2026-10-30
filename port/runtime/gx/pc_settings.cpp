@@ -1984,6 +1984,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
+  options.offline_delay_frames = 2;
+  bool offline_delay_frames_seen = false;
   // The Lossless adapter lag test arms one launch only ("lagtestnext", cleared by that launch:
   // consume_lag_test_launch). 0.9.47 to 0.9.62 kept it on ("losslesslagtest") until it was switched
   // off, so every later launch booted to an FFA character select that rumbled and turned the picture
@@ -2087,6 +2089,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
       else if (key == "offline_delay") options.offline_delay = value == "1";
+      else if (key == "offline_delay_frames") {
+        options.offline_delay_frames = std::clamp(std::stoi(value), 1, 9);
+        offline_delay_frames_seen = true;
+      }
       else if (key == "early_inputs") options.early_inputs = value == "1";
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
@@ -2396,6 +2402,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
+  // Old files used the online slider for offline play. Preserve that value once, independent
+  // of key order, then save separate values so future online changes leave offline play alone.
+  if (!offline_delay_frames_seen) options.offline_delay_frames = slippi::online::config().delay;
+  RenderOptions::live_offline_delay_frames() = options.offline_delay_frames;
   host::early_input::set_enabled(options.early_inputs);
 #ifndef MELEE_NO_SLIPPI
   RenderOptions::live_slippi_spectator() = options.slippi_spectator;
@@ -4002,6 +4012,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nonlinedelay " << slippi::online::config().delay
        << "\nonlinedelayauto " << (slippi::online::config().auto_delay ? 1 : 0)
        << "\noffline_delay " << (options.offline_delay ? 1 : 0)
+       << "\noffline_delay_frames " << options.offline_delay_frames
        << "\nearly_inputs " << (options.early_inputs ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
        << "\nblockcode1 " << slippi::online::config().blocked_codes[0]
@@ -5503,7 +5514,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
     if (settings_combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
-    changed |= settings_toggle("VSync", &options.vsync);
+    changed |= settings_toggle("VSync (prevents tearing)", &options.vsync);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Prevents horizontal screen tearing; may add display latency.\n"
+                        "With VSync off, tearing is possible when automatic variable-refresh detection is unavailable.");
     // Display: one choice. Borderless and exclusive fullscreen were two switches that turned each
     // other off; the same two settings are written, so the renderers see no difference.
     {
@@ -6242,7 +6256,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
     {
-      const std::string current = options.shader_preset.empty() ? std::string("None") : options.shader_preset;
       ImGui::TextUnformatted("Shader preset");
       ImGui::SameLine();
       if (ImGui::SmallButton("+ Open Shaders folder")) user_shader::open_folder();
@@ -6255,28 +6268,87 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (!user_shader::available()) {
         ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
       } else {
-        static char shader_filter[64] = "";
-        ImGui::SetNextItemWidth(260.0f);
-        ImGui::InputTextWithHint("##shaderfilter", "type to search presets", shader_filter, sizeof shader_filter);
-        ImGui::SameLine();
-        ImGui::TextUnformatted(current.c_str());
-        const std::vector<std::string> found = user_shader::presets();
-        if (found.empty()) ImGui::TextDisabled("Nothing in the Shaders folder yet. Put a shader pack folder in it.");
-        if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, found.empty() ? 30.0f : 150.0f))) {
-          if (ImGui::Selectable("None", options.shader_preset.empty()) && !options.shader_preset.empty()) { options.shader_preset.clear(); changed = true; }
-          std::string needle = shader_filter;
-          for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
-          int shown = 0;
-          for (const std::string& name : found) {
-            if (!needle.empty()) {
-              std::string lower = name;
-              for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
-              if (lower.find(needle) == std::string::npos) continue;
-            }
-            if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
-            if (ImGui::Selectable(name.c_str(), name == options.shader_preset) && name != options.shader_preset) { options.shader_preset = name; changed = true; }
+        struct ShaderEntry { std::string path, label, search; int group; };
+        static std::vector<ShaderEntry> entries;
+        static bool listed = false;
+        static bool recommended_present = false;
+        static bool pending_initialized = false;
+        static std::string pending_shader, observed_shader;
+        constexpr const char* recommended = "slang-shaders/crt/crt-yo6-flat-trinitron-tv.slangp";
+        if (observed_shader != options.shader_preset) {
+          pending_shader = observed_shader = options.shader_preset;
+        }
+        auto friendly = [](const std::string& path) {
+          std::string label = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+          const size_t dot = label.rfind('.');
+          if (dot != std::string::npos) label.resize(dot);
+          if (label.rfind("crt-", 0) == 0) label.erase(0, 4);
+          for (char& ch : label) if (ch == '-' || ch == '_') ch = ' ';
+          if (!label.empty()) label[0] = (char)std::toupper((unsigned char)label[0]);
+          return label;
+        };
+        if (!listed) {
+          entries.clear();
+          recommended_present = false;
+          for (const std::string& path : user_shader::presets()) {
+            const int group = path == recommended ? 0 : path.find("/crt/") != std::string::npos ? 1
+                            : path.size() >= 6 && path.substr(path.size() - 6) == ".slang" ? 3 : 2;
+            std::string label = path == recommended ? "Flat Trinitron TV (recommended)" : friendly(path);
+            std::string search = label + " " + path;
+            for (char& ch : search) ch = (char)std::tolower((unsigned char)ch);
+            entries.push_back({path, std::move(label), std::move(search), group});
+            if (path == recommended) recommended_present = true;
           }
-          ImGui::EndListBox();
+          std::stable_sort(entries.begin(), entries.end(), [](const ShaderEntry& a, const ShaderEntry& b) {
+            return a.group < b.group || (a.group == b.group && a.label < b.label);
+          });
+          listed = true;
+        }
+        if (!pending_initialized) {
+          pending_shader = options.shader_preset.empty() && recommended_present ? recommended : options.shader_preset;
+          observed_shader = options.shader_preset;
+          pending_initialized = true;
+        }
+        if (ImGui::SmallButton("Refresh presets")) { user_shader::refresh_presets(); listed = false; }
+        if (ImGui::CollapsingHeader("Browse shader presets")) {
+          static char shader_filter[64] = "";
+          ImGui::SetNextItemWidth(260.0f);
+          ImGui::InputTextWithHint("##shaderfilter", "type to search presets", shader_filter, sizeof shader_filter);
+          if (entries.empty()) ImGui::TextDisabled("Nothing in the Shaders folder yet. Put a shader pack folder in it.");
+          if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, entries.empty() ? 30.0f : 150.0f))) {
+            if (ImGui::Selectable("None (unfiltered)", pending_shader.empty())) pending_shader.clear();
+            std::string needle = shader_filter;
+            for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
+            int shown = 0, last_group = -1;
+            for (const ShaderEntry& entry : entries) {
+              if (!needle.empty() && entry.search.find(needle) == std::string::npos) continue;
+              if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
+              if (entry.group != last_group) {
+                static const char* groups[] = {"Recommended", "CRT presets", "Other presets", "Single shaders"};
+                ImGui::TextDisabled("%s", groups[entry.group]);
+                last_group = entry.group;
+              }
+              ImGui::PushID(entry.path.c_str());
+              if (ImGui::Selectable(entry.label.c_str(), entry.path == pending_shader)) pending_shader = entry.path;
+              if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entry.path.c_str());
+              ImGui::PopID();
+            }
+            ImGui::EndListBox();
+          }
+        }
+        if (recommended_present && ImGui::SmallButton("Select recommended Trinitron")) pending_shader = recommended;
+        const std::string applied = options.shader_preset.empty() ? "None" : friendly(options.shader_preset);
+        const std::string selected = pending_shader.empty() ? "None" : friendly(pending_shader);
+        ImGui::TextWrapped("Applied: %s", applied.c_str());
+        if (pending_shader != options.shader_preset) {
+          ImGui::TextWrapped("Selected: %s", selected.c_str());
+          if (ImGui::Button("Apply shader preset")) {
+            options.shader_preset = observed_shader = pending_shader;
+            changed = true;
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Cancel selection")) pending_shader = options.shader_preset;
+          ImGui::TextDisabled("Applying a preset may pause briefly while its shaders compile.");
         }
         const std::string why = user_shader::status();
         if (!options.shader_preset.empty() && !why.empty()) ImGui::TextWrapped("This preset is not running: %s", why.c_str());
@@ -7591,12 +7663,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::map<std::string, std::vector<const CosmeticAsset*>> stages;
           std::map<std::string, std::vector<const CosmeticAsset*>> pictures;   // a costume's own portrait and stock icon
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
+          std::map<std::string, std::vector<const CosmeticAsset*>> fighter_sounds;
           for (const auto& asset : installed_mods) {
             if (asset.kind == "character_costume") characters[asset.character][asset.costume].push_back(&asset);
             // One row per disc file: two imports of the same file can carry different labels.
             else if (asset.kind == "stage_visual" && asset.available) stages[asset.target_path].push_back(&asset);
             else if (asset.kind == "character_portrait") pictures[asset.character + ", " + asset.costume].push_back(&asset);
             else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
+            else if (asset.kind == "fighter_sound") fighter_sounds[asset.character].push_back(&asset);
           }
           static std::string rename_id;
           static std::array<char, 97> rename_text{};
@@ -7872,7 +7946,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           auto draw_resource_slot = [&](const std::string& label,
                                         const std::vector<const CosmeticAsset*>& variants) {
             const std::string target = variants.front()->target_path +
-                (variants.front()->scope.empty() ? "" : "#" + variants.front()->scope);
+                (variants.front()->kind == "fighter_sound" ? "#sounds" :
+                 variants.front()->scope.empty() ? "" : "#" + variants.front()->scope);
             ImGui::PushID(target.c_str());
             ImGui::TextUnformatted(label.c_str());
             int current = 0;
@@ -7919,6 +7994,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             for (const auto& slot : pictures) draw_resource_slot(slot.first, slot.second);
           if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
             for (const auto& stage : stages) draw_resource_slot(stage.second.back()->costume, stage.second);
+          if (!fighter_sounds.empty() && ImGui::CollapsingHeader("Fighter move sounds", ImGuiTreeNodeFlags_DefaultOpen))
+            for (const auto& sounds : fighter_sounds) draw_resource_slot(sounds.first + " move sounds", sounds.second);
           if (!effects.empty() && ImGui::CollapsingHeader("Effects")) {
             if (ImGui::Button("Enable project effects")) {
               std::string error;
@@ -8191,36 +8268,47 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         te_pair_hover(kTeNoScreenRumble));
 
 
-#ifndef MELEE_NO_SLIPPI   // the build without that layer has neither setting
-    // ---- Online ----
-    // Slippi's local input delay: frames of your own input held back so there is less to roll back.
-    // The game asks for it when an online match is set up, so a change applies from the next match.
-    // Both engines: the Source Port's match state carries the same setting (checked 09-29: delay 4
-    // in a Source Port pair, 0 mismatches).
-    ImGui::TextUnformatted("Online");
+    ImGui::TextUnformatted("Input delay");
     {
-      int delay = slippi::online::config().delay;
-      ImGui::SetNextItemWidth(160.0f);
-      if (settings_slider("Frame delay", &delay, 1, 9)) { slippi::online::config().delay = delay; changed = true; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
-                          "Higher means fewer rollbacks on a bad connection and more input lag.\n"
-                          "2 is Slippi's default. Takes effect from the next online match.");
-      ImGui::SameLine();
-      if (settings_toggle("Auto", &slippi::online::config().auto_delay)) changed = true;
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Picks the delay from the ping when each match starts: 2 frames up to about\n"
-                          "50 ms ping, more on slower connections (at most 6). Never below 2.\n"
-                          "Off: the frame delay above.");
-      ImGui::SameLine();
-      if (settings_toggle("Also use offline", &options.offline_delay)) {
+      static const char* offline_choices[] = {"Off (0 frames)", "1 frame", "2 frames", "3 frames",
+                                              "4 frames", "5 frames", "6 frames", "7 frames", "8 frames", "9 frames"};
+      int offline = options.offline_delay ? options.offline_delay_frames : 0;
+      ImGui::SetNextItemWidth(180.0f);
+      if (settings_combo("Offline input delay", &offline, offline_choices, 10)) {
+        options.offline_delay = offline > 0;
+        if (offline > 0) options.offline_delay_frames = offline;
         RenderOptions::live_offline_delay() = options.offline_delay;
+        RenderOptions::live_offline_delay_frames() = options.offline_delay_frames;
         changed = true;
       }
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Use this frame delay in all offline gameplay, including VS, Training and 1P modes.\n"
-                          "Both engines. Menus and replay playback keep their normal input.\n"
-                          "Online matches use Frame delay regardless of this checkbox.");
+        ImGui::SetTooltip("Added input delay in offline VS, Training and 1P modes, on both engines.\n"
+                          "Off adds no delay. Menus and replay playback are unaffected.");
+#ifndef MELEE_NO_SLIPPI
+      static const char* online_choices[] = {"Auto", "1 frame", "2 frames", "3 frames", "4 frames",
+                                             "5 frames", "6 frames", "7 frames", "8 frames", "9 frames"};
+      int online = slippi::online::config().auto_delay ? 0 : slippi::online::config().delay;
+      ImGui::SetNextItemWidth(180.0f);
+      if (settings_combo("Online input delay", &online, online_choices, 10)) {
+        slippi::online::config().auto_delay = online == 0;
+        if (online > 0) slippi::online::config().delay = online;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Applies from the next online match. Higher delay can reduce rollbacks.\n"
+                          "Auto picks 2 to 6 frames from ping at match start and holds it for that match.\n"
+                          "Without a ping measurement, Auto uses the last manual online value (%d frames).",
+                          slippi::online::config().delay);
+      if (online == 1)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                           "1 frame online can cause more rollbacks: fighters may jump or stutter.");
+#endif
+      ImGui::TextDisabled("Added input delay, not total controller-to-screen latency.");
+    }
+
+#ifndef MELEE_NO_SLIPPI
+    ImGui::TextUnformatted("Online");
+    {
       // Early inputs (host/early_input.h): the other player's game learns of a press up to a frame
       // sooner, so it guesses right more often and rolls back less. Only between two Melee Unlocked
       // players who both have it on; a Slippi Dolphin opponent is never sent anything new.
@@ -8233,16 +8321,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "other player's game guesses them right more often and rolls back less.\n"
                           "Only between Melee Unlocked players who both have this on. Slippi Dolphin\n"
                           "opponents see nothing new. Takes effect from the next online match.");
-      // A player ran at 3 without knowing and reported the game as feeling slow. The cost is
-      // shown whenever the value is above the default; the tooltip alone is not seen on a controller.
-      if (delay > 2)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                           "%d frames: about %d ms more input delay than the default of 2.", delay, (delay - 2) * 17);
-      // A player at 1 frame and 50 ms ping rolled back on half of all frames and reported it as
-      // visual lag. Shown here in the settings only, never over the game.
-      else if (delay < 2)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                           "%d frame: more rollbacks than the default of 2. Fighters can jump or stutter online.", delay);
       // Slippi's quick chat on the online character select screen, the same three choices as
       // Slippi Dolphin. Off also stops showing the other player's messages.
       static const char* chat_choices[] = {"On", "Direct matches only", "Off"};
@@ -9005,13 +9083,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #else
     ImGui::TextUnformatted("Slippi's codes, built in");
 #endif
-    // The same setting as Video > Widescreen, which is True widescreen only since 0.9.63.
-    if (settings_toggle("Widescreen 16:9", &options.true_widescreen)) {
-      options.widescreen = false;
-      if (options.true_widescreen) options.true_aspect = TrueAspect::Wide16_9;
-      changed = true;
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The same as Video > Widescreen: True 16:9. Online safe. Applies at once.");
     if (settings_toggle("Disable Screen Shake", &gecko::option_no_screen_shake)) {
       te_follow_ours(options, kTeNoScreenRumble, gecko::option_no_screen_shake);
       changed = true;

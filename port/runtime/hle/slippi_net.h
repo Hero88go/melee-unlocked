@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -134,6 +135,14 @@ class User {
   // name changed on the website since then is stale in it; the server's copy is what the opponent
   // and the in-game name tag already show.
   void RefreshFromServer();
+  // Fresh verification before each server search and peer connection. Failure stays offline;
+  // cached user.json and the startup background refresh never authorize a new match.
+  using VersionFetch = bool (*)(const std::string&, std::string*, int*);
+  bool CheckOnlineCompatibility(std::string* error, VersionFetch fetch = nullptr);
+  // Game thread only: 0 checking, 1 approved, -1 refused. Also covers rematches which reuse
+  // a peer connection. Checking never blocks the character-select/render thread.
+  int PollOnlineCompatibility(std::string* error, VersionFetch fetch = nullptr);
+  void ResetOnlineCompatibility() { ++compatibility_generation_; compatibility_done_ = false; }
  private:
   std::string dir_;
   std::string account_file_;
@@ -142,6 +151,13 @@ class User {
   bool logged_in_ = false;
   mutable std::mutex mutex_;
   std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
+  bool compatibility_done_ = false, compatibility_ok_ = false;
+  uint64_t compatibility_generation_ = 0;
+  std::string compatibility_error_;
+  // Destroyed before the fields used by their workers: no detached access to a destroyed User.
+  std::future<void> refresh_;
+  struct VersionResult { bool ok; std::string error; uint64_t generation; };
+  std::future<VersionResult> compatibility_;
 };
 
 // Connect-code history (direct-codes.json / teams-codes.json in the user folder).

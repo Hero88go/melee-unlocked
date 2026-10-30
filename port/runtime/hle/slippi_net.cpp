@@ -183,15 +183,16 @@ void PlayerSelections::Reset() { character_id = character_color = team_id = 0; i
 // ---------------------------------------------------------------- user
 User::User(std::string user_dir) : dir_(std::move(user_dir)) { if (AttemptLogin()) RefreshFromServer(); }
 void User::RefreshFromServer() {
+  if (refresh_.valid() && refresh_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
   UserInfo me = GetUserInfo();
   if (me.uid.empty()) return;
   if (Matchmaking::local_peer.enabled) return;   // local test peering stays off Slippi's servers
   std::shared_ptr<std::atomic<bool>> alive = alive_;
-  std::thread([this, me, alive] {
+  refresh_ = std::async(std::launch::async, [this, me, alive] {
     // Nothing may leave this thread as an exception: that would end the process.
     try {
       std::string response; int status = 0;
-      if (!report::http_get("https://users.slippi.gg/user/" + me.uid, &response, &status) || status != 200) {
+      if (!report::http_get("https://users-rest-dot-slippi.uc.r.appspot.com/user/" + me.uid, &response, &status) || status != 200) {
         host::log("slippi: profile refresh unavailable (HTTP %d); keeping user.json", status);
         return;
       }
@@ -206,6 +207,7 @@ void User::RefreshFromServer() {
         if (cm->is_array() && cm->size() == 16)
           for (const auto& m : *cm) if (m.is_string()) chat.push_back(m.get<std::string>());
       std::lock_guard<std::mutex> lock(mutex_);
+      if (info_.uid != me.uid) return;
       if (!name.empty()) info_.display_name = name;
       if (!code.empty()) info_.connect_code = code;
       if (!latest.empty()) info_.latest_version = latest;
@@ -218,8 +220,56 @@ void User::RefreshFromServer() {
     } catch (...) {
       host::log("slippi: profile refresh failed; keeping user.json");
     }
-  }).detach();
+  });
 }
+int User::PollOnlineCompatibility(std::string* error, VersionFetch fetch) {
+  if (!compatibility_done_) {
+    if (!compatibility_.valid()) {
+      const uint64_t generation = compatibility_generation_;
+      compatibility_ = std::async(std::launch::async, [this, fetch, generation] {
+        std::string reason;
+        const bool ok = CheckOnlineCompatibility(&reason, fetch);
+        return VersionResult{ok, std::move(reason), generation};
+      });
+    }
+    if (compatibility_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return 0;
+    auto result = compatibility_.get();
+    if (result.generation != compatibility_generation_) return 0;  // cancelled/preceding game's request
+    compatibility_ok_ = result.ok;
+    compatibility_error_ = std::move(result.error);
+    compatibility_done_ = true;
+  }
+  *error = compatibility_error_;
+  return compatibility_ok_ ? 1 : -1;
+}
+bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
+  *error = "Could not check Slippi version. Try again.";
+  const UserInfo me = GetUserInfo();
+  if (me.uid.empty()) { *error = "Sign in to Slippi before playing online."; return false; }
+  try {
+    std::string response; int status = 0;
+    if (!(fetch ? fetch : report::http_get)("https://users-rest-dot-slippi.uc.r.appspot.com/user/" + me.uid, &response, &status) || status != 200)
+      return false;
+    const json reply = json::parse(response, nullptr, false);
+    if (!reply.is_object()) return false;
+    const std::string latest = str_or(reply, "latestVersion", "");
+    if (!release_version_valid(latest)) return false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (info_.uid != me.uid) return false;  // the player signed out or changed accounts
+      info_.latest_version = latest;
+    }
+    if (version_newer(latest, SLIPPI_SEMVER)) {
+      *error = "Slippi " + latest + " is out. Update Melee Unlocked";
+      return false;
+    }
+    error->clear();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool User::AttemptLogin(bool rediscover) {
   account::Profile profile;
   if (rediscover || !account_discovered_) {
@@ -1177,6 +1227,14 @@ static json local_peer_ticket(const UserInfo& me, Matchmaking::OnlinePlayMode mo
 }
 
 void Matchmaking::startMatchmaking() {
+  if (!local_peer.enabled) {
+    std::string error;
+    if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
+      fail(error.empty() ? "Could not check Slippi version. Try again." : error);
+      return;
+    }
+    if (is_mm_terminated_ || state_ != INITIALIZING) return;
+  }
   client_ = nullptr;
   UserInfo me = user_->GetUserInfo();
   static std::mt19937 rng((uint32_t)time_ms());
@@ -1377,6 +1435,14 @@ bool Matchmaking::ingest_ticket(const Ticket& ticket) {
 
 
 void Matchmaking::handleConnecting() {
+  if (!local_peer.enabled) {
+    std::string error;
+    if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
+      fail(error.empty() ? "Could not check Slippi version. Try again." : error);
+      return;
+    }
+    if (is_mm_terminated_ || state_ != OPPONENT_CONNECTING) return;
+  }
   {
     std::unique_ptr<NetplayClient> old_client;
     { std::lock_guard<std::mutex> lk(result_mutex_); old_client = std::move(netplay_client_); }

@@ -6,8 +6,11 @@
 #include "slippi_online.h"
 #include "native_slippi_bridge.h"
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <process.h>
+#include <atomic>
+#include <thread>
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 namespace fs = std::filesystem;
@@ -38,6 +41,18 @@ struct Environment {
   ~Environment() { _putenv_s(name.c_str(), previous.c_str()); }
 };
 struct OnlineShutdown { ~OnlineShutdown() { slippi::online::shutdown(); } };
+std::string version_reply;
+int version_http_status = 200;
+std::atomic<int> version_requests{0};
+std::atomic<bool> block_version_fetch{false};
+bool version_transport_ok = true;
+bool fetch_version(const std::string& url, std::string* response, int* status) {
+  ++version_requests;
+  while (block_version_fetch.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  *response = version_reply;
+  *status = version_http_status;
+  return version_transport_ok && url == "https://users-rest-dot-slippi.uc.r.appspot.com/user/synthetic-test-user";
+}
 }
 
 // A Dolphin build the Slippi Launcher's settings file points at, outside the launcher's folder,
@@ -137,6 +152,61 @@ int main() {
   CHECK(user.dir() == local.string());
   CHECK(user.GetUserChatMessages().size() == 16);
 
+  // A cached supported version must not authorize a match after the server updates, or while
+  // its fresh reply is unavailable/malformed. Use the production check with an offline transport.
+  std::string compatibility_error;
+  user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
+  version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
+  CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  CHECK(compatibility_error.empty() && version_requests == 1);
+  version_reply = "{\"latestVersion\":\"99.0.0\"}";
+  CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  CHECK(compatibility_error.find("Update Melee Unlocked") != std::string::npos && version_requests == 2);
+  for (const auto* reply : {"{}", "null", "[]", "{broken", "{\"latestVersion\":123}",
+                           "{\"latestVersion\":\"\"}", "{\"latestVersion\":\"garbage\"}",
+                           "{\"latestVersion\":\"3.6.4-beta\"}", "{\"latestVersion\":\"3.6.4.0.1\"}"}) {
+    user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
+    version_reply = reply;
+    CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version) && !compatibility_error.empty());
+  }
+  version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
+  version_http_status = 503;
+  CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  version_http_status = 200; version_transport_ok = false;
+  CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  version_transport_ok = true;
+  CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  // Rematches on the same peer connection also need a new check. Polling while the request is
+  // pending must leave the character screen responsive and must not issue duplicate requests.
+  struct ReleaseFetch { ~ReleaseFetch() { block_version_fetch = false; } } release_fetch;
+  block_version_fetch = true;
+  CHECK(user.PollOnlineCompatibility(&compatibility_error, fetch_version) == 0);
+  CHECK(user.PollOnlineCompatibility(&compatibility_error, fetch_version) == 0);
+  block_version_fetch = false;
+  const auto poll = [&] {
+    for (int i = 0; i < 2000; ++i) {
+      const int status = user.PollOnlineCompatibility(&compatibility_error, fetch_version);
+      if (status) return status;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return 0;
+  };
+  CHECK(poll() == 1);
+  const int requests_before_rematch = version_requests;
+  CHECK(user.PollOnlineCompatibility(&compatibility_error, fetch_version) == 1);
+  CHECK(version_requests == requests_before_rematch);
+  user.ResetOnlineCompatibility();
+  version_reply = "{\"latestVersion\":\"99.0.0\"}";
+  CHECK(poll() == -1 && version_requests == requests_before_rematch + 1);
+  // Cancelling a pending check must not let its result approve a later connection.
+  user.ResetOnlineCompatibility();
+  block_version_fetch = true;
+  const int before_cancelled_check = version_requests;
+  CHECK(user.PollOnlineCompatibility(&compatibility_error, fetch_version) == 0);
+  user.ResetOnlineCompatibility();
+  block_version_fetch = false;
+  CHECK(poll() == -1 && version_requests == before_cancelled_check + 2);
+
   // A complete portable login takes priority. Logout/re-login and refresh read its current contents.
   const auto portable = profile("Portable test", "LOCAL#123");
   write(local / "user.json", portable);
@@ -144,6 +214,9 @@ int main() {
   CHECK(slippi::account::resolve(local).file == local / "user.json");
   user.LogOut();
   CHECK(!user.IsLoggedIn() && user.GetUserInfo().play_key.empty());
+  const int requests_before_logout_check = version_requests;
+  CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  CHECK(version_requests == requests_before_logout_check);
   CHECK(user.AttemptLogin() && user.GetUserInfo().connect_code == "LOCAL#123");
   write(local / "user.json", profile("Changed", "LOCAL#456"));
   CHECK(user.AttemptLogin() && user.GetUserInfo().connect_code == "LOCAL#456");
@@ -165,6 +238,16 @@ int main() {
   write(standard, "{}");
   CHECK(slippi::account::resolve(local).file == playback);
   CHECK(read(moved) == shared_data && read(shared_history) == "[\"UNCHANGED#1\"]");
+  // Explicit opt-in only: use a local launcher profile to exercise the real WinHTTP version
+  // check. No matchmaking request is made and the profile is only read, never changed.
+  if (const char* live_profile = std::getenv("MELEE_TEST_LIVE_SLIPPI_PROFILE")) {
+    slippi::Matchmaking::local_peer.enabled = false;
+    slippi::User live_user(live_profile);
+    std::string live_error;
+    CHECK(live_user.CheckOnlineCompatibility(&live_error));
+    CHECK(live_error.empty());
+    std::puts("Live Slippi user API version check passed");
+  }
   std::puts("Slippi login regression passed: relocated profiles, live Log In, EXI/native status, local history, credential validation");
   return 0;
 }

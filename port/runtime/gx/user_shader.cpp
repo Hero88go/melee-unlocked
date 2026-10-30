@@ -16,7 +16,6 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <chrono>
 #include <filesystem>
 #include <mutex>
 #include <vector>
@@ -63,6 +62,9 @@ libra_instance_t& library() {
 
 std::mutex g_status_mutex;
 std::string g_status;
+std::mutex g_presets_mutex;
+std::vector<std::string> g_presets;
+bool g_presets_listed = false;
 void set_status(const std::string& text) {
   std::lock_guard<std::mutex> lock(g_status_mutex);
   g_status = text;
@@ -313,12 +315,10 @@ bool available() { return library().instance_loaded; }
 
 std::vector<std::string> presets() {
   unpack_bundle();
-  static std::vector<std::string> found;
-  static std::chrono::steady_clock::time_point listed{};
-  const auto now = std::chrono::steady_clock::now();
-  if (listed != std::chrono::steady_clock::time_point{} && now - listed < std::chrono::seconds(3)) return found;
-  listed = now;
-  found.clear();
+  std::lock_guard<std::mutex> lock(g_presets_mutex);
+  if (g_presets_listed) return g_presets;
+  g_presets_listed = true;
+  g_presets.clear();
   const std::filesystem::path root = shader_root();
   std::error_code ec;
   std::filesystem::create_directories(root, ec);
@@ -331,11 +331,16 @@ std::vector<std::string> presets() {
     // thousands inside a pack are passes of its presets, not shaders to pick).
     const auto extension = it->path().extension();
     if (extension != ".slangp" && !(extension == ".slang" && it.depth() == 0)) continue;
-    found.push_back(it->path().lexically_relative(root).generic_u8string());
-    if (found.size() >= 4000) break;
+    g_presets.push_back(it->path().lexically_relative(root).generic_u8string());
+    if (g_presets.size() >= 4000) break;
   }
-  std::sort(found.begin(), found.end());
-  return found;
+  std::sort(g_presets.begin(), g_presets.end());
+  return g_presets;
+}
+
+void refresh_presets() {
+  std::lock_guard<std::mutex> lock(g_presets_mutex);
+  g_presets_listed = false;
 }
 
 void open_folder() {

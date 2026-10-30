@@ -270,7 +270,8 @@ std::string size_text(uint64_t bytes) {
   else std::snprintf(buf, sizeof buf, "%.0f MB", bytes / (double)kMiB);
   return buf;
 }
-void post_refresh() { if (g_window) PostMessageW(g_window, WM_MODS_REFRESH, 0, 0); }
+void request_view();
+void post_refresh() { request_view(); if (g_window) PostMessageW(g_window, WM_MODS_REFRESH, 0, 0); }
 void set_status(const std::string& id, const std::string& text) {
   { std::lock_guard<std::mutex> lock(g_mutex); g_status[id] = text; }
   if (g_launcher_test) {   // the hidden test gate reads every status line from here
@@ -425,6 +426,48 @@ std::map<std::string, Installed> installed() {
   }
   return out;
 }
+int disc_skins(const std::string& disc_path, std::string* sets);
+// What the page and the Play page show of the installed mods: the detected list and each disc's skin
+// count. Building it touches every mod's file (exists, and the same-file test against the skin list),
+// and a linked disc on a network share or a drive that went away blocks such a call for about 20
+// seconds. On the window's thread every repaint and the 2 second timer did that, and the launcher
+// stopped responding. A worker builds it; the windows read the last one built.
+struct View {
+  std::map<std::string, Installed> installed;
+  std::map<std::string, std::pair<int, std::string>> skins;   // disc path -> skin count, set names
+  bool ready = false;
+};
+std::mutex g_view_mutex;
+View g_view;
+std::atomic<bool> g_view_building{false}, g_view_again{false};
+View view() { std::lock_guard<std::mutex> lock(g_view_mutex); return g_view; }
+int view_skins(const View& v, const std::string& path, std::string* sets) {
+  const auto it = v.skins.find(path);
+  if (it == v.skins.end()) return 0;
+  if (sets) *sets = it->second.second;
+  return it->second.first;
+}
+void request_view() {
+  if (g_view_building.exchange(true)) { g_view_again = true; return; }
+  std::thread([] {
+    do {
+      g_view_again = false;
+      View v;
+      v.installed = installed();
+      for (const auto& entry : v.installed) {
+        std::string sets;
+        const int count = disc_skins(entry.second.path, &sets);
+        v.skins[entry.second.path] = {count, sets};
+      }
+      v.ready = true;
+      { std::lock_guard<std::mutex> lock(g_view_mutex); g_view = std::move(v); }
+    } while (g_view_again.exchange(false));
+    g_view_building = false;
+    if (g_view_again.exchange(false)) request_view();   // asked for while this one was finishing
+    if (g_window) PostMessageW(g_window, WM_MODS_REFRESH, 0, 0);
+    if (g_main) InvalidateRect(g_main, nullptr, FALSE);
+  }).detach();
+}
 // A scan is running. Until it ends, what the page shows comes from the last scan, which after an
 // update is the previous version's verdict: a disc that version could not run would read "Not
 // supported yet" for as long as the new scan takes to read the disc again.
@@ -459,7 +502,9 @@ void rescan() { std::lock_guard<std::mutex> lock(g_install_mutex); scan_installe
 std::string summary() {
   std::string packs;
   int on = 0;
-  for (const auto& entry : installed()) {
+  const View current = view();
+  if (!current.ready) request_view();
+  for (const auto& entry : current.installed) {
     const auto& m = entry.second;
     if (m.enabled && runs_here(m)) { packs += (on ? ", " : " ") + m.name; ++on; }
   }
@@ -738,7 +783,8 @@ bool same_version(std::string a, std::string b) {
 }
 void refresh_window() {
   if (!g_window) return;
-  const auto found = installed();
+  const View current = view();
+  const auto& found = current.installed;
   std::vector<CatalogMod> catalog;
   { std::lock_guard<std::mutex> lock(g_mutex); catalog = g_catalog; }
   g_rows.clear(); std::set<std::string> listed;
@@ -782,7 +828,7 @@ void refresh_window() {
     const auto& row = g_rows[i]; const auto& m = row.catalog; const auto& f = row.installed;
     // "Choose skins" opens the Settings window on the Mods tab, where the disc's costumes are picked.
     // Only once the game has listed them (disc-skins.txt), so the button never leads to an empty list.
-    const bool has_skins = row.found && disc_skins(f.path, nullptr) > 0;
+    const bool has_skins = row.found && view_skins(current, f.path, nullptr) > 0;
     SetWindowTextW(g_skins[i], launcher::lang::txw(L"Choose skins").c_str());
     EnableWindow(g_skins[i], has_skins && !g_playing);
     const bool busy = is_busy(m.id), playable = row.found && runs_here(f);
@@ -857,6 +903,7 @@ void paint_page(HDC dc) {
             LR(kPad, 46, width - 2 * kPad, 18), g_font_small, C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
   std::map<std::string, std::string> status; std::map<std::string, int> percent;
   { std::lock_guard<std::mutex> lock(g_mutex); status = g_status; percent = g_percent; }
+  const View current = view();
   const int shown = visible_rows();
   for (int slot = 0; slot < shown && g_top + slot < (int)g_rows.size(); ++slot) {
     const Row& row = g_rows[g_top + slot];
@@ -901,7 +948,7 @@ void paint_page(HDC dc) {
     else if (row.found && f.kind != "te" && f.kind != "tmce") {
       // Once the game has listed the disc's costumes as skins, say how many and where to pick them.
       std::string sets;
-      const int skins = disc_skins(f.path, &sets);
+      const int skins = view_skins(current, f.path, &sets);
       if (skins > 0) {
         const std::string named = sets_text(sets);
         line = launcher::lang::fill(tx("Skins: {count} in your skin list{sets}. Pick them in Settings, Mods."),
@@ -1068,7 +1115,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     }
-    case WM_TIMER: refresh_window(); return 0;
+    case WM_TIMER: request_view(); refresh_window(); return 0;
   }
   return DefWindowProcW(w, msg, wp, lp);
 }

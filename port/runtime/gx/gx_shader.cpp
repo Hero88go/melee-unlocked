@@ -780,7 +780,14 @@ void build_projection(const DrawCall& dc, float m[16], const float* override_pro
     // off-centre shift) and its x and y scales are in exactly the 4:3 ratio the quad was drawn for,
     // which the game's own cameras never are once the player's aspect is applied.
     // A corner-pinned perspective layer is excluded the same way (see is_authored_screen_pinned).
-    if (g_true_widescreen.load(std::memory_order_relaxed) &&
+    // Small viewports render into textures, rather than into the presented camera.
+    // FoD's 80x60 mirrored view is projected onto the water with the game's own
+    // (unwidened) texture matrix. Widening that view independently makes the image
+    // disagree with those coordinates and clamps its outer pixels across the water.
+    const bool full_viewport = std::fabs(vp[0]) >= 320.0f && std::fabs(vp[1]) >= 240.0f;
+    // A backdrop plane that exactly fills the authored frustum (DrawCall::frustum_backdrop) keeps that
+    // projection too: widened, Poke Floats' sky gradient covered only the middle 4:3 of the picture.
+    if (g_true_widescreen.load(std::memory_order_relaxed) && full_viewport && !dc.frustum_backdrop &&
         !is_authored_fullscreen(authored_proj) && !is_authored_screen_pinned(authored_proj)) {
       const float widen = g_true_widen.load(std::memory_order_relaxed);   // 16:9: (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= widen;

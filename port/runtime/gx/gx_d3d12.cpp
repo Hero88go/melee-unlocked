@@ -24,7 +24,9 @@
 #include <condition_variable>
 #include <vector>
 #include "dxgi_paced_mode.h"
+#include "fullscreen_state.h"
 #include "vrr_detect.h"
+#include "temporal_history.h"
 #include "vblank_clock.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
@@ -513,8 +515,8 @@ class D3D12Backend : public Backend {
   // A draw's pose this frame and in the frame before. A model drawn in several passes in one frame
   // (fighters are) must compare every pass with the previous frame; comparing a second pass with the
   // first pass's pose gave zero motion, and DLSS/DLAA blended the moving fighter into the background.
-  struct LastPose { float pos[256]; float proj[16]; uint64_t frame; float prev_pos[256]; float prev_proj[16]; uint64_t prev_frame; };
-  std::unordered_map<uint64_t, LastPose> last_poses_;
+  TemporalMotionHistory last_poses_;
+  uint64_t temporal_cut_sequence_ = 0;
   void configure_dlss();
   void update_vram();
   void set_dlss_mip_bias(float bias);
@@ -533,6 +535,7 @@ class D3D12Backend : public Backend {
     bool operator==(const FallbackKey& o) const { return blend == o.blend && zmode == o.zmode && cull == o.cull && topology == o.topology && pixel_format == o.pixel_format && mvec == o.mvec && variant == o.variant; } };
   struct FallbackKeyHash { size_t operator()(const FallbackKey& k) const { return hash_bytes(&k, sizeof k); } };
   std::unordered_map<FallbackKey, ComPtr<ID3D12PipelineState>, FallbackKeyHash> fallback_psos_;
+  std::unordered_map<uint32_t, std::pair<ComPtr<ID3DBlob>, ComPtr<ID3DBlob>>> fallback_blobs_;   // per variant and mvec
   ID3D12PipelineState* fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   void prewarm_fallback_psos();
   std::mutex pso_mutex_, pipeline_library_mutex_;
@@ -662,6 +665,7 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12CommandQueue> queue_;
   ComPtr<IDXGIFactory4> factory_;   // kept: the swap chain is created again when exclusive fullscreen toggles
   ComPtr<IDXGISwapChain3> swapchain_;
+  FullscreenState fullscreen_state_;
   // Frame latency. Without a limit DXGI lets three finished frames wait in line for the display,
   // and whenever the GPU is the bottleneck every one of them is input delay. The swap chain is
   // created with the frame latency waitable object, its maximum latency set to one, and the render
@@ -1184,6 +1188,7 @@ void D3D12Backend::apply_fullscreen_mode() {
   if (!swapchain_) return;
   BOOL was_exclusive = FALSE;
   swapchain_->GetFullscreenState(&was_exclusive, nullptr);
+  fullscreen_state_.exclusive_active = was_exclusive != FALSE;
   // Exclusive fullscreen needs a swap chain without the frame latency waitable object, and a swap
   // chain cannot change that after it is made. Making a second one for the same window in the
   // middle of a session was refused on players' machines ("Access is denied": the first one is
@@ -1197,7 +1202,7 @@ void D3D12Backend::apply_fullscreen_mode() {
   if (!opts_.exclusive_fullscreen) exclusive_deferred_ = false;
   const bool want_exclusive = opts_.exclusive_fullscreen && !exclusive_deferred_;
   if ((was_exclusive != FALSE) == want_exclusive) {
-    if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen || exclusive_deferred_);
+    if (!want_exclusive) host::window_set_fullscreen(fullscreen_state_.borderless(opts_, exclusive_deferred_));
     return;
   }
   pause_frame_generation_for_resize();
@@ -1205,6 +1210,7 @@ void D3D12Backend::apply_fullscreen_mode() {
   for (auto& buffer : backbuffers_) buffer.Reset();
   if (was_exclusive) {
     HRESULT hr = swapchain_->SetFullscreenState(FALSE, nullptr);
+    fullscreen_state_.exclusive_active = FAILED(hr);
     if (FAILED(hr)) host::log("d3d12: leaving exclusive fullscreen failed (0x%08X)", (unsigned)hr);
   }
   if (host::window_is_fullscreen()) host::window_set_fullscreen(false);
@@ -1228,12 +1234,14 @@ void D3D12Backend::apply_fullscreen_mode() {
         swapchain_->ResizeTarget(&mode);
       }
     }
-    const HRESULT hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+    HRESULT hr;
+    fullscreen_state_.enter_exclusive([&] {
+      hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+      return SUCCEEDED(hr);
+    });
     if (FAILED(hr)) {
       host::log("d3d12: exclusive fullscreen unavailable (0x%08X); using borderless fullscreen", (unsigned)hr);
-      opts_.exclusive_fullscreen = false;
-      opts_.fullscreen = true;
-      host::window_set_fullscreen(true);
+      host::window_set_fullscreen(fullscreen_state_.borderless(opts_));
       RECT client{}; if (GetClientRect(hwnd_, &client)) { client_w_ = client.right; client_h_ = client.bottom; }
     } else {
       ComPtr<IDXGIOutput> output;
@@ -1833,7 +1841,11 @@ ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCal
   // Raster state is deliberately normalized here. The fallback is approximate by design; using
   // one generic blend/depth/cull state per output format and topology bounds the set to a few
   // startup-created PSOs instead of one synchronous PSO creation for every new guest state.
-  FallbackKey fk{0, 0, 0, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
+  // A blended draw keeps its own blend and depth state: forced opaque, the first frame of a shield
+  // (or any new translucent effect) drew as a solid ball. The game uses a handful of blend modes,
+  // so the set stays small, and the shaders are compiled once per variant (fallback_blobs_).
+  const bool blended = (key.blend & 1) != 0;
+  FallbackKey fk{blended ? key.blend : 0, blended ? key.zmode : 0, 0, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
   auto it = fallback_psos_.find(fk);
   if (it != fallback_psos_.end()) return it->second.Get();
   // On menus and transitions only: an untextured, uncoloured draw has its colour in TEV state this
@@ -1881,16 +1893,20 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
   ps.replace(ps.find("TEX_EXPR"), 8, textured ? "c *= Tex[0].Sample(samp[0], uv);" : "");
   ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1, out float ohud : SV_Target2" : "");
   ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0); ohud = 0.0;" : "");
-  ComPtr<ID3DBlob> vsb, psb, err;
-  if (FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err)) ||
-      FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err))) {
+  auto& blobs = fallback_blobs_[fk.variant | (key.mvec << 2)];
+  ComPtr<ID3DBlob>& vsb = blobs.first;
+  ComPtr<ID3DBlob>& psb = blobs.second;
+  ComPtr<ID3DBlob> err;
+  if ((!vsb && FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err))) ||
+      (!psb && FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err)))) {
     host::log("d3d12: fallback shader compile failed: %s", err ? (const char*)err->GetBufferPointer() : "?");
+    vsb.Reset(); psb.Reset();
     fallback_psos_[fk] = nullptr; return nullptr;
   }
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
   PsoKey generic = key;
-  generic.blend = 0x18; // write RGBA, blending disabled
-  generic.zmode = 0;    // depth disabled
+  generic.blend = blended ? key.blend : 0x18;   // blended: the draw's own mode; otherwise write RGBA, blending disabled
+  generic.zmode = blended ? key.zmode : 0;      // blended: the draw's own depth test (no write); otherwise depth disabled
   generic.cull = 0;     // no culling
   describe_pipeline(pd, generic, topo, root_.Get(), vsb.Get(), psb.Get());
   ComPtr<ID3D12PipelineState> pso;
@@ -1915,6 +1931,13 @@ void D3D12Backend::prewarm_fallback_psos() {
           if (variant & 1) draw.xf_regs[0x3F] = 1;
           PsoKey key{0, 0, 0x18, 0, 0, (uint32_t)topo, pixel_format, mvec};
           fallback_pso(key, draw, topo);
+          // The blend modes of most translucent effects (shields, smoke, sparks): alpha over and
+          // additive, depth test without write.
+          if (topo == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
+            for (uint32_t blend : {0x18u | 1u | (5u << 5) | (4u << 8), 0x18u | 1u | (1u << 5) | (4u << 8)}) {
+              PsoKey blended_key{0, 0, blend, 0x0Fu, 0, (uint32_t)topo, pixel_format, mvec};
+              fallback_pso(blended_key, draw, topo);
+            }
         }
       }
     }
@@ -1978,6 +2001,9 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       }
     }
     ++g_pso_skips;
+    // A translucent draw waits the frame or two out instead: the stand-in cannot shape it by its
+    // texture's alpha, so the first frame of a shield drew as a square.
+    if (key.blend & 1) return nullptr;
     return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
   }
   ++g_pso_creates;
@@ -2501,18 +2527,15 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   VSConstants vs_constants;
   if (dlss_active_) {
     MotionInfo motion; motion.jitter_x = jitter_x_; motion.jitter_y = jitter_y_;
-    LastPose& last = last_poses_[dc.identity];
-    if (last.frame != 0 && last.frame != frame_counter_) {   // first pass this frame: last frame's pose moves back
-      std::memcpy(last.prev_pos, last.pos, sizeof last.pos); std::memcpy(last.prev_proj, last.proj, sizeof last.proj);
-      last.prev_frame = last.frame;
-    }
-    bool had = last.prev_frame != 0 && last.prev_frame + 2 >= frame_counter_ && last.prev_frame != frame_counter_;
-    if (had) { motion.prev_pos = last.prev_pos; motion.prev_proj = last.prev_proj; }
+    const uint64_t presentation = (uint64_t)frames_presented_ + 1;
+    const auto* previous = last_poses_.previous(dc.identity, presentation, !skip_present_);
+    const bool had = previous != nullptr;
+    if (had) { motion.prev_pos = previous->position.data(); motion.prev_proj = previous->projection.data(); }
     ++mv_draws_; if (had) ++mv_matched_;
     fill_vs_constants(dc, vs_constants, scale_, override_matrices, &motion);
-    std::memcpy(last.pos, override_matrices ? override_matrices->pos : dc.posMatrices, sizeof last.pos);
-    std::memcpy(last.proj, vs_constants.unjittered_projection, sizeof last.proj);
-    last.frame = frame_counter_;
+    last_poses_.record(dc.identity, presentation, !skip_present_,
+                       override_matrices ? override_matrices->pos : dc.posMatrices,
+                       &vs_constants.unjittered_projection[0][0]);
   } else {
     fill_vs_constants(dc, vs_constants, scale_, override_matrices);
   }
@@ -3239,6 +3262,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
             d.primitive, d.vertex_count, d.components, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5], d.xf_regs[0x26], pr[0], pr[1], pr[2], pr[3], pr[4], pr[5],
             d.bp.reg[0], d.bp.zmode(), d.bp.blendmode(), d.bp.alpha_test(), d.bp.zcontrol(), d.bp.reg[BP_SCISSORTL], d.bp.reg[BP_SCISSORBR], d.bp.reg[BP_SCISSOROFFSET],
             d.xf_regs[0x3F] & 15, d.xf_regs[0x09] & 3, d.matrix_index_a);
+    fprintf(f, "   owner=%u skinned=%u\n", d.owner_player, d.skinned ? 1u : 0u);
     const Vertex& v = frame.vertices[d.first_vertex];
     fprintf(f, "   v0 pos=(%g %g %g) nrm=(%g %g %g) col0=%02X%02X%02X%02X uv0=(%g %g) posmtx=%u | mtx row0=[%g %g %g %g]\n", v.pos[0], v.pos[1], v.pos[2], v.nrm[0], v.nrm[1], v.nrm[2],
             v.col0[0], v.col0[1], v.col0[2], v.col0[3], v.uv[0][0], v.uv[0][1], v.posmtx, d.posMatrices[v.posmtx * 4], d.posMatrices[v.posmtx * 4 + 1], d.posMatrices[v.posmtx * 4 + 2], d.posMatrices[v.posmtx * 4 + 3]);
@@ -3378,6 +3402,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   pso_wait_budget_us_ = 0;
   capturing_efb_ = std::any_of(frame.copies.begin(),frame.copies.end(),[](const EfbCopy& c) { return !c.to_xfb; });
   ++frame_counter_;
+  if (frame.discontinuous && frame.sequence != temporal_cut_sequence_) {
+    temporal_cut_sequence_ = frame.sequence;
+    last_poses_.clear();
+    dlss_reset_ = xess_reset_ = true;
+#ifdef GX_DLSS5
+    dlss5_reset_ = true;
+#endif
+  }
   // Opt-in hardware-build probe: capture and upload one real match scene every two seconds.
   // Kept off in ordinary sessions until the ray dispatch and shading path are integrated.
   static const bool dxr_scene_diag = [] {
@@ -3484,10 +3516,15 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
-    fc.reset = dlss_reset_; dlss_reset_ = false;
-    if (!xess_active()) streamline::set_constants(fc);
+    fc.reset = dlss_reset_;
+    // A drained frame writes EFB textures but never evaluates the upscaler. It must not advance
+    // either the per-draw history above or Streamline's previous camera projection.
+    if (!skip_present_) {
+      dlss_reset_ = false;
+      if (!xess_active()) streamline::set_constants(fc);
+    }
     if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
-    if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
+    if (frame_counter_ % 600 == 0) last_poses_.prune((uint64_t)frames_presented_ + 1);
   }
   // Reflex and frame generation: a frame token is needed for the markers even without DLSS, and even
   // with Reflex's own low-latency mode left Off -- the PC Latency markers below are what feeds the
@@ -3630,7 +3667,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // game (NVIDIA: V-Sync for it belongs in the driver).
       const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
       const double present_call = Stopwatch::now();
-      swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      swapchain_->Present(synced ? 1 : 0, (!synced && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
       present_wait_ += Stopwatch::now() - present_call;   // a synced Present waits for the display (see gx_d3d11.cpp)
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());

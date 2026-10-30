@@ -46,11 +46,14 @@ uint8_t owner_cache_player = 0xFF, current_owner = 0xFF;
 uint8_t* guest_memory = nullptr;   // the last memory a joint was displayed from (it never moves)
 
 // Owners cost a few reads per rendered object, so they are resolved only for their users: the
-// L-cancel indicator, the look's port colours (gx_retro.h) and the particle tier.
+// L-cancel indicator, the look's port colours (gx_retro.h), the particle tier, and any look that
+// treats fighter or stage textures, which keeps items and model effects textured (look_surface).
+// Without that, flat colours alone treated a held item as stage art: Peach's turnip drew black.
 bool owners_wanted() {
   const LookLive& l = look_live();
   return owner_tracking.load(std::memory_order_relaxed) || l.colours.load(std::memory_order_relaxed) != 0 ||
-         l.effect_owners.load(std::memory_order_relaxed);
+         l.effect_owners.load(std::memory_order_relaxed) || l.fighter.load(std::memory_order_relaxed) != 0 ||
+         l.stage.load(std::memory_order_relaxed) != 0 || l.retro.load(std::memory_order_relaxed);
 }
 
 uint8_t resolve_owner(uint8_t* memory) {
@@ -64,7 +67,7 @@ uint8_t resolve_owner(uint8_t* memory) {
   // share classifier 8 but carry an EF_Effect, so they must not receive the particle token.
   const uint32_t classifier = r.word(gobj) >> 16;
   if (classifier == 6 || classifier == 8) {
-    player = classifier == 8 && !fighter ? kEffectOwner : kGameplayOwner;
+    player = classifier == 6 ? kGameplayOwner : (fighter ? kModelEffectOwner : kEffectOwner);
   } else if (fighter && r.word(fighter) == gobj) {              // Fighter::gobj points back at it
     for (uint32_t slot = 0; slot < 6; ++slot)            // StaticPlayer player_slots[6], stride 0xE90
       if (r.word(0x80453080 + slot * 0xE90 + 0xB0) == gobj) { player = (uint8_t)slot; break; }

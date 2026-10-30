@@ -25,7 +25,7 @@ namespace host {
 
 enum class ProfileDevice : uint8_t { Keyboard, XInput, PlayStation, GCAdapter, SwitchPro, Hid, Count };
 
-constexpr int kProfileActions = 22;   // BindAction::Count, in BindAction order (C-stick, control stick directions, trigger travel)
+constexpr int kProfileActions = 27;   // BindAction::Count, in BindAction order (C-stick, control stick directions, trigger travel)
 using ProfileBindings = std::array<uint32_t, kProfileActions>;
 // A profile saved before L and R were split has no LAnalog / RAnalog lines. A caller that needs to
 // know passes this in those two slots: profile_load leaves a slot the file does not mention as it was.

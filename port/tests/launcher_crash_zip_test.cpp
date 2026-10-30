@@ -332,8 +332,26 @@ int main() {
             k.find("\n2180,0\n") != std::string::npos && k.find("\n2181,0\n") == std::string::npos);
       CHECK(launcher::crash::marked_rows(text("frame,mark\n1,0\n2,0\n")).empty());   // nothing marked
     }
+    {
+      // A connection wait marks the start, but a later checksum disagreement is the useful
+      // diagnostic event. Preserve its context even when nobody pressed a mark button.
+      std::string big = "frame,desync,mark\r\n";
+      for (int f = 0; f < 3000; ++f)
+        big += std::to_string(f) + (f == 2000 ? ",1,0\r\n" : f == 1 ? ",0,1\r\n" : ",0,0\r\n");
+      const auto kept = launcher::crash::marked_rows(text(big));
+      const std::string k(kept.begin(), kept.end());
+      CHECK(k.find("\n2000,1,0\r\n") != std::string::npos);
+      CHECK(k.find("\n1400,0,0\r\n") != std::string::npos && k.find("\n1399,0,0\r\n") == std::string::npos);
+      CHECK(k.find("\n2180,0,0\r\n") != std::string::npos && k.find("\n2181,0,0\r\n") == std::string::npos);
+      CHECK(launcher::crash::marked_rows(text("frame,desync\n1,0\n2,1\n")) ==
+            text("frame,desync\n1,0\n2,1\n"));
+      CHECK(launcher::crash::marked_rows(text("frame,desync\n1,0\n2,0\n")).empty());
+    }
     auto logs = launcher::crash::collect_logs(game.u8string(), game.u8string(), {replays.u8string()}, false);
     CHECK(names(logs) == std::vector<std::string>({"melee_port.log", "session.trace"}));
+    const auto overlapping = launcher::crash::collect_logs(game.u8string(), game.u8string(),
+        {replays.u8string(), (replays / "2026-10").u8string(), (replays / ".").u8string()}, false);
+    CHECK(overlapping == logs);   // overlapping launcher/game replay folders upload each trace once
     const auto zip = launcher::crash::capped_zip(logs);
     std::vector<Entry> got;
     CHECK(read_zip(zip, got) && names(got) == std::vector<std::string>({"melee_port.log", "session.trace"}));

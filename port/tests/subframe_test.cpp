@@ -15,6 +15,26 @@ static void rot_z(float deg, float tx, float out[12]) {
   std::memcpy(out, m, sizeof m);
 }
 int main() {
+  // A render-to-texture camera keeps its authored projection: its consumers use
+  // an authored projective texture matrix, even while the main view is widened.
+  {
+    gx::DrawCall camera{};
+    float p[] = {3.06576f, 0, 3.73205f, 0, -0.0000061f, -0.100001f};
+    std::memcpy(&camera.xf_regs[0x20], p, sizeof p);
+    float viewport[] = {320, -240, 16777215, 662, 582, 16777215};
+    std::memcpy(&camera.xf_regs[0x1A], viewport, sizeof viewport);
+    float original[16], widened[16], reflection[16];
+    gx::set_true_widescreen(false);
+    gx::build_projection(camera, original);
+    gx::set_true_widescreen(true);
+    gx::build_projection(camera, widened);
+    check(near(widened[0], original[0] * 219.0f / 320.0f), "main camera widens");
+    viewport[0] = 40; viewport[1] = -30; viewport[3] = 382; viewport[4] = 372;
+    std::memcpy(&camera.xf_regs[0x1A], viewport, sizeof viewport);
+    gx::build_projection(camera, reflection);
+    check(std::memcmp(original, reflection, sizeof original) == 0, "FoD reflection keeps authored projective mapping");
+    gx::set_true_widescreen(false);
+  }
   gx::DrawCall shader_draw{};
   auto uid = gx::make_vs_uid(shader_draw);
   shader_draw.xf_regs[0x0A] = 0xff00ff00;

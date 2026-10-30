@@ -100,6 +100,8 @@ int mu_widescreen(void);
  * game: a fighter in the added sides is drawn (ftdrawcommon.c). */
 #define MU_OPTION_TRUE_WIDESCREEN 0x20000000u
 int mu_wide_picture(void);
+/* How much wider the presented picture is than the game's camera (True widescreen), 1 otherwise. */
+float mu_picture_widen(void);
 /* Display-only options from the PC settings (MuHostApi.display_options, shim/mu_entry.c). Values
  * match MU_DISPLAY_OPTION_* in mu_host.h. "Low poly fighters": the fighter draw shows the game's own
  * far model in place of the full one (ftdrawcommon.c). Nonzero while the player has it on. */

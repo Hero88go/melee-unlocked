@@ -17,6 +17,7 @@
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
 #include "dxgi_paced_mode.h"
+#include "fullscreen_state.h"
 #include "vrr_detect.h"
 #include "vblank_clock.h"
 #include "gx_adapter.h"
@@ -420,6 +421,7 @@ class D3D11Backend : public Backend {
   ComPtr<ID3D11DeviceContext> context_;
   ComPtr<ID3D11DeviceContext1> context1_;
   ComPtr<IDXGISwapChain1> swapchain_;
+  FullscreenState fullscreen_state_;
   ComPtr<ID3D11RenderTargetView> backbuffer_rtv_;
   ComPtr<ID3D11Texture2D> efb_color_, efb_depth_;
   ComPtr<ID3D11RenderTargetView> efb_rtv_;
@@ -834,15 +836,17 @@ void D3D11Backend::apply_fullscreen_mode() {
   if (!swapchain_) return;
   BOOL was_exclusive = FALSE;
   swapchain_->GetFullscreenState(&was_exclusive, nullptr);
+  fullscreen_state_.exclusive_active = was_exclusive != FALSE;
   const bool want_exclusive = opts_.exclusive_fullscreen;
   if ((was_exclusive != FALSE) == want_exclusive) {
-    if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen);
+    if (!want_exclusive) host::window_set_fullscreen(fullscreen_state_.borderless(opts_));
     return;
   }
   context_->ClearState(); context_->Flush();
   backbuffer_rtv_.Reset(); capture_staging_.Reset();
   if (was_exclusive) {
     const HRESULT hr = swapchain_->SetFullscreenState(FALSE, nullptr);
+    fullscreen_state_.exclusive_active = FAILED(hr);
     if (FAILED(hr)) host::log("d3d11: leaving exclusive fullscreen failed (0x%08X)", (unsigned)hr);
   }
   if (host::window_is_fullscreen()) host::window_set_fullscreen(false);
@@ -859,12 +863,14 @@ void D3D11Backend::apply_fullscreen_mode() {
         swapchain_->ResizeTarget(&mode);
       }
     }
-    const HRESULT hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+    HRESULT hr;
+    fullscreen_state_.enter_exclusive([&] {
+      hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+      return SUCCEEDED(hr);
+    });
     if (FAILED(hr)) {
       host::log("d3d11: exclusive fullscreen unavailable (0x%08X); using borderless fullscreen", (unsigned)hr);
-      opts_.exclusive_fullscreen = false;
-      opts_.fullscreen = true;
-      host::window_set_fullscreen(true);
+      host::window_set_fullscreen(fullscreen_state_.borderless(opts_));
       RECT client{}; if (GetClientRect(hwnd_, &client)) { client_w_ = client.right; client_h_ = client.bottom; }
     } else {
       ComPtr<IDXGIOutput> output;
@@ -2301,7 +2307,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // presentation loop), where a frame starts its own refresh and syncing costs nothing.
     const bool synced = opts_.vsync || tear_free_;
     const double present_call = Stopwatch::now();
-    swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     // A synced Present blocks until the display takes the previous frame: waiting, not drawing.
     // Counted as drawing it inflated the render-time estimate to a whole refresh under synced
     // pacing, and the presentation loop then aimed every frame one refresh too late.

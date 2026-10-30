@@ -19,6 +19,7 @@ namespace gx::user_shader {
 
 bool available();                        // the library is present and loaded
 std::vector<std::string> presets();      // .slangp files under Shaders, as paths relative to it
+void refresh_presets();                  // rescan on the next presets() call after a player adds files
 void open_folder();
 std::string status();                    // why the chosen preset is not running; empty when it is
 

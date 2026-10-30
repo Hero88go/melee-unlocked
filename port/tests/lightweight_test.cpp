@@ -93,6 +93,13 @@ int main() {
       check(!gx::skip_for_effects(gx::effects_filter(f, level), projectile), "all effect levels keep gameplay visuals");
     check(!gx::lightweight_flat(five, projectile) && !gx::lightweight_wire(five, projectile), "lowest levels keep projectile shape");
     check(gx::look_surface(five, projectile) == gx::Surface::Textured, "gameplay visuals keep their original textures");
+    gx::DrawCall model_effect = smoke; model_effect.owner_player = gx::kModelEffectOwner;
+    for (int level = 1; level <= 3; ++level)
+      check(gx::skip_for_effects(gx::effects_filter(f, level), model_effect) == (level >= 3 && ((model_effect.bp.blendmode() >> 5) & 7) == 1),
+            "a fighter's model effects stay, except additive glows at No decorative particles");
+    check(!gx::lightweight_flat(five, model_effect) && !gx::lightweight_wire(five, model_effect), "model effects retain current look behavior");
+    check(gx::look_surface(five, model_effect) == gx::Surface::Textured, "model effects retain their current textures");
+    check(!gx::lightweight_flat(five, smoke), "a blended particle keeps its texture's shape");
     smoke.xf_regs[0x20] = 0x9999;
     check(!gx::skip_for_effects(gx::effects_filter(f, 3), smoke), "particle tier keeps another camera's HUD");
     gx::RenderOptions particles; particles.effects_level = 3; gx::publish_look(particles);

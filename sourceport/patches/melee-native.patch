@@ -127533,7 +127533,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..51ac212a1 100644
+index 536bb3b2b..a71862cdd 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -127731,7 +127731,23 @@ index 536bb3b2b..51ac212a1 100644
  {
      Mtx mtx;
      Vec3 vec;
-@@ -849,12 +914,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -762,7 +827,15 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+                 HSD_CObjSetNear(dst, HSD_CObjGetNear(src));
+                 HSD_CObjSetFar(dst, HSD_CObjGetFar(src));
+                 HSD_CObjSetFov(dst, HSD_CObjGetFov(src));
++#ifdef MU_NATIVE
++                /* True widescreen widens the picture in the renderer, not the game's camera: the
++                 * reflection is widened the same way here, so its image covers the widened water
++                 * and the texture matrix below (built from this aspect) still matches it. Without
++                 * it the sides of the water stretched the reflection's outer pixels. */
++                HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src) * mu_picture_widen());
++#else
+                 HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src));
++#endif
+                 HSD_CObjGetEyePosition(src, &vec);
+                 vec.y = -vec.y;
+                 HSD_CObjSetEyePosition(dst, &vec);
+@@ -849,12 +922,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -127753,7 +127769,7 @@ index 536bb3b2b..51ac212a1 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +952,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +960,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }
@@ -173064,7 +173080,7 @@ index 5ea9c63cc..1e01ce507 100644
  
  /// SetTimerAnimation
 diff --git a/src/melee/lb/lbdvd.c b/src/melee/lb/lbdvd.c
-index 116b1407a..a26574d91 100644
+index 116b1407a..2c41762b7 100644
 --- a/src/melee/lb/lbdvd.c
 +++ b/src/melee/lb/lbdvd.c
 @@ -1,10 +1,15 @@
@@ -173266,7 +173282,19 @@ index 116b1407a..a26574d91 100644
  {
      PreloadEntry* preloadEntry = &preloadCache.entries[index];
      if (cancelflag != 0) {
-@@ -378,19 +457,18 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+@@ -372,25 +451,30 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+ 
+     OSRestoreInterrupts(interrupt);
+     lbDvd_800189EC(entry_num);
++    /* Native: an entry whose buffer never arrived (a heap that could not hold a mod's larger
++     * stage file) reads as not preloaded, so the caller loads the file from the disc instead of
++     * reading through NULL. */
++    if (entry->raw_data == NULL) {
++        return NULL;
++    }
+     if (entry->load_state == 1) {
+         PreloadEntry* entry = &preloadCache.entries[i];
+         type = entry->type;
  
          switch (type) {
          case 2:
@@ -173292,7 +173320,7 @@ index 116b1407a..a26574d91 100644
              break;
  
          default:
-@@ -401,60 +479,48 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+@@ -401,60 +485,48 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
          entry->load_state = 2;
      }
      if (entry->archive) {
@@ -173374,7 +173402,7 @@ index 116b1407a..a26574d91 100644
          }
      }
  }
-@@ -482,12 +548,11 @@ void lbDvd_8001823C(void)
+@@ -482,12 +554,11 @@ void lbDvd_8001823C(void)
          preloadCache.new_scene.mode_scene_changes + 1;
  }
  
@@ -173388,7 +173416,7 @@ index 116b1407a..a26574d91 100644
      for (i = 0; i < (signed) ARRAY_SIZE(preloadCache.entries); i++) {
          entry = &preloadCache.entries[i];
          if (entry->state != 0) {
-@@ -498,18 +563,14 @@ static inline void inline_preload_entries(bool* enabled)
+@@ -498,18 +569,14 @@ static inline void inline_preload_entries(bool* enabled)
      }
  }
  
@@ -173411,7 +173439,7 @@ index 116b1407a..a26574d91 100644
          cleanup_entry = &preloadCache.entries[j];
          if (cleanup_entry->load_score < 0) {
              if (cleanup_entry->state == 1) {
-@@ -540,53 +601,32 @@ void lbDvd_80018254(void)
+@@ -540,53 +607,32 @@ void lbDvd_80018254(void)
      }
  
      preloadCache.new_scene = preloadCache.scene;
@@ -173473,7 +173501,7 @@ index 116b1407a..a26574d91 100644
  int lbDvd_800187F4(int entry_num)
  {
      int result = 0;
-@@ -594,10 +634,10 @@ int lbDvd_800187F4(int entry_num)
+@@ -594,10 +640,10 @@ int lbDvd_800187F4(int entry_num)
      int i;
  
      bool enabled = OSDisableInterrupts();
@@ -173488,7 +173516,7 @@ index 116b1407a..a26574d91 100644
  
      for (i = 0; i < (signed) ARRAY_SIZE(preloadCache.entries); i++) {
          entry = &preloadCache.entries[i];
-@@ -613,7 +653,7 @@ int lbDvd_800187F4(int entry_num)
+@@ -613,7 +659,7 @@ int lbDvd_800187F4(int entry_num)
              continue;
          }
  
@@ -173497,7 +173525,7 @@ index 116b1407a..a26574d91 100644
              result = 1;
              break;
          }
-@@ -624,8 +664,22 @@ int lbDvd_800187F4(int entry_num)
+@@ -624,8 +670,22 @@ int lbDvd_800187F4(int entry_num)
              result = 1;
              break;
          case 3:
@@ -173522,7 +173550,7 @@ index 116b1407a..a26574d91 100644
                  result = 1;
                  break;
              }
-@@ -748,7 +802,16 @@ void lbDvd_80018C6C(void)
+@@ -748,7 +808,16 @@ void lbDvd_80018C6C(void)
  
  static s32 lbDvd_804D37F4[2] = { 4, 5 };
  
@@ -173540,7 +173568,7 @@ index 116b1407a..a26574d91 100644
  {
      int i;
      int tmp;
-@@ -807,17 +870,9 @@ void lbDvd_80018CF4(int arg0)
+@@ -807,17 +876,9 @@ void lbDvd_80018CF4(int arg0)
          }
          break;
      }
@@ -205970,7 +205998,7 @@ index 90de5e6fc..8f9a71211 100644
  typedef struct _HSD_Class {
      struct _HSD_ClassInfo* class_info;
 diff --git a/src/sysdolphin/baselib/cobj.c b/src/sysdolphin/baselib/cobj.c
-index a1b904ed3..fda38cd7e 100644
+index a1b904ed3..5e7b90201 100644
 --- a/src/sysdolphin/baselib/cobj.c
 +++ b/src/sysdolphin/baselib/cobj.c
 @@ -110,9 +110,9 @@ void HSD_CObjAddAnim(HSD_CObj* cobj, HSD_CameraAnim* canim)
@@ -206129,7 +206157,21 @@ index a1b904ed3..fda38cd7e 100644
          break;
      case PROJ_ORTHO:
          HSD_CObjSetOrtho(cobj, desc->ortho.top, desc->ortho.bottom,
-@@ -1321,8 +1351,8 @@ HSD_CObj* HSD_CObjLoadDesc(HSD_CObjDesc* desc)
+@@ -1301,7 +1331,13 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
+                            desc->frustum.left, desc->frustum.right);
+         break;
+     default:
++#ifdef MU_NATIVE
++        /* A mod's camera with a projection type none of the three: perspective, the common case,
++         * instead of stopping the game. */
++        HSD_CObjSetPerspective(cobj, desc->perspective.fov, desc->perspective.aspect);
++#else
+         HSD_ASSERT(0x7D0, 0);
++#endif
+         break;
+     }
+     return 0;
+@@ -1321,8 +1357,8 @@ HSD_CObj* HSD_CObjLoadDesc(HSD_CObjDesc* desc)
      HSD_CObj* cobj;
  
      if (desc != NULL) {
@@ -206140,7 +206182,7 @@ index a1b904ed3..fda38cd7e 100644
          {
              cobj = HSD_CObjAlloc();
          } else {
-@@ -1342,7 +1372,7 @@ static int CObjInit(HSD_Class* o)
+@@ -1342,7 +1378,7 @@ static int CObjInit(HSD_Class* o)
      if (status < 0) {
          return status;
      }
@@ -206149,7 +206191,7 @@ index a1b904ed3..fda38cd7e 100644
      if (cobj != NULL) {
          HSD_CObjSetMtxDirty(cobj);
      }
-@@ -1355,23 +1385,13 @@ void CObjRelease(HSD_Class* o)
+@@ -1355,23 +1391,13 @@ void CObjRelease(HSD_Class* o)
  {
      HSD_WObj* eyepos;
      HSD_WObj* interest;
@@ -207930,7 +207972,7 @@ index 6d5505e85..e6807fd4f 100644
      return gen;
  }
 diff --git a/src/sysdolphin/baselib/gobj.c b/src/sysdolphin/baselib/gobj.c
-index 8caeba264..30d2f0054 100644
+index 8caeba264..35f233dcb 100644
 --- a/src/sysdolphin/baselib/gobj.c
 +++ b/src/sysdolphin/baselib/gobj.c
 @@ -1,18 +1,11 @@
@@ -207981,7 +208023,7 @@ index 8caeba264..30d2f0054 100644
  {
      s32 i;
      HSD_GObjProc* proc;
-@@ -147,12 +127,35 @@ u32 HSD_GObj_80390EB8(s32 i)
+@@ -147,12 +127,36 @@ u32 HSD_GObj_80390EB8(s32 i)
      return HSD_GObj_804085F0[i];
  }
  
@@ -207997,12 +208039,13 @@ index 8caeba264..30d2f0054 100644
 +    /* Private FIFO token 0xF1 0xFE: the draws that follow belong to an effect object (particles,
 +     * smoke, dust), the owner the recompiled build reads from the classifier. Sent only while the
 +     * host tracks owners, so the stream is otherwise unchanged. */
-+    /* Class 6 items and class 8 model effects carry gameplay signals. Only the class 8
-+     * dispatchers with no user data are particles. Keep their private owner tokens distinct. */
++    /* Class 6 items carry gameplay signals (0xFD). Class 8 dispatchers with no user data are
++     * particles (0xFE); class 8 with user data are model effects (0xFC: shields, reflectors and
++     * the glows of moves), the same three owners the recompiled build reads. */
 +    int effect = (cur->classifier == 6 || cur->classifier == 8) && mu_native_owner_tracking();
 +    if (effect) {
 +        GXW_u8(0xF1);
-+        GXW_u8(cur->classifier == 8 && cur->user_data == NULL ? 0xFE : 0xFD);
++        GXW_u8(cur->classifier == 6 ? 0xFD : cur->user_data == NULL ? 0xFE : 0xFC);
 +    }
 +#endif
      HSD_GObj_804D7814 = cur;
@@ -208017,7 +208060,7 @@ index 8caeba264..30d2f0054 100644
  }
  
  /// GObj_SetTextureCamera
-@@ -199,76 +202,6 @@ void HSD_GObj_80390FC0(void)
+@@ -199,76 +203,6 @@ void HSD_GObj_80390FC0(void)
      }
  }
  

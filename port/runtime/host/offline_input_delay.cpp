@@ -16,12 +16,11 @@ void apply(PadState pads[4], bool gameplay) {
 #ifdef MELEE_NO_SLIPPI
   const bool offline = host::netplay::session_mode() < 0;
   const bool replay = false;
-  const int delay = host::netplay::config().delay;
 #else
   const bool offline = slippi::online::session_mode() < 0;
   const bool replay = slippi::playback::enabled();
-  const int delay = slippi::online::config().delay;
 #endif
+  const int delay = gx::RenderOptions::live_offline_delay_frames();
   uint32_t major = 0, minor = 0, frame = 0;
   const bool active = gx::RenderOptions::live_offline_delay() && offline && !replay && gameplay;
   if (active) current_scene(&major, &minor, &frame);

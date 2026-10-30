@@ -25,6 +25,14 @@ static std::vector<uint8_t> fixture(uint32_t shift, uint8_t mesh) {
   for(size_t i=0;i<roots.size();++i) { put(b,table+8*i,roots[i].second); put(b,table+8*i+4,name); name+=(uint32_t)roots[i].first.size()+1; }
   return b;
 }
+static void pointer(std::vector<uint8_t>& b, uint32_t field, uint32_t target) {
+  using host::cosmetics::stage_safety::word;
+  const uint32_t size = word(b.data()+4), count = word(b.data()+8);
+  put(b,32ull+field,target);
+  const size_t at=32ull+size+count*4ull;
+  b.insert(b.begin()+at,4,0); put(b,at,field);
+  put(b,0,(uint32_t)b.size()); put(b,8,count+1);
+}
 int main(int argc,char** argv) {
   using host::cosmetics::stage_safety::matches;
   std::string reason;
@@ -70,6 +78,44 @@ int main(int argc,char** argv) {
   const auto check=[&](bool ok,const char* name) { if(!ok) { std::fprintf(stderr,"FAIL %s: %s\n",name,reason.c_str()); ++failed; } };
   auto a=fixture(0,1), b=fixture(32,2);
   check(matches(a,b,&reason),"relocated visual mesh");
+  {
+    using namespace host::cosmetics::stage_safety;
+    auto clean=fixture(0,1), skin=fixture(32,2);
+    put(clean,32+96+4,0x70000008u);
+    put(skin,32+128+4,0x50000000u);
+    std::vector<uint8_t> out; std::string note;
+    check(graft_visuals(clean,skin,&out,&note),"graft skin with different opaque/translucent masks");
+    check(word(out.data()+32+96+4)==0x50000008u,"skin draw masks survive while original transform flags stay");
+    check(matches(clean,out,&reason),"draw-mask repair preserves gameplay");
+    pointer(skin,224+4,128);
+    check(graft_visuals(clean,skin,&out,&note),"mesh binding to a paired stage joint is supported");
+    const uint32_t mesh=word(out.data()+32+96+16);
+    check(word(out.data()+32+mesh+4)==96,"skin mesh binds to the original gameplay joint");
+    check(matches(clean,out,&reason),"remapped mesh binding preserves gameplay");
+  }
+  {
+    using namespace host::cosmetics::stage_safety;
+    auto clean=fixture(0,1), skin=fixture(32,2);
+    pointer(clean,96+8,320); pointer(clean,320+16,192); put(clean,32+320+4,8);
+    pointer(skin,128+8,352); pointer(skin,352+16,224);
+    std::vector<uint8_t> out; std::string note;
+    check(graft_visuals(clean,skin,&out,&note),"exporter flag differences still pair an unchanged child transform");
+    check(word(out.data()+32+320+16)!=0,"paired child keeps its skin mesh");
+    check(word(out.data()+32+320+4)==8,"paired child retains original transform flags");
+    check(matches(clean,out,&reason),"flag-tolerant pairing preserves gameplay");
+  }
+  {
+    using namespace host::cosmetics::stage_safety;
+    auto clean=fixture(0,1), skin=fixture(32,2);
+    pointer(clean,40,320);   // bound the unused tail without adding a gameplay joint
+    pointer(skin,128+8,352); pointer(skin,352+16,256);
+    std::vector<uint8_t> out; std::string note;
+    const bool grafted=graft_visuals(clean,skin,&out,&note);
+    reason=note;
+    check(grafted,"appearance coverage alone does not disable a gameplay-safe skin");
+    check(note.find("1 of the skin's 2 meshes")!=std::string::npos,"partial coverage remains accurately reported");
+    check(matches(clean,out,&reason),"partial visual coverage still requires full gameplay equivalence");
+  }
   {
     // Append one draw-only sibling without moving any original joint or gameplay object.
     auto scenery = a;

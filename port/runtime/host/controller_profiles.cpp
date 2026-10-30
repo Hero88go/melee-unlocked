@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "controller_profiles.h"
+#include "host.h"
+#include "input_bindings.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -14,7 +16,8 @@ namespace {
 // Action names as the settings file already spells them (pc_settings.cpp kActionNames).
 constexpr const char* kActions[kProfileActions] = {"A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
                                                     "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight",
-                                                    "LAnalog", "RAnalog"};
+                                                    "LAnalog", "RAnalog", "ModX", "ModY", "LightShield", "MidShield", "StickMod"};
+static_assert(kProfileActions == static_cast<int>(BindAction::Count), "Profiles must include every action");
 // Profiles written before the control stick was rebindable stop here; ones written before L and R
 // were split stop four later. Either way the missing actions keep what the caller passed in.
 constexpr int kFirstStickAction = 16;

@@ -352,6 +352,12 @@ typedef struct MuHostApi {
      * in a replay; the host returns 0 during online matches and replay playback, because early
      * key-on lets the game see a sound finish one tick sooner (crowd loops, a stage text box). */
     uint32_t (*audio_options)(void);
+
+    /* Version 20. How much wider the presented picture is than the game's own camera sees: True
+     * widescreen widens in the renderer, so the game's cameras stay 73:60 (1 when it is off). A camera
+     * that renders into a texture the stage maps back onto the scene (Fountain of Dreams' reflection)
+     * widens by this so the image covers the widened water. Display only. */
+    float (*picture_widen)(void);
 } MuHostApi;
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):

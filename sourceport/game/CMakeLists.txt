@@ -249,6 +249,28 @@ set_target_properties(sdk_math PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 
 # ---- what is compiled ----
 file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS "${D}/src/melee/*.c" "${D}/src/sysdolphin/*.c")
+# Define the CPU's hitlag decision in a private input, preserving the user's decomp checkout.
+set(MU_CPU_SOURCE "${D}/src/melee/ft/kinds/ftCommon/ftCo_0A01.c")
+set(MU_CPU_FIXED "${CMAKE_CURRENT_BINARY_DIR}/native-cpu/ftCo_0A01.c")
+add_custom_command(OUTPUT "${MU_CPU_FIXED}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/native_cpu_overlay.py"
+    "${MU_CPU_SOURCE}" "${MU_CPU_FIXED}"
+  DEPENDS "${MU_CPU_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/native_cpu_overlay.py"
+  VERBATIM)
+list(REMOVE_ITEM GAME_SOURCES "${MU_CPU_SOURCE}")
+list(APPEND GAME_SOURCES "${MU_CPU_FIXED}")
+set_source_files_properties("${MU_CPU_FIXED}" PROPERTIES
+  INCLUDE_DIRECTORIES "${D}/src/melee/ft/kinds/ftCommon")
+set(MU_CPU_HITLAG_FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/native_cpu_hitlag_branch.h")
+add_custom_command(OUTPUT "${MU_CPU_HITLAG_FIXTURE}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/native_cpu_overlay.py"
+    "${MU_CPU_SOURCE}" "${MU_CPU_HITLAG_FIXTURE}" --hitlag-fixture
+  DEPENDS "${MU_CPU_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/native_cpu_overlay.py"
+  VERBATIM)
+add_executable(mu_cpu_hitlag_test EXCLUDE_FROM_ALL tests/cpu_hitlag.c "${MU_CPU_HITLAG_FIXTURE}")
+set_target_properties(mu_cpu_hitlag_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_include_directories(mu_cpu_hitlag_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME native_cpu_hitlag COMMAND mu_cpu_hitlag_test)
 # The console's C library is kept only where its results reach the simulation: the maths, and rand.
 set(LIBC_SOURCES "${D}/src/MSL/math.c" "${D}/src/MSL/math_1.c" "${D}/src/MSL/math_data.c" "${D}/src/MSL/trigf.c" "${D}/src/MSL/float.c" "${D}/src/MSL/rand.c")
 # The halves of the SDK that sit above the hardware. What sat below it is the host's job.

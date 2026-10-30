@@ -84,7 +84,13 @@ inline std::vector<uint8_t> flat_colour(const std::vector<uint8_t>& px) {
     const double a = px[i * 4 + 3] / 255.0; asum += a;
     r += px[i * 4] * a; g += px[i * 4 + 1] * a; b += px[i * 4 + 2] * a; wsum += a;
   }
-  if (wsum <= 0) return {0, 0, 0, 0};
+  // No alpha at all (a format whose alpha the draw does not use): the plain mean, or the texture
+  // drew black wherever the draw ignores alpha.
+  if (wsum <= 0) {
+    for (size_t i = 0; i < n; ++i) { r += px[i * 4]; g += px[i * 4 + 1]; b += px[i * 4 + 2]; }
+    const double k = 1.0 / std::max<size_t>(1, n);
+    return {(uint8_t)(r * k + 0.5), (uint8_t)(g * k + 0.5), (uint8_t)(b * k + 0.5), 0};
+  }
   return {(uint8_t)(r / wsum + 0.5), (uint8_t)(g / wsum + 0.5), (uint8_t)(b / wsum + 0.5), (uint8_t)(asum / std::max<size_t>(1, n) * 255.0 + 0.5)};
 }
 
@@ -142,7 +148,7 @@ inline uint64_t retro_key(uint64_t key) { return look_key(key, treated(Surface::
 // The group a draw belongs to for the look: fighters (skinned models of the match's world camera), the stage (the
 // rest of that world), or menus (everything else: character and stage select, HUD, pause screen).
 inline Surface look_surface(const LightweightFilter& e, const DrawCall& d) {
-  if (d.owner_player == kGameplayOwner) return Surface::Textured;
+  if (d.owner_player == kGameplayOwner || d.owner_player == kModelEffectOwner) return Surface::Textured;
   const LookLive& l = look_live();
   if (e.in_match && d.xf_regs[0x26] == 0 && std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) == 0)
     return treated((Surface)(d.skinned ? l.fighter.load(std::memory_order_relaxed) : l.stage.load(std::memory_order_relaxed)));

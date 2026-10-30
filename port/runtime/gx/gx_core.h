@@ -147,6 +147,10 @@ struct DrawCall {
   // Skinned (envelope) draw: the fighter's model. Its shadow and its effects are rigid draws, so
   // this is what tells the model apart from everything else the same player renders.
   bool skinned = false;
+  // A camera-space quad whose corners sit exactly on the edges of its camera's frustum: a stage's
+  // backdrop plane authored to fill the 4:3 view (Poke Floats' sky gradient). True widescreen leaves
+  // it at its authored projection so it fills the widened picture instead of showing as a 4:3 box.
+  bool frustum_backdrop = false;
   // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
   // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
   mutable void* cached_pipeline = nullptr;
@@ -345,6 +349,7 @@ inline const DrawCall* frame_scene_draw(const Frame& f) {
 // without this test Minimal removed a mod's song title banner text and left its empty backing.
 // owner_player of a draw made by a particle dispatcher (class 8, no user data).
 constexpr uint8_t kEffectOwner = 0xFE;
+constexpr uint8_t kModelEffectOwner = 0xFC; // class-8 EF_Effect objects with their own GObj
 constexpr uint8_t kGameplayOwner = 0xFD;   // items/projectiles and model effects (shields, reflectors)
 struct EffectsFilter {
   int level = 0;                // 0 = nothing is skipped this frame
@@ -366,6 +371,10 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
   if (zmode & 0x10) return false;                                   // writes depth: part of the scene
   if (std::memcmp(e.projection, &dc.xf_regs[0x20], sizeof e.projection) != 0) return false;   // another camera
   const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
+  // A fighter's model effects: the shield bubble and reflectors blend over the scene and always
+  // stay. No decorative particles also drops the additive glows of moves (Mario's tornado swirl),
+  // which kept drawing at that level.
+  if (dc.owner_player == kModelEffectOwner) return e.level >= 3 && additive;
   if (additive || (e.level >= 2 && !(zmode & 1))) return true;
   // No decorative particles (3): every other blended draw of the particle dispatchers as well, the
   // smoke and dust that Reduced keeps and that can cover a fighter. Fighters with their shields,
@@ -486,8 +495,12 @@ inline bool lightweight_background(const LightweightFilter& e, const Frame& f, c
     if (z >= limit && (!band || z <= front)) return false;   // something visible is on the play plane: keep it
   }
   if (seen) return true;
-  // Nothing of it in view by its corners: only a dome or backdrop plane far larger than any stage
-  // floor counts as background then (a floor spanning the screen keeps drawing).
+  // Nothing of it in view by its corners: background when all of it lies behind the play plane (in
+  // the band, also wholly in front), or it is a dome or backdrop plane far larger than any stage
+  // floor (a floor spanning the screen keeps drawing). Without the depth test a backdrop smaller
+  // than that, such as Yoshi's Story's sky, was skipped while a corner was in view and drawn while
+  // none was, so it flickered on and off as the camera zoomed.
+  if (hi[2] < limit || (band && lo[2] > front)) return true;
   return hi[0] - lo[0] > 3000.0f || hi[1] - lo[1] > 3000.0f || hi[2] - lo[2] > 3000.0f;
 }
 // The answer of lightweight_background for draw `index` of frame `f`, remembered for that game frame: an
@@ -509,10 +522,15 @@ inline bool skip_for_lightweight(const LightweightFilter& e, const Frame& f, con
   lightweight_count(skip);
   return skip;
 }
-// Level 3 and up: no textures on world draws (every slot reads one white texel).
-inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && e.level >= 3 && lightweight_world_draw(e, d); }
+// Level 3 and up: no textures on world draws (every slot reads one white texel). A blended draw
+// that writes no depth (smoke, sparks, the stars of a KO) keeps its texture: its shape is the
+// texture's alpha, and with one white texel each one was drawn as a solid square.
+inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) {
+  if ((d.bp.blendmode() & 1) && !(d.bp.zmode() & 0x10)) return false;
+  return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 3 && lightweight_world_draw(e, d);
+}
 // Level 5: world draws as lines.
-inline bool lightweight_wire(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && e.level >= 5 && lightweight_world_draw(e, d); }
+inline bool lightweight_wire(const LightweightFilter& e, const DrawCall& d) { return d.owner_player != kGameplayOwner && d.owner_player != kModelEffectOwner && e.level >= 5 && lightweight_world_draw(e, d); }
 // Visual effects in force: Lightweight 3 and up holds them at Minimal.
 inline int lightweight_effects_level(int effects_level, int lightweight) { return lightweight >= 3 ? std::max(effects_level, 2) : effects_level; }
 

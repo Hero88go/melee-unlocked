@@ -1426,7 +1426,7 @@ void launch_game_now() {
     args += " --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
     // Explicit Source layers take precedence over automatic layers. Keep enabled TE alongside a disc.
     if (g_mod_launch_engine == "source" && g_mod_launch_kind != "te")
-      for (const auto& entry : mod_manager::installed())
+      for (const auto& entry : mod_manager::view().installed)
         if (entry.second.kind == "te" && entry.second.enabled && launcher::mod_catalog::playable(entry.second))
           args += " --mod-gci \"" + entry.second.path + "\"";
 
