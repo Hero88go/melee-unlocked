@@ -196,11 +196,11 @@ def main():
                     'melee_game.so'], cwd=folder, check=True)
 
     # Fight a pro: one network per released pro beside the Source Port, as in the Windows zip.
-    for name in [f'ghost_ai_{pro}.bin' for pro in ('mang0', 'zain', 'cody', 'amsa')] + ['ghost_ai_models.json']:
-        source = args.ghost_ai_dir / name
+    for pro_file in [f'ghost_ai_{pro}.bin' for pro in ('mang0', 'zain', 'cody', 'amsa')] + ['ghost_ai_models.json']:
+        source = args.ghost_ai_dir / pro_file
         if not source.is_file():
             raise SystemExit(f'missing {source} (the pro AI files for Fight a pro)')
-        shutil.copy2(source, folder / name)
+        shutil.copy2(source, folder / pro_file)
 
     # lib/: the bundled libraries and their license files.
     lib = folder / 'lib'
