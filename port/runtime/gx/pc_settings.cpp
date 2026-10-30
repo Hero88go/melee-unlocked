@@ -46,6 +46,7 @@
 #include "lag_test_codes.h"
 #include "gecko_data.h"
 #include "hid_pad.h"
+#include "phob_menu.h"
 #include "updater.h"
 #include "discord_presence.h"
 
@@ -2533,6 +2534,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
 #ifdef GX_DLSS5
   dlss5::profile_set_folder(options.settings_path);
 #endif
+  host::phob_store_load(options.settings_path);
 }
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
@@ -3589,6 +3591,9 @@ static void apply_practice_tools(RenderOptions& options) {
   // copy is masked off at load and rebuilt from the practice settings).
   options.te_options = te;
   if (RenderOptions::kModFeaturesAvailable) RenderOptions::live_te_options() = te;
+  // The Arcade look's projectile hitboxes and combo counter, for as long as these rows are on.
+  set_arcade_display(ArcadeSource::Practice, ((cfg.tools & MU_PC_TOOL_PROJECTILE_HITBOXES) ? kArcadeProjectileHitboxes : 0u) |
+                                            ((cfg.tools & MU_PC_TOOL_COMBO_COUNTER) ? kArcadeComboCounter : 0u));
 }
 
 // The practice CPU tabs. Returns true when a setting changed (saved by the caller).
@@ -3690,6 +3695,9 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     ImGui::BeginDisabled(!options.native_source);
     changed |= flag_row("Hitboxes and hurtboxes", &c.tools, MU_PC_TOOL_HITBOXES, nullptr);
     changed |= flag_row("Hitboxes only (no models)", &c.tools, MU_PC_TOOL_HITBOXES_ONLY, nullptr);
+    changed |= flag_row("Projectile hitboxes", &c.tools, MU_PC_TOOL_PROJECTILE_HITBOXES, nullptr);
+    changed |= flag_row("Combo counter", &c.tools, MU_PC_TOOL_COMBO_COUNTER,
+                        "Counts the hits of each combo over the attacker's damage.");
     changed |= flag_row("Inputs and frame advantage", &c.tools, MU_PC_TOOL_OVERLAY,
                         "Both players' inputs and actions, and your frame advantage after each hit or shield.");
     ImGui::EndDisabled();
@@ -4713,7 +4721,18 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 have_pad ? pad.stick_x : 0, have_pad ? pad.stick_y : 0, have_pad ? pad.sub_x : 0, have_pad ? pad.sub_y : 0);
     }
   }
-  if (have_pad && nav_active && state.practice_pad_armed) {
+  // Test runs (MELEE_TEST_PHOB): the PhobGCC menu opens on adapter socket 1 with the panel.
+  {
+    static bool phob_test_opened = false;
+    if (!phob_test_opened && state.open && std::getenv("MELEE_TEST_PHOB")) { phob_test_opened = true; phob_native_request(0); }  }
+  if (!state.open && phob_native_open()) phob_native_close();
+  // The PhobGCC menu reads the controller itself: the panel gets none of it.
+  if (have_pad && nav_active && state.practice_pad_armed && phob_native_open()) {
+    auto& io = ImGui::GetIO();
+    for (ImGuiKey k : {ImGuiKey_GamepadStart, ImGuiKey_GamepadBack, ImGuiKey_GamepadFaceDown, ImGuiKey_GamepadFaceRight,
+                       ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight})
+      io.AddKeyEvent(k, false);
+  } else if (have_pad && nav_active && state.practice_pad_armed) {
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -4967,10 +4986,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
-  if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
+  if (state.open && !phob_native_open() && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
       !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && state.rebind_action < 0)
     state.open = false;
-  if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) &&
+  if (state.open && !phob_native_open() && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) &&
       !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && state.rebind_action < 0) {
     if (options.overlay_style == 0 && state.clean_detail_open) state.clean_detail_open = false;
     else if (options.overlay_style == 1 && state.dashboard_detail_open) state.dashboard_detail_open = false;
@@ -4986,7 +5005,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // screen; on the category screen it asks to quit (Quit / Cancel), so Esc, Esc, Enter still exits
   // the game the way the old Esc menu did. Esc on that prompt cancels it. The legacy menus and the
   // launcher's settings window keep Esc = close.
-  if (host::window_take_escape() && state.rebind_action < 0) {
+  if (phob_native_open() && host::window_take_escape()) {
+    phob_native_close();   // Esc leaves the PhobGCC menu for the Controls tab
+  } else if (host::window_take_escape() && state.rebind_action < 0) {
     const int style = options.overlay_style;
     const bool on_page = (style == 0 && state.clean_detail_open) || (style == 1 && state.dashboard_detail_open) ||
                          (style == 2 && state.gd_detail_open) || (style == 3 && state.radial_detail_open) ||
@@ -5040,7 +5061,24 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   const float clean_step = ImGui::GetIO().DeltaTime * 60.0f;
   state.clean_detail_frames = std::clamp(state.clean_detail_frames +
       (state.clean_detail_open ? clean_step : -clean_step), 0.0f, 14.0f);
-  const bool panel_visible = state.open || state.panel_slide_x > -720.0f;
+  // The PhobGCC menu (phob_menu.cpp) draws instead of the panel; the panel stays open underneath,
+  // so the game keeps its controllers away exactly as with the panel.
+  if (state.open && phob_native_open()) {
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    PhobNativeIn pin;
+    const float aspect = presented_aspect(options, (int)screen.x, (int)screen.y, true);
+    float gw = screen.x, gh = gw / std::max(aspect, 0.1f);
+    if (gh > screen.y) { gh = screen.y; gw = gh * aspect; }
+    pin.x0 = (screen.x - gw) * 0.5f; pin.y0 = (screen.y - gh) * 0.5f; pin.x1 = pin.x0 + gw; pin.y1 = pin.y0 + gh;
+    if (have_pad) { pin.buttons = pad.button; pin.stick_x = pad.stick_x; pin.stick_y = pad.stick_y; }
+    pin.armed = state.practice_pad_armed;
+    pin.time = ImGui::GetTime();
+    const PhobNativeOut pout = phob_native_frame(pin);
+    if (pout.back_to_panel) { phob_native_close(); state.practice_pad_armed = false; }
+    // The Start that closed it must not reach the game (it would pause): hold the controllers until let go.
+    if (pout.close_all) { phob_native_close(); state.open = false; state.practice_release_capture = true; }
+  }
+  const bool panel_visible = (state.open || state.panel_slide_x > -720.0f) && !phob_native_open();
   const bool practice_capture = state.practice_open || practice_force_capture ||
                                 state.practice_release_capture;
   host::window_input_capture(state.open || state.menu_open || practice_capture || replay_bar::wants_cursor());
@@ -8893,6 +8931,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (manual && g_edit_follow_active) { g_edit_follow_active = false; changed = true; }
         }
     };
+    // Test runs (MELEE_TEST_PHOB): open on adapter socket 1, where the PhobGCC section is.
+    static const bool phob_test = std::getenv("MELEE_TEST_PHOB") != nullptr;
+    if (phob_test) g_edit_follow_active = false;
+    if (family_sel < 0 && phob_test)
+      for (int f = 0; f < kFamilyCount; ++f)
+        if (kFamilies[f].first_tab <= 9 && 9 < kFamilies[f].first_tab + kFamilies[f].count) { family_sel = f; device_sel[f] = 9 - kFamilies[f].first_tab; }
     if (family_sel < 0) {   // open on whatever plays as port 1, else the first family with something connected
       family_sel = 0;
       for (int f = 0; f < kFamilyCount; ++f) if (family_connected(kFamilies[f]) > 0) { family_sel = f; break; }
@@ -9322,6 +9366,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             if (!any) { ImGui::Spacing(); ImGui::SeparatorText("Per button"); any = true; }
             changed |= binding_level_slider(tab_kind, tab_index, i);
           }
+        }
+        if (tab_kind == host::CaptureDevice::GCAdapter && ImGui::CollapsingHeader("PhobGCC")) {
+          ImGui::PushID("phob");
+          draw_phob_menu(tab_index);
+          ImGui::PopID();
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {
           if (ImGui::Button("B0XX (vJoy / b0xx-ahk)")) { host::g_hid_bindings[tab_index] = host::vjoy_b0xx_bindings(); changed = true; }

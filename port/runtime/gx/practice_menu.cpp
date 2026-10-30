@@ -440,15 +440,9 @@ std::vector<Row> rows_for(Page p) {
                                                                     : "Find a match while you train."));
       const practice_cpu::Status st = practice_cpu::status();
       std::string cpu = !c.enabled ? "Off" : (st.driving ? plan_text(st.plan) : "On");
-      {
-        const bool neural = neural_ghosts();
-        bool any = false;
-        for (int i = 0; i < kGhostCount; ++i) any |= ghost_offered(i, neural);
-        if (any)
-          rows.push_back(page_row("Fight a pro", Page::Ghosts, active_pro(c),
-                                  neural ? "Play an AI that learned from a top player's own games."
-                                         : "A top player's habits on the CPU, on their own character."));
-      }
+      // Fight a pro is not ready to ship: a row that says it is coming instead of the page.
+      rows.push_back(action_row("Fight a pro", kActNone, "Coming soon",
+                                "Play AIs that learned from top players' own games. Coming in a later update.", false));
       rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Practice CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),
                               "What it does when you attack near it."));
@@ -457,7 +451,8 @@ std::vector<Row> rows_for(Page p) {
       rows.push_back(page_row("Ledge", Page::Ledge, top_name(kLedge, c.ledge_odds, MU_PC_LEDGE_COUNT),
                               "Ledge options and recovery."));
       int tools = 0;
-      for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP, MU_PC_TOOL_FRAME_ADVANCE})
+      for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP, MU_PC_TOOL_FRAME_ADVANCE,
+                        MU_PC_TOOL_PROJECTILE_HITBOXES, MU_PC_TOOL_COMBO_COUNTER})
         tools += (c.tools & m) ? 1 : 0;
       char t[24]; std::snprintf(t, sizeof t, tools ? "%d on" : "Off", tools);
       rows.push_back(page_row("Tools", Page::Tools, t, g_f.native_source ? "Save states, hitboxes, inputs, frame advance." : "Frame advance."));
@@ -566,6 +561,8 @@ std::vector<Row> rows_for(Page p) {
           {"Loop recording", MU_PC_TOOL_LOOP, "A played back recording starts again from the kept moment."},
           {"Hitboxes", MU_PC_TOOL_HITBOXES, "Hitboxes and hurtboxes over the fighters."},
           {"Hitboxes only", MU_PC_TOOL_HITBOXES_ONLY, "Hitboxes without the models."},
+          {"Projectile hitboxes", MU_PC_TOOL_PROJECTILE_HITBOXES, "Lasers, bombs and items show their hitboxes too."},
+          {"Combo counter", MU_PC_TOOL_COMBO_COUNTER, "Counts the hits of each combo over your damage."},
           {"Inputs", MU_PC_TOOL_OVERLAY, "Both players' inputs and your frame advantage."},
       };
       {
@@ -981,10 +978,15 @@ void draw_bar(ImDrawList* dl, float left, float top, float right, float h, float
     dl->AddLine(ImVec2(cx - 3.0f * u, cy - r), ImVec2(cx, cy - r), with_alpha(kGold, a), 3.6f * u);
     dl->AddLine(ImVec2(cx - 3.0f * u, cy + r), ImVec2(cx, cy + r), with_alpha(kGold, a), 3.6f * u);
   }
-  const float px = h * 0.5f, vy = top + h * 0.5f - px * 0.56f;
+  const float px = h * 0.5f;
+  // A label too long for the bar (beside its value and the cursor ring) is drawn smaller.
+  const float value_w = value.empty() ? 0.0f : text_width(px * 0.84f, value.c_str()) + 24.0f * u;
+  const float room = right - rim - 40.0f * u - value_w - (left + 18.0f * u), label_w = text_width(px, label);
+  const float lpx = label_w > room && room > 0 ? std::max(px * 0.7f, px * room / label_w) : px;
+  const float vy = top + h * 0.5f - lpx * 0.56f;
   const float da = enabled ? a : a * 0.45f;
-  if (lit) text(dl, left + 18.0f * u, vy, px, with_alpha(IM_COL32(18, 16, 10, 255), da), label, 0.0f, false);
-  else text(dl, left + 18.0f * u, vy, px, with_alpha(kGoldText, da), label, 0.19f);
+  if (lit) text(dl, left + 18.0f * u, vy, lpx, with_alpha(IM_COL32(18, 16, 10, 255), da), label, 0.0f, false);
+  else text(dl, left + 18.0f * u, vy, lpx, with_alpha(kGoldText, da), label, 0.19f);
   if (!value.empty()) {
     const float vpx = px * 0.84f, w = text_width(vpx, value.c_str());
     const float vx = right - rim - (lit ? 40.0f : 22.0f) * u - w;
@@ -1637,6 +1639,22 @@ float legend(ImDrawList* dl, float x, float cy, float u, const char* spec, float
 std::vector<std::string> wrap_text(const std::string& s, float px, float width) { return wrap(s, px, width); }
 
 // ---------------------------------------------------------------------------------------------
+namespace gold {
+void bar(ImDrawList* dl, float left, float top, float right, float h, float u, bool lit, const char* label,
+         const std::string& value, bool enabled, float a) {
+  draw_bar(dl, left, top, right, h, u, lit, label, value, enabled, a, false);
+}
+void ring(ImDrawList* dl, float cx, float cy, float u, float t, float a) { draw_ring(dl, ImVec2(cx, cy), u, t, a); }
+void title(ImDrawList* dl, float x, float y, float u, const char* t, float a) { draw_title(dl, x, y, u, t, a); }
+void description(ImDrawList* dl, float x, float y, float w, float u, const std::string& s, float a) {
+  draw_description(dl, x, y, w, u, s, a);
+}
+void fill_rect(ImDrawList* dl, float x0, float y0, float x1, float y1, uint32_t top, uint32_t bottom, float rounding) {
+  rect_gradient(dl, ImVec2(x0, y0), ImVec2(x1, y1), top, bottom, rounding);
+}
+}  // namespace gold
+void font_ensure() { font_ready(); }
+
 void opened() {
   if (g_stack.empty()) g_stack.push_back(Level{});
   // Back to the top level unless the player is mid-way through a page.

@@ -105,7 +105,9 @@ are included with Melee Unlocked.
   Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
   CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
-- Practice menu in Training (Start + D-pad Up + Z): your own CPU, Fight a pro, frame advance,
+- PhobGCC settings for stock GameCube controllers on an adapter (calibration, notches, snapback
+  filter, trigger modes), with PhobScope and Phob Check: PC settings > Controls > adapter socket > PhobGCC > Open PhobGCC menu.
+- Practice menu in Training (Start + D-pad Up + Z): your own CPU, frame advance,
   save states, and searching for a match while you train. See [Practice](#practice).
 - Optional launcher with self-update
 
@@ -263,9 +265,7 @@ In Training, press **Start + D-pad Up + Z** to open the Practice menu (keyboard:
 few times you enter Training a banner shows those buttons. Everything works with the controller alone,
 and none of it runs online.
 
-- **Fight a pro**: play against an AI that learned from Mang0's Falco, Zain's Marth, Cody Schwab's Fox
-  or aMSa's Yoshi, from their own games. Pick one and the CPU becomes that player's character. Source
-  Port; on the Static Recomp the CPU plays their habits instead.
+- **Fight a pro**: coming in a later update.
 - **CPU**: decide how the Training CPU moves, attacks, shields, DIs, techs, gets up and uses the ledge.
   Presets cover common drills, and three slots keep your own setups.
 - **Tools**: frame advance (L + R + Z freezes the game, Z steps one frame). On the Source Port also
@@ -356,3 +356,9 @@ Hero88go - developer
 Johnny Brookes Aka Lainthewired for their major contribution of the last graphic error fix that took this project from alpha -> beta. Could not have done it without them 
 
 SSBM_Arte for subframe rollback: the idea and the original implementation of sending inputs between frames so the other game can predict and roll back sooner. Melee Unlocked's early inputs, early rollback and the check against faked early inputs are adapted from that work, and the exclusive audio timing draws on Arte's audio research.
+
+The PhobGCC team (Phobos132, FrostSSBM, CarVac, NiceMitch and contributors) for the PhobGCC firmware and PhobVision, which the PhobGCC controller settings are ported from.
+
+greenwave-1 for GCC Test Suite, whose tester views inspired the PhobScope additions.
+
+venus23gg for the Melee stickmaps, and Altimor for the Melee Stick Coordinate Visualizer they were made with.

@@ -11,9 +11,11 @@
 // adapter through as a HID device, and on Windows for an adapter still on its stock HID driver.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "phob.h"
 #define NOMINMAX
 #include <windows.h>
 #ifdef _WIN32
+#include <timeapi.h>
 #include <setupapi.h>
 #endif
 #include <tlhelp32.h>
@@ -22,9 +24,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -72,6 +78,76 @@ std::string g_problem;
 void set_problem(const std::string& text) { std::lock_guard<std::mutex> lock(g_problem_mutex); g_problem = text; }
 constexpr const char* kFrame1Note = " A box controller plugged in normally, such as a Frame1, counts as an adapter.";
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
+
+// PhobGCC settings per adapter port (phob.h). The firmware's loop runs on the reader thread, once
+// per millisecond of adapter reports, so its filters see every report the adapter sends; the poll
+// then hands the game the latest result. All of it under g_mutex.
+phob::Prepared g_phob[4];
+phob::PortState g_phob_state[4];
+phob::Output g_phob_out[4];
+bool g_phob_live[4] = {};
+std::chrono::steady_clock::time_point g_phob_last;
+bool g_phob_have_last = false;
+// Every report as read and as the Phob settings shaped it, for the Phob scope menus.
+constexpr int kScopeLen = 4096;
+GCScopeSample g_scope[4][kScopeLen];
+uint32_t g_scope_head[4] = {};
+
+phob::HardwareInput phob_input(const uint8_t* c, const Origin& o) {
+  phob::HardwareInput in;
+  uint16_t b = 0;
+  if (c[1] & 0x01) b |= PAD_A; if (c[1] & 0x02) b |= PAD_B; if (c[1] & 0x04) b |= PAD_X; if (c[1] & 0x08) b |= PAD_Y;
+  if (c[1] & 0x10) b |= PAD_LEFT; if (c[1] & 0x20) b |= PAD_RIGHT; if (c[1] & 0x40) b |= PAD_DOWN; if (c[1] & 0x80) b |= PAD_UP;
+  if (c[2] & 0x01) b |= PAD_START; if (c[2] & 0x02) b |= PAD_Z; if (c[2] & 0x04) b |= PAD_R; if (c[2] & 0x08) b |= PAD_L;
+  in.buttons = b;
+  in.ax = c[3]; in.ay = c[4]; in.cx = c[5]; in.cy = c[6];
+  in.ax0 = o.sx; in.ay0 = o.sy; in.cx0 = o.cx; in.cy0 = o.cy;
+  in.la = (uint8_t)(c[7] > o.tl ? c[7] - o.tl : 0);
+  in.ra = (uint8_t)(c[8] > o.tr ? c[8] - o.tr : 0);
+  return in;
+}
+
+// Called with g_mutex held, for each new report.
+void phob_process(const uint8_t* report, std::chrono::steady_clock::time_point now) {
+  int steps = 1;
+  if (g_phob_have_last) {
+    const double ms = std::chrono::duration<double, std::milli>(now - g_phob_last).count();
+    steps = (int)(ms + 0.5);
+    steps = steps < 1 ? 1 : steps > 50 ? 50 : steps;
+  }
+  g_phob_last = now;
+  g_phob_have_last = true;
+  const uint32_t t = (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+  for (int port = 0; port < 4; ++port) {
+    const uint8_t* c = report + 1 + port * 9;
+    if (!(c[0] & 0x30) || !g_origin[port].set) { g_phob_live[port] = false; g_phob_state[port].primed = false; continue; }
+    const phob::HardwareInput in = phob_input(c, g_origin[port]);
+    GCScopeSample& s = g_scope[port][g_scope_head[port] % kScopeLen];
+    s.time_us = t;
+    s.raw_ax = (int8_t)((int)in.ax - in.ax0); s.raw_ay = (int8_t)((int)in.ay - in.ay0);
+    s.raw_cx = (int8_t)((int)in.cx - in.cx0); s.raw_cy = (int8_t)((int)in.cy - in.cy0);
+    s.raw_l = in.la; s.raw_r = in.ra;
+    s.raw_buttons = in.buttons; s.hw_ax = in.ax; s.hw_ay = in.ay; s.hw_cx = in.cx; s.hw_cy = in.cy;
+    if (g_phob[port].s.enabled) {
+      g_phob_out[port] = phob::step(g_phob[port], g_phob_state[port], in, steps);
+      g_phob_live[port] = true;
+      // The firmware's "unfiltered" stick: through the calibration, before the filters.
+      auto unf = [](float v) { const long r = std::lround(v); return (int8_t)(r > 127 ? 127 : r < -128 ? -128 : r); };
+      s.raw_ax = unf(g_phob_state[port].ax_unfilt); s.raw_ay = unf(g_phob_state[port].ay_unfilt);
+      s.raw_cx = unf(g_phob_state[port].cx_unfilt); s.raw_cy = unf(g_phob_state[port].cy_unfilt);
+      s.ax = g_phob_out[port].stick_x; s.ay = g_phob_out[port].stick_y;
+      s.cx = g_phob_out[port].sub_x; s.cy = g_phob_out[port].sub_y;
+      s.l = g_phob_out[port].trig_l; s.r = g_phob_out[port].trig_r;
+      s.buttons = g_phob_out[port].buttons;
+    } else {
+      g_phob_live[port] = false;
+      g_phob_state[port].primed = false;
+      s.ax = s.raw_ax; s.ay = s.raw_ay; s.cx = s.raw_cx; s.cy = s.raw_cy;
+      s.l = s.raw_l; s.r = s.raw_r; s.buttons = s.raw_buttons;
+    }
+    ++g_scope_head[port];
+  }
+}
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
 std::thread g_writer;
@@ -204,6 +280,7 @@ void reader_thread() {
         std::memcpy(g_report, buf, 37);
         g_report_time = received;
         g_have_report = true;
+        phob_process(buf, received);
       }
     } else {
       if (rc == LIBUSB_ERROR_TIMEOUT) {
@@ -496,6 +573,9 @@ std::once_flag g_scanner_started;
 void scanner_thread();
 
 void ensure_scanner_started() {
+  // --no-gc-adapter (and every hidden test run) never opens the adapter, whoever asks: the Controls
+  // tab's status line used to start the scanner and take a real adapter from the player.
+  if (options.no_gc_adapter) return;
   std::call_once(g_scanner_started, [] {
     g_scanner_run.store(true);
     g_scanner = std::thread(scanner_thread);
@@ -593,6 +673,12 @@ uint32_t gcadapter_poll(PadState out[4]) {
     p.sub_x = axis(c[5], o.cx); p.sub_y = axis(c[6], o.cy);
     p.trig_l = (uint8_t)(c[7] > o.tl ? c[7] - o.tl : 0);
     p.trig_r = (uint8_t)(c[8] > o.tr ? c[8] - o.tr : 0);
+    if (g_phob_live[port] && g_phob[port].s.enabled) {
+      const phob::Output& q = g_phob_out[port];
+      p.button = q.buttons;
+      p.stick_x = q.stick_x; p.stick_y = q.stick_y; p.sub_x = q.sub_x; p.sub_y = q.sub_y;
+      p.trig_l = q.trig_l; p.trig_r = q.trig_r;
+    }
     mask |= 1u << port;
   }
   return mask;
@@ -615,7 +701,94 @@ void gcadapter_rumble(int port, bool on) {
   if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; g_rumble_wake.notify_one(); }
 }
 
+// ---- test runs: a scripted controller on socket 1 ----
+// MELEE_TEST_ADAPTER_SCRIPT=<file>, honoured only when the real adapter is off (--no-gc-adapter, as
+// every hidden test run is). One line per step: `<ms> <ax> <ay> <cx> <cy> <la> <ra> [buttons...]`,
+// raw adapter bytes (128 is centre), buttons A B X Y Z L R S DU DD DL DR. The steps play once at
+// 1 kHz through the same report path as a real adapter (phob_process); the last one then holds.
+struct ScriptStep { int ms; uint8_t ax, ay, cx, cy, la, ra; uint16_t buttons; };
+std::thread g_test_thread;
+std::atomic<bool> g_test_run{false};
+
+void test_script_thread(std::vector<ScriptStep> steps) {
+  // 1 ms sleeps, so a scripted 9 ms tilt lasts 9 ms (the default timer slice is about 15 ms).
+#ifdef _WIN32
+  timeBeginPeriod(1);
+#endif
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+  uint8_t rep[37] = {0x21};
+  auto fill = [&](const ScriptStep& s) {
+    uint8_t* c = rep + 1;
+    c[0] = 0x10;
+    const uint16_t b = s.buttons;
+    c[1] = (uint8_t)((b & PAD_A ? 0x01 : 0) | (b & PAD_B ? 0x02 : 0) | (b & PAD_X ? 0x04 : 0) | (b & PAD_Y ? 0x08 : 0) |
+                     (b & PAD_LEFT ? 0x10 : 0) | (b & PAD_RIGHT ? 0x20 : 0) | (b & PAD_DOWN ? 0x40 : 0) | (b & PAD_UP ? 0x80 : 0));
+    c[2] = (uint8_t)((b & PAD_START ? 0x01 : 0) | (b & PAD_Z ? 0x02 : 0) | (b & PAD_R ? 0x04 : 0) | (b & PAD_L ? 0x08 : 0));
+    c[3] = s.ax; c[4] = s.ay; c[5] = s.cx; c[6] = s.cy; c[7] = s.la; c[8] = s.ra;
+  };
+  auto next = std::chrono::steady_clock::now();
+  size_t i = 0;
+  int left = steps.empty() ? 0 : steps[0].ms;
+  while (g_test_run.load()) {
+    if (!steps.empty()) fill(steps[i]);
+    next += std::chrono::milliseconds(1);
+    std::this_thread::sleep_until(next);
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lk(g_mutex);
+      if (!g_origin[0].set) { g_origin[0].set = true; g_origin[0].sx = g_origin[0].sy = g_origin[0].cx = g_origin[0].cy = 128; }
+      std::memcpy(g_report, rep, 37);
+      g_report_time = now;
+      g_have_report = true;
+      phob_process(rep, now);
+    }
+    g_poll_rate_hz.store(1000.0, std::memory_order_relaxed);
+    static int ticks = 0; static auto tick_start = now;
+    if (++ticks == 5000) { log("gc adapter: test script %.0f reports/s", 5000.0 / std::chrono::duration<double>(now - tick_start).count()); ticks = 0; tick_start = now; }
+    // Steps advance by the time that really passed (a sleep can last longer than 1 ms).
+    static auto last = now;
+    int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+    if (elapsed > 0) last += std::chrono::milliseconds(elapsed);
+    while (!steps.empty() && elapsed > 0) {
+      const int used = std::min(elapsed, left);
+      left -= used; elapsed -= used;
+      if (left <= 0) { if (i + 1 >= steps.size()) break; left = steps[++i].ms; fill(steps[i]); if (i % 20 == 0) log("gc adapter: test script step %zu", i); }
+    }
+    if (std::chrono::steady_clock::now() - next > std::chrono::milliseconds(50)) next = std::chrono::steady_clock::now();
+  }
+}
+
+void gcadapter_test_script_start() {
+  const char* path = std::getenv("MELEE_TEST_ADAPTER_SCRIPT");
+  if (!path || !options.no_gc_adapter || g_test_thread.joinable()) return;
+  std::ifstream in(path);
+  std::vector<ScriptStep> steps;
+  std::string line;
+  while (std::getline(in, line)) {
+    std::istringstream ls(line);
+    int ms, v[6];
+    if (!(ls >> ms >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5])) continue;
+    ScriptStep s{ms, (uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2], (uint8_t)v[3], (uint8_t)v[4], (uint8_t)v[5], 0};
+    std::string b;
+    while (ls >> b) {
+      if (b == "A") s.buttons |= PAD_A; else if (b == "B") s.buttons |= PAD_B; else if (b == "X") s.buttons |= PAD_X;
+      else if (b == "Y") s.buttons |= PAD_Y; else if (b == "Z") s.buttons |= PAD_Z; else if (b == "L") s.buttons |= PAD_L;
+      else if (b == "R") s.buttons |= PAD_R; else if (b == "S") s.buttons |= PAD_START; else if (b == "DU") s.buttons |= PAD_UP;
+      else if (b == "DD") s.buttons |= PAD_DOWN; else if (b == "DL") s.buttons |= PAD_LEFT; else if (b == "DR") s.buttons |= PAD_RIGHT;
+    }
+    steps.push_back(s);
+  }
+  log("gc adapter: test script %s, %zu steps", path, steps.size());
+  g_test_run.store(true);
+  g_test_thread = std::thread(test_script_thread, std::move(steps));
+}
+
 void gcadapter_shutdown() {
+  if (g_test_thread.joinable()) { g_test_run.store(false); g_test_thread.join();
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
+  }
   if (g_scanner.joinable()) {
     { std::lock_guard<std::mutex> lock(g_scanner_mutex); g_scanner_run.store(false); }
     g_scanner_wake.notify_all();
@@ -628,5 +801,39 @@ void gcadapter_shutdown() {
 }
 
 bool steam_running() { return steam_is_running(); }
+
+void gcadapter_phob_set(int port, const phob::Settings& settings) {
+  if (port < 0 || port > 3) return;
+  phob::Prepared prepared;
+  phob::prepare(settings, prepared);   // the calibration fit runs outside the lock
+  std::lock_guard<std::mutex> lk(g_mutex);
+  g_phob[port] = prepared;
+  g_phob_state[port].primed = false;
+}
+
+phob::Settings gcadapter_phob_get(int port) {
+  if (port < 0 || port > 3) return {};
+  std::lock_guard<std::mutex> lk(g_mutex);
+  return g_phob[port].s;
+}
+
+bool gcadapter_phob_raw(int port, phob::HardwareInput& in) {
+  if (port < 0 || port > 3) return false;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (!g_have_report || !g_origin[port].set) return false;
+  const uint8_t* c = g_report + 1 + port * 9;
+  if (!(c[0] & 0x30)) return false;
+  in = phob_input(c, g_origin[port]);
+  return true;
+}
+
+int gcadapter_scope(int port, GCScopeSample* out, int max) {
+  if (port < 0 || port > 3 || max <= 0) return 0;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  const uint32_t head = g_scope_head[port];
+  const int n = (int)std::min<uint32_t>((uint32_t)std::min(max, kScopeLen), head);
+  for (int i = 0; i < n; ++i) out[i] = g_scope[port][(head - (uint32_t)n + (uint32_t)i) % kScopeLen];
+  return n;
+}
 
 }  // namespace host

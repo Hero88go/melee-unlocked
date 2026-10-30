@@ -98,4 +98,15 @@ std::vector<std::string> wrap_text(const std::string& s, float px, float width);
 void text(ImDrawList* dl, float x, float y, float px, uint32_t color, const char* s, float skew = 0.0f,
           bool shadow = true);
 
+// The gold look's pieces (Main Menu bars), for other menus drawn the same way (phob_menu.cpp).
+namespace gold {
+void bar(ImDrawList* dl, float left, float top, float right, float h, float u, bool lit, const char* label,
+         const std::string& value, bool enabled, float a);
+void ring(ImDrawList* dl, float cx, float cy, float u, float t, float a);
+void title(ImDrawList* dl, float x, float y, float u, const char* title, float a);
+void description(ImDrawList* dl, float x, float y, float w, float u, const std::string& s, float a);
+void fill_rect(ImDrawList* dl, float x0, float y0, float x1, float y1, uint32_t top, uint32_t bottom, float rounding);
+}  // namespace gold
+void font_ensure();   // the game's font, loaded from the disc at first use
+
 }  // namespace practice_menu
