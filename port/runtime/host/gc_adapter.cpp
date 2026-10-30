@@ -14,8 +14,8 @@
 #include "phob.h"
 #define NOMINMAX
 #include <windows.h>
-#include <timeapi.h>
 #ifdef _WIN32
+#include <timeapi.h>
 #include <setupapi.h>
 #endif
 #include <tlhelp32.h>
@@ -712,7 +712,9 @@ std::atomic<bool> g_test_run{false};
 
 void test_script_thread(std::vector<ScriptStep> steps) {
   // 1 ms sleeps, so a scripted 9 ms tilt lasts 9 ms (the default timer slice is about 15 ms).
+#ifdef _WIN32
   timeBeginPeriod(1);
+#endif
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
   uint8_t rep[37] = {0x21};
   auto fill = [&](const ScriptStep& s) {
@@ -782,7 +784,11 @@ void gcadapter_test_script_start() {
 }
 
 void gcadapter_shutdown() {
-  if (g_test_thread.joinable()) { g_test_run.store(false); g_test_thread.join(); timeEndPeriod(1); }
+  if (g_test_thread.joinable()) { g_test_run.store(false); g_test_thread.join();
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
+  }
   if (g_scanner.joinable()) {
     { std::lock_guard<std::mutex> lock(g_scanner_mutex); g_scanner_run.store(false); }
     g_scanner_wake.notify_all();
