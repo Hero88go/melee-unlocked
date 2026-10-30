@@ -277,6 +277,8 @@ inline void note_rollback(int32_t = kRollbackFrameUnknown) { host::netplay::note
 inline bool is_online_match() { return host::netplay::is_online_match(); }
 inline int local_player_slot() { return host::netplay::local_player_slot(); }
 inline int local_player_index() { return host::netplay::local_player_slot(); }
+// Peer-to-peer play has no build message to carry a shield colour: opponents keep their port colour.
+inline uint32_t remote_shield_color(int) { return 0; }
 inline std::array<std::string, 4> player_names_for_overlay() { return host::netplay::player_names(); }
 inline int ping_ms() { return host::netplay::ping_ms(); }
 inline int session_mode() { return host::netplay::session_mode(); }
