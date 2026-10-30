@@ -381,6 +381,13 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
             }
             out->buttons &= ~(MU_PC_L | MU_PC_R | MU_PC_Z);
             out->l = out->r = 0.0f;
+            /* Outside the stage's edge and below the ledge, no aerial attack either: one started there cannot be
+             * jumped out of, and the fighter fell past the ledge with its jump unused (Yoshi at 0 percent). Above the
+             * ledge the pro's edgeguards stay. */
+            if (ax > v.ledge_x && v.cpu.y < v.ledge_y - 2.0f) {
+                out->buttons &= ~MU_PC_A;
+                out->cx = out->cy = 0.0f;
+            }
         }
         /* Not on the ledge or leaving it by a ledge option: hanging is safe, and the pro's own choice there
          * (getup, roll, drop and jump) is theirs. The net took over while it hung, let go and flew away. */
