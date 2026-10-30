@@ -88,7 +88,7 @@ const Node& node(Screen s) {
       {SCOPE, "Gate Visualizer", "Roll the stick slowly around the gate; the outline is the farthest it reached in each direction."},
       {SCOPE, "Export Data", "The last 4096 reports of this socket as CSV beside your settings."},
       {MAIN, "Phob Check", "What this controller sends, checked against Melee: the latest PhobScope results and the notch you hold."},
-      {MAIN, "Setups", "Save these settings under a name and switch between setups, or give one to a friend."},
+      {MAIN, "Setups", "Save these settings as a setup, switch between setups, or go back to the defaults. A setup works on a PhobGCC and on a stock controller alike."},
   };
   return nodes[s];
 }
@@ -124,6 +124,9 @@ struct MenuState {
   std::chrono::steady_clock::time_point reaction_at;
   float last_snapback = -1, last_db_van = -1, last_db_ucf = -1, last_pivot[3] = {-1, -1, -1}, last_trig[3] = {-1, -1, -1};
   bool setup_cal = false;
+  std::string active_setup;         // the setup last loaded or saved on this socket
+  int setup_pick = 0;                // the setup Save Over and Delete act on
+  int setup_delete_pending = -1;     // the setup waiting for the second A to be deleted
   std::string status;
   double status_until = 0;
 };
@@ -281,12 +284,14 @@ std::vector<Row> rows_for(int port, MenuState& m) {
                       [](int v) { return std::string(v ? "On" : "Off"); });
         e.act = [&s]() { s.enabled = on == 1; };
         rows.push_back(e);
-        rows.push_back(page(STICK));
-        rows.push_back(page(SETTINGS));
       }
+      // A PhobGCC runs these in its firmware: here they are what it is set to, kept so a setup can
+      // be saved and carried to a stock controller (where they run). Nothing is applied twice.
+      rows.push_back(page(STICK));
+      rows.push_back(page(SETTINGS));
       rows.push_back(page(SCOPE));
       rows.push_back(page(PHOBCHECK));
-      if (!s.phob_hardware) rows.push_back(page(SETUPS));
+      rows.push_back(page(SETUPS, m.active_setup));
       static int sock;
       sock = port;
       Row p = value("Socket", &sock, 0, 3, "The adapter socket this menu sets up.", [](int v) { return std::to_string(v + 1); });
@@ -294,7 +299,8 @@ std::vector<Row> rows_for(int port, MenuState& m) {
       rows.push_back(p);
       break;
     }
-    case STICK: rows = {page(CALIBRATE), page(FILTER), page(GEOM)}; break;
+    // A PhobGCC calibrates itself: only the settings a setup keeps are offered for it.
+    case STICK: rows = s.phob_hardware ? std::vector<Row>{page(FILTER), page(GEOM)} : std::vector<Row>{page(CALIBRATE), page(FILTER), page(GEOM)}; break;
     case CALIBRATE: {
       const auto begin = [&m](Screen sc, Stick which, bool fix) {
         return [&m, sc, which, fix]() {
@@ -490,17 +496,58 @@ std::vector<Row> rows_for(int port, MenuState& m) {
       break;
     }
     case SETUPS: {
-      static int with_cal;
-      with_cal = m.setup_cal ? 1 : 0;
-      Row c = value("Include Calibration", &with_cal, 0, 1, "A setup without calibration keeps each player's own stick calibration when loaded.",
-                    [](int v) { return std::string(v ? "Yes" : "No"); });
-      c.act = [&m]() { m.setup_cal = with_cal == 1; };
-      rows.push_back(c);
+      // Back to the defaults in one place: the firmware's Soft Reset, which keeps the stick calibration.
+      rows.push_back(action("Reset to Default", m.reset_pending == 2 ? "Press A again" : "",
+                            "Every setting back to PhobGCC's default. Your stick calibration stays.",
+                            [&m, &s]() {
+                              if (m.reset_pending == 2) { soft_reset(s); m.reset_pending = -1; m.active_setup.clear(); say(m, "Back to the defaults."); }
+                              else m.reset_pending = 2;
+                            }));
+      if (!s.phob_hardware) {
+        static int with_cal;
+        with_cal = m.setup_cal ? 1 : 0;
+        Row c = value("Include Calibration", &with_cal, 0, 1, "A setup without calibration keeps each player's own stick calibration when loaded.",
+                      [](int v) { return std::string(v ? "Yes" : "No"); });
+        c.act = [&m]() { m.setup_cal = with_cal == 1; };
+        rows.push_back(c);
+      }
       const std::vector<std::string> names = host::phob_setup_list();
-      rows.push_back(action("Save New Setup", "Setup " + std::to_string(names.size() + 1), "Saves these settings as a new setup (the PhobGCC Setups folder beside your settings).",
-                            [&m, n = names.size()]() { const std::string name = "Setup " + std::to_string(n + 1); say(m, host::phob_setup_save(name, m.s, m.setup_cal) ? "Saved " + name + "." : "Could not save."); }));
+      // The first "Setup N" not taken, so a deleted setup's name never makes a new one overwrite another.
+      int n = 1;
+      while (std::find(names.begin(), names.end(), "Setup " + std::to_string(n)) != names.end()) ++n;
+      const std::string fresh = "Setup " + std::to_string(n);
+      rows.push_back(action("Save New Setup", fresh, "Saves these settings as a new setup (the PhobGCC Setups folder beside your settings, ready to share).",
+                            [&m, fresh]() {
+                              if (host::phob_setup_save(fresh, m.s, m.setup_cal && !m.s.phob_hardware)) { m.active_setup = fresh; say(m, "Saved " + fresh + "."); }
+                              else say(m, "Could not save.");
+                            }));
       for (const std::string& name : names)
-        rows.push_back(action("Load " + name, "", "Loads this setup onto the socket.", [&m, name]() { if (host::phob_setup_load(name, m.s)) say(m, "Loaded " + name + "."); }));
+        rows.push_back(action("Load " + name, name == m.active_setup ? "In use" : "", "Loads this setup onto this socket.",
+                              [&m, name]() { if (host::phob_setup_load(name, m.s)) { m.active_setup = name; say(m, "Loaded " + name + "."); } }));
+      if (!names.empty()) {
+        static int pick;
+        m.setup_pick = std::clamp(m.setup_pick, 0, (int)names.size() - 1);
+        pick = m.setup_pick;
+        Row c = value("Change Setup", &pick, 0, (int)names.size() - 1, "The setup the two rows below act on.",
+                      [names](int v) { return v >= 0 && v < (int)names.size() ? names[v] : std::string(); });
+        c.act = [&m]() { m.setup_pick = pick; m.setup_delete_pending = -1; };
+        rows.push_back(c);
+        const std::string chosen = names[m.setup_pick];
+        rows.push_back(action("Save Over It", "", "Replaces " + chosen + " with the settings on this socket now.",
+                              [&m, chosen]() {
+                                if (host::phob_setup_save(chosen, m.s, m.setup_cal && !m.s.phob_hardware)) { m.active_setup = chosen; say(m, "Saved over " + chosen + "."); }
+                                else say(m, "Could not save.");
+                              }));
+        rows.push_back(action("Delete It", m.setup_delete_pending == m.setup_pick ? "Press A again" : "", "Deletes " + chosen + ".",
+                              [&m, chosen]() {
+                                if (m.setup_delete_pending != m.setup_pick) { m.setup_delete_pending = m.setup_pick; return; }
+                                m.setup_delete_pending = -1;
+                                if (host::phob_setup_delete(chosen)) { if (m.active_setup == chosen) m.active_setup.clear(); m.setup_pick = 0; say(m, "Deleted " + chosen + "."); }
+                                else say(m, "Could not delete.");
+                              }));
+      }
+      if (s.phob_hardware)
+        rows.push_back(info("PhobGCC", "", "Your controller runs its own settings: a setup here is a record of them to set on the controller, and it runs as is on a stock controller."));
       break;
     }
     default: break;
