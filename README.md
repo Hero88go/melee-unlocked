@@ -107,6 +107,8 @@ are included with Melee Unlocked.
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
 - PhobGCC settings for stock GameCube controllers on an adapter (calibration, notches, snapback
   filter, trigger modes), with PhobScope and Phob Check: PC settings > Controls > adapter socket > PhobGCC > Open PhobGCC menu.
+  Setups saves your settings under a name to load, overwrite, delete or share, on a PhobGCC and a stock
+  controller alike, and Reset to Default puts every setting back (your stick calibration stays).
 - Practice menu in Training (Start + D-pad Up + Z): your own CPU, frame advance,
   save states, and searching for a match while you train. See [Practice](#practice).
 - Optional launcher with self-update
