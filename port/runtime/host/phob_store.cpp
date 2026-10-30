@@ -63,6 +63,14 @@ bool phob_store_save(int port, const phob::Settings& s) {
   return write_text(port_file(port), phob::serialize(s));
 }
 
+bool phob_setup_delete(const std::string& name) {
+  const std::string clean = profile_clean_name(name);
+  if (clean.empty()) return false;
+  std::lock_guard<std::mutex> lock(g_store_mutex);
+  std::error_code ec;
+  return std::filesystem::remove(setup_folder() / (clean + ".ini"), ec) && !ec;
+}
+
 std::vector<std::string> phob_setup_list() {
   std::lock_guard<std::mutex> lock(g_store_mutex);
   std::vector<std::string> names;
@@ -81,14 +89,19 @@ bool phob_setup_save(const std::string& name, const phob::Settings& s, bool with
   return write_text(setup_folder() / (clean + ".ini"), phob::serialize(copy));
 }
 
-// Loads a setup on top of `s`: a setup saved without calibration keeps this controller's own.
+// Loads a setup on top of `s`: a setup saved without calibration keeps this controller's own. The
+// controller stays what it is (a PhobGCC, or a stock controller with the settings on), so one setup
+// works on either.
 bool phob_setup_load(const std::string& name, phob::Settings& s) {
   const std::string clean = profile_clean_name(name);
   if (clean.empty()) return false;
   std::string text;
   std::lock_guard<std::mutex> lock(g_store_mutex);
   if (!read_text(setup_folder() / (clean + ".ini"), text)) return false;
+  const bool hardware = s.phob_hardware;
   phob::parse(text, s);
+  s.phob_hardware = hardware;
+  s.enabled = !hardware;
   return true;
 }
 

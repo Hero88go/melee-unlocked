@@ -302,6 +302,7 @@ void phob_store_load(const std::string& settings_path);
 bool phob_store_save(int port, const phob::Settings& s);
 std::string phob_store_folder();   // the PhobGCC folder beside the settings file
 std::vector<std::string> phob_setup_list();
+bool phob_setup_delete(const std::string& name);
 bool phob_setup_save(const std::string& name, const phob::Settings& s, bool with_calibration);
 bool phob_setup_load(const std::string& name, phob::Settings& s);
 // Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
