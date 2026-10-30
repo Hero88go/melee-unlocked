@@ -42,6 +42,7 @@ enum {
     MU_PC_MS_CATCH_DASH = 214,
     MU_PC_MS_CLIFF_CATCH = 252,
     MU_PC_MS_CLIFF_WAIT = 253,
+    MU_PC_MS_CLIFF_LAST = 263,   /* CliffCatch .. CliffJumpQuick2: on or leaving the ledge by its own options */
     MU_PC_MS_ENTRY = 322,
     MU_PC_MS_SPECIAL_FIRST = 341
 };
@@ -444,7 +445,9 @@ static int pc_recover(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPc
     /* Under the stage's lip (inside the ledge and below it), going in only meets the underside: drift
      * out from under it first. The up special aims at the ledge itself from wherever the fighter is
      * (a fixed angle sent low fighters under the stage). */
-    const int under = pc_abs(f->x) < v->ledge_x + 6.0f && f->y < v->ledge_y - 12.0f;
+    /* Hanging on the ledge is not under the lip: drifting out from there let go of the ledge and flew away. */
+    const int on_ledge = pc_between(f->motion, MU_PC_MS_CLIFF_CATCH, MU_PC_MS_CLIFF_LAST);
+    const int under = !on_ledge && pc_abs(f->x) < v->ledge_x + 6.0f && f->y < v->ledge_y - 12.0f;
     float ax = (f->x > 0.0f ? v->ledge_x - 6.0f : 6.0f - v->ledge_x) - f->x;   /* a point inside and above the ledge */
     float ay = v->ledge_y + 14.0f - f->y;
     float len;
@@ -463,7 +466,11 @@ static int pc_recover(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPc
         o->ly = ay;
         return 1;
     }
+    if (on_ledge) return 1;   /* the ledge's own options get it back up */
     if (f->jumps_left > 0 && f->vy < 0.0f && f->y < v->ledge_y + 30.0f) {
+        /* The jump goes toward the stage: one taken while drifting out from under the lip went away from it
+         * for good. Deep under the stage it still goes out, around the lip. */
+        if (pc_abs(f->x) > v->ledge_x - 20.0f) o->lx = in;
         if (s->plan_t != 1) o->buttons |= MU_PC_X;   /* one press, then a frame off */
         s->plan_t = s->plan_t == 1 ? 0 : 1;
         return 1;

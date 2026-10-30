@@ -218,7 +218,17 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
             const char* v = getenv("MELEE_TEST_PC_PORT");
             only = v != NULL ? (int) (v[0] - '0') : -1;
         }
-        if (only >= 0 && fp->player_idx != only) return 0;
+        if (only >= 0) {
+            /* Both players' stocks whenever they change, from whichever fighter is still asked: the match's last
+             * KO ends it before the loser is asked again, so this is how tests tell who won. */
+            static int seen = -1;
+            const int now = Player_GetStocks(0) * 16 + Player_GetStocks(1);
+            if (now != seen) {
+                seen = now;
+                OSReport("[pc] stocks P1 %d P2 %d\n", Player_GetStocks(0), Player_GetStocks(1));
+            }
+            if (fp->player_idx != only) return 0;
+        }
         for (k = 0; k < 4 && opp == NULL; k++) {   /* the first human player (tests: any other player) */
             HSD_GObj* g;
             if (k == fp->player_idx) continue;
@@ -372,8 +382,12 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
             out->buttons &= ~(MU_PC_L | MU_PC_R | MU_PC_Z);
             out->l = out->r = 0.0f;
         }
-        if (!no_net && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag && ((ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
-             (ax > v.ledge_x - 40.0f && v.cpu.y < v.ledge_y - 10.0f)))
+        /* Not on the ledge or leaving it by a ledge option: hanging is safe, and the pro's own choice there
+         * (getup, roll, drop and jump) is theirs. The net took over while it hung, let go and flew away. */
+        const int ledge = v.cpu.motion >= MU_PC_MS_CLIFF_CATCH && v.cpu.motion <= MU_PC_MS_CLIFF_LAST;
+        if (!no_net && !ledge && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag &&
+            ((ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
+             (ax > v.ledge_x - 40.0f && v.cpu.y < v.ledge_y - 10.0f && v.cpu.vy < 0.0f)))
         {
             MuPcConfig rc = *c;
             rc.enabled = 1;
