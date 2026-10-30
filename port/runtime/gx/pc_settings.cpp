@@ -3732,7 +3732,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     return;
   }
 
-  // The "Start + Up + Z" hint teaches the chord: after the third open it stays away (the setting still hides it).
+  // The "Start + D-pad Up + Z" hint teaches the chord: after the third open it stays away (the setting still hides it).
   static bool counted_open = false;
   if (state.practice_open && !counted_open && options.practice_opens < 99) { ++options.practice_opens; state.dirty = true; }
   counted_open = state.practice_open;
@@ -3799,7 +3799,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     practice_card_title(title, true);
     ImGui::TextDisabled("%s", matchmaking_state_text(practice.matchmaking_state));
     if (!practice.opponent.empty()) ImGui::TextDisabled("vs %s", practice.opponent.c_str());
-    ImGui::TextDisabled("Keep practicing. Tab or Start + Up + Z: search controls");
+    ImGui::TextDisabled("Keep practicing. Tab or Start + D-pad Up + Z: search controls");
     practice_card_end();
   }
 
@@ -3807,7 +3807,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     if (show_hint && practice.tab_available && practice.phase == Phase::Idle) {
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetTime() < 20.0 ? 1.0f : 0.5f);
       practice_card_begin("##native_practice_hint", ImVec2(screen.x - 12, 52), ImVec2(1, 0), false);
-      practice_card_title("Practice menu: Tab or Start + Up + Z", false);
+      practice_card_title("Practice menu: Tab or Start + D-pad Up + Z", false);
       practice_card_end();
       ImGui::PopStyleVar();
     }
@@ -9030,7 +9030,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     changed |= settings_toggle("Show the \"Settings: F1\" reminder", &options.settings_hint);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1, or Start + D-pad Down + Z on a GameCube controller, opens settings.");
 #ifndef MELEE_NO_SLIPPI   // no matchmaking panel in the build without that layer
-    changed |= settings_toggle("Show the \"Matchmaking: Tab\" reminder", &options.matchmaking_hint);
+    changed |= settings_toggle("Show the Practice menu hint in Training", &options.matchmaking_hint);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Start + D-pad Up + Z opens the Practice menu. The hint stops by itself once you have used it.");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tab still opens matchmaking with it off.");
     {
       static const char* const looks[practice_menu::kStyleCount] = {
@@ -9040,7 +9042,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetNextItemWidth(260.0f);
       if (settings_combo("Practice menu look", &look, looks, practice_menu::kStyleCount)) { options.practice_style = look; changed = true; }
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How the Practice menu (Start + Up + Z in Training) looks. All of them work with the controller;\n"
+        ImGui::SetTooltip("How the Practice menu (Start + D-pad Up + Z in Training) looks. All of them work with the controller;\n"
                           "the window also works with the mouse.");
     }
 #endif

@@ -926,7 +926,7 @@ void apply_pads(host::PadState* pads) {
   if (g_offer_shown) {
     static uint16_t held = 0xFFFF;   // nothing held when the prompt appears counts as a press
     host::PadState& p = pads[g_practice.controller_port & 3];
-    // Up or Down on its own: Start + Up + Z (the Practice panel) and other combinations pass through.
+    // Up or Down on its own: Start + D-pad Up + Z (the Practice menu) and other combinations pass through.
     const bool alone = p.err == 0 && (p.button & (uint16_t)~(kUp | kDown)) == 0;
     const uint16_t now = alone ? (uint16_t)(p.button & (kUp | kDown)) : 0;
     const uint16_t fresh = (uint16_t)(now & ~held);

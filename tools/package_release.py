@@ -72,7 +72,7 @@ NVIDIA's separate model, which is not included in this archive.
 
 Pro ghosts (Source Port)
 ------------------------
-In Training, open the Practice menu (Start + Up + Z) and choose Fight a pro: Mang0, Zain,
+In Training, open the Practice menu (Start + D-pad Up + Z) and choose Fight a pro: Mang0, Zain,
 Cody Schwab or aMSa. The CPU becomes that player's character and plays the way that player does,
 learned from their own games. It runs on your PC, works offline and is never used online.
 

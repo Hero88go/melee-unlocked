@@ -452,7 +452,7 @@ std::vector<Row> rows_for(Page p) {
       rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Practice CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),
                               "What it does when you attack near it."));
-      rows.push_back(page_row("Hit reactions", Page::Hit, "Tech " + top_name(kTech, c.tech_odds, MU_PC_TECH_COUNT),
+      rows.push_back(page_row("Hit reactions", Page::Hit, top_name(kTech, c.tech_odds, MU_PC_TECH_COUNT),
                               "DI, techs and getups."));
       rows.push_back(page_row("Ledge", Page::Ledge, top_name(kLedge, c.ledge_odds, MU_PC_LEDGE_COUNT),
                               "Ledge options and recovery."));
@@ -830,6 +830,7 @@ void bar_path(ImDrawList* dl, float left, float top, float right, float h, float
 }
 
 // The GameCube buttons the hints show.
+float glyph_width(char which, float u);
 void button_glyph(ImDrawList* dl, float x, float cy, float u, char which, float a) {
   const ImU32 white = with_alpha(IM_COL32(255, 255, 255, 255), a);
   switch (which) {
@@ -848,9 +849,9 @@ void button_glyph(ImDrawList* dl, float x, float cy, float u, char which, float 
       break;
     }
     case 'S': {
-      const float w = 30.0f * u, h = 14.0f * u;
+      const float w = glyph_width('S', u), h = 14.0f * u;
       dl->AddRectFilled(ImVec2(x, cy - h * 0.5f), ImVec2(x + w, cy + h * 0.5f), with_alpha(IM_COL32(190, 192, 202, 255), a), h * 0.5f);
-      text(dl, x + 3.5f * u, cy - 5.0f * u, 9.0f * u, with_alpha(IM_COL32(30, 30, 36, 255), a), "START", 0, false);
+      text(dl, x + (w - text_width(9.0f * u, "START")) * 0.5f, cy - 5.0f * u, 9.0f * u, with_alpha(IM_COL32(30, 30, 36, 255), a), "START", 0, false);
       break;
     }
     case 'D': {
@@ -889,7 +890,7 @@ float glyph_width(char which, float u) {
   switch (which) {
     case 'A': case 'X': case 'Y': return 24.0f * u;
     case 'B': return 19.0f * u;
-    case 'S': return 30.0f * u;
+    case 'S': return std::max(30.0f * u, text_width(9.0f * u, "START") + 9.0f * u);
     case 'D': case 'Z': case 'L': case 'R': return 22.0f * u;
     default: return 0;
   }
@@ -1106,6 +1107,17 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
   const float right = f.game_x1 - 46.0f * u;
   const float desc_h = 48.0f * u, bottom = f.game_y1 - 116.0f * u;
   const float block_top = bottom - desc_h - 22.0f * u - (shown - 1) * pitch - h;
+  // A soft shade behind the list, so the Training display under it does not show between the bars.
+  // No panel and no border: it fades out to the left, above and below.
+  {
+    const float x0 = right - w - 150.0f * u, x1 = f.game_x1, fade = 120.0f * u, vf = 46.0f * u;
+    const float y0 = block_top - 96.0f * u, y1 = block_top + (shown - 1) * pitch + h + 22.0f * u + 120.0f * u;
+    const ImU32 clear = IM_COL32(0, 0, 0, 0), dark = with_alpha(IM_COL32(4, 4, 12, 255), 0.55f * a);
+    dl->AddRectFilledMultiColor(ImVec2(x0, y0 + vf), ImVec2(x0 + fade, y1 - vf), clear, dark, dark, clear);
+    dl->AddRectFilled(ImVec2(x0 + fade, y0 + vf), ImVec2(x1, y1 - vf), dark);
+    dl->AddRectFilledMultiColor(ImVec2(x0 + fade, y0), ImVec2(x1, y0 + vf), clear, clear, dark, dark);
+    dl->AddRectFilledMultiColor(ImVec2(x0 + fade, y1 - vf), ImVec2(x1, y1), dark, dark, clear, clear);
+  }
   // The bars step in and out like the Main Menu's.
   static const float kStagger[6] = {0.0f, -16.0f, -34.0f, -22.0f, -34.0f, -16.0f};
   g_bar_anim.resize((size_t)count);
@@ -1142,6 +1154,15 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
     dl->AddRectFilled(ImVec2(x, y0), ImVec2(x + 5 * u, y1), with_alpha(IM_COL32(255, 255, 255, 34), a), 3 * u);
     const float span = y1 - y0, th = span * (float)visible / (float)count, ty = y0 + (span - th) * (float)lv.top / (float)(count - visible);
     dl->AddRectFilled(ImVec2(x, ty), ImVec2(x + 5 * u, ty + th), with_alpha(kGold, a), 3 * u);
+    // More rows above or below: a gold arrow that breathes, centred on the bars.
+    const float pulse = 0.55f + 0.45f * std::sin(t * 4.0f), cx = right - w * 0.45f;
+    const ImU32 arrow = with_alpha(kGold, a * pulse);
+    if (lv.top > 0)
+      dl->AddTriangleFilled(ImVec2(cx - 11 * u, block_top - 7 * u), ImVec2(cx + 11 * u, block_top - 7 * u), ImVec2(cx, block_top - 19 * u), arrow);
+    if (lv.top + visible < count) {
+      const float yb = block_top + (shown - 1) * pitch + h + 5 * u;
+      dl->AddTriangleFilled(ImVec2(cx - 11 * u, yb), ImVec2(cx + 11 * u, yb), ImVec2(cx, yb + 12 * u), arrow);
+    }
   }
   const Row* cur = count ? &rows[(size_t)lv.cursor] : nullptr;
   const float dx = right - w - 36.0f * u, dw = w + 36.0f * u;
@@ -1170,6 +1191,44 @@ void draw_offer(ImDrawList* dl, const Frame& f) {
   hints(dl, (f.game_x0 + f.game_x1 - hw) * 0.5f, top + h + 8 * u, u, spec, 1.0f);
 }
 
+// Until the menu has been opened three times (Frame::hint) it introduces itself in every look: a banner
+// near the top for the first seconds of Training, then the buttons drawn small at the top right.
+double g_hint_since = -1.0;
+void draw_intro(ImDrawList* dl, const Frame& f) {
+  if (!f.hint) { g_hint_since = -1.0; return; }
+  // The search-again question comes first; the introduction starts once it is answered.
+  if (g_hint_since < 0.0 || !f.search.offer.empty()) g_hint_since = f.time;
+  const float since = (float)(f.time - g_hint_since);
+  const float gu = (f.game_y1 - f.game_y0) / 720.0f;
+  // After "Go!" and before the player is busy: 1.5 to 10 seconds in, unless the search-again question is up.
+  constexpr float kFrom = 1.5f, kTo = 10.0f;
+  if (since > kFrom && since < kTo && f.search.offer.empty()) {
+    const float u = gu * 0.82f;
+    const float fa = std::min(ease((since - kFrom) / 0.35f), ease((kTo - since) / 0.45f));
+    const float slide = (1.0f - ease((since - kFrom) / 0.3f)) * 30.0f * u;
+    const char* title = "Practice menu";
+    const float cx = (f.game_x0 + f.game_x1) * 0.5f;
+    const float w = text_width(25 * u, title) + 110 * u, left = cx - w * 0.5f, top = f.game_y0 + 170 * u, h = 50 * u;
+    draw_bar(dl, left - slide, top, left + w - slide, h, u, true, title, "", true, fa, false);
+    const char* keys = "S:+|D:Up  +|Z:Open";
+    const float kw = hints(dl, 0, 0, u, keys, fa, false);
+    hints(dl, cx - kw * 0.5f, top + h + 8 * u, u, keys, fa);
+    // Kept between the Training logo and its damage display.
+    const char* about = "Set up the CPU, use training tools, fight a pro, or find a match while you train.";
+    float y = top + h + 28 * u;
+    for (const std::string& line : wrap(about, 16 * u, 430 * u)) {
+      text(dl, cx - text_width(16 * u, line.c_str()) * 0.5f, y, 16 * u, with_alpha(IM_COL32(255, 255, 255, 255), fa), line.c_str());
+      y += 21 * u;
+    }
+    return;
+  }
+  // Then small at the top right: the buttons and what they open (dimmer after half a minute).
+  const float u = gu * 0.8f, alpha = since < 30.0f ? 0.95f : 0.55f;
+  const char* spec = "S:+|D:Up  +|Z:Practice menu";
+  const float hw = hints(dl, 0, 0, u, spec, alpha, false);
+  hints(dl, f.game_x1 - hw - 8 * u, f.game_y0 + 30 * u, u, spec, alpha);
+}
+
 // While closed, the gold look keeps the search on screen as one lit bar at the top right.
 void draw_bars_closed(ImDrawList* dl, const Frame& f) {
   if (!f.search.searching) return;
@@ -1180,7 +1239,7 @@ void draw_bars_closed(ImDrawList* dl, const Frame& f) {
   draw_bar(dl, right - w, top, right, h, u, true, f.search.mode.c_str(), v, true, 1.0f, false);
   const float dot = 0.55f + 0.45f * std::sin((float)f.time * 4.0f);
   dl->AddCircleFilled(ImVec2(right - 20 * u, top + h * 0.5f), 5.5f * u, IM_COL32(40, 170, 70, (int)(255 * dot)), 16);
-  const std::string sub = f.search.opponent.empty() ? std::string("Start + Up + Z: menu") : "Found " + f.search.opponent;
+  const std::string sub = f.search.opponent.empty() ? std::string("Start + D-pad Up + Z: menu") : "Found " + f.search.opponent;
   text(dl, right - w + 4 * u, top + h + 6 * u, 15 * u, IM_COL32(230, 232, 240, 230), sub.c_str());
 }
 
@@ -1467,7 +1526,11 @@ float draw_strip_line(ImDrawList* dl, const Frame& f, float u, float a) {
   parts.push_back({"PRACTICE", IM_COL32(255, 255, 255, 255)});
   parts.push_back({!g_c.enabled ? "CPU off" : (st.driving ? plan_text(st.plan) : "CPU on"), IM_COL32(255, 255, 255, 255)});
   parts.push_back({top_of(kDefend, g_c.defend_odds, MU_PC_DEF_COUNT), IM_COL32(255, 255, 255, 255)});
-  parts.push_back({"Tech " + top_name(kTech, g_c.tech_odds, MU_PC_TECH_COUNT), IM_COL32(255, 255, 255, 255)});
+  {
+    std::string tech = top_name(kTech, g_c.tech_odds, MU_PC_TECH_COUNT);
+    if (!tech.empty()) tech[0] = (char)std::tolower((unsigned char)tech[0]);
+    parts.push_back({"Tech " + tech, IM_COL32(255, 255, 255, 255)});
+  }
   if (f.search.searching) parts.push_back({f.search.mode + " " + f.search.elapsed, IM_COL32(93, 240, 138, 255)});
   }
   const float px = 16 * u, h = 40 * u, sep = 24 * u;
@@ -1675,12 +1738,7 @@ Result frame(int style, const Frame& f) {
   }
   if (!f.open) {
     draw_offer(dl, f);
-    if (f.hint && style != kStrip) {
-      // How to open it, in the game's font at the top right (dimmer after the first 20 seconds).
-      const float u = (f.game_y1 - f.game_y0) / 720.0f, alpha = f.time < 20.0 ? 0.95f : 0.5f;
-      const char* s = "Practice: Start + Up + Z";
-      text(dl, f.game_x1 - text_width(17 * u, s) - 20 * u, f.game_y0 + 18 * u, 17 * u, with_alpha(IM_COL32(255, 255, 255, 255), alpha), s);
-    }
+    draw_intro(dl, f);
     switch (style) {
       case kBars: draw_bars_closed(dl, f); break;
       case kRails: draw_rails_closed(dl, f); break;
