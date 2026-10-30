@@ -89,6 +89,7 @@
 {"lobby.error.cannot_accept", "Only the invited player can accept, while free."},
 {"lobby.error.unknown_action", "Unknown lobby action."},
 {"lobby.players_online", "Players online ({count})"},
+{"lobby.alone", "Searching for players. Others show up when they also press Go Online, which can take a minute. To find a friend, add their connect code under Friends."},
 {"lobby.filter.button", "Show: {mode}"},
 {"lobby.filter.all", "All"},
 {"lobby.card.finish_setup", "Choose your Melee ISO on the Play page"},

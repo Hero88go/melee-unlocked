@@ -1012,6 +1012,9 @@ void refresh() {
     roster=std::move(shown);
   }
   refill(PLAYERS,rows,roster,[&](const Json& p){return peer_text(p,ping);});
+  // Online with nobody else listed: the list holds only the player's own card, so its empty state never
+  // shows. Say how players are found rather than leaving "only me" unexplained.
+  if(active && status.empty() && roster_all.size()==1) label(STATUS,launcher::lang::tr("lobby.alone"));
   if(p2p_matches) {
     // A pasted invite was answered: that player is selected, ready for Send Match Request.
     const Json invite=state.value("invite",Json::object());

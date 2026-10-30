@@ -487,3 +487,4 @@ crash.offer = 游戏崩溃了。要发送崩溃报告以便修复吗？\n\n将�
 @Use the Replays folder next to the launcher = 使用启动器旁边的 Replays 文件夹
 @Replay folder = 录像文件夹
 @Replay folder... = 录像文件夹...
+lobby.alone = 正在搜索玩家。其他玩家也点击上线后才会出现，可能需要一分钟。要找到好友，请在好友中添加对方的连接代码。

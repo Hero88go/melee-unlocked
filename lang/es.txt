@@ -488,3 +488,4 @@ crash.offer = El juego se cerró inesperadamente. ¿Enviar un informe de error p
 @Use the Replays folder next to the launcher = Usar la carpeta Replays junto al launcher
 @Replay folder = Carpeta de repeticiones
 @Replay folder... = Carpeta de repeticiones...
+lobby.alone = Buscando jugadores. Los demás aparecen cuando también pulsan Conectarse, lo que puede tardar un minuto. Para encontrar a un amigo, añade su código de conexión en Amigos.

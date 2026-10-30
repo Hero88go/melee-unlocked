@@ -13,6 +13,8 @@
 #include <SDL.h>
 #include <algorithm>
 #include <memory>
+#include <string>
+#include <cctype>
 
 namespace gx {
 
@@ -53,6 +55,22 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
   // was (the renderer's own line goes to the terminal only, which a report does not include).
   const auto gl_text = [](GLenum name) { const GLubyte* s = glGetString(name); return s ? reinterpret_cast<const char*>(s) : "?"; };
   host::log("opengl: %s | %s | %s", gl_text(GL_VENDOR), gl_text(GL_RENDERER), gl_text(GL_VERSION));
+  // Mesa's software rasterisers draw on the processor: the game runs, its music plays, and the
+  // picture crawls at a few frames a second. Say so once, instead of leaving a player to guess.
+  {
+    const std::string gl_renderer = gl_text(GL_RENDERER);
+    std::string lower = gl_renderer;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+    if (lower.find("llvmpipe") != std::string::npos || lower.find("softpipe") != std::string::npos ||
+        lower.find("software rasterizer") != std::string::npos || lower.find("swrast") != std::string::npos) {
+      host::log("opengl: WARNING software rendering (%s): no graphics driver for the GPU is in use", gl_renderer.c_str());
+      if (!host::options.no_gc_adapter)   // set for hidden and headless runs: a test never waits on a dialog
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Melee Unlocked",
+            ("OpenGL is running in software on your processor (" + gl_renderer + "), so the game will run very slowly.\n\n"
+             "Install or enable the graphics driver for your GPU (on Linux Mint: Driver Manager), then restart the game.").c_str(),
+            window);
+    }
+  }
   host::log("opengl: internal resolution EFB x%d (window %dx%d)", scale, client_w, client_h);
   if (opts.pc_settings) g_presentation->settings = std::make_unique<PcSettingsUIGL>(hwnd, opts);
   linux_renderer::Hooks hooks;

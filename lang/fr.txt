@@ -487,3 +487,4 @@ crash.offer = Le jeu a planté. Envoyer un rapport de plantage pour que le probl
 @Use the Replays folder next to the launcher = Utiliser le dossier Replays à côté du lanceur
 @Replay folder = Dossier des replays
 @Replay folder... = Dossier des replays...
+lobby.alone = Recherche de joueurs. Les autres apparaissent quand ils passent aussi en ligne, ce qui peut prendre une minute. Pour trouver un ami, ajoutez son code de connexion dans Amis.

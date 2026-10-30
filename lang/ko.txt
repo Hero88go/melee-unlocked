@@ -487,3 +487,4 @@ crash.offer = 게임이 비정상적으로 종료되었습니다. 문제를 고�
 @Use the Replays folder next to the launcher = 런처 옆의 Replays 폴더 사용
 @Replay folder = 리플레이 폴더
 @Replay folder... = 리플레이 폴더...
+lobby.alone = 플레이어를 찾는 중입니다. 상대도 온라인으로 전환하면 표시되며 1분 정도 걸릴 수 있습니다. 친구를 찾으려면 친구 탭에서 연결 코드를 추가하세요.

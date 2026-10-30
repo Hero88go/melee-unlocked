@@ -487,3 +487,4 @@ crash.offer = ゲームがクラッシュしました。修正のためにクラ
 @Use the Replays folder next to the launcher = ランチャーの隣の Replays フォルダーを使う
 @Replay folder = リプレイフォルダー
 @Replay folder... = リプレイフォルダー...
+lobby.alone = プレイヤーを検索中です。相手もオンラインにすると表示されます（1分ほどかかることがあります）。フレンドを探すには、フレンドで接続コードを追加してください。

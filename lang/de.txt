@@ -487,3 +487,4 @@ crash.offer = Das Spiel ist abgestürzt. Einen Absturzbericht senden, damit der 
 @Use the Replays folder next to the launcher = Den Replays-Ordner neben dem Launcher verwenden
 @Replay folder = Replay-Ordner
 @Replay folder... = Replay-Ordner...
+lobby.alone = Suche nach Spielern. Andere erscheinen, wenn sie ebenfalls auf Online gehen klicken; das kann eine Minute dauern. Um einen Freund zu finden, füge seinen Verbindungscode unter Freunde hinzu.

@@ -487,3 +487,4 @@ crash.offer = O jogo fechou inesperadamente. Enviar um relatório de erro para q
 @Use the Replays folder next to the launcher = Usar a pasta Replays ao lado do launcher
 @Replay folder = Pasta de replays
 @Replay folder... = Pasta de replays...
+lobby.alone = Procurando jogadores. Os outros aparecem quando também ficam online, o que pode levar um minuto. Para encontrar um amigo, adicione o código de conexão dele em Amigos.
