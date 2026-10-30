@@ -68,6 +68,7 @@ void mu_hud_scale(HSD_GObj* gobj, int stock)
 #include <melee/if/types.h>
 #include <melee/pl/player.h>
 #include <melee/ft/types.h>
+#include <melee/ft/forward.h>
 
 int mu_nametag_position(int slot, float* x, float* y);   /* if/ifnametag.c */
 void mu_hud_player_abi(int slot, int present, int damage, int stocks, float tag_x, float tag_y,
@@ -78,6 +79,19 @@ static int mu_combo_stun_action(unsigned int a)
 {
     return a == 38 || (a >= 75 && a <= 91) || (a >= 183 && a <= 204) || (a >= 223 && a <= 232) ||
            (a >= 239 && a <= 243) || (a >= 266 && a <= 296);
+}
+
+/* A fighter object that is alive now: on the game's fighter list. Right after a match the player slots
+ * can still name fighters already freed (with the results screen off the next scene starts at once),
+ * and reading one of those crashed the game at the end of the match. */
+static int mu_live_fighter(const HSD_GObj* gobj)
+{
+    const HSD_GObj* cur;
+    if (gobj == NULL || HSD_GObjPLinkHead == NULL) return 0;
+    for (cur = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER]; cur != NULL; cur = cur->next) {
+        if (cur == gobj) return 1;
+    }
+    return 0;
 }
 
 void mu_hud_report(void)
@@ -94,8 +108,8 @@ void mu_hud_report(void)
          * grabbed or thrown action; the same list as the host's combo_stun_action). */
         {
             HSD_GObj* gobj = present ? Player_GetEntity(slot) : NULL;
-            Fighter* fp = gobj != NULL ? gobj->user_data : NULL;
-            Fighter* link = fp != NULL && fp->x2094 != NULL ? fp->x2094->user_data : NULL;
+            Fighter* fp = mu_live_fighter(gobj) ? gobj->user_data : NULL;
+            Fighter* link = fp != NULL && mu_live_fighter(fp->x2094) ? fp->x2094->user_data : NULL;
             mu_hud_combo_abi(slot, link != NULL ? link->player_idx : -1, fp != NULL ? fp->dmg.x1830_percent : 0.0f,
                              fp != NULL && (fp->dmg.x195c_hitlag_frames > 0.0f || mu_combo_stun_action(fp->motion_id)));
         }
