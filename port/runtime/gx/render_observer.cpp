@@ -53,7 +53,9 @@ bool owners_wanted() {
   const LookLive& l = look_live();
   return owner_tracking.load(std::memory_order_relaxed) || l.colours.load(std::memory_order_relaxed) != 0 ||
          l.effect_owners.load(std::memory_order_relaxed) || l.fighter.load(std::memory_order_relaxed) != 0 ||
-         l.stage.load(std::memory_order_relaxed) != 0 || l.retro.load(std::memory_order_relaxed);
+         l.stage.load(std::memory_order_relaxed) != 0 || l.retro.load(std::memory_order_relaxed) ||
+         // The Arcade look's 2D camera and background find the fighters by their skinned draws.
+         arcade_camera_2d_active() || arcade_backdrop_slot().load(std::memory_order_relaxed) != 0;
 }
 
 uint8_t resolve_owner(uint8_t* memory) {

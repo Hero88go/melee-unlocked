@@ -567,6 +567,28 @@ void test_built_in() {
   CHECK(label("hook", {{0xC2100020u, 1u}, {0x38600001u, 0u}}) == "Switch");
 }
 
+// The always-display hitbox code, pasted: on the Source Port it is the Arcade look's hitboxes, as
+// many of them as its lines stand for, while it is switched on.
+void test_arcade_code() {
+  fresh();
+  const Lines all = {{0x040805FCu, 0x60000000u}, {0x04080638u, 0x480001D4u}, {0x0426ED50u, 0x60000000u},
+                     {0x0426ED58u, 0x60000000u}, {0x04009430u, 0x38600001u}};
+  Code c;
+  c.name = "Always Display Hitboxes";
+  c.lines = all;
+  const char* found = native_equivalent(c);
+  CHECK(found && std::string(found) == kArcadeHitboxCodeLabel);
+  codes().push_back(c);
+  CHECK_EQ(arcade_bits_of_codes(), 0u);   // off
+  codes().back().enabled = true;
+  CHECK_EQ(arcade_bits_of_codes(), 0xE0u);
+  codes().back().lines = {all[0], all[1]};
+  CHECK_EQ(arcade_bits_of_codes(), 0x20u);
+  codes().back().lines = {all[4]};   // the "behind" line alone is not this code
+  CHECK_EQ(arcade_bits_of_codes(), 0u);
+  codes().clear();
+}
+
 // Slippi's own required codes are refused by name: Melee Unlocked already runs them.
 void test_slippi_required() {
   fresh();
@@ -592,6 +614,7 @@ int run_all() {
   test_codes_and_library();
   test_built_in();
   test_slippi_required();
+  test_arcade_code();
   // A vanilla listing suspends execution without changing the saved enabled code.
   fresh();
   codes().push_back(compiled({{0x00400030u, 0x00000011u}}));

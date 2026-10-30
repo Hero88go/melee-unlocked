@@ -880,6 +880,21 @@ void lightweight_publish_counts() {
   g_lw_last_drawn.store(drawn, std::memory_order_relaxed);
   g_lw_last_skipped.store(skipped, std::memory_order_relaxed);
 }
+void arcade_debug(const Frame& f, const LightweightFilter& e) {
+  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_ARCADE_LOG"); return v && *v == '1'; }();
+  static uint32_t n = 0;
+  if (!on || ++n != 200) return;
+  host::log("arcade: plane z %.1f, %zu draws", e.plane_z, f.draws.size());
+  for (size_t i = 0; i < f.draws.size(); ++i) {
+    const DrawCall& d = f.draws[i];
+    if (d.xf_regs[0x26] != 0 || std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) != 0) continue;
+    const int row = (int)(d.matrix_index_a & 0x3F);
+    const float z = row + 2 < 64 ? d.posMatrices[(row + 2) * 4 + 3] : 0.0f;
+    const float* vp = (const float*)&d.xf_regs[0x1A];
+    host::log("arcade: draw %zu z %.1f verts %u skinned %d owner %u backdrop %d vp %.0fx%.0f", i, z, d.vertex_count,
+              d.skinned ? 1 : 0, d.owner_player, d.frustum_backdrop ? 1 : 0, vp[0], vp[1]);
+  }
+}
 void lightweight_debug(const Frame& f, const LightweightFilter& e) {
   static const bool on = [] { const char* v = std::getenv("MELEE_TEST_LIGHTWEIGHT_LOG"); return v && *v == '1'; }();
   static uint32_t n = 0;
@@ -924,6 +939,16 @@ void set_css_background_free(bool on) { g_css_background_free.store(on, std::mem
 bool css_background_free_active() { return g_css_background_free.load(std::memory_order_relaxed); }
 void set_player_tags_always(bool on) { g_player_tags_always.store(on, std::memory_order_relaxed); }
 bool player_tags_always_active() { return g_player_tags_always.load(std::memory_order_relaxed); }
+std::atomic<uint32_t> g_arcade_display[(int)ArcadeSource::Count] = {};
+void set_arcade_display(ArcadeSource source, uint32_t bits) {
+  g_arcade_display[(int)source].store(bits, std::memory_order_relaxed);
+  set_arcade_camera_2d((arcade_display() & kArcadeCamera2d) != 0);
+}
+uint32_t arcade_display() {
+  uint32_t bits = 0;
+  for (const auto& source : g_arcade_display) bits |= source.load(std::memory_order_relaxed);
+  return bits;
+}
 
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
                            bool tag_visible) {

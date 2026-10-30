@@ -976,6 +976,12 @@ target_include_directories(port_render_observer_test PRIVATE runtime/ppc runtime
 target_compile_features(port_render_observer_test PRIVATE cxx_std_17)
 target_compile_definitions(port_render_observer_test PRIVATE NOMINMAX)
 target_link_libraries(port_render_observer_test PRIVATE native_animation)
+add_executable(port_projection_2d_test tests/projection_2d_test.cpp runtime/gx/gx_texture.cpp runtime/gx/authored_pose.cpp runtime/gx/subframe.cpp runtime/gx/gx_shader.cpp)
+target_include_directories(port_projection_2d_test PRIVATE runtime/ppc runtime/gx "${PROJECT_SOURCE_DIR}/native")
+target_compile_features(port_projection_2d_test PRIVATE cxx_std_17)
+target_compile_definitions(port_projection_2d_test PRIVATE NOMINMAX)
+target_link_libraries(port_projection_2d_test PRIVATE native_animation)
+add_test(NAME port_projection_2d COMMAND port_projection_2d_test)
 add_test(NAME port_render_observer COMMAND port_render_observer_test)
 
 add_executable(port_source_boundary_test tests/source_boundary_test.cpp app/source_guest_boundary.cpp)

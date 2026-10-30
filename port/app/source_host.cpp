@@ -271,7 +271,11 @@ struct KnownPack { const char* fingerprint; const char* name; };
 const KnownPack kKnownPacks[] = {
   {"9a1a48b999a2f8f4deaee2554e5f177cb265666b95676a508406db80b181246b", "Akaneia 1.0.1"},
   {"61834b65d921668ff11702c458a1ae6946172b0a4c8321a47e2c2ddff9aef51d", "20XX TE 2d r4"},
+  // An m-ex build with its own camera, hitbox and HUD codes (run-source/arcade-0980/STUDY.md): its
+  // files load as they are; its codes are native (shim/mu_arcade.c and the Arcade look switches).
+  {"23859e58d0f6153bbc9a813f4eac2b3ae1b69e90d5e5a0ef1f57829b1ed588ff", "2D-style build 2.0"},
 };
+constexpr const char kArcadePackName[] = "2D-style build 2.0";
 
 // An ISO layer's fingerprint covers what it changes: every changed or added file's path and
 // content, the changed main.dol runs and the retail files it drops. Hashing a whole modded disc
@@ -488,6 +492,7 @@ void load_mod_overlay() {
       }
     }
     if (known && std::strncmp(known->name, "Akaneia", 7) == 0) mods::status().akaneia = true;
+    if (known && std::strcmp(known->name, kArcadePackName) == 0) mods::status().arcade = true;
     host::log("mods: %s %s, content %s%s%s", kind, layer.path.u8string().c_str(), fingerprint.substr(0, 16).c_str(),
               known ? ", recognized as " : "", known ? known->name : "");
     summary += (summary.empty() ? "" : ", ") + (known ? std::string(known->name) : layer.path.filename().u8string());
@@ -516,6 +521,13 @@ void load_mod_overlay() {
   const bool one_iso = g_mod_layers.size() == 1 && g_mod_layers[0].kind == mods::LayerKind::Iso;
   const bool akaneia = one_iso && has("/mxdt.dat") && has("/plsn.dat") && has("/plts.dat");
   if (akaneia) host::log("mods: Akaneia profile detected; its content online is Direct-only");
+  // The 2D-style build: its hitbox code is the Arcade look's hitbox switches, on for this profile.
+  // Its camera code runs in the game (MU_GAME_OPTION2_ARCADE_PACK, offline); online, where the game
+  // leaves it off, the renderer's 2D camera gives the same flat look.
+  if (mods::status().arcade) {
+    gx::set_arcade_display(gx::ArcadeSource::Pack, gx::kArcadeGameBits | gx::kArcadeCamera2d);
+    host::log("mods: %s found; its codes run natively", kArcadePackName);
+  }
   // Training Mode CE: its disc's TM/ files carry the event menus and lab models; its code is
   // compiled into the native game (sourceport/game/tmce). Like the original, vanilla base only.
   if (has("/tm/eventmenu.dat")) {
@@ -596,7 +608,10 @@ void load_mod_overlay() {
     }
     status.notes.clear();
     for (const auto& report : g_mod_overlay.iso_reports())
-      if (!report.dol_runs.empty() || report.dol_size != report.base_dol_size)
+      if (status.arcade)   // every run and code of this build has a native equivalent (run-source/arcade-0980/STUDY.md)
+        status.notes.push_back(std::string(kArcadePackName) + ": its code patches run natively, and its hitbox, camera "
+                               "and HUD looks are on for this profile.");
+      else if (!report.dol_runs.empty() || report.dol_size != report.base_dol_size)
         status.notes.push_back(std::to_string(report.dol_runs.size()) +
                                " code patches in a modded disc are not applied: the Source Port runs its own game code.");
     for (const auto& conflict : g_mod_overlay.conflicts())
@@ -985,6 +1000,11 @@ int32_t h_native_owner_tracking() { return gx::owner_tracking_enabled() ? 1 : 0;
 int32_t h_native_draw_identity() { return 1; }
 // The HUD sliders (stock icon and damage number size), display only, as the backend last set them.
 uint32_t h_hud_scales() { return gx::hud_scales_packed(); }
+static_assert(gx::kArcadeHitboxes == 0x20u && gx::kArcadeProjectileHitboxes == 0x40u && gx::kArcadeHitboxesBehind == 0x80u,
+              "user_gecko::arcade_bits_of_codes");
+static_assert(gx::kArcadeHitboxes == MU_DISPLAY_OPTION_HITBOXES &&
+              gx::kArcadeProjectileHitboxes == MU_DISPLAY_OPTION_PROJECTILE_HITBOXES &&
+              gx::kArcadeHitboxesBehind == MU_DISPLAY_OPTION_HITBOXES_BEHIND, "Arcade look bits");
 // Display-only options (MU_DISPLAY_OPTION_*), read live by the native game's draw code. Never part
 // of a replay or of the match the opponent plays: the viewer's own, as the HUD sizes are.
 uint32_t h_display_options() {
@@ -992,7 +1012,9 @@ uint32_t h_display_options() {
          (gx::player_tags_always_active() ? MU_DISPLAY_OPTION_PLAYER_TAGS : 0u) |
          (gx::fod_reflections_active() ? MU_DISPLAY_OPTION_FOD_REFLECTIONS : 0u) |
          (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u) |
-         (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u);
+         (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u) |
+         // The Arcade look's hitboxes: never in a network match (the game also checks).
+         (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits);
 }
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
@@ -1022,8 +1044,10 @@ uint32_t te_words_mask2() { return mods::status().te_owned ? 0xFFFFFFFFu : hp_te
 uint32_t h_game_options2() {
   if (host::gameplay::vanilla_only()) return 0;
   if (g_replaying) return g_replay_feature_options2;
-  return (gx::RenderOptions::live_te_options2() & te_words_mask2() & ~MU_GAME_OPTION2_STADIUM_FROZEN) | cpu_20xx_bit() |
-         (gx::RenderOptions::live_stadium_frozen() ? MU_GAME_OPTION2_STADIUM_FROZEN : 0u);   // a plain option, like 20XX CPUs
+  return (gx::RenderOptions::live_te_options2() & te_words_mask2() & ~(MU_GAME_OPTION2_STADIUM_FROZEN | MU_GAME_OPTION2_ARCADE_PACK)) |
+         cpu_20xx_bit() |
+         (gx::RenderOptions::live_stadium_frozen() ? MU_GAME_OPTION2_STADIUM_FROZEN : 0u) |   // a plain option, like 20XX CPUs
+         (mods::status().arcade ? MU_GAME_OPTION2_ARCADE_PACK : 0u);   // the recognised 2D-style build's codes
 }
 // The 20XX Hack Pack training options for CPUs (Game tab), word 3: plain options, the game gates
 // them itself (mu_options3_offline: offline only, never in a TM-CE event).
@@ -1930,6 +1954,19 @@ void h_pad_read(MuPadStatus out[4]) {
   // The player's data-only Gecko codes, once per frame. Offline only: the writer in the game
   // library also refuses during an online match, whichever kind.
   if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
+  // A pasted always-display hitbox code turns on the Arcade look switches its lines stand for.
+  gx::set_arcade_display(gx::ArcadeSource::Codes, user_gecko::arcade_bits_of_codes());
+  // Hidden test hook: MELEE_TEST_INSTALL_LOOK=<0 Diet, 1 Animelee> starts that one-click install once.
+  {
+    static const int test_install = [] { const char* v = std::getenv("MELEE_TEST_INSTALL_LOOK"); return v && *v ? std::atoi(v) : -1; }();
+    static int frames = 0;
+    if (test_install >= 0 && ++frames == 120) {
+      wchar_t exe[MAX_PATH] = {};
+      std::string tool;
+      if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) tool = (std::filesystem::path(exe).parent_path() / L"tools" / L"xdelta3.exe").u8string();
+      host::cosmetics::install_official_look(test_install, host::options.iso, tool, source_port::mods::mods_folder().u8string());
+    }
+  }
   if (host::audio_tracing()) {
     // Latency trace: the first read that shows a new press on port 1 (buttons or the stick leaving
     // its center), the moment the game sees it.

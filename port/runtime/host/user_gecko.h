@@ -113,6 +113,11 @@ bool any_enabled();
 // optional codes above, PAL stock icons), matched patch by patch on the address and the exact
 // words (kBuiltInUnits in user_gecko_targets.h).
 const char* native_equivalent(const Code& c);
+// The label native_equivalent gives the always-display hitbox code. On the Source Port, while such a
+// code is switched on, the Arcade look shows what its lines would: the attack hitboxes of every
+// fighter (and of items, and behind the fighter, when it carries those lines too).
+constexpr const char kArcadeHitboxCodeLabel[] = "Show attack hitboxes (VIDEO, Arcade look)";
+uint32_t arcade_bits_of_codes();
 
 // Parses a pasted or typed code and appends it, so a player can bring in a code without editing
 // GeckoCodes.ini by hand. `body` is the code's hex lines, one "XXXXXXXX YYYYYYYY" pair per line

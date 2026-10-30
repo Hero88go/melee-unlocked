@@ -378,6 +378,11 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE 0x8u
 /* "Freeze Final Destination": the background stays on its first form. */
 #define MU_DISPLAY_OPTION_FREEZE_FD 0x10u
+/* Arcade look: attack hitboxes on every fighter (no hurtboxes), item hitboxes, and the hitbox
+ * capsules drawn behind the fighter. Only the draw tests widen; the game ignores them online. */
+#define MU_DISPLAY_OPTION_HITBOXES 0x20u
+#define MU_DISPLAY_OPTION_PROJECTILE_HITBOXES 0x40u
+#define MU_DISPLAY_OPTION_HITBOXES_BEHIND 0x80u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,
@@ -514,6 +519,7 @@ typedef struct MuHostApi {
 /* 0x00080000 to 0x00400000: the L-cancel flash choices (mu_lcancel_flash.h). */
 #define MU_GAME_OPTION2_TE_20XX_CPUS        0x00800000u   /* CPUs play with the 20XX Hack Pack's AI */
 #define MU_GAME_OPTION2_STADIUM_FROZEN      0x01000000u   /* Pokemon Stadium never transforms (offline, a plain option) */
+#define MU_GAME_OPTION2_ARCADE_PACK         0x02000000u   /* the recognised 2D-style mod build is the profile: its codes run natively (offline) */
 #define MU_GAME_OPTION2_TE_TOURNAMENT_SAFE                                                        \
     (MU_GAME_OPTION2_TE_NEUTRAL_SPAWNS | MU_GAME_OPTION2_TE_V100 | MU_GAME_OPTION2_TE_DL64_QUIET |  \
      MU_GAME_OPTION2_TE_RESET_TOURNAMENT | MU_GAME_OPTION2_TE_FROZEN_TOGGLE |                     \

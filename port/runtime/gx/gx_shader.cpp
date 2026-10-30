@@ -665,6 +665,25 @@ void set_true_widescreen(bool on, float aspect) {
 }
 bool true_widescreen_active() { return g_true_widescreen.load(std::memory_order_relaxed); }
 
+// Arcade look "2D camera": the orthographic projection that puts every point of the plane `d` units
+// in front of the camera where the perspective one `p` (GX layout: p[0] x scale, p[1] x shift, p[2]
+// y scale, p[3] y shift, p[4] = -n/(f-n), p[5] = -fn/(f-n)) puts it. At view z = -d perspective gives
+// x' = p[0] x / d - p[1], so the scales divide by d and the shifts stay.
+// Depth: on the plane, exactly the perspective camera's depth, so the HUD and the other cameras' draws,
+// which test against the world's depth, sort as they always did (with plain linear depth the whole world
+// sat at the front of the range and hid the timer). Away from it a straight line through that point,
+// as steep as fits the near plane at -1 and the far one at 0 (GX's range), so depth order is kept.
+void arcade_orthographic(const float* p, float d, float m[16]) {
+  std::memset(m, 0, 16 * sizeof(float));
+  m[0] = p[0] / d; m[3] = -p[1];
+  m[5] = p[2] / d; m[7] = -p[3];
+  const float far = p[5] / p[4], near = -p[4] * far / (1.0f - p[4]);
+  const float plane = -p[4] + p[5] / d;   // perspective depth at view z = -d
+  float slope = -plane / std::max(far - d, 1e-3f);
+  if (d > near) slope = std::min(slope, (1.0f + plane) / (d - near));
+  m[10] = -slope; m[11] = plane - slope * d; m[15] = 1.0f;
+}
+
 // The character select's grey bands (top and bottom, one 104x72 texture) and its top-right BACK
 // corner (88x56, colour index) are modelled to reach the screen edges at 16:9. Wider than that they
 // end short and the dark backdrop shows past them. Only those draws are stretched, and only while
@@ -768,6 +787,15 @@ void build_projection(const DrawCall& dc, float m[16], const float* override_pro
   std::memset(m, 0, 16 * sizeof(float));
   if (type == 0) {  // perspective
     m[0] = proj[0]; m[2] = proj[1]; m[5] = proj[2]; m[6] = proj[3]; m[10] = proj[4]; m[11] = proj[5]; m[14] = -1.0f;
+    // Arcade look "2D camera": the match's world camera only (the frame's scene projection), so the
+    // HUD, the flash and wipes, backdrop planes and render-to-texture views keep theirs. Widened below
+    // like the perspective matrix: row 0 holds the x scale and shift in both shapes.
+    if (arcade_camera_2d_active() && std::fabs(vp[0]) >= 320.0f && std::fabs(vp[1]) >= 240.0f &&
+        !dc.frustum_backdrop && proj[4] != 0.0f) {
+      const LightweightFilter& e = look_filter();
+      if (e.in_match && e.plane_z < 0.0f && std::memcmp(e.projection, authored_proj, sizeof e.projection) == 0)
+        arcade_orthographic(proj, -e.plane_z, m);
+    }
     // True 16:9 (see set_true_widescreen). Scaling the whole first row rather than the x term alone
     // keeps an off-centre frustum centred: Melee shifts the projection horizontally in places, and
     // scaling only m[0] would move the picture as well as widen it. Perspective draws only: the

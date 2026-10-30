@@ -76,6 +76,9 @@ std::string generate_pixel_shader(const PSUid& uid);
 // presented pose of this draw (position matrices + unjittered projection), both optional.
 struct MotionInfo { float jitter_x = 0, jitter_y = 0; const float* prev_pos = nullptr; const float* prev_proj = nullptr; };
 void build_projection(const DrawCall& dc, float m[16], const float* override_projection = nullptr);   // row-major, as dotted in the vertex shader
+// The Arcade look's 2D camera: the orthographic matrix equal to the GX perspective `p` on the plane `d`
+// units in front of the camera, depth kept in GX's -1 (near) to 0 (far) range.
+void arcade_orthographic(const float* p, float d, float m[16]);
 // DLSS: the frame's main 3D camera projection (null when the frame has none, e.g. menus). Only draws
 // with exactly this projection are the scene DLSS reconstructs; everything else (Melee's HUD camera
 // with the timer, stocks and percentages, player tags, overlays) is shown as rendered.

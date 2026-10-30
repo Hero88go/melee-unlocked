@@ -181,6 +181,18 @@ std::vector<LookPackStatus> look_packs();
 // Slow (minutes): call from a worker thread. The message says what happened either way.
 bool build_look_packs(const std::string& patcher_folder, const std::string& retail_disc, const std::string& xdelta_tool,
                       std::string* message);
+// One click (Settings > Looks > Get mod looks): 0 Diet Melee (Classic, 64 and Crystal), 1 Animelee
+// Complete Edition. The authors' own download, checked against its published SHA-256, built from the
+// player's clean disc with the shipped xdelta3; Animelee lands in <Mods>/Discs. Windows only. A worker
+// thread does it; the panel polls official_look_state.
+struct OfficialLookState {
+  bool installed = false, busy = false, any_busy = false;
+  float progress = 0;     // the download, 0 to 1
+  std::string message;    // what is happening, or how it ended
+  std::string disc;       // Animelee: the built disc's path
+};
+OfficialLookState official_look_state(int which, const std::string& mods_folder);
+void install_official_look(int which, const std::string& retail_disc, const std::string& xdelta_tool, const std::string& mods_folder);
 // At startup with the game disc open: scans every built look disc as its pack.
 void scan_look_packs();
 // The look whose pack is served from the next start ("" none). Read by publish.

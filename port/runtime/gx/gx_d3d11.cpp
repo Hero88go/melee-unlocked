@@ -261,6 +261,7 @@ class D3D11Backend : public Backend {
       set_fod_reflections(opts_.fod_reflections);
       set_css_background_free(opts_.css_background_free);
       set_player_tags_always(opts_.player_tags_always != 0);
+      set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_));
     } catch (...) { stop_shader_workers(); throw; }   // the worker threads must not outlive a failed start
     starting_ = false;
   }
@@ -1711,10 +1712,9 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
     } else { shader_source_w_ = shader_w; shader_source_h_ = shader_h; }
   }
   const bool crt_on = opts_.crt_filter && !shader_on;
-  CrtFit fit{vh, 0.0f};
-  // Only the built-in CRT snaps its height to whole pixels per line; a preset smooths its own lines,
-  // and snapping would leave a border on every side (True widescreen fills the window otherwise).
-  if (crt_on) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
+  CrtFit fit{vh, 0.0f, lines};
+  // Only the built-in CRT lays its lines on whole pixels (crt_fit: more, finer lines, the picture keeps its size).
+  if (crt_on) fit = crt_fit(vh, lines);
   D3D11_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
   if (crt_on || shader_on) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D11_RECT sc{0, 0, client_w_, client_h_};
@@ -1735,7 +1735,7 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   // Averaging box when the rendered image is larger than the output (see the D3D12 backend).
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
-  const float crt[8] = {look.scan, look.mask, look.curve, lines, (float)c.src_w, vh / lines, look.halation, fit.shift};
+  const float crt[8] = {look.scan, look.mask, look.curve, fit.lines, (float)c.src_w, vh / fit.lines, look.halation, fit.shift};
   if (shader_on) {   // the averaging box for the console-sized texture, and no sharpening before the preset
     rect[6] = 0.0f;
     rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / shader_w), 1, 4);

@@ -334,6 +334,7 @@ class D3D12Backend : public Backend {
     set_fod_reflections(opts_.fod_reflections);
     set_css_background_free(opts_.css_background_free);
     set_player_tags_always(opts_.player_tags_always != 0);
+    set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_));
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");
@@ -2972,10 +2973,9 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   }
   const bool crt_on = opts_.crt_filter && !shader_on;
   const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0, opts_.crt_curve);
-  CrtFit crt_fit_now{vh, 0.0f};
-  // Only the built-in CRT snaps its height to whole pixels per line; a preset smooths its own lines,
-  // and snapping would leave a border on every side (True widescreen fills the window otherwise).
-  if (crt_on) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
+  CrtFit crt_fit_now{vh, 0.0f, src_h_lines};
+  // Only the built-in CRT lays its lines on whole pixels (crt_fit: more, finer lines, the picture keeps its size).
+  if (crt_on) crt_fit_now = crt_fit(vh, src_h_lines);
   D3D12_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
   if (crt_on || shader_on) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D12_RECT sc{0, 0, client_w_, client_h_};
@@ -3014,8 +3014,8 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
                     opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao,
                     // The CRT model: scanline depth, mask depth, curvature, scanlines in the picture;
                     // columns, output pixels per scanline, halation.
-                    crt.scan, crt.mask, crt.curve, std::max(src_h_lines, 1.0f),
-                    (float)c.src_w, vh / std::max(src_h_lines, 1.0f), crt.halation, crt_fit_now.shift};
+                    crt.scan, crt.mask, crt.curve, std::max(crt_fit_now.lines, 1.0f),
+                    (float)c.src_w, vh / std::max(crt_fit_now.lines, 1.0f), crt.halation, crt_fit_now.shift};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
@@ -3510,6 +3510,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (in_match) {
       if (const auto* scene = frame_scene_draw(frame)) {
         build_projection(*scene, fc.projection); set_main_projection(scene); found = true;
+        fc.orthographic = fc.projection[15] == 1.0f;   // the Arcade look's 2D camera
       }
     }
     if (!found) set_main_projection(nullptr);
