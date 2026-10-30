@@ -2662,6 +2662,18 @@ static void draw_settings_icon(int index, ImVec2 p, ImU32 color) {
 #include "ui_sources/gd_melee/text.inl"
 #include "pc_settings_visuals.inl"
 
+// A change that applies at the next start (a mod look, an audio driver, a graphics backend): a button
+// that saves the settings and restarts the game, instead of the player closing and reopening it. The
+// standalone settings window has no game behind it, so it shows none.
+static bool g_settings_standalone = false;
+static bool g_settings_restart_asked = false;
+static void restart_now_button(const char* id) {
+  if (g_settings_standalone) return;
+  char label[96];
+  std::snprintf(label, sizeof label, "Restart now##%s", id);
+  if (ImGui::Button(label)) g_settings_restart_asked = true;
+}
+
 static void settings_gd_chrome(ImVec2 origin, float scale, const char* title = "SETTINGS") {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const auto point = [&](float x, float y) {
@@ -4621,7 +4633,8 @@ static void game_mods_panel(const RenderOptions& options) {
       const bool engine_ok = mods::runs_on(d, options.native_source);
       bool on = d.enabled;
       ImGui::BeginDisabled(!engine_ok || view.scanning || view.importing);
-      if (settings_toggle(on ? "On" : "Off", &on)) mods::choose(d.key, on);
+      static std::string toggled;   // the pack switched in this session, which the restart applies
+      if (settings_toggle(on ? "On" : "Off", &on)) { mods::choose(d.key, on); toggled = d.key; }
 #ifdef MELEE_NO_SLIPPI   // one engine in this build: there is no other one to send the player to
       ImGui::EndDisabled();
       if (!engine_ok) ImGui::TextDisabled("This build cannot play it.");
@@ -4634,8 +4647,10 @@ static void game_mods_panel(const RenderOptions& options) {
 #endif
       else if (!options.native_source && !d.card)
         ImGui::TextDisabled("Play this disc from the launcher's Mods page.");
-      else if (d.restart || (!options.native_source && d.kind == mods::Kind::Te))
+      else if (d.restart || (!options.native_source && d.kind == mods::Kind::Te)) {
         ImGui::TextDisabled("Restart to apply changes.");
+        if (toggled == d.key) restart_now_button("game_mod");
+      }
       if (d.status == mods::Support::Untested) ImGui::TextDisabled("This build has not been verified yet.");
     }
     ImGui::PopID();
@@ -5924,8 +5939,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       const auto diet = host::cosmetics::official_look_state(0, mods_dir);
       const auto anim = host::cosmetics::official_look_state(1, mods_dir);
       static bool was_busy[2] = {false, false};
-      static bool enable_animelee = false;
-      if (was_busy[1] && !anim.busy && anim.installed) { mods::rescan_async(); enable_animelee = true; }
+      static bool enable_animelee = false, animelee_new = false;   // installed in this session: not running yet
+      if (was_busy[1] && !anim.busy && anim.installed) { mods::rescan_async(); enable_animelee = animelee_new = true; }
       was_busy[0] = diet.busy; was_busy[1] = anim.busy;
       if (enable_animelee) {
         const auto view = mods::panel_view();
@@ -5954,8 +5969,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             if (!s.message.empty()) settings_hint("%s", s.message.c_str());
           } else if (s.installed) {
             ImGui::TextColored(ImVec4(.37f, .84f, .53f, 1), "Installed");
+            // The Static Recomp plays a disc mod from the launcher's Mods page, not from the MODS tab.
             settings_hint("%s", which == 0 ? "Pick Look > Diet Classic, Diet 64 or Crystal under Low-Detail Modes, then restart."
-                                           : "On in Game mods (MODS tab). Restart to play with it.");
+                                : options.native_source ? "On in Game mods (MODS tab). Restart to play with it."
+                                                        : "Play it from the launcher's Mods page.");
+            if (which == 1 && animelee_new && options.native_source) restart_now_button("official_animelee");
           } else {
             ImGui::BeginDisabled(s.any_busy);
             if (ImGui::Button("Install")) {
@@ -6041,8 +6059,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       const std::string active = host::cosmetics::active_look_pack();
       if (!chosen.empty() && !ready(chosen.c_str()))
         settings_hint("%s needs setup below. Its mod artwork is not active.", chosen.c_str());
-      else if (chosen != active)
+      else if (chosen != active) {
         settings_hint("Restart the game to apply the selected artwork.");
+        restart_now_button("look_artwork");
+      }
       if (current == 5 || current == 6) {
         const char* colors[] = {"Original mod colors", "Player colors (red, blue, yellow, green)"};
         int selected = current == 6 ? 1 : 0;
@@ -6122,8 +6142,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::TextWrapped("Mod artwork: %s", have.c_str());
       const std::string active = host::cosmetics::active_look_pack();
       const std::string chosen = exact_look_of(options);
-      if (!chosen.empty() && chosen != active)
+      if (!chosen.empty() && chosen != active) {
         settings_hint("%s applies after restart once its artwork is prepared.", chosen.c_str());
+        if (std::any_of(packs.begin(), packs.end(), [&](const auto& pack) { return pack.name == chosen && pack.built; }))
+          restart_now_button("look_pack");
+      }
       ImGui::InputText("Patch folder##exactlooks", patcher_folder, sizeof patcher_folder);
 #ifdef _WIN32
       ImGui::SameLine();
@@ -6399,8 +6422,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         changed = true;
       }
       if (!fg_capabilities_known) settings_hint("Checking supported modes…");
-      else if (fg_from_cache && options.frame_generation_mode != 0) settings_hint("Frame generation starts the next time the game starts.");
-      else if (!fg_deferred && fg_queried && options.frame_generation_mode == 0) settings_hint("Restart the game to fully unload frame generation.");
+      else if (fg_from_cache && options.frame_generation_mode != 0) {
+        settings_hint("Frame generation starts the next time the game starts.");
+        restart_now_button("framegen_start");
+      } else if (!fg_deferred && fg_queried && options.frame_generation_mode == 0) {
+        settings_hint("Restart the game to fully unload frame generation.");
+        restart_now_button("framegen_unload");
+      }
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -6616,6 +6644,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         const ModelState ms = host::updater::dlss5_model_state(game_dir);
         if (ms == ModelState::Present) {
           settings_hint("DLSS 5 is installed. Restart the game to use it.");
+          restart_now_button("dlss5");
         } else if (ms == ModelState::Downloading) {
           settings_hint("%s", host::updater::dlss5_model_message().c_str());
         } else {
@@ -7005,8 +7034,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       (void)running;
       if (false)
 #endif
+      {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Graphics backend: %s at the next launch. Save settings, then restart.",
                            options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
+        restart_now_button("backend");
+      }
     }
 
     // ---- Advanced ----
@@ -7134,7 +7166,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       changed = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto and Low latency share the Windows output with other apps.\nAuto adjusts buffering and remembers it per device; Low latency keeps your selected software buffer fixed.\nWASAPI exclusive takes over the Windows output while the game runs.\nASIO uses an installed interface driver and its outputs 1 and 2; if it cannot start, Auto is used.\nThe fastest stable choice depends on the device and driver.");
-    if (options.audio_mode != mode_at_start) ImGui::TextDisabled("Applies after restart.");
+    if (options.audio_mode != mode_at_start) { ImGui::TextDisabled("Applies after restart."); restart_now_button("audio_mode"); }
     // This dialog can enable the manually selected interface mode, so its official logo is
     // shown with the picker even before that mode is selected. Preserve the artwork's alpha
     // and aspect ratio; the same asset is packaged in ui_sources/vendor beside the game.
@@ -7162,7 +7194,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (int i = 0; i < 8; ++i) if (buffer_values[i] == options.audio_asio_buffer) buffer_choice = i;
       if (settings_combo("ASIO buffer", &buffer_choice, buffer_names, 8)) { options.audio_asio_buffer = buffer_values[buffer_choice]; changed = true; }
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smaller is less delay; too small can crackle. Driver default uses the size set in the interface's control panel.");
-      if (options.audio_asio_driver != asio_at_start || options.audio_asio_buffer != asio_buffer_at_start) ImGui::TextDisabled("Applies after restart.");
+      if (options.audio_asio_driver != asio_at_start || options.audio_asio_buffer != asio_buffer_at_start) {
+        ImGui::TextDisabled("Applies after restart.");
+        restart_now_button("asio");
+      }
       ImGui::TextDisabled("ASIO uses driver outputs 1 and 2.");
     }
     if (options.audio_mode == 1) {
@@ -7200,7 +7235,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Used by Windows shared and WASAPI exclusive modes, and by Auto if ASIO cannot start.");
       ImGui::EndDisabled();
-      if (options.audio_device != device_at_start) ImGui::TextDisabled("Applies after restart.");
+      if (options.audio_device != device_at_start) { ImGui::TextDisabled("Applies after restart."); restart_now_button("audio_device"); }
     }
     host::AsioStatus asio;
     if (host::audio_running() && host::audio_asio_info(&asio)) {
@@ -9733,6 +9768,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // being dragged writes once, at the end, not sixty times a second). The button stays for
     // anyone who wants to be sure, and for the few controls that do not report a change.
     if (changed) state.dirty = true;
+    g_settings_standalone = state.fill_window;
+    if (g_settings_restart_asked) { g_settings_restart_asked = false; state.confirm = SettingsState::Confirm::Restart; }
     const bool autosave = state.dirty && !ImGui::IsAnyItemActive();
     if ((state.fill_window && ImGui::Button("Save settings")) || autosave) {
       state.dirty = false;
@@ -9763,6 +9800,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (ImGui::Button(restart ? "Restart" : "Quit", ImVec2(110, 0))) {
           state.confirm = SettingsState::Confirm::None;
           ImGui::CloseCurrentPopup();
+          // The new process reads its settings from the file: an unsaved choice (the look or audio
+          // driver this restart is for) is written first.
+          if (restart && state.dirty) { state.dirty = false; state.saved = write_settings_file(state, options); }
           if (restart) host::request_restart(); else host::request_exit(0);
         }
         ImGui::SameLine();
