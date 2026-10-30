@@ -1,5 +1,6 @@
-// Legacy hand-tuned CPU habit tables. The separately trained neural pro ghosts load from
-// ghost_ai_<player>.bin; these fallback tables are not their training data or model weights.
+// Habit tables: the practice CPU's odds measured from each player's games (Fight a pro on the Static
+// Recomp, and the fallback when a player's AI file is missing). The Source Port's pro AI is a separate
+// network per player, loaded from ghost_ai_<player>.bin; these tables are not its training data.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
@@ -34,5 +35,10 @@ inline const Ghost kGhosts[] = {
     {"aMSa", "Yoshi", 14, 0, 0,
      {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}, 0, 0},
 };
+
+// The players Fight a pro offers. Every entry keeps its place (the index is saved in settings and sent to
+// the game); Hungrybox is not offered yet.
+inline constexpr bool kReleased[] = {true, true, false, true, true};
+static_assert(sizeof kReleased / sizeof kReleased[0] == sizeof kGhosts / sizeof kGhosts[0], "one flag per ghost");
 
 }  // namespace practice_ghosts

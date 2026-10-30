@@ -227,6 +227,24 @@ const char* const kPresetAbout[] = {
     "Wavedash forward tilt, boost grabs.",      "Shields, then punishes out of shield.",
     "DIs down, mixes every tech and getup.",    "Mixes every option from the ledge.",
 };
+constexpr int kGhostCount = (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]);
+
+// Fight a pro: on the Source Port the players whose own AI file loaded; elsewhere (or with no file) the
+// players with habit tables. Hungrybox is not offered yet (practice_ghosts::kReleased).
+bool neural_ghosts() {
+  for (int i = 0; i < kGhostCount; ++i)
+    if (practice_ghosts::kReleased[i] && ghost_ai::specialist_available((unsigned)i)) return true;
+  return false;
+}
+bool ghost_offered(int i, bool neural) {
+  if (i < 0 || i >= kGhostCount || !practice_ghosts::kReleased[i]) return false;
+  return neural ? ghost_ai::specialist_available((unsigned)i) : practice_ghosts::kGhosts[i].games > 0;
+}
+// The pro the CPU plays as now, or "".
+std::string active_pro(const MuPcConfig& c) {
+  if (!(c.preset & 0x80) || c.preset == MU_PC_PRESET_AI || (c.preset & 0x7F) >= kGhostCount) return "";
+  return practice_ghosts::kGhosts[c.preset & 0x7F].name;
+}
 
 enum class Page : int {
   Root, Queue, Code, Blocked, Cpu, Moves, Attacks, Defense, Oos, Hit, Di, Tech, Getup, After, Ledge, Tools,
@@ -278,7 +296,7 @@ bool cpu_page(Page p) {
 enum class Kind { Page, Toggle, Percent, Number, Choice, Odds, Flag, Action, Info };
 enum Action : int {
   kActNone, kActUnranked, kActCancel, kActWindow, kActDefaults, kActPreset = 100, kActLoad = 200, kActSave = 300, kActGhost = 400,
-  kActBlocked = 400, kActTeams = 500
+  kActTeams = 500, kActBlocked = 600
 };
 
 struct Row {
@@ -422,8 +440,16 @@ std::vector<Row> rows_for(Page p) {
                                                                     : "Find a match while you train."));
       const practice_cpu::Status st = practice_cpu::status();
       std::string cpu = !c.enabled ? "Off" : (st.driving ? plan_text(st.plan) : "On");
-      rows.push_back(page_row("Fight a pro", Page::Ghosts, "", "A pro's habits from their own games, on their own character. Pick one and go."));
-      rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Training CPU moves and attacks."));
+      {
+        const bool neural = neural_ghosts();
+        bool any = false;
+        for (int i = 0; i < kGhostCount; ++i) any |= ghost_offered(i, neural);
+        if (any)
+          rows.push_back(page_row("Fight a pro", Page::Ghosts, active_pro(c),
+                                  neural ? "Play an AI that learned from a top player's own games."
+                                         : "A top player's habits on the CPU, on their own character."));
+      }
+      rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Practice CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),
                               "What it does when you attack near it."));
       rows.push_back(page_row("Hit reactions", Page::Hit, "Tech " + top_name(kTech, c.tech_odds, MU_PC_TECH_COUNT),
@@ -434,10 +460,9 @@ std::vector<Row> rows_for(Page p) {
       for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP, MU_PC_TOOL_FRAME_ADVANCE})
         tools += (c.tools & m) ? 1 : 0;
       char t[24]; std::snprintf(t, sizeof t, tools ? "%d on" : "Off", tools);
-      rows.push_back(page_row("Tools", Page::Tools, t, "Save states, hitboxes, inputs."));
+      rows.push_back(page_row("Tools", Page::Tools, t, g_f.native_source ? "Save states, hitboxes, inputs, frame advance." : "Frame advance."));
       std::string preset = c.preset >= 1 && c.preset <= mu_pc_preset_count() ? mu_pc_preset_name(c.preset - 1) : "Your own";
-      if ((c.preset & 0x80) && c.preset != MU_PC_PRESET_AI && (c.preset & 0x7F) < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]))
-        preset = std::string(practice_ghosts::kGhosts[c.preset & 0x7F].name) + " AI";
+      if (!active_pro(c).empty()) preset = active_pro(c);
       rows.push_back(page_row("Presets", Page::Presets, preset, "Ready-made CPUs and your own setups."));
       rows.push_back(action_row("All settings", kActWindow, "", "The full Practice window, for the mouse and keyboard."));
       break;
@@ -468,7 +493,7 @@ std::vector<Row> rows_for(Page p) {
       }
       break;
     case Page::Cpu:
-      rows.push_back(toggle_row("Practice CPU", &c.enabled, "On: the Training CPU follows these pages. Never online."));
+      rows.push_back(toggle_row("Practice CPU", &c.enabled, "On: the CPU follows these pages. Never online."));
       rows.push_back(toggle_row("Only react", &c.freeze, "It stands still and only DIs, techs and recovers."));
       rows.push_back(page_row("Movement", Page::Moves, top_of(kMoves, c.move_odds, MU_PC_MOVE_COUNT), "What it does between attacks."));
       {
@@ -534,7 +559,7 @@ std::vector<Row> rows_for(Page p) {
       break;
     case Page::Tools: {
       const bool on = g_f.native_source;
-      const char* only = "These run on the Source Port.";
+      const char* only = "Save states, recording, hitboxes and the input display run on the Source Port.";
       struct T { const char* label; uint8_t mask; const char* about; };
       const T tools[] = {
           {"D-pad states", MU_PC_TOOL_DPAD, "Right keeps this moment, left returns. Down records you as the CPU, up plays it."},
@@ -548,43 +573,37 @@ std::vector<Row> rows_for(Page p) {
         r.about = "In Training, L + R + Z freezes the game. Z steps a frame; the D-pad moves the CPU.";
         rows.push_back(r);
       }
-      for (const T& t : tools) {
-        Row r; r.kind = Kind::Flag; r.label = t.label; r.byte = &c.tools; r.mask = t.mask; r.about = on ? t.about : only; r.enabled = on;
+      if (!on) {
+        Row r; r.kind = Kind::Info; r.label = "More tools"; r.value_override = "Source Port"; r.about = only;
         rows.push_back(r);
+      } else {
+        for (const T& t : tools) {
+          Row r; r.kind = Kind::Flag; r.label = t.label; r.byte = &c.tools; r.mask = t.mask; r.about = t.about;
+          rows.push_back(r);
+        }
       }
       break;
     }
-    case Page::Ghosts:
-      for (int i = 0; i < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]); ++i) {
+    case Page::Ghosts: {
+      const bool neural = neural_ghosts();
+      for (int i = 0; i < kGhostCount; ++i) {
+        if (!ghost_offered(i, neural)) continue;
         const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
-        char about[220];
-        const bool ai_ready = ghost_ai::specialist_available((unsigned)i);
-        if (ai_ready)
-          std::snprintf(about, sizeof about,
-                        "A player-specific policy trained from %s's own verified %s games, frame by frame. "
-                        "The CPU becomes %s and Training starts again.",
-                        gh.name, gh.character, gh.character);
+        char about[240];
+        if (neural)
+          std::snprintf(about, sizeof about, "Plays %s the way %s does, learned from %s's own games. "
+                        "Training starts again with the CPU as %s.", gh.character, gh.name, gh.name, gh.character);
         else
-          std::snprintf(about, sizeof about,
-                        "%s's separate player-specific policy is not installed. This choice is disabled.", gh.name);
-        rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about, ai_ready));
+          std::snprintf(about, sizeof about, "%s's habits on the CPU: attacks, movement, shields, techs and ledge "
+                        "options. Training starts again with the CPU as %s.", gh.name, gh.character);
+        rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about));
       }
       break;
+    }
     case Page::Presets:
       for (int i = 0; i < mu_pc_preset_count(); ++i)
         rows.push_back(action_row(mu_pc_preset_name(i), kActPreset + i, c.preset == i + 1 ? "In use" : "",
                                   kPresetAbout[i % (int)(sizeof kPresetAbout / sizeof kPresetAbout[0])]));
-      for (int i = 0; i < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]); ++i) {
-        // Ghosts: the odds measured from a player's own games (port/runtime/hle/practice_ghosts.h).
-        const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
-        char about[200];
-        const bool ai_ready = ghost_ai::specialist_available((unsigned)i);
-        if (ai_ready)
-          std::snprintf(about, sizeof about, "Use %s's verified, player-specific policy as the Training CPU.", gh.name);
-        else
-          std::snprintf(about, sizeof about, "%s's separate player-specific policy is not installed; this choice is disabled.", gh.name);
-        rows.push_back(action_row((std::string(gh.name) + " ghost").c_str(), kActGhost + i, gh.character, about, ai_ready));
-      }
       rows.push_back(page_row("Your setups", Page::Setups, "", "Save what is set now; load it any time."));
       rows.push_back(action_row("Defaults", kActDefaults, "", "Every CPU setting back to the start."));
       break;
