@@ -293,6 +293,10 @@ void reset_ram_translator() {
   select_invocation();
 }
 void configure_ram_translator(bool value) {
+  // The stencils use the processor's FMA instructions (leaf_stencils.cpp): without them, the interpreter.
+  int r[4]{};
+  __cpuid(r, 1);
+  if (value && !(((r[2] >> 12) & 1) && ((r[2] >> 27) & 1) && (_xgetbv(0) & 6) == 6)) { value = false; host::log("RAM translator: off, this processor has no FMA"); }
   reset_ram_translator(); enabled = value;
   // The dispatch reports its changes only while native branches can depend on them.
   g_ram_dispatch_watch = value;

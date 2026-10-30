@@ -72,9 +72,15 @@ std::string exe_dir() {
   const fs::path self = fs::read_symlink("/proc/self/exe", ec);
   return ec ? fs::current_path().string() : self.parent_path().string();
 }
-std::string game_exe() { return g_dir + "/melee_" "source"; }
 std::string ini_path() { return g_dir + "/launcher.ini"; }
 bool file_exists(const std::string& p) { std::error_code ec; return fs::is_regular_file(p, ec); }
+// The game is built for AVX2. A processor without it (older than Intel Haswell or AMD Ryzen) stopped
+// on its first instruction with code 132, so it gets the compatibility build beside it instead.
+bool cpu_has_avx2() { __builtin_cpu_init(); return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }
+std::string game_exe() {
+  const bool compat = !cpu_has_avx2() && file_exists(g_dir + "/melee_" "source_compat");
+  return g_dir + (compat ? "/melee_" "source_compat" : "/melee_" "source");
+}
 
 void load_ini() {
   std::ifstream f(ini_path());
@@ -781,6 +787,9 @@ int main(int argc, char** argv) {
           g_replay_playing.clear();
           status(code == 4 ? "Replay stopped." : code ? "Replay playback ended with an error. Check melee_port.log." : "Replay finished.");
         }
+      } else if (code == 128 + SIGILL) {
+        status(cpu_has_avx2() ? "The game stopped on an instruction this processor does not have (code 132). Send logs from Help."
+                              : "This processor has no AVX2 and the compatibility build is missing: extract the whole release archive again.");
       } else status(code ? "The game ended with code " + std::to_string(code) + "." : "Ready.");
       SDL_RestoreWindow(window);
     }

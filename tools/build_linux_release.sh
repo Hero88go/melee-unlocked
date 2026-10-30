@@ -6,4 +6,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 tools/build_linux.py
+# The compatibility build for processors without AVX2, which the launcher starts on them.
+python3 tools/build_linux.py --cpu SSE2 --build-dir build-linux-compat --game-build-dir build-linux-game-compat
 python3 tools/package_linux_release.py

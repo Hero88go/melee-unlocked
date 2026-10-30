@@ -124,6 +124,8 @@ GameImageReservation g_game_image_reservation;
 MuGameApi g_game{};
 #ifdef _WIN32
 std::string g_dll = "melee_game.dll";
+#elif defined(MELEE_GAME_LIBRARY_NAME)
+std::string g_dll = MELEE_GAME_LIBRARY_NAME;   // the compatibility build loads its own game library
 #else
 std::string g_dll = "melee_game.so";
 #endif

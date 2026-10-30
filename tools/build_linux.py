@@ -57,6 +57,9 @@ def main():
         '-DMELEE_PORT_GEN=' + (str(args.port_gen.resolve()) if (args.port_gen / 'hle_decls.h').exists() else ''))
     full = not args.headless_build and (args.port_gen / 'hle_decls.h').exists()
     targets = ['melee_linux'] + (['melee_' 'source', 'melee_launcher'] if full else [])
+    if full and args.cpu != 'AVX2':
+        targets = ['melee_' 'source']   # the compatibility build: only the game, under its own names
+
     if args.test:
         targets += ['linux_gc_adapter_test', 'linux_input_script_test']
     run('cmake', '--build', host_build, '--target', *targets, '-j', args.jobs)

@@ -9,6 +9,9 @@
 // Compile with /O2 /Ob2 /Gy /GS- /GL-. The extractor rejects a frame, a call or a host reference in
 // a leaf stencil, any host symbol that is not on its list, and a non-tail Next everywhere.
 // SPDX-License-Identifier: GPL-2.0-or-later
+// A leaf stencil calls nothing, so fmadd is the instruction itself even in the SSE2 build; there the
+// translator stays off on processors without FMA (configure_ram_translator).
+#define MU_PPC_HARDWARE_FMA
 #include "ppc.h"
 #include "ram_translator.h"
 

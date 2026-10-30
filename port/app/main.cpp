@@ -1213,6 +1213,9 @@ static void remember_iso(const std::string& iso) {
 
 // The runtime and the translated game are built for AVX2. Without it the first AVX2 instruction
 // kills the process before anything is logged, so say so plainly instead (this file is not AVX2).
+#ifndef MELEE_CPU_BASELINE_NAME
+#define MELEE_CPU_BASELINE_NAME "AVX2"
+#endif
 static bool cpu_has_avx2() {
   int r[4];
   __cpuid(r, 0); if (r[0] < 7) return false;
@@ -1397,7 +1400,9 @@ static int melee_main(int argc, char** argv) {
 #ifndef MELEE_SOURCE_PORT
   user_gecko::install_static_runtime();
 #endif
-  if (!cpu_has_avx2()) {
+  // The compatibility build (an SSE2 baseline) exists for exactly these processors: only an AVX2
+  // build has anything to refuse.
+  if (std::strcmp(MELEE_CPU_BASELINE_NAME, "AVX2") == 0 && !cpu_has_avx2()) {
     const char* msg = "Melee Unlocked needs a CPU with AVX2 (Intel Haswell 2013 or newer, AMD Ryzen or newer). This CPU does not support it.";
     std::fprintf(stderr, "%s\n", msg);
     MessageBoxA(nullptr, msg, "Melee Unlocked", MB_ICONERROR | MB_OK);

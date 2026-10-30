@@ -342,7 +342,16 @@ inline double f25(double d) {
   i = (i & 0xFFFFFFFFF8000000ull) + (i & 0x8000000ull);
   std::memcpy(&d, &i, 8); return d;
 }
-// Hardware FMA, exactly as Jit64 emits VFMADD/VFMSUB/VFNMADD/VFNMSUB (scalar double).
+// Hardware FMA, exactly as Jit64 emits VFMADD/VFMSUB/VFNMADD/VFNMSUB (scalar double). A build for
+// processors without FMA (the compatibility builds) gets the same single rounding from std::fma,
+// with the operands negated as the instructions do so zero signs match too. (MSVC compiles the
+// intrinsics into any build, so its SSE2 compatibility build faulted on them on those processors.)
+#if !defined(__FMA__) && !defined(__AVX2__) && !defined(MU_PPC_HARDWARE_FMA)
+inline double fmadd(double a, double c, double b) { return std::fma(a, c, b); }
+inline double fmsub(double a, double c, double b) { return std::fma(a, c, -b); }
+inline double fnmadd(double a, double c, double b) { return std::fma(-a, c, -b); }   // VFNMSUB
+inline double fnmsub(double a, double c, double b) { return std::fma(-a, c, b); }    // VFNMADD
+#else
 inline double fmadd(double a, double c, double b) {
   return _mm_cvtsd_f64(_mm_fmadd_sd(_mm_set_sd(a), _mm_set_sd(c), _mm_set_sd(b)));
 }
@@ -355,6 +364,7 @@ inline double fnmadd(double a, double c, double b) {  // PPC fnmadd = -(a*c + b)
 inline double fnmsub(double a, double c, double b) {  // PPC fnmsub = -(a*c - b) = VFNMADD
   return _mm_cvtsd_f64(_mm_fnmadd_sd(_mm_set_sd(a), _mm_set_sd(c), _mm_set_sd(b)));
 }
+#endif
 double fres(double v);
 double frsqrte(double v);
 inline uint64_t fctiw(double b, bool truncate) {

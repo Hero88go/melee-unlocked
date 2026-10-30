@@ -25,6 +25,15 @@ while(MELEE_VERSION_PART_COUNT LESS 4)
 endwhile()
 list(SUBLIST MELEE_VERSION_PARTS 0 4 MELEE_VERSION_PARTS)
 list(JOIN MELEE_VERSION_PARTS "," MELEE_VERSION_COMMAS)
+# The compatibility build (any other baseline) sits beside the AVX2 one under its own names, and the
+# launcher picks between them by asking the processor.
+if(MELEE_CPU_BASELINE STREQUAL "AVX2")
+  set(MELEE_GAME_FILE melee_game.so)
+  set(MELEE_SOURCE_NAME melee_source)
+else()
+  set(MELEE_GAME_FILE melee_game_compat.so)
+  set(MELEE_SOURCE_NAME melee_source_compat)
+endif()
 if(MELEE_CPU_BASELINE STREQUAL "AVX2")
   set(MELEE_HOST_ARCH -mavx2 -mfma)
 elseif(MELEE_CPU_BASELINE STREQUAL "AVX")
@@ -105,7 +114,9 @@ add_executable(melee_source "${PORT}/app/main.cpp" settings_window_linux.cpp "${
   "${PORT}/app/source_guest_boundary.cpp" "${PORT}/app/source_p2p.cpp" "${NATIVE_RECORDING_CODES}")
 target_include_directories(melee_source PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${PORT}/runtime/abi" "${PORT}/app")
 target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
-  MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}" MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
+  MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}" MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS}
+  MELEE_GAME_LIBRARY_NAME="${MELEE_GAME_FILE}")
+set_target_properties(melee_source PROPERTIES OUTPUT_NAME ${MELEE_SOURCE_NAME})
 target_compile_options(melee_source PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
 target_link_libraries(melee_source PRIVATE full_runtime full_mu_net)
 set_target_properties(melee_source PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -118,12 +129,12 @@ add_custom_command(TARGET melee_source POST_BUILD
 if(TARGET melee_game)
   add_dependencies(melee_source melee_game)
   add_custom_command(TARGET melee_source POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:melee_game>" "$<TARGET_FILE_DIR:melee_source>/melee_game.so"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:melee_game>" "$<TARGET_FILE_DIR:melee_source>/${MELEE_GAME_FILE}"
     VERBATIM)
 elseif(MELEE_LINUX_GAME_LIBRARY AND EXISTS "${MELEE_LINUX_GAME_LIBRARY}")
   get_filename_component(MELEE_LINUX_GAME_DIR "${MELEE_LINUX_GAME_LIBRARY}" DIRECTORY)
   add_custom_command(TARGET melee_source POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_LINUX_GAME_LIBRARY}" "$<TARGET_FILE_DIR:melee_source>/melee_game.so"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_LINUX_GAME_LIBRARY}" "$<TARGET_FILE_DIR:melee_source>/${MELEE_GAME_FILE}"
     VERBATIM)
 endif()
 

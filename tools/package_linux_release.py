@@ -59,8 +59,8 @@ with Windows players on the same version.
 
 Requirements
 
-  - An x86-64 Linux desktop with a processor that has AVX2 (Intel Haswell 2013 or newer, AMD Ryzen or
-    newer) and an OpenGL 4.5 graphics driver (Mesa or NVIDIA).
+  - An x86-64 Linux desktop and an OpenGL 4.5 graphics driver (Mesa or NVIDIA). Processors without
+    AVX2 (older than Intel Haswell 2013 or AMD Ryzen) start the compatibility build beside the game.
   - Everything else the game needs is in lib/ beside it.
   - zenity or kdialog for file pickers (most desktops have one).
 
@@ -149,6 +149,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build-linux/port/linux/full')
     parser.add_argument('--game-build-dir', type=Path, default=ROOT / 'build-linux-game')
+    # The compatibility build for processors without AVX2 (tools/build_linux.py --cpu SSE2): without it
+    # those players' game stopped on its first instruction with code 132.
+    parser.add_argument('--compat-build-dir', type=Path, default=ROOT / 'build-linux-compat/port/linux/full')
+    parser.add_argument('--compat-game-build-dir', type=Path, default=ROOT / 'build-linux-game-compat')
     parser.add_argument('--out', type=Path, default=ROOT / 'release')
     parser.add_argument('--ghost-ai-dir', type=Path, default=None,
                         help='ghost_ai_<pro>.bin for each released pro plus ghost_ai_models.json (Fight a pro)')
@@ -160,12 +164,21 @@ def main():
     launcher = args.build_dir / 'launcher' / 'MeleeUnlocked'
     game = args.game_build_dir / 'melee_game.so'
     snapexcl = args.game_build_dir / 'melee_game.snapexcl'
-    for need in (exe, launcher, game, snapexcl):
+    compat_exe = args.compat_build_dir / (EXE + '_compat')
+    compat_game = args.compat_build_dir / 'melee_game_compat.so'
+    for need in (exe, launcher, game, snapexcl, compat_exe, compat_game):
         if not need.is_file():
             raise SystemExit(f'missing {need} (run tools/build_linux.py first)')
     reported = subprocess.run([str(exe), '--version'], capture_output=True, text=True, timeout=60).stdout.strip()
     if reported != version:
         raise SystemExit(f'the Source Port reports {reported!r}, not {version!r}')
+    reported = subprocess.run([str(compat_exe), '--version'], capture_output=True, text=True, timeout=60).stdout.strip()
+    if reported != version:
+        raise SystemExit(f'the compatibility build reports {reported!r}, not {version!r}')
+    for binary in (compat_exe, compat_game):
+        listing = subprocess.run(['objdump', '-d', '--no-show-raw-insn', str(binary)], capture_output=True, text=True).stdout
+        if any(' %ymm' in line or ',%ymm' in line or 'vfmadd' in line for line in listing.splitlines()):
+            raise SystemExit(f'{binary} uses AVX instructions; the compatibility build must not')
     if version.encode() not in launcher.read_bytes():
         raise SystemExit(f'the launcher was built before VERSION became {version}')
 
@@ -194,6 +207,12 @@ def main():
     run('objcopy', '--compress-debug-sections=zlib', folder / 'melee_game.dbg')
     subprocess.run(['objcopy', '--remove-section=.gnu_debuglink', '--add-gnu-debuglink=melee_game.dbg',
                     'melee_game.so'], cwd=folder, check=True)
+    # The compatibility pair, which the launcher starts on processors without AVX2. Its debug file stays
+    # out of the archive (the AVX2 one is most of its size); the link to the other one is removed.
+    shutil.copy2(compat_exe, folder / (EXE + '_compat'))
+    shutil.copy2(compat_game, folder / 'melee_game_compat.so')
+    run('strip', '--strip-unneeded', folder / (EXE + '_compat'))
+    run('objcopy', '--remove-section=.gnu_debuglink', folder / 'melee_game_compat.so')
 
     # Fight a pro: one network per released pro beside the Source Port, as in the Windows zip.
     for pro_file in [] if args.ghost_ai_dir is None else [f'ghost_ai_{pro}.bin' for pro in ('mang0', 'zain', 'cody', 'amsa')] + ['ghost_ai_models.json']:
@@ -218,7 +237,7 @@ def main():
         os.chmod(tools_dir / tool, 0o755)
         shader_tools.append(tools_dir / tool)
     libraries = {}
-    for binary in (exe, launcher, game, *shader_tools):
+    for binary in (exe, launcher, game, compat_exe, compat_game, *shader_tools):
         libraries.update(ldd(binary))
     licenses = folder / 'licenses'
     licenses.mkdir()
@@ -252,12 +271,14 @@ def main():
     for path in lib.iterdir():
         run('patchelf', '--set-rpath', '$ORIGIN', path)
     run('patchelf', '--set-rpath', '$ORIGIN/lib', folder / 'melee_game.so')
+    run('patchelf', '--set-rpath', '$ORIGIN/lib', folder / 'melee_game_compat.so')
     for tool in shader_tools:
         run('patchelf', '--set-rpath', '$ORIGIN/../lib', tool)
     # Prove it: with no help from the environment, every dependency the package bundles resolves to lib/.
     env = {k: v for k, v in os.environ.items() if k != 'LD_LIBRARY_PATH'}
     wrong = []
-    for binary in [folder / EXE, folder / 'MeleeUnlocked', folder / 'melee_game.so', *shader_tools, *lib.iterdir()]:
+    for binary in [folder / EXE, folder / 'MeleeUnlocked', folder / 'melee_game.so', folder / (EXE + '_compat'),
+                   folder / 'melee_game_compat.so', *shader_tools, *lib.iterdir()]:
         out = subprocess.run(['ldd', str(binary)], capture_output=True, text=True, env=env).stdout
         dynamic = subprocess.run(['readelf', '-d', str(binary)], capture_output=True, text=True).stdout
         needed = {line.split('[', 1)[1].split(']', 1)[0] for line in dynamic.splitlines() if '(NEEDED)' in line}
