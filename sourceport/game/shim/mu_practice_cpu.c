@@ -390,13 +390,21 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
             }
         }
         /* Not on the ledge or leaving it by a ledge option: hanging is safe, and the pro's own choice there
-         * (getup, roll, drop and jump) is theirs. The net took over while it hung, let go and flew away. */
+         * (getup, roll, drop and jump) is theirs. The net took over while it hung, let go and flew away.
+         * Falling well below the stage's top is off the stage wherever it is: right under the middle of the stage
+         * the net once left it alone and Yoshi's egg throws carried it down past the bottom. */
         const int ledge = v.cpu.motion >= MU_PC_MS_CLIFF_CATCH && v.cpu.motion <= MU_PC_MS_CLIFF_LAST;
-        if (!no_net && !ledge && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag &&
-            ((ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
-             (ax > v.ledge_x - 40.0f && v.cpu.y < v.ledge_y - 10.0f && v.cpu.vy < 0.0f)))
+        /* Once the net has taken over it keeps the fighter until it is back above the ledge, on it, landed or hit:
+         * handing back on the way up let the network's up special stop Yoshi's recovery jump. */
+        static int net_hold[6];
+        const int free_air = !no_net && !ledge && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag;
+        if (!free_air || v.cpu.y > v.ledge_y + 5.0f) net_hold[slot] = 0;
+        if (free_air && (net_hold[slot] ||
+            (ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
+            (v.cpu.y < v.ledge_y - 10.0f && v.cpu.vy < 0.0f)))
         {
             MuPcConfig rc = *c;
+            net_hold[slot] = 1;
             rc.enabled = 1;
             rc.freeze = 0;
             if (rc.recovery == MU_PC_RECOVER_GAME) rc.recovery = MU_PC_RECOVER_MIX;
