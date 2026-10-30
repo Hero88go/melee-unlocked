@@ -590,6 +590,13 @@ std::vector<Row> rows_for(Page p) {
         if (!ghost_offered(i, neural)) continue;
         const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
         char about[240];
+        // Vanilla mode on a new memory card: a locked character cannot be picked in Training.
+        const int css = css_kind_of(gh.character);
+        if (css >= 0 && !(g_f.unlocked & (1u << css))) {
+          std::snprintf(about, sizeof about, "Unlock %s on your memory card to fight %s.", gh.character, gh.name);
+          rows.push_back(action_row(gh.name, kActGhost + i, "Locked", about, false));
+          continue;
+        }
         if (neural)
           std::snprintf(about, sizeof about, "Plays %s the way %s does, learned from %s's own games. "
                         "Training starts again with the CPU as %s.", gh.character, gh.name, gh.name, gh.character);
@@ -732,6 +739,7 @@ void press(Page p, Row& r, Result& out) {
       // The CPU takes the player's own character (Training starts again for it when it differs).
       const int css = css_kind_of(practice_ghosts::kGhosts[r.action - kActGhost].character);
       if (css >= 0) slippi::native_practice::submit_train_against(css);
+      out.close = true;   // Training starts again against that player: back to playing
     }
     return;
   }
@@ -930,6 +938,9 @@ std::vector<std::string> wrap(const std::string& s, float px, float width) {
   return lines;
 }
 
+bool editable(const Row* r) {
+  return r && r->enabled && (r->kind == Kind::Odds || r->kind == Kind::Percent || r->kind == Kind::Number || r->kind == Kind::Choice);
+}
 std::string about_now(const Row* r) {
   if (!g_error.empty() && g_f.time < g_error_until) return g_error;
   return r ? r->about : std::string();
@@ -1101,7 +1112,7 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
     const float px = 25.0f * u;
     need = std::max(need, text_width(px, r.label.c_str()) + text_width(px * 0.84f, value_of(r).c_str()) + 118.0f * u);
   }
-  const float w = std::clamp(need, 320.0f * u, (f.game_x1 - f.game_x0) * 0.56f);
+  const float w = std::clamp(need, 320.0f * u, (f.game_x1 - f.game_x0) * 0.64f);
   const float h = 50.0f * u, pitch = 60.0f * u;
   // Room on the right for the cursor ring (it reaches past the bar) even when the picture fills the window.
   const float right = f.game_x1 - 46.0f * u;
@@ -1202,7 +1213,7 @@ void draw_intro(ImDrawList* dl, const Frame& f) {
   const float gu = (f.game_y1 - f.game_y0) / 720.0f;
   // After "Go!" and before the player is busy: 1.5 to 10 seconds in, unless the search-again question is up.
   constexpr float kFrom = 1.5f, kTo = 10.0f;
-  if (since > kFrom && since < kTo && f.search.offer.empty()) {
+  if (f.intro && since > kFrom && since < kTo && f.search.offer.empty()) {
     const float u = gu * 0.82f;
     const float fa = std::min(ease((since - kFrom) / 0.35f), ease((kTo - since) / 0.45f));
     const float slide = (1.0f - ease((since - kFrom) / 0.3f)) * 30.0f * u;
@@ -1268,11 +1279,14 @@ float rail_card(ImDrawList* dl, float x, float y, float w, float u, const char* 
   for (char& c : upper) c = (char)std::toupper((unsigned char)c);
   float label_px = 13 * u;   // a long label (a replay moment) shrinks to the card's width
   const float label_w = text_width(label_px, upper.c_str());
-  if (label_w > w - 22 * u) label_px = std::max(9 * u, label_px * (w - 22 * u) / label_w);
+  if (label_w > w - 22 * u) label_px = std::max(9 * u, label_px * (w - 22 * u) / label_w * 0.97f);
   text(dl, x + 11 * u, y + 7 * u + (13 * u - label_px) * 0.5f, label_px, with_alpha(lit ? IM_COL32(255, 229, 138, 255) : kLabel, da),
        fit(upper, label_px, w - 22 * u).c_str(), 0, false);
-  const std::string shown = fit(value, value_px * u, w - 22 * u);
-  text(dl, x + 11 * u, y + 22 * u, value_px * u, with_alpha(IM_COL32(255, 255, 255, 255), da), shown.c_str());
+  float vpx = value_px * u;
+  const float vw = text_width(vpx, value.c_str());
+  if (vw > w - 22 * u) vpx = std::max(value_px * u * 0.72f, vpx * (w - 22 * u) / vw * 0.97f);
+  const std::string shown = fit(value, vpx, w - 22 * u);
+  text(dl, x + 11 * u, y + 22 * u + (value_px * u - vpx) * 0.6f, vpx, with_alpha(IM_COL32(255, 255, 255, 255), da), shown.c_str());
   float cy = y + (22.0f + value_px + 6.0f) * u;
   if (chip) {
     const float cw = text_width(12 * u, chip) + 18 * u;
@@ -1407,7 +1421,8 @@ void draw_rails(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   const std::vector<std::string> lines = wrap(about_now(cur), 14 * u, cw_l);
   float ly = y1 - 56 * u - (float)lines.size() * 16 * u;
   for (const std::string& line : lines) { text(dl, cx_l, ly, 14 * u, with_alpha(IM_COL32(200, 214, 245, 255), a), line.c_str(), 0, false); ly += 16 * u; }
-  hints(dl, cx_l, y1 - 26 * u, u * 0.82f, g_stack.size() > 1 ? "D:Move|A:Pick|B:Back" : "D:Move|A:Pick|S:Close", a);
+  hints(dl, cx_l, y1 - 26 * u, u * 0.82f,
+        editable(cur) ? "D:Change|B:Back" : g_stack.size() > 1 ? "D:Move|A:Pick|B:Back" : "D:Move|A:Pick|S:Close", a);
   // Right: the search and the CPU.
   rail_status(dl, cx_r, y0 + 16 * u, cw_r, u, f, a, true);
 }
@@ -1472,7 +1487,7 @@ void draw_slots(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
     std::string upper = r.label;
     for (char& c : upper) c = (char)std::toupper((unsigned char)c);
     float tab_px = 16 * u;   // a long label (a replay moment) shrinks to the slot
-    if (text_width(tab_px, upper.c_str()) > sw - 58 * u) tab_px = std::max(10 * u, tab_px * (sw - 58 * u) / text_width(tab_px, upper.c_str()));
+    if (text_width(tab_px, upper.c_str()) > sw - 58 * u) tab_px = std::max(10 * u, tab_px * (sw - 58 * u) / text_width(tab_px, upper.c_str()) * 0.97f);
     upper = fit(upper, tab_px, sw - 58 * u);
     const float tw = std::min(sw - 24 * u, text_width(tab_px, upper.c_str()) + 34 * u);
     const int ci = index % 4;
@@ -1483,7 +1498,9 @@ void draw_slots(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
     // Value, with arrows when it can change; then what it means.
     std::string v = value_of(r);
     if (v.empty()) v = r.kind == Kind::Page ? "Open" : (r.kind == Kind::Action ? "Press A" : "");
-    const float vpx = v.size() > 10 ? 22 * u : 27 * u;
+    // The value at full size when it fits beside the arrows, smaller otherwise (never cut short).
+    float vpx = 27 * u;
+    { const float room = sw - 44 * u, vw = text_width(vpx, v.c_str()); if (vw > room) vpx = std::max(15 * u, vpx * room / vw); }
     const bool edits = r.kind == Kind::Odds || r.kind == Kind::Percent || r.kind == Kind::Number || r.kind == Kind::Choice || r.kind == Kind::Toggle || r.kind == Kind::Flag;
     text(dl, x + 14 * u, y + 46 * u, vpx, with_alpha(IM_COL32(255, 255, 255, 255), sa * (r.enabled ? 1.0f : 0.5f)), v.c_str());
     if (lit && edits && r.enabled) {
@@ -1491,10 +1508,13 @@ void draw_slots(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
       dl->AddTriangleFilled(ImVec2(ax - 6 * u, ay - 4 * u), ImVec2(ax + 6 * u, ay - 4 * u), ImVec2(ax, ay - 13 * u), with_alpha(IM_COL32(255, 203, 0, 255), sa));
       dl->AddTriangleFilled(ImVec2(ax - 6 * u, ay + 4 * u), ImVec2(ax + 6 * u, ay + 4 * u), ImVec2(ax, ay + 13 * u), with_alpha(IM_COL32(255, 203, 0, 255), sa));
     }
-    const std::vector<std::string> lines = wrap(r.about, 14 * u, sw - 26 * u);
-    float ly = y + 92 * u;
-    for (size_t li = 0; li < lines.size() && li < 3; ++li, ly += 17 * u)
-      text(dl, x + 14 * u, ly, 14 * u, with_alpha(IM_COL32(215, 219, 230, 255), sa), lines[li].c_str(), 0, false);
+    // The whole description: four lines at the usual size, five a little smaller when it is longer.
+    float dpx = 14 * u, pitch = 17 * u;
+    std::vector<std::string> lines = wrap(r.about, dpx, sw - 26 * u);
+    if (lines.size() > 4) { dpx = 12.5f * u; pitch = 14.5f * u; lines = wrap(r.about, dpx, sw - 26 * u); }
+    float ly = y + 90 * u;
+    for (size_t li = 0; li < lines.size() && li < 5; ++li, ly += pitch)
+      text(dl, x + 14 * u, ly, dpx, with_alpha(IM_COL32(215, 219, 230, 255), sa), lines[li].c_str(), 0, false);
   }
   // Page name and buttons above the slots; little marks when there are more slots either side.
   std::string path;
@@ -1565,7 +1585,10 @@ void draw_strip(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   if (lv.cursor >= lv.top + visible) lv.top = lv.cursor - visible + 1;
   lv.top = std::clamp(lv.top, 0, std::max(0, count - visible));
   const int shown = std::min(visible, count);
-  float need = 260 * u;
+  // The path title ("Practice / Skip in Unranked") sets the width too, so it is never cut short.
+  std::string path;
+  for (size_t i = 0; i < g_stack.size(); ++i) { if (i) path += " / "; path += page_title(g_stack[i].page); }
+  float need = std::max(260 * u, text_width(17 * u, path.c_str()) + 32 * u);
   for (const Row& r : rows) need = std::max(need, text_width(17 * u, r.label.c_str()) + text_width(17 * u, value_of(r).c_str()) + 64 * u);
   const float w = std::min(need, (f.game_x1 - f.game_x0) * 0.5f), rh = 32 * u;
   const float x = f.game_x0 + 12 * u, y = below + 8 * u;
@@ -1576,8 +1599,6 @@ void draw_strip(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   dl->AddRectFilled(ImVec2(x - 2 * u, y - 2 * u), ImVec2(x + w + 2 * u, y + h + 2 * u), with_alpha(IM_COL32(0, 0, 0, 255), a), 16 * u);
   rect_gradient(dl, ImVec2(x, y), ImVec2(x + w, y + h), with_alpha(IM_COL32(10, 21, 48, 244), a), with_alpha(IM_COL32(4, 10, 28, 244), a), 14 * u);
   dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), with_alpha(IM_COL32(63, 120, 224, 255), a), 14 * u, 0, 2 * u);
-  std::string path;
-  for (size_t i = 0; i < g_stack.size(); ++i) { if (i) path += " / "; path += page_title(g_stack[i].page); }
   text(dl, x + 14 * u, y + 10 * u, 17 * u, with_alpha(kAmber, a), path.c_str());
   float ry = y + 40 * u;
   for (int i = 0; i < shown; ++i) {
@@ -1600,7 +1621,11 @@ void draw_strip(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   dl->AddLine(ImVec2(x + 14 * u, ry), ImVec2(x + w - 14 * u, ry), with_alpha(IM_COL32(255, 255, 255, 30), a), 1.0f);
   ry += 8 * u;
   for (const std::string& line : about) { text(dl, x + 14 * u, ry, 14 * u, with_alpha(IM_COL32(170, 190, 230, 255), a), line.c_str(), 0, false); ry += 17 * u; }
-  hints(dl, x + 14 * u, ry + 14 * u, u * 0.82f, g_stack.size() > 1 ? "A:Pick|B:Back|S:Close" : "A:Pick|B:Fold up", a);
+  {
+    const Row* cur = rows.empty() ? nullptr : &rows[(size_t)std::clamp(level().cursor, 0, (int)rows.size() - 1)];
+    hints(dl, x + 14 * u, ry + 14 * u, u * 0.82f,
+          editable(cur) ? "D:Change|B:Back|S:Close" : g_stack.size() > 1 ? "A:Pick|B:Back|S:Close" : "A:Pick|B:Fold up", a);
+  }
   dl->PopClipRect();
 }
 

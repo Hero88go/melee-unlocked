@@ -3761,7 +3761,8 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     f.open = state.practice_open;
     f.armed = state.practice_pad_armed;
     if (have_pad) { f.buttons = pad.button; f.stick_x = pad.stick_x; f.stick_y = pad.stick_y; }
-    f.hint = show_hint && practice.tab_available && practice.phase == Phase::Idle;
+    // Only in Training: a VS match with friends or a training mod's exercise stays clean.
+    f.hint = show_hint && practice.in_practice && practice.tab_available && practice.phase == Phase::Idle;
     f.search.available = practice.tab_available;
     f.search.can_start = practice.can_start;
     f.search.searching = practice.phase == Phase::Searching;
@@ -3771,6 +3772,8 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     f.search.opponent = practice.opponent;
     f.search.code = practice.connect_code;
     f.search.offer = practice.offer;
+    f.unlocked = practice.unlocked;
+    f.intro = options.practice_opens == 0;
     f.time = ImGui::GetTime();
     const practice_menu::Result r = practice_menu::frame(look, f);
     if (r.changed) { state.dirty = true; apply_practice_tools(options); }
@@ -3804,7 +3807,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   }
 
   if (!state.practice_open) {
-    if (show_hint && practice.tab_available && practice.phase == Phase::Idle) {
+    if (show_hint && practice.in_practice && practice.tab_available && practice.phase == Phase::Idle) {
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetTime() < 20.0 ? 1.0f : 0.5f);
       practice_card_begin("##native_practice_hint", ImVec2(screen.x - 12, 52), ImVec2(1, 0), false);
       practice_card_title("Practice menu: Tab or Start + D-pad Up + Z", false);
@@ -5882,6 +5885,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::TreePop();
     }
     // The look controls: what the presets set, one by one. Folded away; changing one makes Look read Custom.
+    // Hidden capture hook (MELEE_TEST_LOOK_MENU=custom): this list open and in view.
+    if (const char* shot = std::getenv("MELEE_TEST_LOOK_MENU"); shot && std::strcmp(shot, "custom") == 0) {
+      ImGui::SetNextItemOpen(true);
+      ImGui::SetScrollHereY(0.0f);
+    }
     if (ImGui::TreeNodeEx("Customise the look##lookcontrols", 0)) {
       static const char* surfaces[] = {"Textured", "Retro 64 (64 x 64)", "Flat colours", "White", "Posterised", "Wireframe"};
       if (settings_combo("Fighters", &options.look_fighter, surfaces, kSurfaceCount)) changed = true;
@@ -9427,6 +9435,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (!state.fill_window && !state.open && !state.menu_open && replay_control::active())
     draw_replay_practice(options, pad, have_pad);
   if (practice_was_open && !state.practice_open) state.practice_release_capture = true;
+  // Practice menu changes (the CPU, your setups, skipped codes, the hint count) are saved as they happen.
+  // The panel's own autosave runs only while the panel shows, so these were lost at exit before.
+  if (state.dirty && !panel_visible && !ImGui::IsAnyItemActive()) {
+    state.dirty = false;
+    state.saved = write_settings_file(state, options);
+  }
   if (!panel_visible) {
     if (!state.fill_window && !state.menu_open &&
         g_guest_options_selection.load(std::memory_order_relaxed)) {

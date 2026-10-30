@@ -8,6 +8,7 @@
 #include "../gx/render_options.h"
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -100,7 +101,8 @@ NativeBridge g_bridge = nullptr;
 ContentBridge g_content_bridge = nullptr;
 enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
        OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE, OP_CPU_MOVE,
-       OP_TRAINING_PICK, OP_TRAINING_STAGE };
+       OP_TRAINING_PICK, OP_TRAINING_STAGE, OP_UNLOCKED };
+std::atomic<uint32_t> g_unlocked{0xFFFFFFFFu};   // tick(): the card's unlocked characters, read in Training
 
 uint8_t current_major() {
   if (g_bridge) { int32_t a[2] = {}; g_bridge(OP_SCENE, a, 2); return (uint8_t)a[0]; }
@@ -514,6 +516,7 @@ void publish_snapshot() {
   out.phase = g_lifecycle.phase();
   out.mode = g_match_mode;
   out.in_practice = is_training();
+  out.unlocked = g_unlocked.load(std::memory_order_relaxed);
   const bool playback = slippi::playback::enabled();
   const bool online_match = slippi::online::is_online_match() || is_online_scene();
   const bool session_active = slippi::online::session_mode() >= 0;
@@ -764,6 +767,17 @@ void tick() {
 
   frame_advance_tick();
 
+  // Fight a pro: which characters the memory card has, once a second in Training (a game library
+  // without the question leaves it unknown, which offers every pro as before).
+  {
+    static int unlocked_ticks = 0;
+    if (g_bridge && is_training() && ++unlocked_ticks >= 60) {
+      unlocked_ticks = 0;
+      int32_t a[1] = {0};
+      if (g_bridge(OP_UNLOCKED, a, 1) == 0) g_unlocked.store((uint32_t)a[0], std::memory_order_relaxed);
+    }
+  }
+
   // MELEE_TEST_AFTER_SESSION=<tick> (tests only): at that tick on the main menu, the step an ended
   // online session takes (Unranked), so the way into Training and the prompt can run without a peer.
   {
@@ -899,6 +913,16 @@ void tick() {
 }
 
 
+// Every controller as if let go (buttons up, sticks and triggers at rest); disconnected ones stay so.
+static void neutral_pads(host::PadState* pads) {
+  for (int i = 0; i < 4; ++i) {
+    host::PadState& p = pads[i];
+    p.button = 0;
+    p.stick_x = p.stick_y = p.sub_x = p.sub_y = 0;
+    p.trig_l = p.trig_r = p.analog_a = p.analog_b = 0;
+  }
+}
+
 void apply_pads(host::PadState* pads) {
   constexpr uint16_t kDown = 0x0004, kUp = 0x0008, kA = 0x0100, kStart = 0x1000;
   if (g_enter_training) {
@@ -912,15 +936,21 @@ void apply_pads(host::PadState* pads) {
       g_enter_training = false;
       host::log("native practice: stopped pressing through Training's menus (scene %02X:%02X)", major, minor);
     } else if (major == kTrainingMajor && minor == 1 && g_bridge) {
+      neutral_pads(pads);
       // Stage select: the same stage as before (Final Destination when there was none), picked at once.
       const int legal[] = {2, 3, 8, 28, 31, 32};
       int stage = 32;
       for (int s : legal) if ((int)g_practice.stage == s) stage = s;
       int32_t a[1] = {stage};
       g_bridge(OP_TRAINING_STAGE, a, 1);
-    } else if (major == kTrainingMajor && g_enter_ticks % 40 < 3) {
-      // Character select: Start confirms the remembered pick (the Static Recomp also takes A on the stage).
-      pads[g_enter_port & 3].button |= minor == 0 ? kStart : kA;
+    } else if (major == kTrainingMajor) {
+      // Character select: only Start, which confirms the remembered pick (the Static Recomp also takes A
+      // on the stage). Every controller is neutral meanwhile: an A still held from the Practice menu, or a
+      // nudged stick, picked whatever character was under the cursor instead.
+      neutral_pads(pads);
+      if (g_enter_ticks % 40 < 3) pads[g_enter_port & 3].button |= minor == 0 ? kStart : kA;
+    } else {
+      neutral_pads(pads);   // on the way into Training
     }
   }
   if (g_offer_shown) {

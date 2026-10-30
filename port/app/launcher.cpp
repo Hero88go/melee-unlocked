@@ -137,6 +137,7 @@ HBITMAP g_wordmark = nullptr;    // the MU mark cut off its navy plate, at full 
 int g_wordmark_w = 0, g_wordmark_h = 0;
 std::string g_dir, g_iso, g_game_exe;
 std::string g_language;   // launcher.ini language= (empty: follow Windows)
+std::string g_notes_seen;   // launcher.ini notesseen=: the version whose What's new already opened by itself
 // A code mod (Akaneia, ACE, 20XX Hack Pack...) runs on the Static Recomp with its own disc, the
 // player's vanilla disc for the reference code, and a memory card folder of its own.
 std::string g_mod_launch_iso, g_mod_launch_key, g_mod_launch_engine, g_mod_launch_kind;
@@ -257,6 +258,7 @@ void load_ini() {
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
+      else if (line.rfind("notesseen=", 0) == 0) g_notes_seen = line.substr(10);
       else if (line == "dlss5asked=1") g_dlss5_asked = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
       else if (line == "savereplays=0") g_save_replays = false;
@@ -292,6 +294,7 @@ void save_ini() {
     f << "iso=" << g_iso << "\n";
     if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
+    if (!g_notes_seen.empty()) f << "notesseen=" << g_notes_seen << "\n";
     if (g_dlss5_asked) f << "dlss5asked=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
     if (!g_save_replays) f << "savereplays=0\n";
@@ -2039,6 +2042,16 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         shown = true;
         show_changelog();
         std::ofstream(widen(g_dir + "\\changelog-test.txt"), std::ios::binary) << narrow(changelog_text());
+      }
+      // The first start of a new version opens What's new by itself, once its notes have arrived, so a
+      // player sees what changed without looking for the link on the version line.
+      if (static bool checked; !checked && !g_launcher_test && !host::updater::releases().empty()) {
+        checked = true;
+        if (g_notes_seen != MELEE_PORT_VERSION) {
+          g_notes_seen = MELEE_PORT_VERSION;
+          save_ini();
+          show_changelog();
+        }
       }
       {
         static ULONGLONG last_state = 0;

@@ -105,6 +105,8 @@ are included with Melee Unlocked.
   Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
   CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
+- Practice menu in Training (Start + D-pad Up + Z): your own CPU, Fight a pro, frame advance,
+  save states, and searching for a match while you train. See [Practice](#practice).
 - Optional launcher with self-update
 
 ## Install
@@ -224,6 +226,32 @@ Lab's shape; if the collision cannot be read, its fixed platforms are used inste
 While the view is showing, the game's own 3D scene is not drawn, since it would be covered anyway.
 That makes the Lab view much lighter on the graphics card than the normal game, which helps on weak
 laptops. "Skip the 3D scene underneath" under the Lab view checkbox turns that off.
+
+## Practice
+
+In Training, press **Start + D-pad Up + Z** to open the Practice menu (keyboard: **Tab**). The first
+few times you enter Training a banner shows those buttons. Everything works with the controller alone,
+and none of it runs online.
+
+- **Fight a pro**: play against an AI that learned from Mang0's Falco, Zain's Marth, Cody Schwab's Fox
+  or aMSa's Yoshi, from their own games. Pick one and the CPU becomes that player's character. Source
+  Port; on the Static Recomp the CPU plays their habits instead.
+- **CPU**: decide how the Training CPU moves, attacks, shields, DIs, techs, gets up and uses the ledge.
+  Presets cover common drills, and three slots keep your own setups.
+- **Tools**: frame advance (L + R + Z freezes the game, Z steps one frame). On the Source Port also
+  save states on the D-pad (right saves, left loads), recording the CPU (down records, up plays it
+  back), hitboxes and an input display.
+- **Search**: start an Unranked, Direct or Teams search and keep training; the match starts by itself
+  when one is found. Skip in Unranked turns down up to three connect codes.
+- **Four looks**: PC settings (F1) > Overlays > Practice menu look.
+
+**Practice from replays** (Source Port): open a replay from the launcher's Replay Viewer. The
+buttons are shown at the bottom: A takes over a player from that moment, X and Y jump between tips,
+Start opens the replay's practice settings.
+
+**After online play**: when an online session ends you go straight into a Training match with your
+character. D-pad Up searches again, D-pad Down keeps training. Turn it off in PC settings > Game >
+Online.
 
 ## Slippi online
 

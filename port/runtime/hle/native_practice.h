@@ -32,6 +32,9 @@ struct Snapshot {
   std::string opponent;
   // After an online session: back in Training, "search again?" (D-pad Up searches, Down dismisses).
   std::string offer;          // the prompt, empty when none
+  // Characters the memory card has unlocked, a bit per character kind (all set when not known, and on
+  // the Static Recomp). Fight a pro offers a pro only when that pro's character can be picked.
+  uint32_t unlocked = 0xFFFFFFFFu;
 };
 
 Snapshot snapshot();

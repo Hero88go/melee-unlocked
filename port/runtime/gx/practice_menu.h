@@ -38,8 +38,10 @@ struct Frame {
   int8_t stick_x = 0, stick_y = 0;
   bool keyboard = true;         // arrow keys, Enter, Esc and typing also drive it
   bool hint = false;            // closed: show how to open it
+  bool intro = false;           // never opened yet: the banner first, then only the corner hint
   Search search;
   double time = 0;              // seconds, for animation and key repeat
+  uint32_t unlocked = 0xFFFFFFFFu;   // characters the memory card has (a bit per character kind)
 };
 
 struct Result {

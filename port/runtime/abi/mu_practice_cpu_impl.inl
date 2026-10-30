@@ -774,13 +774,13 @@ void mu_pc_defaults(MuPcConfig* c)
 
 static const char* const pc_preset_names[] = {
     "Balanced",
-    "Punching bag (DI and tech only)",
-    "Aerial spammer (nair and bair)",
+    "Punching bag",
+    "Aerial spammer",
     "Runaway camper",
     "Wavedash and tilt",
     "Shield and punish",
-    "Tech chase practice",
-    "Ledge trapping practice",
+    "Tech chaser",
+    "Ledge trapper",
 };
 
 int mu_pc_preset_count(void) { return (int) (sizeof pc_preset_names / sizeof pc_preset_names[0]); }

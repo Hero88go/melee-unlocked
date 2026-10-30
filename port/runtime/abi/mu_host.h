@@ -611,6 +611,7 @@ enum {
     MU_PRACTICE_TRAINING_STAGE = 13,    /* a[0] stage kind: Training's stage select picks it at once */
     MU_PRACTICE_TRAINING_PICK = 12,     /* a[0] slot (0 player, 1 CPU), a[1] character, a[2] costume: Training's select starts there */
     MU_PRACTICE_FRAME_PAUSE = 10,       /* a[0] pause (1), run (0) or ask (-1); a[1] step one frame; a[0] out: paused */
+    MU_PRACTICE_UNLOCKED = 14,          /* out a[0]: bit per character kind the memory card has unlocked */
 };
 
 /* The library's one export. The host fills `host`, the game fills `game`. */
