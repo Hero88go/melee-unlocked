@@ -101,6 +101,8 @@ struct RenderOptions {
   // The Practice menu's look in Training (practice_menu.h: 0 Main Menu bars, 1 side rails, 2 slots,
   // 3 strip, 4 the full window).
   int practice_style = 0;
+  // Times the Practice menu has been opened: the "Start + Up + Z" hint stops after the third.
+  int practice_opens = 0;
   bool input_overlay = false;     // on-screen controller display, for streaming
   // Lab view: draw matches as Slippi Lab draws replays (flat silhouettes on a plain stage) over
   // the game image. Display only, so it is safe online. F3 toggles it. See lab_view.h.
@@ -138,8 +140,12 @@ struct RenderOptions {
   int look_colours = 0, look_background = 0;
   uint32_t look_background_rgb = 0x2A2A40;
   // Lab view looks (lab_view.h set_style): fighters 0 silhouettes, 1 stick figures, 2 capsules; stage 0 as
-  // drawn, 1 outline, 2 blocks. Used while lab_view is on.
+  // drawn, 1 outline, 2 blocks, 3 hidden. Used while lab_view is on.
   int look_lab_fighters = 0, look_lab_stage = 0;
+  // The player's own colours in those looks (lab_view.h set_colors): 0 keeps the look's colour, otherwise
+  // 0x1000000 | RGB. P1 to P4 (team games keep team colours), the background and the stage.
+  uint32_t lab_colour[4] = {0, 0, 0, 0};
+  uint32_t lab_colour_background = 0, lab_colour_stage = 0;
   // "Freeze Pokemon Stadium (offline only)" (Game tab, Stages): it changes the match, so never online.
   // Slippi's Frozen Pokemon Stadium, on the Source Port (MU_GAME_OPTION2_STADIUM_FROZEN); a replay
   // records it as its isFrozenPS, so it plays back frozen here and in Slippi's player.

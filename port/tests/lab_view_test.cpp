@@ -326,6 +326,36 @@ int unit_test() {
     CHECK(draw_vertex_count(W,H) > body_vertices);
     feed(end);
   }
+  // The player's own colours and the hidden stage (PC settings > Low-Detail Modes > Customise the look).
+  {
+    MuLookSnapshot snapshot{};
+    snapshot.major = 2; snapshot.minor = 2; snapshot.stage = 32; snapshot.frame = 700;
+    auto& fighter = snapshot.fighters[0][0];
+    fighter.present = 1; fighter.kind = 1; fighter.external = 2; fighter.stocks = 4;
+    fighter.facing = 1; fighter.action = 14;
+    fighter.capsule_count = 1; fighter.capsules[0] = {0, 2, 0, 10, 2};
+    const ImU32 red = IM_COL32(0xB9, 0x1C, 0x1C, 255), slate = IM_COL32(0x1E, 0x29, 0x3B, 255);
+    const ImU32 lime = IM_COL32(0x12, 0xEE, 0x34, 255), plum = IM_COL32(0x60, 0x10, 0x70, 255);
+    const ImU32 sand = IM_COL32(0xF0, 0xE0, 0xC0, 255);
+    lab::set_style(2, 0);
+    lab::native_frame(snapshot);
+    CHECK(frame_box(red, W, H).n > 0 && frame_box(slate, W, H).n > 0);    // the look's own colours
+    const uint32_t players[4] = {0x1000000u | 0x12EE34u, 0, 0, 0};
+    lab::set_colors(players, 0x1000000u | 0xF0E0C0u, 0x1000000u | 0x601070u);
+    ++snapshot.frame; lab::native_frame(snapshot);
+    CHECK(frame_box(lime, W, H).n > 0 && frame_box(red, W, H).n == 0);
+    CHECK(frame_box(plum, W, H).n > 0 && frame_box(slate, W, H).n == 0);
+    CHECK(frame_box(sand, W, H).n > 0);                                    // the background
+    lab::set_style(2, 3);                                                  // hidden: no stage, the fighter stays
+    ++snapshot.frame; lab::native_frame(snapshot);
+    CHECK(frame_box(plum, W, H).n == 0 && frame_box(lime, W, H).n > 0);
+    const uint32_t none[4] = {0, 0, 0, 0};
+    lab::set_colors(none, 0, 0);
+    ++snapshot.frame; lab::native_frame(snapshot);
+    lab::set_style(2, 0);
+    CHECK(frame_box(red, W, H).n > 0);                                     // back to the look's own
+    feed(end);
+  }
   {
     const float bone[3][4] = {{0.1f,0,0,100},{0,0.1f,0,200},{0,0,0.1f,0}};
     CHECK(std::fabs(mu_look_world_radius(20, bone) - 2) < 0.0001f);

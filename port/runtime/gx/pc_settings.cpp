@@ -2128,6 +2128,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "damagehudscale") options.damage_hud_scale = std::clamp(std::atoi(value.c_str()), 75, 175);
       else if (key == "playernicknames") options.show_player_nicknames = value == "1";
       else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
+      else if (key == "practiceopens") options.practice_opens = std::clamp(std::atoi(value.c_str()), 0, 99);
       else if (key == "practicestyle") { const int n = std::atoi(value.c_str()); if (n >= 0 && n < practice_menu::kStyleCount) options.practice_style = n; }
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 3) options.effects_level = n; }
       else if (key == "playertags") options.player_tags_always = value == "1";
@@ -2143,7 +2144,14 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "look_background_rgb") options.look_background_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
       else if (key == "stadium_frozen") options.stadium_frozen = value == "1";
       else if (key == "look_lab_fighters") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_lab_fighters = n; }
-      else if (key == "look_lab_stage") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_lab_stage = n; }
+      else if (key == "look_lab_stage") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 3) options.look_lab_stage = n; }
+      else if (key.rfind("lab_colour_", 0) == 0) {
+        const uint32_t c = value == "-" ? 0u : 0x1000000u | ((uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu);
+        const std::string which = key.substr(11);
+        if (which.size() == 2 && which[0] == 'p' && which[1] >= '1' && which[1] <= '4') options.lab_colour[which[1] - '1'] = c;
+        else if (which == "background") options.lab_colour_background = c;
+        else if (which == "stage") options.lab_colour_stage = c;
+      }
       else if (key == "lowspec_look") lowspec_look = value == "1";
       else if (key == "lightweight") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kLightweightLevels) options.lightweight = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
@@ -3576,8 +3584,8 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     break;
   }
   case 5: {
-    heading("Training tools", options.native_source ? "D-pad: right save state, left load, down record the CPU, up play it back."
-                                                    : "These run on the Source Port.");
+    heading("Practice tools", options.native_source ? "D-pad: right save state, left load, down record the CPU, up play it back."
+                                                    : "Frame advance works here; the other tools run on the Source Port.");
     ImGui::BeginDisabled(!options.native_source);
     changed |= flag_row("Save states and recording on the D-pad", &c.tools, MU_PC_TOOL_DPAD,
                         "Right keeps this moment, left returns to it as often as you like.\n"
@@ -3724,6 +3732,12 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     return;
   }
 
+  // The "Start + Up + Z" hint teaches the chord: after the third open it stays away (the setting still hides it).
+  static bool counted_open = false;
+  if (state.practice_open && !counted_open && options.practice_opens < 99) { ++options.practice_opens; state.dirty = true; }
+  counted_open = state.practice_open;
+  const bool show_hint = options.matchmaking_hint && options.practice_opens < 3;
+
   // The Practice menu's looks (practice_menu.cpp). The window further down is the "Window" look, and
   // what "All settings" opens until the menu is closed again.
   static bool window_once = false;
@@ -3747,7 +3761,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     f.open = state.practice_open;
     f.armed = state.practice_pad_armed;
     if (have_pad) { f.buttons = pad.button; f.stick_x = pad.stick_x; f.stick_y = pad.stick_y; }
-    f.hint = options.matchmaking_hint && practice.tab_available && practice.phase == Phase::Idle;
+    f.hint = show_hint && practice.tab_available && practice.phase == Phase::Idle;
     f.search.available = practice.tab_available;
     f.search.can_start = practice.can_start;
     f.search.searching = practice.phase == Phase::Searching;
@@ -3785,15 +3799,15 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     practice_card_title(title, true);
     ImGui::TextDisabled("%s", matchmaking_state_text(practice.matchmaking_state));
     if (!practice.opponent.empty()) ImGui::TextDisabled("vs %s", practice.opponent.c_str());
-    ImGui::TextDisabled("Keep practicing. Tab or START + UP + Z: search controls");
+    ImGui::TextDisabled("Keep practicing. Tab or Start + Up + Z: search controls");
     practice_card_end();
   }
 
   if (!state.practice_open) {
-    if (options.matchmaking_hint && practice.tab_available && practice.phase == Phase::Idle) {
+    if (show_hint && practice.tab_available && practice.phase == Phase::Idle) {
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetTime() < 20.0 ? 1.0f : 0.5f);
       practice_card_begin("##native_practice_hint", ImVec2(screen.x - 12, 52), ImVec2(1, 0), false);
-      practice_card_title("Practice panel: Tab  /  START + UP + Z", false);
+      practice_card_title("Practice menu: Tab or Start + Up + Z", false);
       practice_card_end();
       ImGui::PopStyleVar();
     }
@@ -3967,6 +3981,14 @@ static void draw_replay_practice(RenderOptions& options, const host::PadState& p
 
 // The settings file. Written by the panel after a change, and at once when the game changes a
 // saved value itself (the 20XX TE menu song).
+// A Lab view colour as saved: "-" for the look's own, otherwise RRGGBB.
+static std::string lab_colour_text(uint32_t c) {
+  if (!c) return "-";
+  char buf[8];
+  std::snprintf(buf, sizeof buf, "%06X", (unsigned)(c & 0xFFFFFFu));
+  return buf;
+}
+
 static bool write_settings_file(const SettingsState& state, const RenderOptions& options) {
   std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
   std::ofstream file(temporary);
@@ -4047,7 +4069,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nstockhudscale " << options.stock_hud_scale
        << "\ndamagehudscale " << options.damage_hud_scale
        << "\nplayernicknames " << (options.show_player_nicknames ? 1 : 0)
-       << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0) << "\npracticestyle " << options.practice_style
+       << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0) << "\npracticestyle " << options.practice_style << "\npracticeopens " << options.practice_opens
        << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
        << "\nlabview " << options.lab_view << "\nlabskipscene " << options.lab_skip_scene
        << "\ninputoverlayhideborder " << options.input_overlay_hide_border
@@ -4062,6 +4084,10 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nlook_background_rgb " << std::hex << options.look_background_rgb << std::dec
        << "\nstadium_frozen " << (options.stadium_frozen ? 1 : 0)
        << "\nlook_lab_fighters " << options.look_lab_fighters << "\nlook_lab_stage " << options.look_lab_stage
+       << "\nlab_colour_p1 " << lab_colour_text(options.lab_colour[0]) << "\nlab_colour_p2 " << lab_colour_text(options.lab_colour[1])
+       << "\nlab_colour_p3 " << lab_colour_text(options.lab_colour[2]) << "\nlab_colour_p4 " << lab_colour_text(options.lab_colour[3])
+       << "\nlab_colour_background " << lab_colour_text(options.lab_colour_background)
+       << "\nlab_colour_stage " << lab_colour_text(options.lab_colour_stage)
        << "\nplayertags " << options.player_tags_always
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
@@ -4819,6 +4845,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // Drawn first, on the background list, so every overlay and window below lands on top of it.
   // Called every frame, off or on, so lab::covering() always describes this frame.
   lab::set_style(options.look_lab_fighters, options.look_lab_stage);
+  lab::set_colors(options.lab_colour, options.lab_colour_background, options.lab_colour_stage);
   const bool lab_on = options.lab_view && (kLabViewAvailable || options.look_lab_fighters != 0);   // the styles need no packs
   lab::draw(lab_on && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // 20XX TE's Input display is the same switch as the Controller overlay (te_pairs_linked), and the
@@ -5875,6 +5902,33 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         (options.look_background_rgb & 0xFF) / 255.0f};
         if (ImGui::ColorEdit3("Background colour", rgb, ImGuiColorEditFlags_NoInputs)) {
           options.look_background_rgb = ((uint32_t)(rgb[0] * 255 + 0.5f) << 16) | ((uint32_t)(rgb[1] * 255 + 0.5f) << 8) | (uint32_t)(rgb[2] * 255 + 0.5f);
+          changed = true;
+        }
+      }
+      // Stick figures, capsules and silhouettes (the Lab view): how the stage is drawn, and the player's own colours.
+      if (options.lab_view) {
+        ImGui::SeparatorText("Stick figures, capsules and silhouettes");
+        static const char* lab_stages[] = {"Shapes", "Outline", "Blocks", "Hidden"};
+        if (settings_combo("Stage drawing", &options.look_lab_stage, lab_stages, 4)) changed = true;
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Shapes: each stage's drawn shape. Outline: its collision lines. Blocks: solid floors and platforms.\n"
+                            "Hidden: no stage at all, only the fighters, items and the HUD on the background.");
+        const auto colour_row = [&changed](const char* label, uint32_t* value, uint32_t look_colour) {
+          const uint32_t shown = *value ? (*value & 0xFFFFFFu) : look_colour;
+          float c[3] = {((shown >> 16) & 0xFF) / 255.0f, ((shown >> 8) & 0xFF) / 255.0f, (shown & 0xFF) / 255.0f};
+          if (ImGui::ColorEdit3(label, c, ImGuiColorEditFlags_DisplayRGB)) {
+            *value = 0x1000000u | ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f);
+            changed = true;
+          }
+        };
+        static const char* const ports[4] = {"P1 colour", "P2 colour", "P3 colour", "P4 colour"};
+        for (int i = 0; i < 4; ++i) colour_row(ports[i], &options.lab_colour[i], lab::kDefaultPlayerColors[i]);
+        settings_hint("Team games keep their team colours.");
+        colour_row("Background colour##lab", &options.lab_colour_background, lab::kDefaultBackground);
+        colour_row("Stage colour", &options.lab_colour_stage, lab::kDefaultStage);
+        if (ImGui::Button("Reset colours##lab")) {
+          for (uint32_t& c : options.lab_colour) c = 0;
+          options.lab_colour_background = options.lab_colour_stage = 0;
           changed = true;
         }
       }

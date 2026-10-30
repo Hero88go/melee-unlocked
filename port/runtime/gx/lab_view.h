@@ -33,8 +33,14 @@ void draw(bool enabled, float width, float height);
 // Looks drawn by this view (PC settings > Low poly and lightweight). Fighters: 0 silhouettes (the
 // default), 1 stick figures, 2 capsules, both from the fighters' hurtbox capsules (read each frame).
 // Stage: 0 as before, 1 outline (the live collision lines only), 2 blocks (floors and platforms
-// filled into solid shapes). Display only.
+// filled into solid shapes), 3 hidden (fighters, items and the HUD on the background). Display only.
 void set_style(int fighters, int stage);
+// The player's own colours for these looks: 0 keeps the look's colour, otherwise 0x1000000 | RGB.
+// Players are P1 to P4 (team games keep their team colours).
+void set_colors(const uint32_t players[4], uint32_t background, uint32_t stage);
+// The looks' own colours, for the settings page.
+constexpr uint32_t kDefaultPlayerColors[4] = {0xB91C1C, 0x1D4ED8, 0xEAB308, 0x15803D};
+constexpr uint32_t kDefaultBackground = 0xF8FAFC, kDefaultStage = 0x1E293B;
 // A stick figure or capsule look is chosen: those draw from the live hurtboxes and need no
 // silhouette packs, so the view runs for them while the silhouette view stays hidden.
 bool styles_on();

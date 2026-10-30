@@ -802,6 +802,16 @@ constexpr uint32_t kRandall = 0x94A3B8;      // slate-400
 constexpr uint32_t kGrid = 0xBFE5CB;         // slippi-50
 constexpr uint32_t kItem = 0xA9A9A9;         // darkgray
 
+// The player's own colours (set_colors): 0 keeps the colour above, otherwise 0x1000000 | RGB.
+std::atomic<uint32_t> g_custom_player[4] = {0, 0, 0, 0};
+std::atomic<uint32_t> g_custom_background{0}, g_custom_stage{0};
+uint32_t custom_or(const std::atomic<uint32_t>& c, uint32_t fallback) {
+  const uint32_t v = c.load(std::memory_order_relaxed);
+  return v ? (v & 0xFFFFFFu) : fallback;
+}
+uint32_t background_color() { return custom_or(g_custom_background, kBackground); }
+uint32_t stage_color() { return custom_or(g_custom_stage, kStage); }
+
 uint32_t player_color(const GameInfo& info, int port, bool nana) {
   static const uint32_t solo[4][2] = {
     {0xB91C1C, 0xDC2626}, {0x1D4ED8, 0x2563EB}, {0xEAB308, 0xFACC15}, {0x15803D, 0x16A34A},
@@ -810,6 +820,13 @@ uint32_t player_color(const GameInfo& info, int port, bool nana) {
   if (info.teams) {
     const auto& p = info.ports[port];
     return teams[std::min<int>(p.team, 2)][nana ? 1 : std::min<int>(p.shade, 1)];
+  }
+  if (const uint32_t own = g_custom_player[port & 3].load(std::memory_order_relaxed)) {
+    const uint32_t c = own & 0xFFFFFFu;
+    if (!nana) return c;
+    // Nana: a quarter of the way to white, as the look's own second shade is lighter.
+    auto ch = [&](int s) { const uint32_t v = (c >> s) & 0xFF; return (v + (255 - v) / 4) << s; };
+    return ch(16) | ch(8) | ch(0);
   }
   return solo[port][nana ? 1 : 0];
 }
@@ -862,7 +879,7 @@ void draw_circle(ImDrawList* dl, const View& v, float x, float y, float r, ImU32
 // The game's live collision lines: exactly the floors the characters are standing on this frame,
 // moving platforms and Stadium transformations included.
 void draw_stage_lines(ImDrawList* dl, const View& v, const Frame& f) {
-  const ImU32 stage = rgb(kStage);
+  const ImU32 stage = rgb(stage_color());
   const float floor_w = std::max(1.0f, 1.0f * v.px), edge_w = std::max(1.0f, 0.5f * v.px);
   for (const StageLine& l : f.stage_lines)
     dl->AddLine(v(l.x0, l.y0), v(l.x1, l.y1), stage, (l.floor || l.platform) ? floor_w : edge_w);
@@ -887,7 +904,7 @@ void draw_stage(ImDrawList* dl, const View& v, const GameInfo& info, const Frame
   std::vector<ImVec2> pts;
   pts.reserve(shape->main.size());
   for (const ImVec2& p : shape->main) pts.push_back(v(p));
-  const ImU32 stage = rgb(kStage);
+  const ImU32 stage = rgb(stage_color());
   dl->AddConcavePolyFilled(pts.data(), (int)pts.size(), stage);
   dl->AddPolyline(pts.data(), (int)pts.size(), stage, ImDrawFlags_Closed, std::max(1.0f, 0.5f * v.px));
   const float line_w = std::max(1.0f, 1.0f * v.px);   // SVG's default stroke, one world unit
@@ -936,7 +953,7 @@ ImU32 mix_with(uint32_t a, uint32_t b, float t) {
 
 void draw_stick_figure(ImDrawList* dl, const View& v, const std::vector<Frame::Capsule>& caps,
                        const std::vector<Frame::Bone>& bones, uint32_t colour) {
-  const ImU32 col = rgb(colour), body = mix_with(colour, kBackground, 0.78f);
+  const ImU32 col = rgb(colour), body = mix_with(colour, background_color(), 0.78f);
   if (bones.empty()) { draw_capsule_sticks(dl, v, caps, col); return; }
   for (const auto& c : caps) {
     const float r = std::max(1.0f, c.r * v.px);
@@ -996,7 +1013,7 @@ void draw_capsule_fighter(ImDrawList* dl, const View& v, const std::vector<Frame
 // Blocks: floors and platforms as solid slabs hanging below their line (platforms thin, floors deep),
 // walls as thick lines. The live collision, so moving platforms and Stadium's forms come along.
 void draw_stage_blocks(ImDrawList* dl, const View& v, const Frame& f) {
-  const ImU32 stage = rgb(kStage), edge = (stage & 0x00FFFFFFu) | 0x80000000u;
+  const ImU32 stage = rgb(stage_color()), edge = (stage & 0x00FFFFFFu) | 0x80000000u;
   // Not every stage flags its pass-through platforms, so a floor above the lowest one (the main
   // stage's top) is drawn as a thin ledge too.
   float lowest = std::numeric_limits<float>::max();
@@ -1251,10 +1268,11 @@ void draw(bool enabled, float width, float height) {
   ImDrawList* dl = ImGui::GetBackgroundDrawList();
   // Covers the game image entirely; the game still renders underneath (and the other player's
   // game is untouched), this only decides what this window shows.
-  dl->AddRectFilled(ImVec2(0, 0), ImVec2(width, height), rgb(kBackground));
+  dl->AddRectFilled(ImVec2(0, 0), ImVec2(width, height), rgb(background_color()));
   const int stage_style = g_stage_style.load(std::memory_order_relaxed);
   const int fighter_style = g_fighter_style.load(std::memory_order_relaxed);
-  if (stage_style == 1 && !f.stage_lines.empty()) draw_stage_lines(dl, v, f);
+  if (stage_style == 3) {}   // hidden: fighters, items and the HUD on the background
+  else if (stage_style == 1 && !f.stage_lines.empty()) draw_stage_lines(dl, v, f);
   else if (stage_style == 2 && !f.stage_lines.empty()) draw_stage_blocks(dl, v, f);
   else draw_stage(dl, v, info, f);
   for (int port = 0; port < 4; ++port)
@@ -1277,6 +1295,12 @@ void draw(bool enabled, float width, float height) {
 void set_style(int fighters, int stage) {
   g_fighter_style.store(fighters, std::memory_order_relaxed);
   g_stage_style.store(stage, std::memory_order_relaxed);
+}
+
+void set_colors(const uint32_t players[4], uint32_t background, uint32_t stage) {
+  for (int i = 0; i < 4; ++i) g_custom_player[i].store(players[i], std::memory_order_relaxed);
+  g_custom_background.store(background, std::memory_order_relaxed);
+  g_custom_stage.store(stage, std::memory_order_relaxed);
 }
 
 void set_hud_font(ImFont* font) { g_hud_font = font; }
