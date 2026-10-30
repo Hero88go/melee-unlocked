@@ -210,11 +210,22 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
     if (fp == NULL || fp->is_sub_fighter || !ftCo_IsCpuControlled(fp) || !pc_allowed()) return 0;
     c = pc_settings();
     if (!c->enabled) return 0;
-    for (k = 0; k < 4 && opp == NULL; k++) {   /* the first human player */
-        HSD_GObj* g;
-        if (k == fp->player_idx || Player_GetPlayerSlotType(k) != Gm_PKind_Human) continue;
-        g = Player_GetEntity(k);
-        if (g != NULL && g->user_data != NULL) opp = g->user_data;
+    {
+        /* Tests: MELEE_TEST_PC_PORT=<index> drives only that port, against the other fighter even when it is
+         * a CPU (a pro AI against the game's level 9 CPU in a VS match, MELEE_PC_ANY_MODE). */
+        static int only = -2;
+        if (only == -2) {
+            const char* v = getenv("MELEE_TEST_PC_PORT");
+            only = v != NULL ? (int) (v[0] - '0') : -1;
+        }
+        if (only >= 0 && fp->player_idx != only) return 0;
+        for (k = 0; k < 4 && opp == NULL; k++) {   /* the first human player (tests: any other player) */
+            HSD_GObj* g;
+            if (k == fp->player_idx) continue;
+            if (only < 0 && Player_GetPlayerSlotType(k) != Gm_PKind_Human) continue;
+            g = Player_GetEntity(k);
+            if (g != NULL && g->user_data != NULL) opp = g->user_data;
+        }
     }
     return pc_drive(fp, opp, c, out, 1);
 }
