@@ -6,6 +6,7 @@
 #include "slippi_report.h"
 #include "slippi_account.h"
 #include "host.h"
+#include "gx_core.h"   // the player's own shield colour for the build message
 #include "early_input.h"
 #define NOMINMAX
 #include <winsock2.h>
@@ -501,15 +502,20 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       // Capabilities, a byte builds before early inputs did not send: absent means none.
       uint8_t caps = 0;
       if (!(packet >> caps)) caps = 0;
+      // Their own shield colour, which builds before it do not send.
+      uint8_t has_shield = 0, sr = 0, sg = 0, sb = 0;
+      uint32_t shield = 0;
+      if ((packet >> has_shield) && has_shield == 1 && (packet >> sr >> sg >> sb))
+        shield = 0x1000000u | ((uint32_t)sr << 16) | ((uint32_t)sg << 8) | sb;
       const uint8_t pidx = PlayerIdxFromPort(port);
       if (pidx >= remote_player_count_) { host::log("slippi: build message with invalid player idx %u", pidx); break; }
       {
         std::lock_guard<std::mutex> lk(build_mutex_);
-        remote_build_[pidx] = {true, mod_view != 0, fp, name, (caps & 1) != 0, (caps & 2) != 0};
+        remote_build_[pidx] = {true, mod_view != 0, fp, name, (caps & 1) != 0, (caps & 2) != 0, shield, port};
       }
-      host::log("slippi: opponent %u build: %s%s%s%s", port, mod_view ? "mod " : "retail game",
+      host::log("slippi: opponent %u build: %s%s%s%s, shield colour %s%06X", port, mod_view ? "mod " : "retail game",
                 mod_view ? name.c_str() : "", mod_view ? (" " + fp.substr(0, 16)).c_str() : "",
-                (caps & 1) ? ", takes early inputs" : "");
+                (caps & 1) ? ", takes early inputs" : "", shield ? "" : "none ", shield & 0xFFFFFFu);
       if (caps & 2) SendPrematchPing();   // at once: a match set up right after connecting needs a ping now
       break;
     }
@@ -586,6 +592,11 @@ void NetplayClient::SendBuild() {
   const bool early = online::early_inputs_accept();
   // Bit 1: this side answers pre-match pings (always).
   *p << (uint8_t)((early ? 1 : 0) | 2);
+  // Then the player's own shield colour ("Shield colours", Online): a byte 1 and the three RGB bytes, or
+  // a byte 0. Builds before it stop reading at the capabilities byte.
+  const uint32_t shield = gx::shield_color_online();
+  if (shield) *p << (uint8_t)1 << (uint8_t)(shield >> 16) << (uint8_t)(shield >> 8) << (uint8_t)shield;
+  else *p << (uint8_t)0;
   host::log("slippi: sending build: %s%s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "",
             early ? " (takes early inputs)" : "");
   SendAsync(std::move(p));
@@ -603,6 +614,13 @@ void NetplayClient::SendPrematchPing() {
   Packet p;
   p << (uint8_t)NP_MSG_MU_PING << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'P' << (uint8_t)1 << (uint8_t)0 << player_idx_ << (uint32_t)time_us();
   Send(p);
+}
+
+uint32_t NetplayClient::RemoteShieldColor(int slot) {
+  std::lock_guard<std::mutex> lk(build_mutex_);
+  for (int i = 0; i < remote_player_count_ && i < REMOTE_PLAYER_MAX; ++i)
+    if (remote_build_[i].received && remote_build_[i].port == slot) return remote_build_[i].shield_rgb;
+  return 0;
 }
 
 NetplayClient::RemoteBuild NetplayClient::GetRemoteBuild(int index) {

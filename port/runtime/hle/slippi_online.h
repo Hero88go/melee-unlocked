@@ -66,6 +66,8 @@ void note_rollback(int32_t to_frame = kRollbackFrameUnknown);
 bool is_online_match();
 // The in-game slot the local player occupies in the running online match (0-3).
 int local_player_slot();
+// The shield colour the opponent on in-game `slot` sent after connecting (0x1000000 | RGB), 0 none.
+uint32_t remote_shield_color(int slot);
 // Simulation-thread snapshot for local display; names never enter the synchronized game state.
 std::array<std::string, 4> player_names_for_overlay();
 // Most recent measured round trip to the opponent, in milliseconds; 0 when not connected.

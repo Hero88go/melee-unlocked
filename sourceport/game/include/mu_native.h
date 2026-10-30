@@ -134,7 +134,7 @@ int mu_arcade_hitboxes_behind(void);
  * (cm/camera.c fn_800301D0, shim/mu_arcade.c). Display only, online too. */
 #define MU_DISPLAY_GRID 0x100u
 void mu_arcade_grid(void);
-/* "Shield colours" (MuHostApi.shield_colors): this player's own colour for its shield bubble and KO
+/* "Shield colours" (MuHostApi.shield_color): this player's own colour for its shield bubble and KO
  * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
  * Team matches keep the team colours. */
 int mu_port_shield_color(int slot, unsigned int* rgb);

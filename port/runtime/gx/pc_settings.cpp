@@ -2219,7 +2219,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "arcade_camera_2d") options.arcade_camera_2d = value == "1";
       else if (key == "arcade_combo_counter") options.arcade_combo_counter = value == "1";
       else if (key.size() == 14 && key.compare(0, 13, "shield_colorp") == 0 && key[13] >= '1' && key[13] <= '4')
-        options.shield_color[key[13] - '1'] = std::clamp(std::atoi(value.c_str()), -1, kShieldColorCount - 1);
+        options.shield_color[key[13] - '1'] = (value == "-" || value.empty() ? 0u : 0x1000000u | ((uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu));
+      else if (key == "shield_color_online") options.shield_color_online = (value == "-" || value.empty() ? 0u : 0x1000000u | ((uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu));
       else if (key == "arcade_backdrop") options.arcade_backdrop = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "arcade_grid_rgb") options.arcade_grid_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
       else if (key == "arcade_background_rgb") options.arcade_background_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
@@ -4188,8 +4189,9 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\narcade_hitboxes_behind " << (options.arcade_hitboxes_behind ? 1 : 0)
        << "\narcade_camera_2d " << (options.arcade_camera_2d ? 1 : 0)
        << "\narcade_combo_counter " << (options.arcade_combo_counter ? 1 : 0)
-       << "\nshield_colorp1 " << options.shield_color[0] << "\nshield_colorp2 " << options.shield_color[1]
-       << "\nshield_colorp3 " << options.shield_color[2] << "\nshield_colorp4 " << options.shield_color[3]
+       << "\nshield_colorp1 " << lab_colour_text(options.shield_color[0]) << "\nshield_colorp2 " << lab_colour_text(options.shield_color[1])
+       << "\nshield_colorp3 " << lab_colour_text(options.shield_color[2]) << "\nshield_colorp4 " << lab_colour_text(options.shield_color[3])
+       << "\nshield_color_online " << lab_colour_text(options.shield_color_online)
        << "\narcade_backdrop " << options.arcade_backdrop
        << "\narcade_background_rgb " << std::hex << options.arcade_background_rgb << std::dec
        << "\narcade_grid_rgb " << std::hex << options.arcade_grid_rgb << std::dec
@@ -4738,7 +4740,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   set_fod_reflections(options.fod_reflections);
   set_css_background_free(options.css_background_free);
   set_player_tags_always(options.player_tags_always != 0);
-  set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(options)); set_shield_colors(options.shield_color);
+  set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(options)); set_shield_colors(options.shield_color, options.shield_color_online);
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
@@ -5802,32 +5804,43 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (vram_usage(&used, &total)) settings_hint("Video memory in use: %.1f / %.1f GB", used, total);
     }
     // ---- Shield colours ----
-    // Each port's own shield (and KO blast) colour, on this screen only: online too, and in replays.
+    // Each port's shield (and KO blast) colour: a colour wheel, the game's preset colours one click away,
+    // and the port's own. "Online" is the player's own colour in online matches; Melee Unlocked opponents
+    // are sent it and show it, Slippi Dolphin opponents keep the port colour. Display only.
     if (ImGui::CollapsingHeader("Shield colours##shields")) {
       ImGui::Indent(8.0f);
-      static const char* const ports[4] = {"P1 shield", "P2 shield", "P3 shield", "P4 shield"};
-      for (int port = 0; port < 4; ++port) {
-        ImGui::PushID(port);
-        const int current = options.shield_color[port];
-        const char* preview = current < 0 ? "Port colour" : kShieldColorNames[current];
-        if (current >= 0) {
-          const uint8_t* c = kShieldColorRgb[current];
-          ImGui::ColorButton("##swatch", ImVec4(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip);
-          ImGui::SameLine();
+      auto shield_row = [&](const char* label, uint32_t* value, int port_colour) {
+        ImGui::PushID(label);
+        const uint32_t shown = *value ? (*value & 0xFFFFFFu)
+                                      : ((uint32_t)kShieldColorRgb[port_colour][0] << 16 | (uint32_t)kShieldColorRgb[port_colour][1] << 8 |
+                                         kShieldColorRgb[port_colour][2]);
+        float c[3] = {((shown >> 16) & 0xFF) / 255.0f, ((shown >> 8) & 0xFF) / 255.0f, (shown & 0xFF) / 255.0f};
+        if (ImGui::ColorEdit3(label, c, ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_DisplayRGB)) {
+          *value = 0x1000000u | ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f);
+          changed = true;
         }
-        if (ImGui::BeginCombo(ports[port], preview)) {
-          if (ImGui::Selectable("Port colour", current < 0)) { options.shield_color[port] = -1; changed = true; }
-          for (int i = 0; i < kShieldColorCount; ++i) {
-            const uint8_t* c = kShieldColorRgb[i];
-            ImGui::ColorButton("##c", ImVec4(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
-            ImGui::SameLine();
-            if (ImGui::Selectable(kShieldColorNames[i], current == i)) { options.shield_color[port] = i; changed = true; }
+        ImGui::SameLine();
+        if (!*value) ImGui::TextDisabled("port colour");
+        else if (ImGui::SmallButton("Port colour")) { *value = 0; changed = true; }
+        // The game's own presets, one click each.
+        for (int i = 0; i < kShieldColorCount; ++i) {
+          const uint8_t* rgb = kShieldColorRgb[i];
+          if (i) ImGui::SameLine(0.0f, 3.0f);
+          ImGui::PushID(i);
+          if (ImGui::ColorButton(kShieldColorNames[i], ImVec4(rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f, 1.0f), 0, ImVec2(16, 16))) {
+            *value = 0x1000000u | ((uint32_t)rgb[0] << 16) | ((uint32_t)rgb[1] << 8) | rgb[2];
+            changed = true;
           }
-          ImGui::EndCombo();
+          ImGui::PopID();
         }
         ImGui::PopID();
-      }
-      settings_hint("Your shield and KO blast colour for each port, on your screen only (online too). Team matches keep team colours.");
+      };
+      static const char* const ports[4] = {"P1 shield", "P2 shield", "P3 shield", "P4 shield"};
+      for (int port = 0; port < 4; ++port) shield_row(ports[port], &options.shield_color[port], port);
+      ImGui::Separator();
+      shield_row("Online (you)", &options.shield_color_online, 0);
+      settings_hint("Your shield and KO blast colours. Online, \"Online (you)\" is yours: players on Melee Unlocked see it,"
+                    " players on Slippi Dolphin see your port colour. Team matches keep team colours.");
       ImGui::Unindent(8.0f);
     }
     // ---- Get mod looks ----

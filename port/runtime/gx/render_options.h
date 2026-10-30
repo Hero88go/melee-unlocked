@@ -164,8 +164,10 @@ struct RenderOptions {
   bool arcade_camera_2d = false;
   // "Combo counter": "N HITS" over the attacker while the game's combo link holds (offline and replays).
   bool arcade_combo_counter = false;
-  // "Shield colours": per port -1 the port's own, else one of gx::kShieldColorRgb. Display only.
-  int shield_color[4] = {-1, -1, -1, -1};
+  // "Shield colours": per port 0 for the port's own, else 0x1000000 | RGB; and the player's own colour in
+  // online matches, which Melee Unlocked opponents are sent too. Display only.
+  uint32_t shield_color[4] = {0, 0, 0, 0};
+  uint32_t shield_color_online = 0;
   // "Background": 0 the stage's own, 1 a plain colour (Lightweight level 2's backdrop skip on its own,
   // the colour behind). Display only.
   int arcade_backdrop = 0;      // 2 "Grid": the same, with a grid behind the stage (the Source Port draws it)

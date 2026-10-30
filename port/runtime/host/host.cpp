@@ -1583,11 +1583,14 @@ void apply_shield_colors() {
   if (!table || table < 0x80000000u || table >= 0x81800000u) return;
   for (int port = 0; port < 4; ++port) {
     const uint32_t at = table + 4u * port;
-    const int choice = gx::shield_color(port);
+    const uint32_t choice = gx::shield_color(port);
     const bool own = rd8(0x80453080u + 0xE90u * port + 0x45u) == port;
-    if (choice >= 0 && own) {
+    if ((choice & 0x1000000u) && own) {
       if (!changed[port]) { for (int k = 0; k < 3; ++k) original[port][k] = rd8(at + k); changed[port] = true; }
-      for (int k = 0; k < 3; ++k) if (rd8(at + k) != gx::kShieldColorRgb[choice][k]) wr8(at + k, gx::kShieldColorRgb[choice][k]);
+      for (int k = 0; k < 3; ++k) {
+        const uint8_t want = (uint8_t)(choice >> (16 - 8 * k));
+        if (rd8(at + k) != want) wr8(at + k, want);
+      }
     } else if (changed[port]) {
       for (int k = 0; k < 3; ++k) wr8(at + k, original[port][k]);
       changed[port] = false;

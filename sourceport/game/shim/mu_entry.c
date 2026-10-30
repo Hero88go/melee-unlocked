@@ -116,10 +116,10 @@ _Static_assert(MU_DISPLAY_PLAYER_TAGS == MU_DISPLAY_OPTION_PLAYER_TAGS, "display
 _Static_assert(MU_DISPLAY_FOD_REFLECTIONS == MU_DISPLAY_OPTION_FOD_REFLECTIONS, "display option bits");
 _Static_assert(MU_DISPLAY_FREEZE_FD == MU_DISPLAY_OPTION_FREEZE_FD, "display option bits");
 
-/* "Shield colours" (MuHostApi.shield_colors): 0 from a host before version 21. */
-unsigned int mu_shield_colors(void)
+/* "Shield colours" (MuHostApi.shield_color): 0 (the port's own) from a host before version 21. */
+unsigned int mu_shield_color(int slot)
 {
-    return mu_host && mu_host->version >= 21 && mu_host->shield_colors ? mu_host->shield_colors() : 0;
+    return mu_host && mu_host->version >= 21 && mu_host->shield_color ? mu_host->shield_color(slot) : 0;
 }
 
 /* The Arcade look's hitbox switches: offline only, so nobody sees bubbles in a network match. */

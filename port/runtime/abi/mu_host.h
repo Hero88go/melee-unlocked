@@ -364,10 +364,9 @@ typedef struct MuHostApi {
      * (hitlag, or a damage, down, grabbed or thrown action). Display only: the host counts the hits. */
     void (*hud_combo)(int32_t slot, int32_t link_slot, float percent, int32_t stunned);
 
-    /* Version 21. Each player's own shield colour (VIDEO > Shield colours), 5 bits per port from bit 0:
-     * 0 the port's colour, else 1 + an index into the 18 colours of shim/mu_te_menus.c. It colours
-     * the shield bubble and the KO blast as they spawn: picture only, each player's own screen. */
-    uint32_t (*shield_colors)(void);
+    /* Version 21. The shield (and KO blast) colour of in-game `slot` (VIDEO > Shield colours): 0 the
+     * port's own, else 0x1000000 | RGB. Read as the effect spawns: picture only. */
+    uint32_t (*shield_color)(int32_t slot);
 
     /* Version 21. The colour of the Arcade look's grid (MU_DISPLAY_OPTION_GRID), 0xRRGGBB. */
     uint32_t (*grid_color)(void);

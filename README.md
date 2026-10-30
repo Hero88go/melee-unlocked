@@ -243,8 +243,11 @@ PC settings (F1) > Video > Arcade look gives the match a 2D-fighter look, one sw
   five units behind the stage (the Source Port draws the grid; the Static Recomp shows the plain
   colour). Display only, online too.
 
-**Shield colours** (Video) sets each port's shield and KO blast colour on your own screen. Team
-matches keep team colours.
+**Shield colours** (Video) sets each port's shield and KO blast colour with a colour wheel or one of
+the game's preset colours. Online, your "Online (you)" colour is sent to opponents on Melee
+Unlocked, who see it too (Slippi Dolphin opponents, and peer-to-peer Direct for now, show your port
+colour; you always see yours).
+Team matches keep team colours.
 
 **Get mod looks** (Video) installs Diet Melee (Classic, 64 and Crystal) and Animelee Complete Edition
 in one click. Each is downloaded from its authors' own page, checked against the file they

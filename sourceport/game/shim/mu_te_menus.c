@@ -29,17 +29,17 @@ static signed char shield_choice[4] = {-1, -1, -1, -1};
 
 int mu_port_shield_color(int slot, unsigned int* rgb)
 {
-    extern unsigned int mu_shield_colors(void);   /* mu_entry.c */
-    int index;
+    extern unsigned int mu_shield_color(int slot);   /* mu_entry.c */
+    unsigned int chosen;
     /* Only where the player wears its own port colour: team matches keep the team colours. */
     if (slot < 0 || slot >= 4 || Player_GetUnk45(slot) != (u32) slot) {
         return 0;
     }
-    index = (int) ((mu_shield_colors() >> (5 * slot)) & 31u) - 1;
-    if (index < 0 || index >= SHIELD_COUNT) {
+    chosen = mu_shield_color(slot);
+    if (!(chosen & 0x1000000u)) {
         return 0;
     }
-    *rgb = (unsigned int) shield_rgb[index][0] << 16 | (unsigned int) shield_rgb[index][1] << 8 | shield_rgb[index][2];
+    *rgb = chosen & 0xFFFFFFu;
     return 1;
 }
 

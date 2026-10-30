@@ -1413,6 +1413,7 @@ int session_mode() {
   if (!session) return host::netplay::session_mode();   // a peer-to-peer session, or -1
   return (int)g_last_search.mode;
 }
+uint32_t remote_shield_color(int slot) { return g_netplay ? g_netplay->RemoteShieldColor(slot) : 0u; }
 int local_player_index() { return p2p_session_up() ? host::netplay::local_player_slot() : (int)g_local_player_index; }
 bool in_online_menus() {
   if (p2p_session_up()) return host::netplay::in_online_menus();

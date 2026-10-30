@@ -210,7 +210,11 @@ class NetplayClient {
   uint8_t remote_sent_chat_message_id = 0;
   // The opponents' builds (NP_MSG_MU_BUILD), and when the connection completed. early_pads: the
   // build takes early inputs (a trailing byte older builds never sent and never read).
-  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; bool early_pads = false, pings = false; };
+  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; bool early_pads = false, pings = false;
+                       uint32_t shield_rgb = 0;   // their own shield colour, 0x1000000 | RGB, 0 none sent
+                       uint8_t port = 0xFF; };   // their in-game slot
+  // The shield colour the opponent on in-game `slot` sent (0 none).
+  uint32_t RemoteShieldColor(int slot);
   RemoteBuild GetRemoteBuild(int index);
   uint64_t ConnectedAtMs() const { return connected_at_ms_.load(std::memory_order_acquire); }
   // Early inputs. SendEarlyPad goes to the peers that take them (any thread: it only queues).

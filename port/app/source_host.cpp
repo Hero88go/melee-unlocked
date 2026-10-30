@@ -1020,7 +1020,7 @@ uint32_t h_display_options() {
          (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |
          (gx::arcade_display() & gx::kArcadeGrid);
 }
-uint32_t h_shield_colors() { return gx::shield_colors_packed(); }
+uint32_t h_shield_color(int32_t slot) { return gx::shield_color(slot); }
 uint32_t h_grid_color() { return gx::look_live().arcade_grid_rgb.load(std::memory_order_relaxed) & 0xFFFFFFu; }
 void h_hud_combo(int32_t slot, int32_t link_slot, float percent, int32_t stunned) {
   gx::set_native_hud_combo(slot, link_slot, percent, stunned != 0);
@@ -2991,7 +2991,7 @@ MuHostApi make_host() {
   h.audio_options = h_audio_options;
   h.picture_widen = h_picture_widen;
   h.hud_combo = h_hud_combo;
-  h.shield_colors = h_shield_colors;
+  h.shield_color = h_shield_color;
   h.grid_color = h_grid_color;
   return h;
 }

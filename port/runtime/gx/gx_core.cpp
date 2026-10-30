@@ -967,17 +967,19 @@ const char* const kShieldColorNames[kShieldColorCount] = {
     "Red", "Blue", "Yellow", "Green", "Cyan", "Magenta", "Orange", "Lime", "Pink",
     "Purple", "Indigo", "Dark red", "Dark green", "Dark blue", "Brown", "White", "Dark gray", "Gray",
 };
-std::atomic<uint32_t> g_shield_colors{0};
-void set_shield_colors(const int choice[4]) {
-  uint32_t packed = 0;
-  for (int i = 0; i < 4; ++i)
-    if (choice[i] >= 0 && choice[i] < kShieldColorCount) packed |= (uint32_t)(choice[i] + 1) << (5 * i);
-  g_shield_colors.store(packed, std::memory_order_relaxed);
+std::atomic<uint32_t> g_shield_colors[5] = {};   // P1 to P4, then the online one
+void set_shield_colors(const uint32_t ports[4], uint32_t online) {
+  for (int i = 0; i < 4; ++i) g_shield_colors[i].store(ports[i] & 0x1FFFFFFu, std::memory_order_relaxed);
+  g_shield_colors[4].store(online & 0x1FFFFFFu, std::memory_order_relaxed);
 }
-uint32_t shield_colors_packed() { return g_shield_colors.load(std::memory_order_relaxed); }
-int shield_color(int port) {
-  if (port < 0 || port >= 4) return -1;
-  return (int)((shield_colors_packed() >> (5 * port)) & 31u) - 1;
+uint32_t shield_color_online() { return g_shield_colors[4].load(std::memory_order_relaxed); }
+uint32_t shield_color(int slot) {
+  if (slot < 0 || slot >= 4) return 0;
+  if (slippi::online::is_online_match()) {
+    if (slot == slippi::online::local_player_slot()) return shield_color_online();
+    return slippi::online::remote_shield_color(slot);
+  }
+  return g_shield_colors[slot].load(std::memory_order_relaxed);
 }
 std::atomic<uint32_t> g_arcade_display[(int)ArcadeSource::Count] = {};
 void set_arcade_display(ArcadeSource source, uint32_t bits) {

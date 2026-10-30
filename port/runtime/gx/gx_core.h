@@ -277,15 +277,18 @@ bool css_background_free_active();
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);
 bool player_tags_always_active();
-// "Shield colours" (VIDEO): per port -1 for the port's colour, else one of the 18 colours below (the same
-// table as 20XX TE's, shim/mu_te_menus.c). The shield bubble and the KO blast take it; team matches keep
-// the team colours. Display only. Packed for MuHostApi.shield_colors: 5 bits a port, 0 = the port's own.
+// "Shield colours" (VIDEO): the shield bubble and the KO blast of each in-game slot in a colour of the
+// player's choosing (0 the port's own, else 0x1000000 | RGB). Offline each port's own setting; in an
+// online match the player's "Online" colour on their own slot and, on an opponent's slot, the colour that
+// opponent sent (Melee Unlocked players send it after connecting; Slippi Dolphin sends none, so their
+// port colour stays). Team matches keep the team colours. Display only. The presets offered beside the
+// colour wheel are the game's own: the 18 colours of 20XX TE (shim/mu_te_menus.c).
 constexpr int kShieldColorCount = 18;
 extern const uint8_t kShieldColorRgb[kShieldColorCount][3];
 extern const char* const kShieldColorNames[kShieldColorCount];
-void set_shield_colors(const int choice[4]);
-uint32_t shield_colors_packed();
-int shield_color(int port);   // -1 the port's own
+void set_shield_colors(const uint32_t ports[4], uint32_t online);
+uint32_t shield_color_online();   // the player's own online colour, for the connect message
+uint32_t shield_color(int slot);   // 0 the port's own, else 0x1000000 | RGB
 // "Arcade look" bits (MU_DISPLAY_OPTION_HITBOXES and the next two, and the renderer's 2D camera), from
 // four places: the saved settings, the Practice menu's Tools rows for this session, a recognised mod
 // disc while its profile is active, and a pasted always-display hitbox code that is switched on. The
