@@ -1,187 +1,138 @@
-// PhobVision's menus, rebuilt for the settings panel. The screens, their order, their names and
-// their help text follow PhobGCC's rp2040 menu (menu.h, menuStrings.h), so a Phob owner finds every
-// setting where they expect it. PhobGCC (https://github.com/PhobGCC/PhobGCC-SW, GPL-3.0) is by
-// Phobos132, FrostSSBM, CarVac, NiceMitch and the PhobGCC contributors.
+// The PhobGCC menu, full screen in the game's gold Main Menu look (practice_menu's bars, cursor ring,
+// title, description box, button glyphs and the game's own font), driven by the controller.
 //
-// The PhobScope screens add the views of GCC Test Suite (https://github.com/greenwave-1/GTS, GPL-3.0,
-// by greenwave-1): a continuous oscilloscope, a gate visualizer and a CSV export. They are drawn
-// here from the adapter's own report stream; no GTS code is used.
+// The screens, their order, their names and their help text follow PhobGCC's PhobVision menu
+// (rp2040 menu.h, menuStrings.h), so a Phob owner finds every setting where they expect it. PhobGCC
+// (https://github.com/PhobGCC/PhobGCC-SW, GPL-3.0) is by Phobos132, FrostSSBM, CarVac, NiceMitch
+// and the PhobGCC contributors. PhobScope's stickmaps are by venus23gg, made with Altimor's Melee
+// Stick Coordinate Visualizer; the continuous scope, gate visualizer and export follow GCC Test
+// Suite by greenwave-1 (no code from it is used).
 //
-// Buttons: the menus are ordinary panel controls. Calibration and remapping listen to the
-// controller being set up with PhobVision's buttons (A/L/R next, Z back, X/Y turn a notch, B puts
-// it back); while they do, the panel takes no navigation from the controller (phob_menu_capturing),
-// and Start cancels.
+// Buttons: the D-pad or stick moves, left and right change a value, A picks, B goes back, Start
+// closes (and records on the PhobScope screens, as in PhobScope). Calibration and remapping read
+// the controller being set up with PhobVision's buttons: A/L/R next, Z back, X/Y turn a notch, B puts
+// it back, Start cancels.
 // SPDX-License-Identifier: GPL-3.0-only
 #include "phob_menu.h"
 #include "host.h"
 #include "phob.h"
 #include "phobscope.h"
 #include "phob_stickmaps.h"
+#include "practice_menu.h"
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cstdio>
 #include <filesystem>
-#include <random>
 #include <fstream>
+#include <functional>
+#include <random>
 #include <string>
 #include <vector>
 
 namespace gx {
 namespace {
 using namespace host::phob;
+using host::phobscope::Mode;
+namespace pm = practice_menu;
 
+constexpr uint16_t PAD_LEFT = 0x0001, PAD_RIGHT = 0x0002, PAD_DOWN = 0x0004, PAD_UP = 0x0008, PAD_Z = 0x0010,
+                   PAD_R = 0x0020, PAD_L = 0x0040, PAD_A = 0x0100, PAD_B = 0x0200, PAD_X = 0x0400,
+                   PAD_Y = 0x0800, PAD_START = 0x1000;
+
+// ---- the screens (PhobVision's tree) ----
 enum Screen {
   MAIN, STICK, CALIBRATE, ASTICKCAL, ANOTCHFIX, CSTICKCAL, CNOTCHFIX, FILTER, ASNAPBACK, AWAVE, ASMOOTH,
   CSNAPBACK, CWAVE, GEOM, CARDINALS, RADIUS, SETTINGS, SET_OVER, REMAP, TRIGGER, LTRIGGER, RTRIGGER,
   TOURNEY, RESET, SCOPE, INPUTVIEW, XYSCOPE, TIMESCOPE, PRESSTIME, REACTION, CONTSCOPE, GATE, EXPORT,
   PHOBCHECK, SETUPS, SCREEN_COUNT
 };
-struct Node { Screen parent; const char* name; std::vector<Screen> children; };
+struct Node { Screen parent; const char* name; const char* about; };
 const Node& node(Screen s) {
   static const Node nodes[SCREEN_COUNT] = {
-      {MAIN, "Main Menu", {STICK, SETTINGS, SCOPE, PHOBCHECK, SETUPS}},
-      {MAIN, "Stick Configuration", {CALIBRATE, FILTER, GEOM}},
-      {STICK, "Stick Calibration", {ASTICKCAL, ANOTCHFIX, CSTICKCAL, CNOTCHFIX}},
-      {CALIBRATE, "Calibrate Left Stick", {}},
-      {CALIBRATE, "Left Stick Notch Fix", {}},
-      {CALIBRATE, "Calibrate C-Stick", {}},
-      {CALIBRATE, "C-Stick Notch Fix", {}},
-      {STICK, "Stick Filter Settings", {ASNAPBACK, AWAVE, ASMOOTH, CSNAPBACK, CWAVE}},
-      {FILTER, "Left Stick Smart Snapback", {}},
-      {FILTER, "Left Stick Waveshaping", {}},
-      {FILTER, "Left Stick Smoothing", {}},
-      {FILTER, "C-Stick Snapback", {}},
-      {FILTER, "C-Stick Waveshaping", {}},
-      {STICK, "Stick Geometry Settings", {CARDINALS, RADIUS}},
-      {GEOM, "Cardinal Snapping", {}},
-      {GEOM, "Stick Radius Scaling", {}},
-      {MAIN, "Settings", {SET_OVER, REMAP, TRIGGER, TOURNEY, RESET}},
-      {SETTINGS, "Settings Overview", {}},
-      {SETTINGS, "Button Remapping", {}},
-      {SETTINGS, "Trigger Configuration", {LTRIGGER, RTRIGGER}},
-      {TRIGGER, "Left Trigger Configuration", {}},
-      {TRIGGER, "Right Trigger Configuration", {}},
-      {SETTINGS, "Tourney Button Lockouts", {}},
-      {SETTINGS, "Reset Settings", {}},
-      {MAIN, "PhobScope", {INPUTVIEW, XYSCOPE, TIMESCOPE, PRESSTIME, REACTION, CONTSCOPE, GATE, EXPORT}},
-      {SCOPE, "Input Viewer", {}},
-      {SCOPE, "Stickmap Plots", {}},
-      {SCOPE, "Value vs Time Plots", {}},
-      {SCOPE, "Button Timing Viewer", {}},
-      {SCOPE, "Reaction Time Test", {}},
-      {SCOPE, "Continuous Oscilloscope", {}},
-      {SCOPE, "Gate Visualizer", {}},
-      {SCOPE, "Export Data", {}},
-      {MAIN, "Phob Check", {}},
-      {MAIN, "Setups", {}},
+      {MAIN, "PhobGCC", ""},
+      {MAIN, "Stick Configuration", "Calibration, notches, the snapback filter and the stick's shape."},
+      {STICK, "Stick Calibration", "PhobGCC's own calibration, and Notch Fix to move notches without measuring again."},
+      {CALIBRATE, "Calibrate Left Stick", ""},
+      {CALIBRATE, "Left Stick Notch Fix", ""},
+      {CALIBRATE, "Calibrate C-Stick", ""},
+      {CALIBRATE, "C-Stick Notch Fix", ""},
+      {STICK, "Stick Filter Settings", "Smart snapback, waveshaping and smoothing, as PhobGCC filters its sticks."},
+      {FILTER, "Left Stick Smart Snapback", "Set so that snapback < 23 for Melee. 0 disables the filter. >0 shortens rise time. <0 doesn't shorten rise time. Greater magnitude makes the stick return to center slower."},
+      {FILTER, "Left Stick Waveshaping", "This makes the stick stop during fast inputs. Greater magnitudes reduce the speed threshold. <0 lets you mimic a heavy pode potentiometer. It affects pivots, DBOOC, dashback, and more."},
+      {FILTER, "Left Stick Smoothing", "This averages the stick position with the past. It can be used to make one axis lag the other. Use X=5 to make down-and-in ledgedashes work."},
+      {FILTER, "C-Stick Snapback", "This averages the stick position with the past. Make these 5 or 6 to reduce snapback. Make one axis higher to make it less responsive."},
+      {FILTER, "C-Stick Waveshaping", "This makes the stick stop during fast inputs. This can help C-Stick ledge drop consistency."},
+      {STICK, "Stick Geometry Settings", "Cardinal snapping and how far the stick reaches."},
+      {GEOM, "Cardinal Snapping", "This sets how far the stick snaps to the cardinal axes. 0 disables snapping, and -2 disables 1.0 cardinals even on UCF 0.84+. -1 gives 1.0 on 0.84 except for Zelda teleport."},
+      {GEOM, "Stick Radius Scaling", "This sets how far from the center the stick can reach. A normal GCC can get to roughly 100-103. Melee only sees <=80. Calibrate again after changing it."},
+      {MAIN, "Settings", "Button remapping, trigger modes, tourney lockouts and resets."},
+      {SETTINGS, "Settings Overview", "Everything set on this controller, at a glance."},
+      {SETTINGS, "Button Remapping", "You may remap A, B, Du, L, R, X, Y, or Z. When L or R are swapped, they are digital only. Use Trigger Mode 5 to get an analog trigger value on a digital button for lightshielding."},
+      {SETTINGS, "Trigger Configuration", "The L and R trigger modes and their offsets."},
+      {TRIGGER, "Left Trigger Configuration", "This changes the behavior of the L trigger."},
+      {TRIGGER, "Right Trigger Configuration", "This changes the behavior of the R trigger."},
+      {SETTINGS, "Tourney Button Lockouts", "This prevents misinputs during tournaments by delaying or disabling the start button, which pauses the match, and/or dpad-up, which taunts. You must hold delayed buttons for 1 second."},
+      {SETTINGS, "Reset Settings", "Soft Reset keeps stick calibration. Hard Reset clears everything, calibration included."},
+      {MAIN, "PhobScope", "Records your stick and triggers at the adapter's rate and measures them the way PhobGCC does."},
+      {SCOPE, "Input Viewer", "Everything the controller sends, before and after the settings."},
+      {SCOPE, "Stickmap Plots", "100 ms of stick motion over Melee's stickmaps. Recording starts once the stick moves."},
+      {SCOPE, "Value vs Time Plots", "200 ms of one input, and the chance of snapback, dashback, pivots or a powershield."},
+      {SCOPE, "Button Timing Viewer", "200 ms from your first press: when each button and stick went down, in frames."},
+      {SCOPE, "Reaction Time Test", "Wait for the square, then press anything."},
+      {SCOPE, "Continuous Oscilloscope", "One input, continuously, before and after the settings."},
+      {SCOPE, "Gate Visualizer", "Roll the stick slowly around the gate; the outline is the farthest it reached in each direction."},
+      {SCOPE, "Export Data", "The last 4096 reports of this socket as CSV beside your settings."},
+      {MAIN, "Phob Check", "What this controller sends, checked against Melee: the latest PhobScope results and the notch you hold."},
+      {MAIN, "Setups", "Save these settings under a name and switch between setups, or give one to a friend."},
   };
   return nodes[s];
 }
 
-constexpr uint16_t PAD_LEFT = 0x0001, PAD_RIGHT = 0x0002, PAD_DOWN = 0x0004, PAD_UP = 0x0008, PAD_Z = 0x0010,
-                   PAD_R = 0x0020, PAD_L = 0x0040, PAD_A = 0x0100, PAD_B = 0x0200, PAD_X = 0x0400,
-                   PAD_Y = 0x0800, PAD_START = 0x1000;
-
+// ---- per socket state ----
 struct MenuState {
   Screen screen = MAIN;
+  std::vector<int> cursor = std::vector<int>(SCREEN_COUNT, 0), top = std::vector<int>(SCREEN_COUNT, 0);
   bool loaded = false;
   Settings s;
   CalSession cal;
   bool calibrating = false;
-  uint16_t last_buttons = 0;
-  uint16_t start_last = 0xFFFF;
-  uint16_t last_logged = 0;   // test runs: the buttons last written to the log
+  uint16_t last_buttons = 0xFFFF;   // the socket's own buttons (calibration, remap, reaction)
   std::chrono::steady_clock::time_point last_frame;
-  int remap_step = -1;   // Button Remapping: the output being assigned, -1 when idle
-  int reset_pick = 0;
-  bool reset_confirm = false;
+  int remap_step = -1;
+  int reset_pending = -1;           // 0 soft, 1 hard: waiting for the second A
   bool frozen = false;
   std::vector<host::GCScopeSample> frozen_samples;
+  int cont_input = 0, cont_window = 1000;
+  int gate_stick = 0;
   float gate[64] = {};
-  // PhobScope recordings (phobscope.h): `cap` records, `shown` is the last finished one.
   host::phobscope::Capture cap, shown;
   bool have_shown = false;
   bool auto_repeat = true;
-  // Auto-Repeat starts the next recording 15 menu frames (about 250 ms) after one finishes, as the
-  // firmware's repeatTimer does; it used to restart at once and trigger on a stick still held out.
   std::chrono::steady_clock::time_point repeat_at{};
   host::GCScopeSample prev{};
   bool have_prev = false;
-  uint32_t next_tick_us = 0;   // the recording's 1 ms clock
-  int stickmap = 0;        // 0 = none, else Phob's stickmaps 1..6
+  uint32_t next_tick_us = 0;
+  int stickmap = 0;
   int view_index = 0;
-  int time_input = 0;      // Value vs Time: Left X, Left Y, C X, C Y, L, R
-  int time_measure = 0;    // Snapback, Dashback, Pivots, Trigger
-  // The Reaction Time Test: waiting for the random moment, then counting.
+  int time_input = 0, time_measure = 0;
   bool reaction_waiting = false;
   std::chrono::steady_clock::time_point reaction_at;
-  // The last result of each Value vs Time measurement, for Phob Check.
   float last_snapback = -1, last_db_van = -1, last_db_ucf = -1, last_pivot[3] = {-1, -1, -1}, last_trig[3] = {-1, -1, -1};
-  char setup_name[48] = "";
   bool setup_cal = false;
   std::string status;
+  double status_until = 0;
 };
 MenuState g_menu[4];
-bool g_capturing = false;
-bool g_owns_start = false;   // a PhobScope screen that records on Start is showing
-
-}  // namespace
-// The Controls tab stops drawing the section when its header closes or the tab changes.
-void phob_menu_not_drawn() {
-  g_capturing = false;
-  g_owns_start = false;
-  for (MenuState& m : g_menu) { m.calibrating = false; m.remap_step = -1; m.reaction_waiting = false; m.cap.mode = host::phobscope::Mode::None; }
-}
-namespace {
-void hint(const char* text) {
-  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-  ImGui::TextWrapped("%s", text);
-  ImGui::PopStyleColor();
-}
-
-bool slider(const char* label, int* v, int lo, int hi, int def) {
-  bool changed = ImGui::SliderInt(label, v, lo, hi);
-  ImGui::SameLine();
-  ImGui::PushID(label);
-  if (ImGui::SmallButton("Default")) { *v = def; changed = true; }
-  ImGui::PopID();
-  return changed;
-}
-
-// The stick picture: the gate octagon, Melee's deadzone and rim, the raw dot and the output dot.
-void draw_stick(const char* id, float raw_x, float raw_y, float out_x, float out_y, float size,
-                const float* target_x = nullptr, const float* target_y = nullptr) {
-  ImGui::PushID(id);
-  const ImVec2 p0 = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##stick", ImVec2(size, size));
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImVec2 c(p0.x + size / 2, p0.y + size / 2);
-  const float k = size / 2 / 110.0f;
-  dl->AddRectFilled(p0, ImVec2(p0.x + size, p0.y + size), IM_COL32(12, 16, 24, 255), 6);
-  ImVec2 oct[8];
-  for (int i = 0; i < 8; i++) {
-    float x, y;
-    calc_stick_values(3.14159265f * i / 4, x, y);
-    oct[i] = ImVec2(c.x + x * k, c.y - y * k);
-  }
-  dl->AddPolyline(oct, 8, IM_COL32(90, 100, 120, 255), ImDrawFlags_Closed, 1.5f);
-  dl->AddCircle(c, 80 * k, IM_COL32(70, 120, 200, 160), 64, 1.0f);   // Melee's rim (1.0)
-  dl->AddRect(ImVec2(c.x - 22 * k, c.y - 22 * k), ImVec2(c.x + 22 * k, c.y + 22 * k), IM_COL32(200, 120, 60, 140));   // deadzone
-  if (target_x && target_y) dl->AddCircleFilled(ImVec2(c.x + *target_x * k, c.y - *target_y * k), 5, IM_COL32(80, 220, 120, 255));
-  dl->AddCircleFilled(ImVec2(c.x + raw_x * k, c.y - raw_y * k), 4, IM_COL32(150, 150, 150, 255));
-  dl->AddCircleFilled(ImVec2(c.x + out_x * k, c.y - out_y * k), 5, IM_COL32(255, 255, 255, 255));
-  ImGui::PopID();
-}
-
-void coord_line(const char* label, int x, int y) {
-  float mx, my;
-  melee_coords(x, y, mx, my);
-  ImGui::Text("%s %4d, %4d   Melee %.4f, %.4f", label, x, y, mx, my);
-}
+bool g_open = false;
+int g_port = 0;
+double g_changed_at = 0;
+PhobNativeIn g_in;
+bool g_socket_armed = false;   // the socket's own controller was let go since the menu opened
 
 int latest(int port, std::vector<host::GCScopeSample>& out, int n) {
   out.resize((size_t)n);
@@ -190,153 +141,9 @@ int latest(int port, std::vector<host::GCScopeSample>& out, int n) {
   return got;
 }
 
-// ---- calibration (Calibrate Left Stick, Notch Fix, and the C-stick ones) ----
-const char* notch_name(int n) {
-  static const char* names[16] = {"right", "notch 1", "up right", "notch 2", "up", "notch 3", "up left", "notch 4",
-                                  "left", "notch 5", "down left", "notch 6", "down", "notch 7", "down right", "notch 8"};
-  return n >= 0 && n < 16 ? names[n] : "";
-}
+void say(MenuState& m, const std::string& s) { m.status = s; m.status_until = g_in.time + 4.0; }
 
-bool draw_calibration(int port, MenuState& m, Stick which, bool notch_fix) {
-  bool changed = false;
-  StickCal& saved = which == ASTICK ? m.s.a_cal : m.s.c_cal;
-  const int scaler = which == ASTICK ? m.s.a_scaler : m.s.c_scaler;
-  if (!m.calibrating) {
-    if (notch_fix) {
-      hint("Keeps your last stick measurement and goes straight to adjusting the notches.");
-      if (!saved.measured) { hint("Calibrate this stick once first."); return false; }
-      if (ImGui::Button("Begin Notch Fix")) { m.calibrating = cal_begin_notch_fix(m.cal, which, saved, scaler); m.last_buttons = 0xFFFF; }
-    } else {
-      hint("PhobGCC's own calibration: the stick at rest, then each notch, 16 times around the gate.");
-      hint("Then the Notch Adjust Phase lets you turn each diagonal and modder notch to the angle you want.");
-      if (ImGui::Button("Begin Calibration")) { cal_begin(m.cal, which, saved, scaler); m.calibrating = true; m.last_buttons = 0xFFFF; }
-      if (saved.measured) {
-        ImGui::SameLine();
-        if (ImGui::Button("Clear calibration")) { saved = StickCal{}; changed = true; }
-      }
-    }
-    return changed;
-  }
-
-  host::phob::HardwareInput in;
-  const bool have = host::gcadapter_phob_raw(port, in);
-  if (!have) { ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Plug a controller into socket %d.", port + 1); }
-  const float rx = which == ASTICK ? in.ax / 255.0f : in.cx / 255.0f;
-  const float ry = which == ASTICK ? in.ay / 255.0f : in.cy / 255.0f;
-  // The reading kept for a step: the adapter's reports of the last 32 ms averaged, as the firmware
-  // averages its readings at the press (whatever the display's frame rate).
-  float ax = rx, ay = ry;
-  {
-    std::vector<host::GCScopeSample> recent;
-    latest(port, recent, 64);
-    float sx = 0, sy = 0; int n = 0;
-    for (const host::GCScopeSample& r : recent) {
-      if (!recent.empty() && (int32_t)(recent.back().time_us - r.time_us) > 32000) continue;
-      sx += which == ASTICK ? r.hw_ax : r.hw_cx; sy += which == ASTICK ? r.hw_ay : r.hw_cy; n++;
-    }
-    if (n) { ax = sx / n / 255.0f; ay = sy / n / 255.0f; }
-  }
-
-  const auto now = std::chrono::steady_clock::now();
-  const float dt = std::min(50.0f, std::chrono::duration<float, std::milli>(now - m.last_frame).count());
-  m.last_frame = now;
-  const uint16_t b = have ? in.buttons : 0;
-  const uint16_t pressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)(b & ~m.last_buttons);
-  m.last_buttons = b;
-  if (std::getenv("MELEE_TEST_PHOB") && (pressed || b != m.last_logged)) { host::log("phob test: cal step %d buttons %04X raw %.3f,%.3f have %d", m.cal.step, b, rx, ry, (int)have); m.last_logged = b; }
-
-  const bool advance = (pressed & (PAD_A | PAD_L | PAD_R)) || ImGui::Button("Next (A/L/R)");
-  ImGui::SameLine();
-  const bool back = (pressed & PAD_Z) || ImGui::Button("Back (Z)");
-  ImGui::SameLine();
-  if ((pressed & PAD_START) || ImGui::Button("Cancel (Start)")) { m.calibrating = false; return false; }
-
-  if (m.cal.step < kCalPoints) {
-    ImGui::Text("Measurement Phase   Step: %d / %d", m.cal.step + 1, kCalPoints);
-    const CalPrompt p = cal_prompt(m.cal.step);
-    float tx = 0, ty = 0;
-    if (p.centre) {
-      ImGui::TextUnformatted("Let go of the stick");
-      ImGui::TextUnformatted("and press A/L/R.");
-    } else {
-      calc_stick_values(3.14159265f * p.notch / 8, tx, ty);
-      ImGui::Text("Hold stick into notch: %s", notch_name(p.notch));
-      if (p.optional) { ImGui::TextUnformatted("If no notch exists,"); ImGui::TextUnformatted("leave stick centered."); }
-    }
-    ImGui::TextUnformatted("Press Z to go back.");
-    draw_stick("cal", (rx - 0.5f) * 200, (ry - 0.5f) * 200, (rx - 0.5f) * 200, (ry - 0.5f) * 200, 220, p.centre ? nullptr : &tx, p.centre ? nullptr : &ty);
-    ImGui::Text("Raw Values: %.4f, %.4f", ax, ay);
-  } else {
-    ImGui::Text("Notch Adjust Phase   Step: %d / %d", m.cal.step + 1, kCalSteps);
-    const int notch = cal_adjust_notch(m.cal.step);
-    ImGui::Text("Adjusting: %s", notch_name(notch));
-    ImGui::TextUnformatted("You can now preview the stick motion. Put the");
-    ImGui::TextUnformatted("stick in the indicated notch and press X/Y to");
-    ImGui::TextUnformatted("move its output CW/CCW. B puts it back.");
-    ImGui::TextUnformatted("Press A/L/R to move on.");
-    cal_adjust(m.cal, (b & PAD_X) != 0, (b & PAD_Y) != 0, (b & PAD_B) != 0, dt);
-    // The stick through the calibration as it stands, the way the firmware previews it.
-    const float lx = linearize(rx, m.cal.params.fit_x), ly = linearize(ry, m.cal.params.fit_y);
-    float ox = 0, oy = 0;
-    Settings preview; preview.a_scaler = preview.c_scaler = m.cal.scaler;
-    notch_remap(lx, ly, ox, oy, m.cal.params, 1, preview, which);
-    float tx, ty;
-    calc_stick_values(m.cal.measured_angles[notch], tx, ty);
-    draw_stick("adj", (rx - 0.5f) * 200, (ry - 0.5f) * 200, ox, oy, 220, &tx, &ty);
-    coord_line("Stick Coords:", (int)std::lround(ox), (int)std::lround(oy));
-  }
-  if (back) cal_undo(m.cal);
-  if (advance && have && cal_advance(m.cal, ax, ay, saved)) {
-    m.calibrating = false;
-    m.status = which == ASTICK ? "Left stick calibrated." : "C-stick calibrated.";
-    changed = true;
-  }
-  return changed;
-}
-
-// ---- PhobScope ----
-void plot_series(const char* id, const std::vector<host::GCScopeSample>& v, int which, float height) {
-  ImGui::PushID(id);
-  const ImVec2 p0 = ImGui::GetCursorScreenPos();
-  const float w = std::max(200.0f, ImGui::GetContentRegionAvail().x);
-  ImGui::InvisibleButton("##plot", ImVec2(w, height));
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + height), IM_COL32(12, 16, 24, 255), 4);
-  const float mid = p0.y + height / 2, k = height / 2 / 128.0f;
-  dl->AddLine(ImVec2(p0.x, mid), ImVec2(p0.x + w, mid), IM_COL32(60, 60, 70, 255));
-  for (float lvl : {80.0f, -80.0f, 23.0f, -23.0f})
-    dl->AddLine(ImVec2(p0.x, mid - lvl * k), ImVec2(p0.x + w, mid - lvl * k), IM_COL32(50, 70, 110, 160));
-  if (v.size() >= 2) {
-    auto val = [&](const host::GCScopeSample& s, bool raw) -> float {
-      switch (which) {
-        case 0: return raw ? s.raw_ax : s.ax;
-        case 1: return raw ? s.raw_ay : s.ay;
-        case 2: return raw ? s.raw_cx : s.cx;
-        case 3: return raw ? s.raw_cy : s.cy;
-        case 4: return (raw ? s.raw_l : s.l) / 2.0f;
-        default: return (raw ? s.raw_r : s.r) / 2.0f;
-      }
-    };
-    const float step = w / (float)(v.size() - 1);
-    for (int pass = 0; pass < 2; pass++) {
-      const ImU32 col = pass == 0 ? IM_COL32(140, 140, 140, 200) : IM_COL32(255, 200, 60, 255);
-      for (size_t i = 1; i < v.size(); i++)
-        dl->AddLine(ImVec2(p0.x + (i - 1) * step, mid - val(v[i - 1], pass == 0) * k),
-                    ImVec2(p0.x + i * step, mid - val(v[i], pass == 0) * k), col, 1.2f);
-    }
-  }
-  ImGui::PopID();
-}
-
-double sample_rate(const std::vector<host::GCScopeSample>& v) {
-  if (v.size() < 2) return 0;
-  const double span = (double)(uint32_t)(v.back().time_us - v.front().time_us);
-  return span > 0 ? (v.size() - 1) * 1e6 / span : 0;
-}
-
-
-using host::phobscope::Mode;
-
+// ---- PhobScope recording ----
 host::phobscope::Ms to_ms(const host::GCScopeSample& s) {
   host::phobscope::Ms m;
   auto out = [](int8_t v) { return (uint8_t)(127 + v); };
@@ -348,17 +155,15 @@ host::phobscope::Ms to_ms(const host::GCScopeSample& s) {
   m.l = b & PAD_L; m.r = b & PAD_R; m.du = b & PAD_UP; m.dd = b & PAD_DOWN; m.dl = b & PAD_LEFT; m.dr = b & PAD_RIGHT;
   return m;
 }
-
 void begin_capture(int port, MenuState& m, Mode mode) {
   host::phobscope::start(m.cap, mode);
   std::vector<host::GCScopeSample> v;
   m.have_prev = latest(port, v, 1) == 1;
   if (m.have_prev) { m.prev = v.back(); m.next_tick_us = m.prev.time_us + 1000; }
 }
-
-// Feeds the recording every millisecond since the last frame: a report holds until the next one,
-// so a 1000 Hz adapter gives one sample per report and a slower one repeats each for its duration.
-// Returns true when the recording finished this frame.
+// A fixed 1 ms clock: every tick takes the report in force at that moment. Reports arrive with USB
+// jitter (and sometimes in bursts); counting each gap as whole milliseconds on its own used to
+// stretch short events (9 ms of tilt recorded as 12). Returns true when the recording finished.
 bool feed_capture(int port, MenuState& m) {
   if (m.cap.mode == Mode::None || m.cap.done) return false;
   std::vector<host::GCScopeSample> v;
@@ -368,9 +173,6 @@ bool feed_capture(int port, MenuState& m) {
     m.prev = v.back(); m.have_prev = true; m.next_tick_us = m.prev.time_us + 1000;
     return false;
   }
-  // A fixed 1 ms clock: every tick takes the report in force at that moment. Reports arrive with
-  // USB jitter (and sometimes in bursts); counting each gap as whole milliseconds on its own used
-  // to stretch short events (9 ms of tilt recorded as 12).
   for (const host::GCScopeSample& s : v) {
     if ((int32_t)(s.time_us - m.prev.time_us) <= 0) continue;
     int ticks = 0;
@@ -384,16 +186,19 @@ bool feed_capture(int port, MenuState& m) {
   }
   return false;
 }
+Mode time_mode(const MenuState& m) {
+  return m.time_input >= 4 ? Mode::Trigger : m.time_measure == 0 ? Mode::Snapback : m.time_measure == 1 ? Mode::Dashback : Mode::Pivot;
+}
 
 // Phob's stickmap images, decoded once into runs of one grey.
 struct Run { int16_t row, col, len; uint8_t grey; };
 const std::vector<Run>& stickmap_runs(int map) {
-  static std::vector<Run> cache[gx::phob_stickmaps::kMapCount];
-  static bool made[gx::phob_stickmaps::kMapCount] = {};
+  static std::vector<Run> cache[phob_stickmaps::kMapCount];
+  static bool made[phob_stickmaps::kMapCount] = {};
   std::vector<Run>& runs = cache[map];
   if (made[map]) return runs;
   made[map] = true;
-  const auto& mp = gx::phob_stickmaps::kMaps[map];
+  const auto& mp = phob_stickmaps::kMaps[map];
   const int w = (mp.image[0] << 8) | mp.image[1], h = (mp.image[2] << 8) | mp.image[3];
   int byte = 4, left = (mp.image[byte] >> 3) + 1, color = mp.palette[mp.image[byte] & 7];
   for (int row = 0; row < h; row++) {
@@ -409,277 +214,254 @@ const std::vector<Run>& stickmap_runs(int map) {
   return runs;
 }
 
-const char* kButtonNames[8] = {"A", "B", "X", "Y", "S", "Z", "L", "R"};
+// ---- rows ----
+enum class Kind { Page, Value, Action, Info };
+struct Row {
+  Kind kind = Kind::Info;
+  std::string label, value, about;
+  Screen target = MAIN;
+  int* v = nullptr;
+  int lo = 0, hi = 0, step = 1;
+  std::function<std::string(int)> show;   // a value's text (else the number)
+  std::function<void()> act;              // an action, or what a change must also do
+  bool enabled = true;
+};
+Row page(Screen s, std::string value = "") { Row r; r.kind = Kind::Page; r.label = node(s).name; r.target = s; r.value = value; r.about = node(s).about; return r; }
+Row value(const char* label, int* v, int lo, int hi, const char* about, std::function<std::string(int)> show = nullptr) {
+  Row r; r.kind = Kind::Value; r.label = label; r.v = v; r.lo = lo; r.hi = hi; r.about = about; r.show = show; return r;
+}
+Row action(const std::string& label, std::string value, const std::string& about, std::function<void()> act, bool enabled = true) {
+  Row r; r.kind = Kind::Action; r.label = label; r.value = value; r.about = about; r.act = act; r.enabled = enabled; return r;
+}
+Row info(const std::string& label, std::string value, const std::string& about) { Row r; r.label = label; r.value = value; r.about = about; return r; }
+std::string value_text(const Row& r) {
+  if (r.kind != Kind::Value) return r.value;
+  return r.show ? r.show(*r.v) : std::to_string(*r.v);
+}
+std::string pct(float v) { if (v < 0) return "-"; char b[16]; std::snprintf(b, sizeof b, "%.0f%%", v); return b; }
 
-void draw_results(const host::phobscope::Capture& c) {
-  switch (c.mode) {
-    case Mode::Snapback:
-      ImGui::Text("Positive: %.2f%%", c.percents[0]);
-      ImGui::Text("Negative: %.2f%%", std::fmax(0.0f, 100 - c.percents[0]));
-      hint("Negative is the chance the release reads as a turn the other way.");
-      break;
-    case Mode::Dashback:
-      ImGui::Text("Vanilla  Dashback: %.0f%%", c.percents[0]);
-      ImGui::Text("UCF      Dashback: %.0f%%", c.percents[1]);
-      break;
-    case Mode::Pivot:
-      ImGui::Text("No Turn: %.0f%%", std::round(c.percents[0]));
-      ImGui::Text("Empty Pivot: %.0f%%", std::round(c.percents[1]));
-      ImGui::Text("Dashback: %.0f%%", std::round(c.percents[2]));
-      break;
-    case Mode::Trigger:
-      ImGui::Text("D PS: %.0f%%", std::round(c.percents[0]));
-      ImGui::Text("ADT PS: %.0f%%", std::round(c.percents[1]));
-      ImGui::Text("No PS: %.0f%%", std::round(c.percents[2]));
-      break;
-    default: break;
+const char* trigger_mode_short(int mode) {
+  static const char* n[9] = {"Default", "Digital Only", "Analog Only", "Trigger Plug", "Digital => Analog", "Analog + Digital",
+                             "Scaled Analog", "Plug, No Digital", "Plug, High Gain"};
+  return n[std::clamp(mode, 0, 8)];
+}
+const char* trigger_mode_text(int mode) {
+  switch (mode) {
+    case 0: return "This is the default trigger behavior.";
+    case 1: return "This disables analog triggers (lightshield).";
+    case 2: return "This disables the hard press but preserves LRAS. In Melee you cannot airdodge or tech with this.";
+    case 3: return "This caps the maximum analog value at the offset. In Melee, you get a large lightshield for much of the slider travel, then a hardshield.";
+    case 4: return "This outputs an analog value (the offset) when hard pressed, without the digital press.";
+    case 5: return "This outputs both an analog value and a digital output when hard pressed.";
+    case 6: return "This increases the sensitivity of the analog by a multiplier that changes with the offset.";
+    case 7: return "Trigger plug emulation without the digital press.";
+    default: return "Trigger plug emulation, but has an analog multiplier of 2.5x, enabling lightshield with short travel triggers.";
   }
 }
+const char* kTourney[6] = {"Off", "Taunt Delayed", "Taunt Disabled", "Start Delayed", "Start and Taunt Delayed", "Start Delayed, Taunt Disabled"};
+const char* kRemapNames[REMAP_COUNT] = {"A", "B", "D-pad Up", "L", "R", "X", "Y", "Z"};
+const uint16_t kRemapBits[REMAP_COUNT] = {PAD_A, PAD_B, PAD_UP, PAD_L, PAD_R, PAD_X, PAD_Y, PAD_Z};
 
-// 200 ms of one value, filtered (white) over unfiltered (grey), the way PhobScope draws it.
-void plot_capture(const host::phobscope::Capture& c, bool trigger) {
-  uint8_t a[200], u[200];
-  host::phobscope::ordered(c, c.a1, a);
-  host::phobscope::ordered(c, c.a1_unfilt, u);
-  const ImVec2 p0 = ImGui::GetCursorScreenPos();
-  const float w = std::max(260.0f, ImGui::GetContentRegionAvail().x), h = 200;
-  ImGui::InvisibleButton("##capplot", ImVec2(w, h));
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(12, 16, 24, 255), 4);
-  const float step = w / 199.0f;
-  auto y_of = [&](int v) { return trigger ? p0.y + h - v * h / 256.0f : p0.y + h / 2 - (v - 127) * h / 256.0f; };
-  for (int lvl : trigger ? std::vector<int>{43} : std::vector<int>{127 + 23, 127 - 23, 127 + 64, 127 - 64, 127 + 80, 127 - 80})
-    dl->AddLine(ImVec2(p0.x, y_of(lvl)), ImVec2(p0.x + w, y_of(lvl)), IM_COL32(50, 70, 110, 160));
-  for (int i = 0; i < 200; i += 17) dl->AddLine(ImVec2(p0.x + i * step, p0.y), ImVec2(p0.x + i * step, p0.y + h), IM_COL32(40, 40, 50, 120));
-  for (int i = 1; i < 200; i++) {
-    dl->AddLine(ImVec2(p0.x + (i - 1) * step, y_of(u[i - 1])), ImVec2(p0.x + i * step, y_of(u[i])), IM_COL32(140, 140, 140, 200), 1.2f);
-    dl->AddLine(ImVec2(p0.x + (i - 1) * step, y_of(a[i - 1])), ImVec2(p0.x + i * step, y_of(a[i])), IM_COL32(255, 255, 255, 255), 1.5f);
-  }
-  if (trigger) {
-    uint8_t d[200];
-    host::phobscope::ordered(c, c.buttons, d);
-    for (int i = 0; i < 200; i++)
-      if (d[i]) dl->AddRectFilled(ImVec2(p0.x + i * step, p0.y + h - 6), ImVec2(p0.x + (i + 1) * step, p0.y + h), IM_COL32(80, 160, 255, 255));
-  }
-  hint(trigger ? "200 ms. White: the trigger the game gets, grey: before the trigger mode, blue: digital press. Line at 43 (lightshield). Grid: one frame."
-               : "200 ms. White: filtered, grey: unfiltered. Lines at 23 (deadzone), 64 (dash) and 80. Grid: one frame.");
-}
-
-void draw_scope(int port, MenuState& m, Screen screen) {
-  // Start records, as in PhobScope (the panel leaves Start to these screens: phob_menu_owns_start).
-  host::phob::HardwareInput live;
-  const uint16_t now_buttons = host::gcadapter_phob_raw(port, live) ? live.buttons : 0;
-  const bool start_pressed = (now_buttons & PAD_START) && !(m.start_last & PAD_START);
-  m.start_last = now_buttons;
-  std::vector<host::GCScopeSample> v;
-  const double hz = host::gcadapter_poll_rate_hz();
-  ImGui::Text("Adapter: %.0f Hz", hz);
-  if (hz > 0 && hz < 900) hint("Below 1000 Hz: snapback filtering and the scopes see fewer samples. An overclocked or lossless adapter reads at 1000 Hz.");
-  switch (screen) {
-    case INPUTVIEW: {
-      latest(port, v, 1);
-      if (v.empty()) { hint("No controller on this socket."); return; }
-      const host::GCScopeSample& s = v.back();
-      ImGui::TextUnformatted("Hardware Inputs:         Controller Outputs:");
-      draw_stick("vl", s.raw_ax, s.raw_ay, s.ax, s.ay, 180);
-      ImGui::SameLine();
-      draw_stick("vc", s.raw_cx, s.raw_cy, s.cx, s.cy, 180);
-      coord_line("Left Coords: ", s.ax, s.ay);
-      coord_line("Right Coords:", s.cx, s.cy);
-      ImGui::Text("L %3d -> %3d    R %3d -> %3d", s.raw_l, s.l, s.raw_r, s.r);
-      std::string held;
-      const struct { uint16_t bit; const char* n; } names[] = {{PAD_A, "A"}, {PAD_B, "B"}, {PAD_X, "X"}, {PAD_Y, "Y"},
-          {PAD_Z, "Z"}, {PAD_L, "L"}, {PAD_R, "R"}, {PAD_START, "Start"}, {PAD_UP, "Du"}, {PAD_DOWN, "Dd"},
-          {PAD_LEFT, "Dl"}, {PAD_RIGHT, "Dr"}};
-      for (const auto& n : names) if (s.buttons & n.bit) { held += n.n; held += " "; }
-      ImGui::Text("Pressed Buttons: %s", held.c_str());
+std::vector<Row> rows_for(int port, MenuState& m) {
+  Settings& s = m.s;
+  std::vector<Row> rows;
+  const auto signed_val = [](int v) { return v > 0 ? "+" + std::to_string(v) : std::to_string(v); };
+  switch (m.screen) {
+    case MAIN: {
+      static int kind;
+      kind = s.phob_hardware ? 1 : 0;
+      Row c = value("Controller", &kind, 0, 1, "Stock controller: PhobGCC's settings run here. PhobGCC: your controller already runs them, so only PhobScope and Phob Check are offered.",
+                    [](int v) { return std::string(v ? "PhobGCC" : "Stock"); });
+      c.act = [&s]() { s.phob_hardware = kind == 1; if (s.phob_hardware) s.enabled = false; };
+      rows.push_back(c);
+      if (!s.phob_hardware) {
+        static int on;
+        on = s.enabled ? 1 : 0;
+        Row e = value("PhobGCC Settings", &on, 0, 1, "Turns everything below on for this socket. If this controller is a PhobGCC, choose PhobGCC above instead: these settings on top of its firmware would apply everything twice.",
+                      [](int v) { return std::string(v ? "On" : "Off"); });
+        e.act = [&s]() { s.enabled = on == 1; };
+        rows.push_back(e);
+        rows.push_back(page(STICK));
+        rows.push_back(page(SETTINGS));
+      }
+      rows.push_back(page(SCOPE));
+      rows.push_back(page(PHOBCHECK));
+      if (!s.phob_hardware) rows.push_back(page(SETUPS));
+      static int sock;
+      sock = port;
+      Row p = value("Socket", &sock, 0, 3, "The adapter socket this menu sets up.", [](int v) { return std::to_string(v + 1); });
+      p.act = []() { g_port = sock; g_changed_at = g_in.time; };
+      rows.push_back(p);
       break;
     }
-    case XYSCOPE: {
-      // Stickmap Plots: 100 ms of 2D motion, starting once the stick moves 10 from where it was.
-      static const char* maps = "None\0Deadzones\0Wait Attacks\0Wait Movement\0Crouch\0Left Ledge\0Right Ledge\0";
-      ImGui::Combo("Stickmap:", &m.stickmap, maps);
-      int which = m.cap.c_stick ? 1 : 0;
-      ImGui::RadioButton("Left Stick", &which, 0);
-      ImGui::SameLine();
-      ImGui::RadioButton("Right Stick", &which, 1);
-      m.cap.c_stick = which == 1;
-      if (ImGui::Button("Record (Start)") || start_pressed) { m.cap.stick_thresh = 10; begin_capture(port, m, Mode::StickMap); m.view_index = 0; }
-      if (feed_capture(port, m)) { m.shown = m.cap; m.have_shown = true; m.cap.mode = Mode::None; }
-      if (m.cap.mode == Mode::StickMap && !m.cap.done) ImGui::TextUnformatted("Waiting for Motion...");
-      const ImVec2 p0 = ImGui::GetCursorScreenPos();
-      const float size = 255 * 1.4f, k = 1.4f;
-      ImGui::InvisibleButton("##map", ImVec2(size, size));
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(p0, ImVec2(p0.x + size, p0.y + size), IM_COL32(0, 0, 0, 255));
-      if (m.stickmap > 0)
-        for (const Run& r : stickmap_runs(m.stickmap - 1))
-          dl->AddRectFilled(ImVec2(p0.x + r.col * k, p0.y + r.row * k), ImVec2(p0.x + (r.col + r.len) * k, p0.y + (r.row + 1) * k),
-                            IM_COL32(r.grey, r.grey, r.grey, 255));
-      if (m.have_shown && m.shown.mode == Mode::StickMap) {
-        uint8_t x[100], y[100], ux[100], uy[100], bt[100];
-        host::phobscope::ordered(m.shown, m.shown.a1, x); host::phobscope::ordered(m.shown, m.shown.a2, y);
-        host::phobscope::ordered(m.shown, m.shown.a1_unfilt, ux); host::phobscope::ordered(m.shown, m.shown.a2_unfilt, uy);
-        host::phobscope::ordered(m.shown, m.shown.buttons, bt);
-        auto at = [&](int vx, int vy) { return ImVec2(p0.x + (vx - 127 + 127) * k, p0.y + (128 - (vy - 127)) * k); };
-        for (int i = 0; i < 100; i++) dl->AddCircleFilled(at(ux[i], uy[i]), 2.0f, IM_COL32(140, 140, 140, 255));
-        for (int i = 0; i < 100; i++) dl->AddCircleFilled(at(x[i], y[i]), 2.5f, IM_COL32(255, 255, 255, 255));
-        ImGui::SliderInt("Highlight Sample #:", &m.view_index, 0, 99);
-        dl->AddCircle(at(x[m.view_index], y[m.view_index]), 7, IM_COL32(255, 80, 80, 255), 16, 2);
-        float mx, my;
-        melee_coords(x[m.view_index] - 127, y[m.view_index] - 127, mx, my);
-        ImGui::Text("%d, %d   Melee %.4f, %.4f", x[m.view_index] - 127, y[m.view_index] - 127, mx, my);
-        std::string held;
-        for (int b = 0; b < 8; b++) if (bt[m.view_index] & (1 << b)) { held += kButtonNames[b]; held += " "; }
-        ImGui::Text("Pressed Buttons: %s", held.c_str());
+    case STICK: rows = {page(CALIBRATE), page(FILTER), page(GEOM)}; break;
+    case CALIBRATE: {
+      const auto begin = [&m](Screen sc, Stick which, bool fix) {
+        return [&m, sc, which, fix]() {
+          StickCal& saved = which == ASTICK ? m.s.a_cal : m.s.c_cal;
+          const int scaler = which == ASTICK ? m.s.a_scaler : m.s.c_scaler;
+          if (fix) {
+            if (!cal_begin_notch_fix(m.cal, which, saved, scaler)) { say(m, "Calibrate this stick once first."); return; }
+          } else {
+            cal_begin(m.cal, which, saved, scaler);
+          }
+          m.calibrating = true;
+          m.last_buttons = 0xFFFF;
+          m.screen = sc;
+          g_changed_at = g_in.time;
+        };
+      };
+      rows.push_back(action("Calibrate Left Stick", s.a_cal.measured ? "Done" : "", "The stick at rest, then each notch, 16 times around the gate; then turn each diagonal and modder notch to the angle you want.", begin(ASTICKCAL, ASTICK, false)));
+      rows.push_back(action("Left Stick Notch Fix", "", "Keeps your last measurement and goes straight to adjusting the notches.", begin(ANOTCHFIX, ASTICK, true), s.a_cal.measured));
+      rows.push_back(action("Calibrate C-Stick", s.c_cal.measured ? "Done" : "", "The C-stick the same way.", begin(CSTICKCAL, CSTICK, false)));
+      rows.push_back(action("C-Stick Notch Fix", "", "Keeps the C-stick's last measurement and goes straight to adjusting the notches.", begin(CNOTCHFIX, CSTICK, true), s.c_cal.measured));
+      rows.push_back(action("Clear Calibration", "", "Both sticks go back to their plain readings.", [&s, &m]() { s.a_cal = StickCal{}; s.c_cal = StickCal{}; say(m, "Calibration cleared."); },
+                            s.a_cal.measured || s.c_cal.measured));
+      break;
+    }
+    case FILTER: rows = {page(ASNAPBACK, signed_val(s.x_snapback) + " / " + signed_val(s.y_snapback)), page(AWAVE, signed_val(s.ax_waveshaping) + " / " + signed_val(s.ay_waveshaping)),
+                         page(ASMOOTH, std::to_string(s.ax_smoothing) + " / " + std::to_string(s.ay_smoothing)), page(CSNAPBACK, std::to_string(s.cx_smoothing) + " / " + std::to_string(s.cy_smoothing)),
+                         page(CWAVE, signed_val(s.cx_waveshaping) + " / " + signed_val(s.cy_waveshaping))}; break;
+    case ASNAPBACK: rows = {value("Left Stick X", &s.x_snapback, kSnapbackMin, kSnapbackMax, node(ASNAPBACK).about, signed_val),
+                            value("Left Stick Y", &s.y_snapback, kSnapbackMin, kSnapbackMax, node(ASNAPBACK).about, signed_val)}; break;
+    case AWAVE: rows = {value("Left Stick X", &s.ax_waveshaping, kWaveshapingMin, kWaveshapingMax, node(AWAVE).about, signed_val),
+                        value("Left Stick Y", &s.ay_waveshaping, kWaveshapingMin, kWaveshapingMax, node(AWAVE).about, signed_val)}; break;
+    case ASMOOTH: rows = {value("Left Stick X", &s.ax_smoothing, kSmoothingMin, kSmoothingMax, node(ASMOOTH).about),
+                          value("Left Stick Y", &s.ay_smoothing, kSmoothingMin, kSmoothingMax, node(ASMOOTH).about)}; break;
+    case CSNAPBACK: rows = {value("C-Stick X", &s.cx_smoothing, kSmoothingMin, kSmoothingMax, node(CSNAPBACK).about),
+                            value("C-Stick Y", &s.cy_smoothing, kSmoothingMin, kSmoothingMax, node(CSNAPBACK).about)}; break;
+    case CWAVE: rows = {value("C-Stick X", &s.cx_waveshaping, kWaveshapingMin, kWaveshapingMax, node(CWAVE).about, signed_val),
+                        value("C-Stick Y", &s.cy_waveshaping, kWaveshapingMin, kWaveshapingMax, node(CWAVE).about, signed_val)}; break;
+    case GEOM: rows = {page(CARDINALS, std::to_string(s.a_cardinal) + " / " + std::to_string(s.c_cardinal)), page(RADIUS, std::to_string(s.a_scaler) + " / " + std::to_string(s.c_scaler))}; break;
+    case CARDINALS: rows = {value("Left Stick", &s.a_cardinal, kCardinalMin, kCardinalMax, node(CARDINALS).about),
+                            value("C-Stick", &s.c_cardinal, kCardinalMin, kCardinalMax, node(CARDINALS).about)}; break;
+    case RADIUS: rows = {value("Left Stick", &s.a_scaler, kScalerMin, kScalerMax, node(RADIUS).about),
+                         value("C-Stick", &s.c_scaler, kScalerMin, kScalerMax, node(RADIUS).about)}; break;
+    case SETTINGS: rows = {page(SET_OVER), page(REMAP), page(TRIGGER, std::to_string(s.l_mode + 1) + " / " + std::to_string(s.r_mode + 1)), page(TOURNEY, kTourney[std::clamp(s.tourney, 0, 5)]), page(RESET)}; break;
+    case SET_OVER:
+      rows = {info("Left Stick", s.a_cal.measured ? "Calibrated" : "Not calibrated", node(SET_OVER).about),
+              info("C-Stick", s.c_cal.measured ? "Calibrated" : "Not calibrated", node(SET_OVER).about),
+              info("Snapback", signed_val(s.x_snapback) + " / " + signed_val(s.y_snapback), node(ASNAPBACK).about),
+              info("Waveshaping", signed_val(s.ax_waveshaping) + " / " + signed_val(s.ay_waveshaping), node(AWAVE).about),
+              info("Smoothing", std::to_string(s.ax_smoothing) + " / " + std::to_string(s.ay_smoothing), node(ASMOOTH).about),
+              info("C-Stick Snapback", std::to_string(s.cx_smoothing) + " / " + std::to_string(s.cy_smoothing), node(CSNAPBACK).about),
+              info("Cardinal Snapping", std::to_string(s.a_cardinal) + " / " + std::to_string(s.c_cardinal), node(CARDINALS).about),
+              info("Radius", std::to_string(s.a_scaler) + " / " + std::to_string(s.c_scaler), node(RADIUS).about),
+              info("L Trigger", std::to_string(s.l_mode + 1) + "  " + trigger_mode_short(s.l_mode), trigger_mode_text(s.l_mode)),
+              info("R Trigger", std::to_string(s.r_mode + 1) + "  " + trigger_mode_short(s.r_mode), trigger_mode_text(s.r_mode)),
+              info("Tourney", kTourney[std::clamp(s.tourney, 0, 5)], node(TOURNEY).about)};
+      break;
+    case REMAP:
+      for (int out = 0; out < REMAP_COUNT; out++) {
+        std::string from;
+        for (int i = 0; i < REMAP_COUNT; i++) if (s.remap[out] & (1 << i)) { if (!from.empty()) from += " + "; from += kRemapNames[i]; }
+        rows.push_back(action(kRemapNames[out], m.remap_step == out ? "Press a button" : (from.empty() ? "None" : from),
+                              std::string("Press A, then the button that should press ") + kRemapNames[out] + ". Start cancels.",
+                              [&m, out]() { m.remap_step = out; m.last_buttons = 0xFFFF; }));
       }
-      hint("White: filtered. Grey: unfiltered. Stickmaps by venus23gg, made with Altimor's Melee Stick Coordinate Visualizer.");
+      rows.push_back(action("Reset Remapping", "", "Every button back to itself.", [&s]() { for (int i = 0; i < REMAP_COUNT; i++) s.remap[i] = (uint8_t)(1 << i); }));
+      break;
+    case TRIGGER: rows = {page(LTRIGGER, std::to_string(s.l_mode + 1) + "  " + trigger_mode_short(s.l_mode)),
+                          page(RTRIGGER, std::to_string(s.r_mode + 1) + "  " + trigger_mode_short(s.r_mode))}; break;
+    case LTRIGGER: case RTRIGGER: {
+      int* mode = m.screen == LTRIGGER ? &s.l_mode : &s.r_mode;
+      int* offset = m.screen == LTRIGGER ? &s.l_offset : &s.r_offset;
+      rows.push_back(value("Mode", mode, kTriggerModeMin, kTriggerModeMax, trigger_mode_text(*mode),
+                           [](int v) { return std::to_string(v + 1) + "  " + trigger_mode_short(v); }));
+      Row o = value("Offset", offset, kTriggerOffsetMin, kTriggerOffsetMax, "The value modes 4 to 9 use: the cap, the lightshield, or the multiplier.");
+      o.enabled = *mode >= 3;
+      rows.push_back(o);
+      break;
+    }
+    case TOURNEY: {
+      Row r = value("Lockout", &s.tourney, kTourneyMin, kTourneyMax, node(TOURNEY).about, [](int v) { return std::string(kTourney[std::clamp(v, 0, 5)]); });
+      rows.push_back(r);
+      break;
+    }
+    case RESET:
+      rows.push_back(action("Soft Reset", m.reset_pending == 0 ? "Press A again" : "", "This resets everything to defaults except for stick calibration, which is untouched.",
+                            [&m, &s]() { if (m.reset_pending == 0) { soft_reset(s); m.reset_pending = -1; say(m, "Soft reset done."); } else m.reset_pending = 0; }));
+      rows.push_back(action("Hard Reset", m.reset_pending == 1 ? "Press A again" : "", "This resets everything including stick cal. You'll need to perform stick calibration again.",
+                            [&m, &s]() { if (m.reset_pending == 1) { hard_reset(s); m.reset_pending = -1; say(m, "Hard reset done."); } else m.reset_pending = 1; }));
+      break;
+    case SCOPE: rows = {page(INPUTVIEW), page(XYSCOPE), page(TIMESCOPE), page(PRESSTIME), page(REACTION), page(CONTSCOPE), page(GATE), page(EXPORT)}; break;
+    case INPUTVIEW: rows = {info("Adapter", std::to_string((int)std::lround(host::gcadapter_poll_rate_hz())) + " Hz", node(INPUTVIEW).about)}; break;
+    case XYSCOPE: {
+      static const char* maps[7] = {"None", "Deadzones", "Wait Attacks", "Wait Movement", "Crouch", "Left Ledge", "Right Ledge"};
+      rows.push_back(value("Stickmap", &m.stickmap, 0, 6, "Melee's stick regions behind the recording: deadzones, wait attacks, wait movement, crouch and the ledges.",
+                           [](int v) { return std::string(maps[std::clamp(v, 0, 6)]); }));
+      static int which;
+      which = m.cap.c_stick ? 1 : 0;
+      Row w = value("Stick", &which, 0, 1, "Which stick to record.", [](int v) { return std::string(v ? "C-Stick" : "Left Stick"); });
+      w.act = [&m]() { m.cap.c_stick = which == 1; };
+      rows.push_back(w);
+      rows.push_back(action("Record", m.cap.mode == Mode::StickMap && !m.cap.done ? "Waiting for motion" : "", "Start or A: 100 ms of motion, starting when the stick moves.",
+                            [&m, port]() { m.cap.stick_thresh = 10; begin_capture(port, m, Mode::StickMap); m.view_index = 0; }));
+      if (m.have_shown && m.shown.mode == Mode::StickMap)
+        rows.push_back(value("Highlight Sample", &m.view_index, 0, 99, "Step through the recording; the card shows that sample's coordinates and buttons."));
       break;
     }
     case TIMESCOPE: {
-      static const char* inputs = "Left X\0Left Y\0C-Stick X\0C-Stick Y\0L Trigger\0R Trigger\0";
-      static const char* measures = "Snapback\0Dashback\0Pivots\0";
-      ImGui::Combo("Input:", &m.time_input, inputs);
-      const bool trigger = m.time_input >= 4;
-      if (!trigger) ImGui::Combo("Measurement:", &m.time_measure, measures);
-      else ImGui::TextUnformatted("Measurement: Trigger");
-      ImGui::Checkbox("Auto-Repeat", &m.auto_repeat);
-      const Mode mode = trigger ? Mode::Trigger : m.time_measure == 0 ? Mode::Snapback : m.time_measure == 1 ? Mode::Dashback : Mode::Pivot;
-      m.cap.c_stick = trigger ? m.time_input == 5 : m.time_input >= 2;
-      m.cap.y_axis = !trigger && (m.time_input == 1 || m.time_input == 3);
-      if (m.cap.mode != mode && (m.cap.mode != Mode::None || (m.auto_repeat && std::chrono::steady_clock::now() >= m.repeat_at)))
-        begin_capture(port, m, mode);
-      if (ImGui::Button("Record (Start)") || start_pressed) begin_capture(port, m, mode);
-      if (feed_capture(port, m)) {
-        m.shown = m.cap; m.have_shown = true;
-        if (std::getenv("MELEE_TEST_PHOB")) host::log("phob test: result %d %.1f %.1f %.1f", (int)mode, m.cap.percents[0], m.cap.percents[1], m.cap.percents[2]);
-        if (mode == Mode::Snapback) m.last_snapback = std::fmax(0.0f, 100 - m.cap.percents[0]);
-        if (mode == Mode::Dashback) { m.last_db_van = m.cap.percents[0]; m.last_db_ucf = m.cap.percents[1]; }
-        if (mode == Mode::Pivot) for (int i = 0; i < 3; i++) m.last_pivot[i] = m.cap.percents[i];
-        if (mode == Mode::Trigger) for (int i = 0; i < 3; i++) m.last_trig[i] = m.cap.percents[i];
-        m.cap.mode = Mode::None;
-        m.repeat_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
-      }
-      ImGui::TextUnformatted(mode == Mode::Snapback ? "Flick from the rim and let go." : mode == Mode::Dashback ? "Dash from neutral."
-                             : mode == Mode::Pivot ? "Hold a dash one way, then flick the other way." : "Press the trigger.");
-      if (m.have_shown && m.shown.mode == mode) { plot_capture(m.shown, trigger); draw_results(m.shown); }
-      else ImGui::TextUnformatted("Move Stick or Trigger");
+      static const char* inputs[6] = {"Left Stick X", "Left Stick Y", "C-Stick X", "C-Stick Y", "L Trigger", "R Trigger"};
+      static const char* measures[3] = {"Snapback", "Dashback", "Pivots"};
+      rows.push_back(value("Input", &m.time_input, 0, 5, "Which input to record.", [](int v) { return std::string(inputs[std::clamp(v, 0, 5)]); }));
+      Row me = value("Measurement", &m.time_measure, 0, 2, "Snapback: flick from the rim and let go. Dashback: dash from neutral. Pivots: hold a dash one way, then flick the other way.",
+                     [](int v) { return std::string(measures[std::clamp(v, 0, 2)]); });
+      if (m.time_input >= 4) { me.enabled = false; me.show = [](int) { return std::string("Powershield"); }; }
+      rows.push_back(me);
+      static int ar;
+      ar = m.auto_repeat ? 1 : 0;
+      Row a = value("Auto-Repeat", &ar, 0, 1, "Records again by itself a moment after each result.", [](int v) { return std::string(v ? "On" : "Off"); });
+      a.act = [&m]() { m.auto_repeat = ar == 1; };
+      rows.push_back(a);
+      rows.push_back(action("Record", "", "Start or A records 200 ms around your next input.", [&m, port]() { begin_capture(port, m, time_mode(m)); }));
       break;
     }
     case PRESSTIME: {
-      ImGui::TextUnformatted("Press Start to initiate 200ms of recording,");
-      ImGui::TextUnformatted("starting when you press ABXYLRZ or move a stick.");
-      ImGui::SliderInt("Stick:", &m.cap.stick_thresh, 10, 100);
-      ImGui::SliderInt("Trigger:", &m.cap.trigger_thresh, 10, 255);
-      ImGui::Checkbox("Auto-Repeat:", &m.auto_repeat);
-      if (ImGui::Button("Record (Start)") || start_pressed) begin_capture(port, m, Mode::Press);
-      if (m.cap.mode == Mode::None && m.auto_repeat && std::chrono::steady_clock::now() >= m.repeat_at) begin_capture(port, m, Mode::Press);
-      if (m.cap.mode == Mode::Press && !m.cap.done && !m.cap.begin) ImGui::TextUnformatted("Waiting for input...");
-      if (feed_capture(port, m)) { m.shown = m.cap; m.have_shown = true; m.cap.mode = Mode::None; m.repeat_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250); }
-      if (m.have_shown && m.shown.mode == Mode::Press) {
-        static const char* rows[14] = {"A", "B", "X", "Y", "S", "Z", "L", "R", "Ax", "Ay", "Cx", "Cy", "Ra", "La"};
-        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        const float w = std::max(260.0f, ImGui::GetContentRegionAvail().x), rh = 15, lx = 28;
-        ImGui::InvisibleButton("##timing", ImVec2(w, rh * 14 + 4));
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float nw = 52;   // the frame-number column, kept clear of the bars
-        const float step = (w - lx - nw) / 200.0f;
-        for (int i = 0; i <= 200; i += 17) dl->AddLine(ImVec2(p0.x + lx + i * step, p0.y), ImVec2(p0.x + lx + i * step, p0.y + rh * 14), IM_COL32(40, 40, 50, 160));
-        for (int r = 0; r < 14; r++) {
-          if (r == 4) continue;   // the firmware does not record Start here
-          const float y = p0.y + r * rh;
-          dl->AddText(ImVec2(p0.x, y), IM_COL32(200, 200, 200, 255), rows[r]);
-          int first = -1;
-          for (int i = 0; i < 200; i++) {
-            const bool on = r < 8 ? (m.shown.buttons[i] >> r) & 1 : (m.shown.analog_marks[i] >> (r - 8)) & 1;
-            if (on) { if (first < 0) first = i; dl->AddRectFilled(ImVec2(p0.x + lx + i * step, y + 2), ImVec2(p0.x + lx + (i + 1) * step, y + rh - 2), IM_COL32(255, 200, 60, 255)); }
-          }
-          if (first >= 0) {
-            char buf[24];
-            std::snprintf(buf, sizeof buf, "%.1ff", first / 16.6667f);
-            dl->AddText(ImVec2(p0.x + w - nw + 6, y), IM_COL32(255, 255, 255, 255), buf);
-          }
-        }
-        hint("200 ms from the first press. Grid: one frame. The number is when each input first went down, in frames.");
-      }
+      rows.push_back(value("Stick", &m.cap.stick_thresh, 10, 100, "How far a stick must move to count as pressed."));
+      rows.push_back(value("Trigger", &m.cap.trigger_thresh, 10, 255, "How far a trigger must travel to count as pressed."));
+      static int ar;
+      ar = m.auto_repeat ? 1 : 0;
+      Row a = value("Auto-Repeat", &ar, 0, 1, "Records again by itself a moment after each result.", [](int v) { return std::string(v ? "On" : "Off"); });
+      a.act = [&m]() { m.auto_repeat = ar == 1; };
+      rows.push_back(a);
+      rows.push_back(action("Record", m.cap.mode == Mode::Press && !m.cap.begin ? "Waiting for input" : "",
+                            "Press Start to initiate 200ms of recording, starting when you press ABXYLRZ or move a stick.",
+                            [&m, port]() { begin_capture(port, m, Mode::Press); }));
       break;
     }
     case REACTION: {
-      ImGui::TextUnformatted("Press start to begin the reaction test.");
-      ImGui::TextUnformatted("You can press any button or move any stick.");
-      ImGui::TextUnformatted("Set stick & trigger thresholds below.");
-      ImGui::SliderInt("Stick:", &m.cap.stick_thresh, 10, 100);
-      ImGui::SliderInt("Trigger:", &m.cap.trigger_thresh, 10, 200);
-      host::phob::HardwareInput in;
-      const bool have = host::gcadapter_phob_raw(port, in);
-      const uint16_t pressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)((have ? in.buttons : 0) & ~m.last_buttons);
-      m.last_buttons = have ? in.buttons : 0;
-      if (!m.reaction_waiting && (m.cap.mode != Mode::Reaction || m.cap.done)) {
-        if ((pressed & PAD_START) || ImGui::Button("Start")) {
-          static std::mt19937 rng{std::random_device{}()};
-          m.reaction_waiting = true;   // firmware: a random 3 to 8 seconds
-          m.reaction_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000 + (int)(rng() % 5000));
-          m.cap.mode = Mode::None;
-        }
-      }
-      const ImVec2 p0 = ImGui::GetCursorScreenPos();
-      ImGui::InvisibleButton("##square", ImVec2(120, 120));
-      if (m.reaction_waiting) {
-        ImGui::GetWindowDrawList()->AddText(ImVec2(p0.x, p0.y), IM_COL32(255, 255, 255, 255), "Wait...");
-        if (std::chrono::steady_clock::now() >= m.reaction_at) { m.reaction_waiting = false; begin_capture(port, m, Mode::Reaction); }
-      }
-      if (m.cap.mode == Mode::Reaction && !m.cap.done)
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p0.x + 10, p0.y + 10), ImVec2(p0.x + 110, p0.y + 110), IM_COL32(255, 255, 255, 255));
-      if (feed_capture(port, m) && m.cap.mode == Mode::Reaction) { m.shown = m.cap; m.have_shown = true; }
-      if (m.have_shown && m.shown.mode == Mode::Reaction && !m.reaction_waiting && (m.cap.mode != Mode::Reaction || m.cap.done))
-        ImGui::Text("ms: %u   Frames: %.1f", m.shown.delay_ms, m.shown.delay_ms / 16.667f);
-      hint("Counted from the frame the square is drawn; your display's own delay is included, as on a console.");
+      rows.push_back(value("Stick", &m.cap.stick_thresh, 10, 100, "Set stick & trigger thresholds: how far a stick must move to count."));
+      rows.push_back(value("Trigger", &m.cap.trigger_thresh, 10, 200, "How far a trigger must travel to count."));
+      rows.push_back(action("Start Test", m.reaction_waiting ? "Wait..." : "", "Press start to begin the reaction test. You can press any button or move any stick.",
+                            [&m]() {
+                              static std::mt19937 rng{std::random_device{}()};
+                              m.reaction_waiting = true;   // firmware: a random 3 to 8 seconds
+                              m.reaction_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000 + (int)(rng() % 5000));
+                              m.cap.mode = Mode::None;
+                              m.last_buttons = 0xFFFF;
+                            }));
       break;
     }
     case CONTSCOPE: {
-      static int which = 0;
-      static int window_ms = 200;
-      ImGui::Combo("Input", &which, "Left X\0Left Y\0C-Stick X\0C-Stick Y\0L Trigger\0R Trigger\0");
-      ImGui::SliderInt("Window (reports)", &window_ms, 50, 4000);
-      if (ImGui::Button(m.frozen ? "Unfreeze" : "Freeze")) { m.frozen = !m.frozen; if (m.frozen) latest(port, m.frozen_samples, window_ms); }
-      if (m.frozen) v = m.frozen_samples;
-      else latest(port, v, window_ms);
-      plot_series("ts", v, which, 220);
-      ImGui::Text("%zu reports, %.0f Hz measured", v.size(), sample_rate(v));
-      hint("Grey: unfiltered. Gold: what the game gets. Lines at +-80 (rim) and +-23 (deadzone).");
+      static const char* inputs[6] = {"Left Stick X", "Left Stick Y", "C-Stick X", "C-Stick Y", "L Trigger", "R Trigger"};
+      rows.push_back(value("Input", &m.cont_input, 0, 5, "Which input to draw.", [](int v) { return std::string(inputs[std::clamp(v, 0, 5)]); }));
+      Row w = value("Window", &m.cont_window, 100, 4000, "How many reports wide the scope is.", [](int v) { return std::to_string(v) + " ms"; });
+      w.step = 100;
+      rows.push_back(w);
+      rows.push_back(action("Freeze", m.frozen ? "Frozen" : "", "Holds what is on screen; press again to continue.",
+                            [&m, port]() { m.frozen = !m.frozen; if (m.frozen) latest(port, m.frozen_samples, m.cont_window); }));
       break;
     }
     case GATE: {
-      hint("Roll the stick slowly around the gate. The outline is the farthest it reached in each direction.");
-      static int which = 0;
-      ImGui::RadioButton("Left Stick", &which, 0); ImGui::SameLine(); ImGui::RadioButton("Right Stick", &which, 1);
-      ImGui::SameLine();
-      if (ImGui::Button("Clear")) std::fill(std::begin(m.gate), std::end(m.gate), 0.0f);
-      latest(port, v, 64);
-      for (const auto& s : v) {
-        const float x = which ? s.cx : s.ax, y = which ? s.cy : s.ay;
-        const float r = std::sqrt(x * x + y * y);
-        if (r < 30) continue;
-        int bin = (int)std::floor((std::atan2(y, x) + 3.14159265f) / (2 * 3.14159265f) * 64) % 64;
-        m.gate[bin] = std::max(m.gate[bin], r);
-      }
-      const ImVec2 p0 = ImGui::GetCursorScreenPos();
-      const float size = 260, k = size / 2 / 110.0f;
-      draw_stick("gate", 0, 0, 0, 0, size);
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 c(p0.x + size / 2, p0.y + size / 2);
-      ImVec2 pts[64]; int n = 0;
-      for (int i = 0; i < 64; i++) {
-        if (m.gate[i] <= 0) continue;
-        const float a = (i + 0.5f) / 64 * 2 * 3.14159265f - 3.14159265f;
-        pts[n++] = ImVec2(c.x + std::cos(a) * m.gate[i] * k, c.y - std::sin(a) * m.gate[i] * k);
-      }
-      if (n > 2) dl->AddPolyline(pts, n, IM_COL32(255, 200, 60, 255), ImDrawFlags_Closed, 2.0f);
+      Row w = value("Stick", &m.gate_stick, 0, 1, "Which stick to trace.", [](int v) { return std::string(v ? "C-Stick" : "Left Stick"); });
+      rows.push_back(w);
+      rows.push_back(action("Clear", "", "Start a new outline.", [&m]() { std::fill(std::begin(m.gate), std::end(m.gate), 0.0f); }));
       break;
     }
-    case EXPORT: {
-      hint("Writes the last 4096 reports of this socket as CSV beside your settings (PhobGCC folder).");
-      if (ImGui::Button("Export CSV")) {
+    case EXPORT:
+      rows.push_back(action("Export CSV", "", node(EXPORT).about, [&m, port]() {
+        std::vector<host::GCScopeSample> v;
         latest(port, v, 4096);
         char file[64];
         std::snprintf(file, sizeof file, "scope-port%d-%lld.csv", port + 1,
@@ -693,320 +475,793 @@ void draw_scope(int port, MenuState& m, Screen screen) {
           out << s.time_us << ',' << (int)s.raw_ax << ',' << (int)s.raw_ay << ',' << (int)s.raw_cx << ',' << (int)s.raw_cy << ','
               << (int)s.raw_l << ',' << (int)s.raw_r << ',' << s.raw_buttons << ',' << (int)s.ax << ',' << (int)s.ay << ','
               << (int)s.cx << ',' << (int)s.cy << ',' << (int)s.l << ',' << (int)s.r << ',' << s.buttons << '\n';
-        m.status = out ? "Saved " + name : "Could not write the file.";
-      }
-      break;
-    }
-    default: break;
-  }
-}
-
-const char* trigger_mode_text(int mode) {
-  switch (mode) {
-    case 0: return "This is the default trigger behavior.";
-    case 1: return "This disables analog triggers (lightshield).";
-    case 2: return "This disables the hard press but preserves LRAS. In Melee you cannot airdodge or tech with this.";
-    case 3: return "Trigger plug emulation: this caps the maximum analog value at the offset. In Melee, you get a large lightshield for much of the slider travel, then a hardshield.";
-    case 4: return "This outputs an analog value (the offset) when hard pressed, with no digital press.";
-    case 5: return "This outputs both an analog value and a digital output when hard pressed.";
-    case 6: return "This increases the sensitivity of the analog by a multiplier that changes with the offset.";
-    case 7: return "Trigger plug emulation without the digital press.";
-    default: return "Trigger plug emulation, but has an analog multiplier of 2.5x, enabling lightshield with short travel triggers.";
-  }
-}
-
-bool draw_trigger(Settings& s, bool left) {
-  int& mode = left ? s.l_mode : s.r_mode;
-  int& offset = left ? s.l_offset : s.r_offset;
-  bool changed = false;
-  int shown = mode + 1;
-  if (ImGui::SliderInt("Mode:", &shown, kTriggerModeMin + 1, kTriggerModeMax + 1)) { mode = shown - 1; changed = true; }
-  ImGui::TextWrapped("%s", trigger_mode_text(mode));
-  if (mode >= 3) changed |= slider("Offset:", &offset, kTriggerOffsetMin, kTriggerOffsetMax, kTriggerOffsetDefault);
-  if (mode == 6) ImGui::Text("Multiplier: %.2f", 0.0112f * offset + 0.4494f);
-  const int other = left ? s.r_mode : s.l_mode;
-  if (mode == 4 && other == 4) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "%s", left ? "Conflict with R Trigger Mode 5" : "Conflict with L Trigger Mode 5");
-  return changed;
-}
-
-bool draw_screen(int port, MenuState& m) {
-  Settings& s = m.s;
-  bool changed = false;
-  switch (m.screen) {
-    case ASTICKCAL: changed = draw_calibration(port, m, ASTICK, false); break;
-    case ANOTCHFIX: changed = draw_calibration(port, m, ASTICK, true); break;
-    case CSTICKCAL: changed = draw_calibration(port, m, CSTICK, false); break;
-    case CNOTCHFIX: changed = draw_calibration(port, m, CSTICK, true); break;
-    case ASNAPBACK:
-      hint("Set so that snapback < 23 for Melee.");
-      hint("0 disables the filter. >0 shortens rise time.");
-      hint("<0 doesn't shorten rise time. Greater magnitude makes the stick return to center slower.");
-      changed |= slider("Left stick X:", &s.x_snapback, kSnapbackMin, kSnapbackMax, kSnapbackDefault);
-      changed |= slider("Left stick Y:", &s.y_snapback, kSnapbackMin, kSnapbackMax, kSnapbackDefault);
-      break;
-    case AWAVE: case CWAVE:
-      hint("This makes the stick stop during fast inputs.");
-      hint("Greater magnitudes reduce the speed threshold.");
-      hint("<0 lets you mimic a heavy pode potentiometer.");
-      hint(m.screen == AWAVE ? "It affects pivots, DBOOC, dashback, and more." : "This can help C-Stick ledge drop consistency.");
-      if (m.screen == AWAVE) {
-        changed |= slider("Left stick X:", &s.ax_waveshaping, kWaveshapingMin, kWaveshapingMax, 0);
-        changed |= slider("Left stick Y:", &s.ay_waveshaping, kWaveshapingMin, kWaveshapingMax, 0);
-      } else {
-        changed |= slider("Right stick X:", &s.cx_waveshaping, kWaveshapingMin, kWaveshapingMax, 0);
-        changed |= slider("Right stick Y:", &s.cy_waveshaping, kWaveshapingMin, kWaveshapingMax, 0);
-      }
-      break;
-    case ASMOOTH:
-      hint("This averages the stick position with the past.");
-      hint("It can be used to make one axis lag the other.");
-      hint("Use X=5 to make down-and-in ledgedashes work.");
-      changed |= slider("Left stick X:", &s.ax_smoothing, kSmoothingMin, kSmoothingMax, 0);
-      changed |= slider("Left stick Y:", &s.ay_smoothing, kSmoothingMin, kSmoothingMax, 0);
-      break;
-    case CSNAPBACK:
-      hint("This averages the stick position with the past.");
-      hint("Make these 5 or 6 to reduce snapback.");
-      hint("Make one axis higher to make it less responsive.");
-      changed |= slider("Right stick X:", &s.cx_smoothing, kSmoothingMin, kSmoothingMax, kCSmoothingDefault);
-      changed |= slider("Right stick Y:", &s.cy_smoothing, kSmoothingMin, kSmoothingMax, kCSmoothingDefault);
-      break;
-    case CARDINALS:
-      hint("This sets how far the stick snaps to the cardinal axes. 0 disables snapping, and -2");
-      hint("disables 1.0 cardinals even on UCF 0.84+. -1 gives 1.0 on 0.84 except for Zelda teleport.");
-      changed |= slider("Left stick:", &s.a_cardinal, kCardinalMin, kCardinalMax, kCardinalDefault);
-      changed |= slider("Right stick:", &s.c_cardinal, kCardinalMin, kCardinalMax, kCardinalDefault);
-      break;
-    case RADIUS:
-      hint("This sets how far from the center the stick can reach. A normal GCC can get to roughly 100-103.");
-      hint("Melee only sees <=80, and max possible is 127. Calibrate again after changing it.");
-      changed |= slider("Left stick:", &s.a_scaler, kScalerMin, kScalerMax, kScalerDefault);
-      changed |= slider("Right stick:", &s.c_scaler, kScalerMin, kScalerMax, kScalerDefault);
-      break;
-    case SET_OVER:
-      ImGui::Text("Left stick: %s   C-stick: %s", s.a_cal.measured ? "calibrated" : "not calibrated", s.c_cal.measured ? "calibrated" : "not calibrated");
-      ImGui::Text("Snapback X %d Y %d   Waveshaping X %d Y %d   Smoothing X %d Y %d", s.x_snapback, s.y_snapback, s.ax_waveshaping, s.ay_waveshaping, s.ax_smoothing, s.ay_smoothing);
-      ImGui::Text("C-Stick Snapback X %d Y %d   Waveshaping X %d Y %d", s.cx_smoothing, s.cy_smoothing, s.cx_waveshaping, s.cy_waveshaping);
-      ImGui::Text("Cardinal snapping %d / %d   Radius %d / %d", s.a_cardinal, s.c_cardinal, s.a_scaler, s.c_scaler);
-      ImGui::Text("L Mode %d Offset %d   R Mode %d Offset %d", s.l_mode + 1, s.l_offset, s.r_mode + 1, s.r_offset);
-      ImGui::Text("Tourney mode %d", s.tourney);
-      break;
-    case REMAP: {
-      hint("You may remap A, B, Du, L, R, X, Y, or Z.");
-      hint("When L or R are swapped, they are digital only.");
-      hint("Use Trigger Mode 5 to get an analog trigger value on a digital button for lightshielding.");
-      static const char* names[REMAP_COUNT] = {"A", "B", "D-pad up", "L", "R", "X", "Y", "Z"};
-      static const uint16_t bits[REMAP_COUNT] = {PAD_A, PAD_B, PAD_UP, PAD_L, PAD_R, PAD_X, PAD_Y, PAD_Z};
-      for (int out = 0; out < REMAP_COUNT; out++) {
-        std::string from;
-        for (int i = 0; i < REMAP_COUNT; i++) if (s.remap[out] & (1 << i)) { if (!from.empty()) from += "+"; from += names[i]; }
-        ImGui::PushID(out);
-        if (ImGui::Button(m.remap_step == out ? "Press a button..." : "Set")) { m.remap_step = out; m.last_buttons = 0xFFFF; }
-        ImGui::SameLine();
-        ImGui::Text("%s  <=  %s", names[out], from.empty() ? "(none)" : from.c_str());
-        ImGui::PopID();
-      }
-      if (m.remap_step >= 0) {
-        host::phob::HardwareInput in;
-        if (host::gcadapter_phob_raw(port, in)) {
-          const uint16_t pressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)(in.buttons & ~m.last_buttons);
-          m.last_buttons = in.buttons;
-          if (pressed & PAD_START) m.remap_step = -1;
-          for (int i = 0; i < REMAP_COUNT && m.remap_step >= 0; i++)
-            if (pressed & bits[i]) { s.remap[m.remap_step] = (uint8_t)(1 << i); m.remap_step = -1; changed = true; break; }
-        }
-      }
-      if (ImGui::Button("Reset remapping")) { for (int i = 0; i < REMAP_COUNT; i++) s.remap[i] = (uint8_t)(1 << i); changed = true; }
-      break;
-    }
-    case LTRIGGER: hint("This changes the behavior of the L trigger."); changed |= draw_trigger(s, true); break;
-    case RTRIGGER: hint("This changes the behavior of the R trigger."); changed |= draw_trigger(s, false); break;
-    case TOURNEY: {
-      hint("This prevents misinputs during tournaments by delaying or disabling the start button, which");
-      hint("pauses the match, and/or dpad-up, which taunts. You must hold delayed buttons for 1 second.");
-      static const char* modes[6] = {"Tourney Mode Off", "Taunt Delayed", "Taunt Disabled", "Start Delayed", "Start and Taunt Delayed", "Start Delayed, Taunt Disabled"};
-      for (int i = 0; i < 6; i++) if (ImGui::RadioButton(modes[i], &s.tourney, i)) changed = true;
-      break;
-    }
-    case RESET:
-      ImGui::RadioButton("Soft Reset", &m.reset_pick, 0);
-      ImGui::RadioButton("Hard Reset", &m.reset_pick, 1);
-      hint(m.reset_pick == 0 ? "This resets everything to defaults except for stick calibration, which is untouched."
-                             : "This resets everything including stick cal. You'll need to perform stick calibration again.");
-      if (!m.reset_confirm) { if (ImGui::Button("Reset")) m.reset_confirm = true; }
-      else {
-        ImGui::TextUnformatted("Are you sure you want to reset?");
-        if (ImGui::Button("Yes, reset")) { if (m.reset_pick == 0) soft_reset(s); else hard_reset(s); m.reset_confirm = false; changed = true; }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) m.reset_confirm = false;
-      }
-      break;
-    case INPUTVIEW: case XYSCOPE: case TIMESCOPE: case CONTSCOPE: case PRESSTIME: case REACTION: case GATE: case EXPORT:
-      draw_scope(port, m, m.screen);
+        say(m, out ? std::string("Saved ") + file : std::string("Could not write the file."));
+      }));
       break;
     case PHOBCHECK: {
-      hint("What this controller sends, measured the way PhobScope measures it. Run each test in PhobScope > Value vs Time Plots; the latest result of each shows here.");
-      const double hz = host::gcadapter_poll_rate_hz();
-      ImGui::Text("Adapter: %.0f Hz %s", hz, hz >= 900 ? "(1000 Hz: full detail)" : hz > 0 ? "(below 1000 Hz: results are coarser)" : "");
-      auto row = [](const char* what, bool have, bool good, const char* value, const char* fix) {
-        ImGui::TextColored(!have ? ImVec4(0.6f, 0.6f, 0.6f, 1) : good ? ImVec4(0.5f, 0.9f, 0.6f, 1) : ImVec4(1, 0.6f, 0.3f, 1), "%s %s", what, have ? value : "not measured yet");
-        if (have && !good) hint(fix);
-      };
-      char buf[96];
-      std::snprintf(buf, sizeof buf, "%.0f%% chance a release reads as the other direction", m.last_snapback);
-      row("Snapback:", m.last_snapback >= 0, m.last_snapback < 0.5f, buf,
-          "Raise Smart Snapback (Stick Configuration > Stick Filter Settings > Left Stick Smart Snapback) on the axis you flicked.");
-      std::snprintf(buf, sizeof buf, "vanilla %.0f%%, UCF %.0f%%", m.last_db_van, m.last_db_ucf);
-      row("Dashback:", m.last_db_van >= 0, m.last_db_ucf >= 99.5f, buf,
-          "A slow flick spends time in the tilt zone. Waveshaping (Stick Filter Settings > Left Stick Waveshaping) changes how fast inputs are treated.");
-      std::snprintf(buf, sizeof buf, "no turn %.0f%%, empty pivot %.0f%%, dashback %.0f%%", m.last_pivot[0], m.last_pivot[1], m.last_pivot[2]);
-      row("Pivot:", m.last_pivot[0] >= 0, m.last_pivot[1] >= 50, buf, "This one is mostly timing: the empty pivot window is one frame.");
-      std::snprintf(buf, sizeof buf, "digital %.0f%%, ADT %.0f%%, none %.0f%%", m.last_trig[0], m.last_trig[1], m.last_trig[2]);
-      row("Powershield:", m.last_trig[0] >= 0, m.last_trig[2] < 0.5f, buf,
-          "The analog crossed 43 too long before the click. Trigger Configuration modes 1 (digital only) or 5 change this.");
-      ImGui::Separator();
-      ImGui::TextUnformatted("Notches: hold the stick still in a notch.");
-      std::vector<host::GCScopeSample> v;
-      if (latest(port, v, 1)) {
-        const host::GCScopeSample& s2 = v.back();
-        for (int stick = 0; stick < 2; stick++) {
-          const int x = stick ? s2.cx : s2.ax, y = stick ? s2.cy : s2.ay;
-          float mx, my;
-          melee_coords(x, y, mx, my);
-          const double deg = std::atan2((double)y, (double)x) * 180 / 3.14159265358979;
-          // Angle within the quadrant and magnitude over 80, as Altimor's visualizer shows them.
-          const double qangle = std::atan2(std::fabs((double)y), std::fabs((double)x)) * 180 / 3.14159265358979;
-          ImGui::Text("%s %4d, %4d   Melee %.4f, %.4f   %.1f deg (%.4f in quadrant)   magnitude %.4f", stick ? "C-Stick:" : "Stick:  ",
-                      x, y, mx, my, deg < 0 ? deg + 360 : deg, qangle, std::sqrt((double)x * x + (double)y * y) / 80);
-          if (!stick && (x || y) && host::phob::ic_desync_coordinate(x, y))
-            ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "  This coordinate desyncs the Ice Climbers (Popo and Nana read it differently).");
-        }
-      }
-      hint(m.s.phob_hardware ? "To move a notch, use Notch Fix on the controller (PhobVision: Stick Configuration > Stick Calibration)."
-                             : "To move a notch: Stick Configuration > Stick Calibration > Notch Fix.");
+      const char* run = "Run it in PhobScope > Value vs Time Plots; the latest result shows here.";
+      rows.push_back(info("Snapback", m.last_snapback < 0 ? "-" : pct(m.last_snapback),
+                          m.last_snapback > 0.5f ? "A release can read as a turn the other way. Raise Smart Snapback (Stick Configuration > Stick Filter Settings) on the axis you flicked." : run));
+      rows.push_back(info("Vanilla Dashback", pct(m.last_db_van), m.last_db_van >= 0 && m.last_db_van < 99.5f ? "Part of the flick sat in the tilt zone. A faster flick, or Waveshaping, changes it." : run));
+      rows.push_back(info("UCF Dashback", pct(m.last_db_ucf), run));
+      rows.push_back(info("Empty Pivot", pct(m.last_pivot[1]), m.last_pivot[1] >= 0 ? "Mostly timing: the empty pivot window is one frame." : run));
+      rows.push_back(info("Powershield", m.last_trig[2] < 0 ? "-" : (m.last_trig[2] < 0.5f ? "OK" : pct(100 - m.last_trig[2])),
+                          m.last_trig[2] >= 0.5f ? "The analog crossed 43 too long before the click. Trigger modes 2 (digital only) or 6 change this." : run));
       break;
     }
     case SETUPS: {
-      hint("Save these settings under a name to switch between them or give them to a friend (PhobGCC\\Setups).");
-      hint("A setup without calibration keeps each player's own stick calibration when loaded.");
-      ImGui::InputText("Name", m.setup_name, sizeof m.setup_name);
-      ImGui::Checkbox("Include stick calibration", &m.setup_cal);
-      if (ImGui::Button("Save setup")) m.status = host::phob_setup_save(m.setup_name, s, m.setup_cal) ? "Setup saved." : "Could not save the setup.";
-      for (const std::string& name : host::phob_setup_list()) {
-        ImGui::PushID(name.c_str());
-        if (ImGui::Button("Load")) { if (host::phob_setup_load(name, s)) { changed = true; m.status = "Loaded " + name + "."; } }
-        ImGui::SameLine();
-        ImGui::TextUnformatted(name.c_str());
-        ImGui::PopID();
-      }
+      static int with_cal;
+      with_cal = m.setup_cal ? 1 : 0;
+      Row c = value("Include Calibration", &with_cal, 0, 1, "A setup without calibration keeps each player's own stick calibration when loaded.",
+                    [](int v) { return std::string(v ? "Yes" : "No"); });
+      c.act = [&m]() { m.setup_cal = with_cal == 1; };
+      rows.push_back(c);
+      const std::vector<std::string> names = host::phob_setup_list();
+      rows.push_back(action("Save New Setup", "Setup " + std::to_string(names.size() + 1), "Saves these settings as a new setup (the PhobGCC Setups folder beside your settings).",
+                            [&m, n = names.size()]() { const std::string name = "Setup " + std::to_string(n + 1); say(m, host::phob_setup_save(name, m.s, m.setup_cal) ? "Saved " + name + "." : "Could not save."); }));
+      for (const std::string& name : names)
+        rows.push_back(action("Load " + name, "", "Loads this setup onto the socket.", [&m, name]() { if (host::phob_setup_load(name, m.s)) say(m, "Loaded " + name + "."); }));
       break;
     }
     default: break;
   }
-  return changed;
+  return rows;
 }
-}  // namespace
 
-bool phob_menu_capturing() { return g_capturing; }
-bool phob_menu_owns_start() { return g_owns_start; }
+// ---- drawing ----
+ImU32 with_alpha(ImU32 c, float a) { return (c & 0x00FFFFFF) | ((ImU32)std::clamp((float)((c >> 24) & 0xFF) * a, 0.0f, 255.0f) << 24); }
+constexpr ImU32 kGold = IM_COL32(201, 150, 47, 255), kGoldText = IM_COL32(233, 180, 76, 255), kCream = IM_COL32(242, 230, 200, 255);
+constexpr ImU32 kYellow = IM_COL32(255, 216, 90, 255), kOrange = IM_COL32(255, 157, 74, 255), kGreen = IM_COL32(92, 255, 138, 255);
 
-bool draw_phob_menu(int port) {
-  if (port < 0 || port > 3) return false;
-  MenuState& m = g_menu[port];
-  // Only this socket's screen is drawn this frame; the others stop listening when it changes.
-  for (int i = 0; i < 4; i++) if (i != port) { g_menu[i].calibrating = false; g_menu[i].remap_step = -1; }
-  host::gcadapter_test_script_start();   // test runs only: the scripted player starts with the screen
-  if (!m.loaded) {
-    m.s = host::gcadapter_phob_get(port);
-    m.loaded = true;
-    // Test runs: MELEE_TEST_PHOB=<screen number> opens that screen, so every one can be drawn hidden.
-    if (const char* t = std::getenv("MELEE_TEST_PHOB")) { const int n = std::atoi(t); if (n >= 0 && n < SCREEN_COUNT) m.screen = (Screen)n; m.stickmap = 1;
-      m.cap.stick_thresh = m.screen == PRESSTIME || m.screen == REACTION ? 23 : 10; m.cap.trigger_thresh = m.screen == REACTION ? 49 : 255; }
-    // MELEE_TEST_PHOB_ACTION presses an on-screen control for scripted players: begin (calibration),
-    // notchfix, remap:<output>, input:<n>, measure:<n>, map:<n>.
-    if (const char* a = std::getenv("MELEE_TEST_PHOB_ACTION")) {
-      const std::string act = a;
-      const auto arg = [&](const char* key) { return act.rfind(key, 0) == 0 ? std::atoi(act.c_str() + std::strlen(key)) : -1; };
-      const Stick which = m.screen == CSTICKCAL || m.screen == CNOTCHFIX ? CSTICK : ASTICK;
-      StickCal& saved = which == ASTICK ? m.s.a_cal : m.s.c_cal;
-      if (act == "begin") { cal_begin(m.cal, which, saved, which == ASTICK ? m.s.a_scaler : m.s.c_scaler); m.calibrating = true; m.last_buttons = 0xFFFF; }
-      if (act == "notchfix") { m.calibrating = cal_begin_notch_fix(m.cal, which, saved, which == ASTICK ? m.s.a_scaler : m.s.c_scaler); m.last_buttons = 0xFFFF; }
-      if (arg("remap:") >= 0) { m.remap_step = arg("remap:"); m.last_buttons = 0xFFFF; }
-      if (arg("input:") >= 0) m.time_input = arg("input:");
-      if (arg("measure:") >= 0) m.time_measure = arg("measure:");
-      if (arg("map:") >= 0) m.stickmap = arg("map:");
-    }
+void text(ImDrawList* dl, float x, float y, float px, ImU32 c, const std::string& s) { pm::text(dl, x, y, px, c, s.c_str()); }
+float tw(float px, const std::string& s) { return pm::text_width(px, s.c_str()); }
+// Text wrapped to `w`; returns the height used.
+float para(ImDrawList* dl, float x, float y, float w, float px, ImU32 c, const std::string& s) {
+  float yy = y;
+  for (const std::string& line : pm::wrap_text(s, px, w)) { text(dl, x, yy, px, c, line); yy += px * 1.15f; }
+  return yy - y;
+}
+
+// Each line centred on `cx`; returns the height used.
+float para_centred(ImDrawList* dl, float cx, float y, float w, float px, ImU32 c, const std::string& s) {
+  float yy = y;
+  for (const std::string& line : pm::wrap_text(s, px, w)) { text(dl, cx - tw(px, line) * 0.5f, yy, px, c, line); yy += px * 1.15f; }
+  return yy - y;
+}
+
+struct Card { float x0, y0, x1, y1, u; };
+// The card's footnote, wrapped at the bottom; returns where it starts.
+float foot_top(const Card& c, const std::string& note) {
+  const float u = c.u, px = 15 * u;
+  return c.y1 - 18 * u - pm::wrap_text(note, px, c.x1 - c.x0 - 48 * u).size() * px * 1.15f;
+}
+float foot(ImDrawList* dl, const Card& c, float a, const std::string& note) {
+  const float u = c.u, px = 15 * u, top = foot_top(c, note);
+  float y = top;
+  for (const std::string& line : pm::wrap_text(note, px, c.x1 - c.x0 - 48 * u)) { text(dl, c.x0 + 24 * u, y, px, IM_COL32(180, 165, 130, (int)(255 * a)), line); y += px * 1.15f; }
+  return top;
+}
+Card card(ImDrawList* dl, float x0, float y0, float x1, float y1, float u, const char* title, float a) {
+  dl->AddRectFilled(ImVec2(x0 + 3 * u, y0 + 4 * u), ImVec2(x1 + 3 * u, y1 + 4 * u), with_alpha(IM_COL32(0, 0, 0, 150), a), 14 * u);
+  pm::gold::fill_rect(dl, x0, y0, x1, y1, with_alpha(IM_COL32(24, 20, 12, 236), a), with_alpha(IM_COL32(6, 5, 3, 236), a), 14 * u);
+  dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), with_alpha(kGold, a), 14 * u, 0, 3 * u);
+  if (title && *title) pm::text(dl, x0 + 20 * u, y0 + 14 * u, 24 * u, with_alpha(kGoldText, a), title, 0.19f);
+  return Card{x0, y0, x1, y1, u};
+}
+
+// The gate, Melee's rim and deadzone, and dots: grey for the reading, gold for what the game gets.
+void stick_picture(ImDrawList* dl, float cx, float cy, float r, float u, float a, float raw_x, float raw_y, float out_x, float out_y,
+                   const float* tx = nullptr, const float* ty = nullptr, bool show_raw = true) {
+  const float k = r / 110.0f;
+  ImVec2 oct[8];
+  for (int i = 0; i < 8; i++) { float x, y; calc_stick_values(3.14159265f * i / 4, x, y); oct[i] = ImVec2(cx + x * k, cy - y * k); }
+  dl->AddConvexPolyFilled(oct, 8, with_alpha(IM_COL32(201, 150, 47, 20), a));
+  dl->AddPolyline(oct, 8, with_alpha(kGold, a), ImDrawFlags_Closed, 3.0f * u);
+  for (int i = 0; i < 48; i += 2) {   // Melee's rim, dashed
+    const float a0 = i * 3.14159265f / 24, a1 = (i + 1) * 3.14159265f / 24;
+    dl->AddLine(ImVec2(cx + std::cos(a0) * 80 * k, cy - std::sin(a0) * 80 * k), ImVec2(cx + std::cos(a1) * 80 * k, cy - std::sin(a1) * 80 * k), with_alpha(IM_COL32(120, 100, 52, 255), a), 2.0f * u);
   }
+  dl->AddRect(ImVec2(cx - 22 * k, cy - 22 * k), ImVec2(cx + 22 * k, cy + 22 * k), with_alpha(IM_COL32(140, 105, 40, 255), a), 0, 0, 2.0f * u);
+  if (tx && ty) dl->AddCircle(ImVec2(cx + *tx * k, cy - *ty * k), 11 * u, with_alpha(kGreen, a), 24, 3 * u);
+  if (show_raw) dl->AddCircleFilled(ImVec2(cx + raw_x * k, cy - raw_y * k), 6 * u, with_alpha(IM_COL32(150, 150, 150, 255), a), 18);
+  dl->AddCircleFilled(ImVec2(cx + out_x * k, cy - out_y * k), 9 * u, with_alpha(IM_COL32(0, 0, 0, 255), a), 20);
+  dl->AddCircleFilled(ImVec2(cx + out_x * k, cy - out_y * k), 7 * u, with_alpha(kYellow, a), 20);
+}
+
+void coord_lines(ImDrawList* dl, float x, float y, float u, float a, const char* name, int sx, int sy, bool desync_check) {
+  float mx, my;
+  melee_coords(sx, sy, mx, my);
+  char b[64];
+  std::snprintf(b, sizeof b, "%s  %d, %d", name, sx, sy);
+  text(dl, x, y, 20 * u, with_alpha(kYellow, a), b);
+  std::snprintf(b, sizeof b, "Melee  %.4f, %.4f", mx, my);
+  text(dl, x, y + 26 * u, 18 * u, with_alpha(kCream, a), b);
+  const double qa = std::atan2(std::fabs((double)sy), std::fabs((double)sx)) * 180 / 3.14159265358979;
+  std::snprintf(b, sizeof b, "Angle %.2f  Magnitude %.4f", qa, std::sqrt((double)sx * sx + (double)sy * sy) / 80);
+  text(dl, x, y + 50 * u, 15 * u, with_alpha(IM_COL32(200, 185, 150, 255), a), b);
+  if (desync_check && (sx || sy) && ic_desync_coordinate(sx, sy)) text(dl, x, y + 72 * u, 15 * u, with_alpha(kOrange, a), "Desyncs the Ice Climbers");
+}
+
+void plot_area(ImDrawList* dl, float x0, float y0, float x1, float y1, float u, float a) {
+  dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), with_alpha(IM_COL32(4, 4, 6, 255), a), 6 * u);
+  dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), with_alpha(IM_COL32(90, 70, 30, 255), a), 6 * u, 0, 1.5f * u);
+}
+
+// 200 ms of one value, filtered (white) over unfiltered (grey), the way PhobScope draws it.
+void plot_capture(ImDrawList* dl, const host::phobscope::Capture& c, bool trigger, float x0, float y0, float x1, float y1, float u, float a) {
+  uint8_t f[200], g[200];
+  host::phobscope::ordered(c, c.a1, f);
+  host::phobscope::ordered(c, c.a1_unfilt, g);
+  plot_area(dl, x0, y0, x1, y1, u, a);
+  const float w = x1 - x0, h = y1 - y0, step = w / 199.0f;
+  const auto y_of = [&](int v) { return trigger ? y1 - v * h / 256.0f : y0 + h / 2 - (v - 127) * h / 256.0f; };
+  for (int i = 0; i < 200; i += 17) dl->AddLine(ImVec2(x0 + i * step, y0), ImVec2(x0 + i * step, y1), with_alpha(IM_COL32(40, 34, 20, 255), a), 1.0f * u);
+  for (int lvl : trigger ? std::vector<int>{43} : std::vector<int>{127 + 23, 127 - 23, 127 + 64, 127 - 64})
+    dl->AddLine(ImVec2(x0, y_of(lvl)), ImVec2(x1, y_of(lvl)), with_alpha(IM_COL32(120, 90, 30, 200), a), 1.2f * u);
+  for (int i = 1; i < 200; i++) dl->AddLine(ImVec2(x0 + (i - 1) * step, y_of(g[i - 1])), ImVec2(x0 + i * step, y_of(g[i])), with_alpha(IM_COL32(130, 130, 130, 220), a), 2.0f * u);
+  for (int i = 1; i < 200; i++) dl->AddLine(ImVec2(x0 + (i - 1) * step, y_of(f[i - 1])), ImVec2(x0 + i * step, y_of(f[i])), with_alpha(IM_COL32(255, 255, 255, 255), a), 2.6f * u);
+  if (trigger) {
+    uint8_t d[200];
+    host::phobscope::ordered(c, c.buttons, d);
+    for (int i = 0; i < 200; i++)
+      if (d[i]) dl->AddRectFilled(ImVec2(x0 + i * step, y1 - 8 * u), ImVec2(x0 + (i + 1) * step, y1), with_alpha(IM_COL32(90, 170, 255, 255), a));
+  }
+}
+
+// A percentage over its label, both fitted to a column `w` wide; 70 units tall.
+void big_result(ImDrawList* dl, float x, float y, float w, float u, float a, const char* label, float value, ImU32 color) {
+  char b[16];
+  std::snprintf(b, sizeof b, "%.0f%%", std::round(value));
+  const float npx = std::min(44 * u, 44 * u * (w - 8 * u) / std::max(1.0f, tw(44 * u, b)));
+  const float lpx = std::min(16 * u, 16 * u * (w - 8 * u) / std::max(1.0f, tw(16 * u, label)));
+  text(dl, x, y + (44 * u - npx) * 0.7f, npx, with_alpha(color, a), b);
+  text(dl, x, y + 50 * u, lpx, with_alpha(IM_COL32(200, 185, 150, 255), a), label);
+}
+
+// The capture's results in columns across `w`.
+void draw_results(ImDrawList* dl, const host::phobscope::Capture& c, float x, float y, float w, float u, float a) {
+  const float w2 = w / 2, w3 = w / 3;
+  switch (c.mode) {
+    case Mode::Snapback:
+      big_result(dl, x, y, w2, u, a, "POSITIVE", c.percents[0], kGreen);
+      big_result(dl, x + w2, y, w2, u, a, "NEGATIVE", std::fmax(0.0f, 100 - c.percents[0]), c.percents[0] > 99.5f ? kGreen : kOrange);
+      break;
+    case Mode::Dashback:
+      big_result(dl, x, y, w2, u, a, "VANILLA", c.percents[0], c.percents[0] > 99.5f ? kGreen : kYellow);
+      big_result(dl, x + w2, y, w2, u, a, "UCF", c.percents[1], c.percents[1] > 99.5f ? kGreen : kYellow);
+      break;
+    case Mode::Pivot:
+      big_result(dl, x, y, w3, u, a, "NO TURN", c.percents[0], kCream);
+      big_result(dl, x + w3, y, w3, u, a, "PIVOT", c.percents[1], kGreen);
+      big_result(dl, x + w3 * 2, y, w3, u, a, "DASHBACK", c.percents[2], kCream);
+      break;
+    case Mode::Trigger:
+      big_result(dl, x, y, w3, u, a, "DIGITAL PS", c.percents[0], kGreen);
+      big_result(dl, x + w3, y, w3, u, a, "ADT PS", c.percents[1], kYellow);
+      big_result(dl, x + w3 * 2, y, w3, u, a, "NO PS", c.percents[2], c.percents[2] > 0.5f ? kOrange : kCream);
+      break;
+    default: break;
+  }
+}
+
+const char* notch_name(int n) {
+  static const char* names[16] = {"right", "notch 1", "up right", "notch 2", "up", "notch 3", "up left", "notch 4",
+                                  "left", "notch 5", "down left", "notch 6", "down", "notch 7", "down right", "notch 8"};
+  return n >= 0 && n < 16 ? names[n] : "";
+}
+
+// ---- calibration: a full screen card, driven by the controller being calibrated ----
+bool run_calibration(ImDrawList* dl, int port, MenuState& m, float gx0, float gy0, float gx1, float gy1, float u, float a) {
   bool changed = false;
-  int kind = m.s.phob_hardware ? 1 : 0;
-  if (ImGui::Combo("This controller", &kind, "Stock controller: PhobGCC settings here\0PhobGCC: tools only\0")) {
-    m.s.phob_hardware = kind == 1;
-    if (m.s.phob_hardware) m.s.enabled = false;
-    m.screen = MAIN;
+  const Stick which = m.cal.which;
+  StickCal& saved = which == ASTICK ? m.s.a_cal : m.s.c_cal;
+  host::phob::HardwareInput in;
+  const bool have = host::gcadapter_phob_raw(port, in);
+  const float rx = which == ASTICK ? in.ax / 255.0f : in.cx / 255.0f;
+  const float ry = which == ASTICK ? in.ay / 255.0f : in.cy / 255.0f;
+  // The reading kept for a step: the adapter's last 32 ms averaged, as the firmware averages its
+  // readings at the press (whatever the display's frame rate).
+  float ax = rx, ay = ry;
+  {
+    std::vector<host::GCScopeSample> recent;
+    latest(port, recent, 64);
+    float sx = 0, sy = 0; int n = 0;
+    for (const host::GCScopeSample& r : recent) {
+      if ((int32_t)(recent.back().time_us - r.time_us) > 32000) continue;
+      sx += which == ASTICK ? r.hw_ax : r.hw_cx; sy += which == ASTICK ? r.hw_ay : r.hw_cy; n++;
+    }
+    if (n) { ax = sx / n / 255.0f; ay = sy / n / 255.0f; }
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const float dt = std::min(50.0f, std::chrono::duration<float, std::milli>(now - m.last_frame).count());
+  m.last_frame = now;
+  const uint16_t b = have ? in.buttons : 0;
+  const uint16_t pressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)(b & ~m.last_buttons);
+  m.last_buttons = b;
+  if (pressed & PAD_START) { m.calibrating = false; m.screen = CALIBRATE; g_changed_at = g_in.time; return false; }
+
+  const float W = gx1 - gx0;
+  const Card c = card(dl, gx0 + W * 0.06f, gy0 + 110 * u, gx1 - W * 0.06f, gy1 - 110 * u, u, which == ASTICK ? "LEFT STICK" : "C-STICK", a);
+  const float r = std::min((c.y1 - c.y0) * 0.36f, (c.x1 - c.x0) * 0.2f), cx = c.x0 + 34 * u + r, cy = (c.y0 + c.y1) * 0.5f + 10 * u;
+  const float tx0 = cx + r + 40 * u, tw0 = c.x1 - 28 * u - tx0;
+  const ImU32 soft = with_alpha(IM_COL32(200, 185, 150, 255), a);
+  char line[96];
+  if (!have) para(dl, tx0, c.y0 + 52 * u, tw0, 20 * u, with_alpha(kOrange, a), "Plug a controller into socket " + std::to_string(port + 1) + ".");
+  float y = c.y0 + 100 * u;
+  if (m.cal.step < kCalPoints) {
+    std::snprintf(line, sizeof line, "Measurement   Step %d of %d", m.cal.step + 1, kCalPoints);
+    y += para(dl, tx0, y, tw0, 20 * u, with_alpha(kGoldText, a), line) + 16 * u;
+    const CalPrompt p = cal_prompt(m.cal.step);
+    float px = 0, py = 0;
+    if (p.centre) {
+      y += para(dl, tx0, y, tw0, 28 * u, with_alpha(kCream, a), "Let go of the stick and press A, L or R.");
+    } else {
+      calc_stick_values(3.14159265f * p.notch / 8, px, py);
+      y += para(dl, tx0, y, tw0, 28 * u, with_alpha(kCream, a), "Hold the stick into");
+      y += para(dl, tx0, y, tw0, 28 * u, with_alpha(kYellow, a), std::string("the ") + notch_name(p.notch) + " notch");
+      if (p.optional) para(dl, tx0, y + 14 * u, tw0, 18 * u, soft, "If no notch exists, leave the stick centred.");
+    }
+    stick_picture(dl, cx, cy, r, u, a, (rx - 0.5f) * 200, (ry - 0.5f) * 200, (rx - 0.5f) * 200, (ry - 0.5f) * 200,
+                  p.centre ? nullptr : &px, p.centre ? nullptr : &py, false);
+    std::snprintf(line, sizeof line, "Raw %.4f, %.4f", ax, ay);
+    text(dl, tx0, c.y1 - 70 * u, 18 * u, soft, line);
+    // Progress: one tick per step, fitted to the column.
+    const float pitch = std::min(12 * u, tw0 / kCalPoints), tick = pitch * 0.66f;
+    for (int i = 0; i < kCalPoints; i++) {
+      const float x = tx0 + i * pitch, ty = c.y1 - 36 * u;
+      dl->AddRectFilled(ImVec2(x, ty), ImVec2(x + tick, ty + tick), with_alpha(i < m.cal.step ? kYellow : i == m.cal.step ? kCream : IM_COL32(70, 56, 26, 255), a), 2 * u);
+    }
+  } else {
+    std::snprintf(line, sizeof line, "Notch Adjust   Step %d of %d", m.cal.step + 1, kCalSteps);
+    y += para(dl, tx0, y, tw0, 20 * u, with_alpha(kGoldText, a), line) + 16 * u;
+    const int notch = cal_adjust_notch(m.cal.step);
+    y += para(dl, tx0, y, tw0, 28 * u, with_alpha(kCream, a), "Put the stick in the");
+    y += para(dl, tx0, y, tw0, 28 * u, with_alpha(kYellow, a), std::string(notch_name(notch)) + " notch");
+    para(dl, tx0, y + 14 * u, tw0, 18 * u, soft, "X and Y turn its output, B puts it back. A, L or R moves on.");
+    cal_adjust(m.cal, (b & PAD_X) != 0, (b & PAD_Y) != 0, (b & PAD_B) != 0, dt);
+    const float lx = linearize(rx, m.cal.params.fit_x), ly = linearize(ry, m.cal.params.fit_y);
+    float ox = 0, oy = 0;
+    Settings preview; preview.a_scaler = preview.c_scaler = m.cal.scaler;
+    notch_remap(lx, ly, ox, oy, m.cal.params, 1, preview, which);
+    float px, py;
+    calc_stick_values(m.cal.measured_angles[notch], px, py);
+    stick_picture(dl, cx, cy, r, u, a, (rx - 0.5f) * 200, (ry - 0.5f) * 200, ox, oy, &px, &py);
+    coord_lines(dl, tx0, c.y1 - 210 * u, u, a, "Output", (int)std::lround(ox), (int)std::lround(oy), which == ASTICK);
+  }
+  const float hw = pm::legend(dl, 0, 0, u, "A:Next|Z:Back|X:Turn|Y:Turn|B:Reset|S:Cancel", a, false);
+  pm::legend(dl, (gx0 + gx1) * 0.5f - hw * 0.5f, c.y1 + 40 * u, u, "A:Next|Z:Back|X:Turn|Y:Turn|B:Reset|S:Cancel", a);
+  if (pressed & PAD_Z) cal_undo(m.cal);
+  if ((pressed & (PAD_A | PAD_L | PAD_R)) && have && cal_advance(m.cal, ax, ay, saved)) {
+    m.calibrating = false;
+    m.screen = CALIBRATE;
+    g_changed_at = g_in.time;
+    say(m, which == ASTICK ? "Left stick calibrated." : "C-stick calibrated.");
     changed = true;
   }
-  const bool on_main = m.screen == MAIN;
-  if (m.s.phob_hardware) {
-    if (on_main) hint("Your PhobGCC already calibrates, filters and remaps itself, and keeps doing so here. Nothing below changes what it sends; tune it with PhobVision or its button combos. PhobScope and Phob Check read exactly what it sends.");
-  } else {
-    if (ImGui::Checkbox("PhobGCC settings on this socket", &m.s.enabled)) changed = true;
-    if (on_main) hint("PhobGCC's stick calibration, notches, snapback filter, trigger modes and lockouts, for any controller on the adapter.");
-    if (m.s.enabled && on_main)
-    {
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.75f, 0.3f, 1));
-      ImGui::TextWrapped("If this controller is a PhobGCC, choose PhobGCC above: these settings on top of its firmware would apply everything twice.");
-      ImGui::PopStyleColor();
-    }
-  }
-  if (on_main) hint("From PhobGCC by Phobos132, FrostSSBM, CarVac, NiceMitch and contributors. Stickmaps by venus23gg; Melee coordinate checks by Altimor; extra scopes after GCC Test Suite by greenwave-1.");
+  return changed;
+}
 
-  // PhobVision's breadcrumb and menu list.
-  std::vector<Screen> path;
-  for (Screen s = m.screen; ; s = node(s).parent) { path.insert(path.begin(), s); if (s == MAIN) break; }
-  for (size_t i = 0; i < path.size(); i++) {
-    if (i) {
-      ImGui::SameLine();
-      const ImGuiStyle& st = ImGui::GetStyle();
-      const float need = ImGui::CalcTextSize("> ").x + ImGui::CalcTextSize(node(path[i]).name).x + st.FramePadding.x * 2 + st.ItemSpacing.x * 2;
-      if (ImGui::GetContentRegionAvail().x < need) ImGui::NewLine();
-      ImGui::TextDisabled(">");
-      ImGui::SameLine();
+// ---- the card on the right of each screen ----
+void draw_card(ImDrawList* dl, int port, MenuState& m, float x0, float y0, float x1, float y1, float u, float a) {
+  std::vector<host::GCScopeSample> v;
+  latest(port, v, 1);
+  const bool have = !v.empty();
+  const host::GCScopeSample s = have ? v.back() : host::GCScopeSample{};
+  const float W = x1 - x0;
+  switch (m.screen) {
+    case INPUTVIEW: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "INPUT VIEWER", a);
+      // Top down: the two sticks, each one's numbers, the triggers, the buttons.
+      const float r = std::max(30 * u, std::min(W * 0.2f, (y1 - y0 - 312 * u) * 0.5f));
+      stick_picture(dl, c.x0 + W * 0.25f, c.y0 + 66 * u + r, r, u, a, s.raw_ax, s.raw_ay, s.ax, s.ay);
+      stick_picture(dl, c.x0 + W * 0.75f, c.y0 + 66 * u + r, r, u, a, s.raw_cx, s.raw_cy, s.cx, s.cy);
+      const float ty = c.y0 + 84 * u + 2 * r;
+      coord_lines(dl, c.x0 + 24 * u, ty, u, a, "Stick", s.ax, s.ay, true);
+      coord_lines(dl, c.x0 + 24 * u, ty + 92 * u, u, a, "C-Stick", s.cx, s.cy, false);
+      char b[64];
+      std::snprintf(b, sizeof b, "L %d > %d     R %d > %d", s.raw_l, s.l, s.raw_r, s.r);
+      text(dl, c.x0 + 24 * u, ty + 168 * u, 19 * u, with_alpha(kCream, a), b);
+      std::string held;
+      const struct { uint16_t bit; const char* n; } names[] = {{PAD_A, "A"}, {PAD_B, "B"}, {PAD_X, "X"}, {PAD_Y, "Y"}, {PAD_Z, "Z"}, {PAD_L, "L"},
+          {PAD_R, "R"}, {PAD_START, "Start"}, {PAD_UP, "Up"}, {PAD_DOWN, "Down"}, {PAD_LEFT, "Left"}, {PAD_RIGHT, "Right"}};
+      for (const auto& n : names) if (s.buttons & n.bit) { held += n.n; held += "  "; }
+      text(dl, c.x0 + 24 * u, ty + 194 * u, 19 * u, with_alpha(kYellow, a), held.empty() ? std::string("No buttons") : held);
+      return;
     }
-    ImGui::PushID((int)i);
-    if (i + 1 < path.size()) { if (ImGui::SmallButton(node(path[i]).name)) { m.screen = path[i]; m.calibrating = false; } }
-    else ImGui::TextUnformatted(node(path[i]).name);
-    ImGui::PopID();
-  }
-  ImGui::Separator();
-  const Node& n = node(m.screen);
-  if (m.s.phob_hardware && m.screen != MAIN && m.screen != PHOBCHECK && node(m.screen).parent != SCOPE && m.screen != SCOPE) m.screen = MAIN;
-  if (!n.children.empty()) {
-    for (Screen child : n.children)
-      if (!m.s.phob_hardware || m.screen != MAIN || child == SCOPE || child == PHOBCHECK)
-        if (ImGui::Button(node(child).name, ImVec2(260, 0))) {
-          m.screen = child; m.calibrating = false; m.reset_confirm = false;
-          m.cap.mode = host::phobscope::Mode::None; m.have_shown = false; m.reaction_waiting = false;
-          // the firmware's thresholds on entering each screen
-          m.cap.stick_thresh = child == PRESSTIME || child == REACTION ? 23 : 10;
-          m.cap.trigger_thresh = child == REACTION ? 49 : 255;
+    case XYSCOPE: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "STICKMAP", a);
+      const char* note = "White: filtered. Grey: unfiltered. Stickmaps by venus23gg (Altimor's visualizer).";
+      const float size = std::min(W - 60 * u, foot_top(c, note) - (c.y0 + 52 * u) - 62 * u), k = size / 255.0f;
+      const float px0 = c.x0 + (W - size) * 0.5f, py0 = c.y0 + 52 * u;
+      dl->AddRectFilled(ImVec2(px0, py0), ImVec2(px0 + size, py0 + size), with_alpha(IM_COL32(0, 0, 0, 255), a));
+      if (m.stickmap > 0)
+        for (const Run& r : stickmap_runs(m.stickmap - 1))
+          dl->AddRectFilled(ImVec2(px0 + r.col * k, py0 + r.row * k), ImVec2(px0 + (r.col + r.len) * k, py0 + (r.row + 1) * k), with_alpha(IM_COL32(r.grey, r.grey, r.grey, 255), a));
+      dl->AddRect(ImVec2(px0, py0), ImVec2(px0 + size, py0 + size), with_alpha(kGold, a), 0, 0, 2 * u);
+      if (m.have_shown && m.shown.mode == Mode::StickMap) {
+        uint8_t x[100], y[100], ux[100], uy[100], bt[100];
+        host::phobscope::ordered(m.shown, m.shown.a1, x); host::phobscope::ordered(m.shown, m.shown.a2, y);
+        host::phobscope::ordered(m.shown, m.shown.a1_unfilt, ux); host::phobscope::ordered(m.shown, m.shown.a2_unfilt, uy);
+        host::phobscope::ordered(m.shown, m.shown.buttons, bt);
+        const auto at = [&](int vx, int vy) { return ImVec2(px0 + vx * k, py0 + (255 - vy) * k); };
+        for (int i = 0; i < 100; i++) dl->AddCircleFilled(at(ux[i], uy[i]), 2.5f * u, with_alpha(IM_COL32(130, 130, 130, 255), a), 10);
+        for (int i = 0; i < 100; i++) dl->AddCircleFilled(at(x[i], y[i]), 3.2f * u, with_alpha(IM_COL32(255, 255, 255, 255), a), 10);
+        const int i = std::clamp(m.view_index, 0, 99);
+        dl->AddCircle(at(x[i], y[i]), 10 * u, with_alpha(IM_COL32(255, 80, 80, 255), a), 20, 3 * u);
+        float mx, my;
+        melee_coords(x[i] - 127, y[i] - 127, mx, my);
+        static const char* names[8] = {"A", "B", "X", "Y", "S", "Z", "L", "R"};
+        std::string held;
+        for (int bb = 0; bb < 8; bb++) if (bt[i] & (1 << bb)) { held += names[bb]; held += " "; }
+        char b[96];
+        std::snprintf(b, sizeof b, "#%d   %d, %d   %s", i, x[i] - 127, y[i] - 127, held.c_str());
+        text(dl, c.x0 + 24 * u, py0 + size + 10 * u, 19 * u, with_alpha(kYellow, a), b);
+        std::snprintf(b, sizeof b, "Melee %.4f, %.4f", mx, my);
+        text(dl, c.x0 + 24 * u, py0 + size + 34 * u, 17 * u, with_alpha(kCream, a), b);
+      } else {
+        text(dl, c.x0 + 24 * u, py0 + size + 14 * u, 19 * u, with_alpha(kCream, a), m.cap.mode == Mode::StickMap ? "Waiting for motion..." : "Start records.");
+      }
+      foot(dl, c, a, note);
+      return;
+    }
+    case TIMESCOPE: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "VALUE VS TIME", a);
+      const bool trig = m.time_input >= 4;
+      const char* note = trig ? "200 ms. White: what the game gets, grey: before the mode, blue: the click. Line at 43."
+                              : "200 ms. White: filtered, grey: unfiltered. Lines at 23 and 64. Grid: one frame.";
+      const float results_y = foot_top(c, note) - 84 * u, plot_y1 = results_y - 14 * u;
+      if (m.have_shown && m.shown.mode == time_mode(m)) {
+        plot_capture(dl, m.shown, trig, c.x0 + 24 * u, c.y0 + 56 * u, c.x1 - 24 * u, plot_y1, u, a);
+        draw_results(dl, m.shown, c.x0 + 24 * u, results_y, c.x1 - c.x0 - 48 * u, u, a);
+      } else {
+        plot_area(dl, c.x0 + 24 * u, c.y0 + 56 * u, c.x1 - 24 * u, plot_y1, u, a);
+        const char* hint = m.time_input >= 4 ? "Press the trigger." : m.time_measure == 0 ? "Flick from the rim and let go." : m.time_measure == 1 ? "Dash from neutral." : "Hold a dash one way, then flick the other way.";
+        const float w = c.x1 - c.x0 - 80 * u, hpx = 22 * u;
+        para_centred(dl, (c.x0 + c.x1) * 0.5f, (c.y0 + 56 * u + plot_y1) * 0.5f - pm::wrap_text(hint, hpx, w).size() * hpx * 0.575f, w, hpx, with_alpha(kCream, a), hint);
+      }
+      foot(dl, c, a, note);
+      return;
+    }
+    case PRESSTIME: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "BUTTON TIMING", a);
+      static const char* rows[13] = {"A", "B", "X", "Y", "Z", "L", "R", "Ax", "Ay", "Cx", "Cy", "Ra", "La"};
+      static const int bits[13] = {0, 1, 2, 3, 5, 6, 7, -1, -2, -3, -4, -5, -6};
+      const bool show = m.have_shown && m.shown.mode == Mode::Press;
+      const std::string note = show ? "200 ms from the first press. Grid: one frame. Numbers: when each first went down." : "Start records; the recording begins with your first input.";
+      const float lx = c.x0 + 60 * u, rx = c.x1 - 90 * u, top = c.y0 + 56 * u, rh = (foot_top(c, note) - 10 * u - top) / 13.0f, step = (rx - lx) / 200.0f;
+      for (int i = 0; i <= 200; i += 17) dl->AddLine(ImVec2(lx + i * step, top), ImVec2(lx + i * step, top + 13 * rh), with_alpha(IM_COL32(50, 42, 24, 255), a), 1.0f * u);
+      for (int r = 0; r < 13; r++) {
+        const float y = top + r * rh;
+        text(dl, c.x0 + 22 * u, y + rh * 0.5f - 9 * u, 17 * u, with_alpha(kCream, a), rows[r]);
+        if (!show) continue;
+        int first = -1;
+        for (int i = 0; i < 200; i++) {
+          const bool on = bits[r] >= 0 ? (m.shown.buttons[i] >> bits[r]) & 1 : (m.shown.analog_marks[i] >> (-bits[r] - 1)) & 1;
+          if (!on) continue;
+          if (first < 0) first = i;
+          dl->AddRectFilled(ImVec2(lx + i * step, y + rh * 0.2f), ImVec2(lx + (i + 1) * step + 0.5f, y + rh * 0.8f), with_alpha(kYellow, a));
         }
-  } else {
-    changed |= draw_screen(port, m);
+        if (first >= 0) {
+          char b[16];
+          std::snprintf(b, sizeof b, "%.1ff", first / 16.6667f);
+          text(dl, rx + 16 * u, y + rh * 0.5f - 9 * u, 17 * u, with_alpha(kCream, a), b);
+        }
+      }
+      foot(dl, c, a, note);
+      return;
+    }
+    case REACTION: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "REACTION TIME", a);
+      const float cx = (c.x0 + c.x1) * 0.5f, cy = (c.y0 + c.y1) * 0.5f - 20 * u, sz = 90 * u;
+      if (m.reaction_waiting) text(dl, cx - tw(40 * u, "Wait...") * 0.5f, cy - 20 * u, 40 * u, with_alpha(kCream, a), "Wait...");
+      else if (m.cap.mode == Mode::Reaction && !m.cap.done) dl->AddRectFilled(ImVec2(cx - sz, cy - sz), ImVec2(cx + sz, cy + sz), with_alpha(IM_COL32(255, 255, 255, 255), a), 6 * u);
+      else if (m.have_shown && m.shown.mode == Mode::Reaction) {
+        char b[32];
+        std::snprintf(b, sizeof b, "%u ms", m.shown.delay_ms);
+        text(dl, cx - tw(64 * u, b) * 0.5f, cy - 50 * u, 64 * u, with_alpha(kYellow, a), b);
+        std::snprintf(b, sizeof b, "%.1f frames", m.shown.delay_ms / 16.667f);
+        text(dl, cx - tw(26 * u, b) * 0.5f, cy + 30 * u, 26 * u, with_alpha(kCream, a), b);
+      } else para_centred(dl, cx, cy - 24 * u, c.x1 - c.x0 - 60 * u, 24 * u, with_alpha(kCream, a), "Start begins the test.");
+      foot(dl, c, a, "Counted from the frame the square is drawn; your display's own delay is included.");
+      return;
+    }
+    case CONTSCOPE: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "OSCILLOSCOPE", a);
+      if (m.frozen) v = m.frozen_samples; else latest(port, v, m.cont_window);
+      const float px0 = c.x0 + 24 * u, py0 = c.y0 + 56 * u, px1 = c.x1 - 24 * u, py1 = c.y1 - 70 * u;
+      plot_area(dl, px0, py0, px1, py1, u, a);
+      const float mid = (py0 + py1) * 0.5f, k = (py1 - py0) * 0.5f / 128.0f;
+      for (float lvl : {80.0f, -80.0f, 23.0f, -23.0f}) dl->AddLine(ImVec2(px0, mid - lvl * k), ImVec2(px1, mid - lvl * k), with_alpha(IM_COL32(120, 90, 30, 200), a), 1.2f * u);
+      if (v.size() >= 2) {
+        const auto val = [&](const host::GCScopeSample& q, bool raw) -> float {
+          switch (m.cont_input) {
+            case 0: return raw ? q.raw_ax : q.ax; case 1: return raw ? q.raw_ay : q.ay;
+            case 2: return raw ? q.raw_cx : q.cx; case 3: return raw ? q.raw_cy : q.cy;
+            case 4: return ((raw ? q.raw_l : q.l) - 128) / 1.0f; default: return ((raw ? q.raw_r : q.r) - 128) / 1.0f;
+          }
+        };
+        const float step = (px1 - px0) / (float)(v.size() - 1);
+        for (int pass = 0; pass < 2; pass++)
+          for (size_t i = 1; i < v.size(); i++)
+            dl->AddLine(ImVec2(px0 + (i - 1) * step, mid - val(v[i - 1], pass == 0) * k), ImVec2(px0 + i * step, mid - val(v[i], pass == 0) * k),
+                        with_alpha(pass == 0 ? IM_COL32(130, 130, 130, 220) : kYellow, a), (pass ? 2.4f : 1.8f) * u);
+      }
+      foot(dl, c, a, "Gold: what the game gets. Grey: before the settings. Lines at 23 and 80.");
+      return;
+    }
+    case GATE: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "GATE", a);
+      latest(port, v, 64);
+      for (const auto& q : v) {
+        const float gx = m.gate_stick ? q.cx : q.ax, gy = m.gate_stick ? q.cy : q.ay;
+        const float rr = std::sqrt(gx * gx + gy * gy);
+        if (rr < 30) continue;
+        const int bin = (int)std::floor((std::atan2(gy, gx) + 3.14159265f) / (2 * 3.14159265f) * 64) % 64;
+        m.gate[bin] = std::max(m.gate[bin], rr);
+      }
+      const float r = std::min(W, y1 - y0 - 80 * u) * 0.42f, cx = (c.x0 + c.x1) * 0.5f, cy = (c.y0 + c.y1) * 0.5f + 10 * u;
+      stick_picture(dl, cx, cy, r, u, a, 0, 0, m.gate_stick ? s.cx : s.ax, m.gate_stick ? s.cy : s.ay, nullptr, nullptr, false);
+      ImVec2 pts[64]; int n = 0;
+      for (int i = 0; i < 64; i++) {
+        if (m.gate[i] <= 0) continue;
+        const float an = (i + 0.5f) / 64 * 2 * 3.14159265f - 3.14159265f;
+        pts[n++] = ImVec2(cx + std::cos(an) * m.gate[i] * r / 110, cy - std::sin(an) * m.gate[i] * r / 110);
+      }
+      if (n > 2) dl->AddPolyline(pts, n, with_alpha(IM_COL32(255, 255, 255, 255), a), ImDrawFlags_Closed, 3.0f * u);
+      return;
+    }
+    case EXPORT: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "EXPORT", a);
+      const float y = c.y0 + 70 * u + para(dl, c.x0 + 26 * u, c.y0 + 70 * u, c.x1 - c.x0 - 52 * u, 21 * u, with_alpha(kCream, a),
+                                           "Every report the adapter sent for this socket, before and after the settings, as a spreadsheet.");
+      para(dl, c.x0 + 26 * u, y + 18 * u, c.x1 - c.x0 - 52 * u, 16 * u, with_alpha(IM_COL32(200, 185, 150, 255), a),
+           "Columns: time in microseconds, the sticks, triggers and buttons as read, then as the game gets them.");
+      return;
+    }
+    case LTRIGGER: case RTRIGGER: case TRIGGER: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "TRIGGERS", a);
+      const char* note = "Grey: the trigger. Gold: what the game gets. Line at 43: lightshield.";
+      for (int side = 0; side < 2; side++) {
+        const float gcx = c.x0 + W * (side ? 0.73f : 0.27f), bx = gcx - 48 * u;   // two 36 wide bars, 60 apart
+        const float top = c.y0 + 60 * u, h = foot_top(c, note) - 70 * u - top;
+        const int in_v = side ? s.raw_r : s.raw_l, out_v = side ? s.r : s.l;
+        const bool click = s.buttons & (side ? PAD_R : PAD_L);
+        for (int k2 = 0; k2 < 2; k2++) {
+          const float x = bx + k2 * 60 * u, val = (float)(k2 ? out_v : in_v);
+          dl->AddRectFilled(ImVec2(x, top), ImVec2(x + 36 * u, top + h), with_alpha(IM_COL32(20, 16, 8, 255), a), 6 * u);
+          dl->AddRectFilled(ImVec2(x, top + h - val / 255.0f * h), ImVec2(x + 36 * u, top + h), with_alpha(k2 ? kYellow : IM_COL32(130, 130, 130, 255), a), 6 * u);
+          dl->AddRect(ImVec2(x, top), ImVec2(x + 36 * u, top + h), with_alpha(kGold, a), 6 * u, 0, 2 * u);
+          dl->AddLine(ImVec2(x - 4 * u, top + h - 43 / 255.0f * h), ImVec2(x + 40 * u, top + h - 43 / 255.0f * h), with_alpha(IM_COL32(200, 120, 40, 255), a), 2 * u);
+        }
+        char b[32];
+        std::snprintf(b, sizeof b, "%s  %d > %d", side ? "R" : "L", in_v, out_v);
+        text(dl, gcx - tw(19 * u, b) * 0.5f, top + h + 12 * u, 19 * u, with_alpha(kCream, a), b);
+        if (click) text(dl, gcx - tw(16 * u, "Click") * 0.5f, top + h + 38 * u, 16 * u, with_alpha(kYellow, a), "Click");
+      }
+      foot(dl, c, a, note);
+      return;
+    }
+    default: break;
   }
-  if (m.screen != MAIN && ImGui::Button("Back")) {
-    m.screen = node(m.screen).parent; m.calibrating = false;
-    m.cap.mode = host::phobscope::Mode::None; m.have_shown = false; m.reaction_waiting = false;
-  }
-  if (!m.status.empty()) ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1), "%s", m.status.c_str());
+  // Everything else: the live stick.
+  const Card c = card(dl, x0, y0, x1, y1, u, m.screen == PHOBCHECK ? "HOLD A NOTCH" : "LIVE STICK", a);
+  char sub[64];
+  std::snprintf(sub, sizeof sub, "Socket %d   Adapter %d Hz", port + 1, (int)std::lround(host::gcadapter_poll_rate_hz()));
+  text(dl, c.x0 + 20 * u, c.y0 + 44 * u, 16 * u, with_alpha(IM_COL32(180, 165, 130, 255), a), have ? sub : "No controller in this socket");
+  const bool c_stick = m.screen == CSNAPBACK || m.screen == CWAVE;
+  const float r = std::min(W * 0.36f, (y1 - y0 - 240 * u) * 0.5f);
+  stick_picture(dl, (c.x0 + c.x1) * 0.5f, c.y0 + 78 * u + r, r, u, a, c_stick ? s.raw_cx : s.raw_ax, c_stick ? s.raw_cy : s.raw_ay, c_stick ? s.cx : s.ax, c_stick ? s.cy : s.ay);
+  coord_lines(dl, c.x0 + 26 * u, c.y0 + 96 * u + 2 * r, u, a, c_stick ? "C-Stick" : "Stick", c_stick ? s.cx : s.ax, c_stick ? s.cy : s.ay, !c_stick);
+  if (m.s.phob_hardware || !m.s.enabled)
+    foot(dl, c, a, m.s.phob_hardware ? "Your PhobGCC's own output." : "PhobGCC Settings are off: the controller as it is.");
+}
 
-  g_owns_start = m.screen == XYSCOPE || m.screen == TIMESCOPE || m.screen == PRESSTIME || m.screen == REACTION;
-  g_capturing = m.calibrating || m.remap_step >= 0 || m.reaction_waiting ||
-                (m.screen == REACTION && m.cap.mode == Mode::Reaction && !m.cap.done);
+// ---- input ----
+struct Input { bool up = false, down = false, left = false, right = false, a = false, b = false, start = false; };
+uint16_t g_prev = 0xFFFF;
+int g_held_dir = -1;
+double g_held_since = 0, g_held_last = 0;
+// `stick_nav` off: the D-pad only, for the screens that measure the stick.
+Input read_input(const PhobNativeIn& f, bool stick_nav) {
+  Input in;
+  uint16_t b = f.armed ? f.buttons : 0xFFFF;
+  if (stick_nav) {
+    if (f.stick_y > 52) b |= PAD_UP;
+    if (f.stick_y < -52) b |= PAD_DOWN;
+    if (f.stick_x < -52) b |= PAD_LEFT;
+    if (f.stick_x > 52) b |= PAD_RIGHT;
+  }
+  if (!f.armed) { g_prev = 0xFFFF; return in; }
+  const uint16_t pressed = (uint16_t)(b & ~g_prev);
+  g_prev = b;
+  in.a = pressed & PAD_A; in.b = pressed & PAD_B; in.start = pressed & PAD_START;
+  int dir = -1;
+  if (b & PAD_UP) dir = 0; else if (b & PAD_DOWN) dir = 1; else if (b & PAD_LEFT) dir = 2; else if (b & PAD_RIGHT) dir = 3;
+  bool fire = false;
+  if (dir != g_held_dir) { g_held_dir = dir; g_held_since = g_held_last = f.time; fire = dir >= 0; }
+  else if (dir >= 0 && f.time - g_held_since > 0.32 && f.time - g_held_last > 0.065) { g_held_last = f.time; fire = true; }
+  if (fire) { in.up = dir == 0; in.down = dir == 1; in.left = dir == 2; in.right = dir == 3; }
+  if (!ImGui::GetIO().WantTextInput) {
+    in.up |= ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+    in.down |= ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+    in.left |= ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
+    in.right |= ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
+    in.a |= ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+    in.b |= ImGui::IsKeyPressed(ImGuiKey_Backspace, false);
+  }
+  return in;
+}
+
+float ease(float t) { t = std::clamp(t, 0.0f, 1.0f); return 1 - (1 - t) * (1 - t) * (1 - t); }
+
+bool records_with_start(Screen s) { return s == XYSCOPE || s == TIMESCOPE || s == PRESSTIME || s == REACTION; }
+
+void load_port(int port) {
+  MenuState& m = g_menu[port];
+  if (m.loaded) return;
+  m.s = host::gcadapter_phob_get(port);
+  m.loaded = true;
+}
+
+}  // namespace
+
+bool phob_native_open() { return g_open; }
+void phob_native_request(int port) {
+  g_open = true;
+  g_port = std::clamp(port, 0, 3);
+  g_prev = 0xFFFF;
+  g_socket_armed = false;
+  g_changed_at = ImGui::GetTime();
+}
+void phob_native_close() {
+  g_open = false;
+  for (MenuState& m : g_menu) { m.calibrating = false; m.remap_step = -1; m.reaction_waiting = false; m.cap.mode = Mode::None; }
+}
+
+PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
+  PhobNativeOut out;
+  g_in = in_frame;
+  host::gcadapter_test_script_start();   // test runs only: the scripted player starts with the menu
+  load_port(g_port);
+  const int port = g_port;
+  MenuState& m = g_menu[port];
+  // Test runs: MELEE_TEST_PHOB=<screen> opens that screen; MELEE_TEST_PHOB_ACTION presses something.
+  static bool test_done = false;
+  if (!test_done) {
+    test_done = true;
+    if (const char* t = std::getenv("MELEE_TEST_PHOB")) {
+      const int n = std::atoi(t);
+      if (n >= 0 && n < SCREEN_COUNT) m.screen = (Screen)n;
+      m.stickmap = 1;
+      m.cap.stick_thresh = m.screen == PRESSTIME || m.screen == REACTION ? 23 : 10;
+      m.cap.trigger_thresh = m.screen == REACTION ? 49 : 255;
+      if (const char* ac = std::getenv("MELEE_TEST_PHOB_ACTION")) {
+        const std::string act = ac;
+        const auto arg = [&](const char* key) { return act.rfind(key, 0) == 0 ? std::atoi(act.c_str() + std::strlen(key)) : -1; };
+        const Stick which = m.screen == CSTICKCAL || m.screen == CNOTCHFIX ? CSTICK : ASTICK;
+        StickCal& saved = which == ASTICK ? m.s.a_cal : m.s.c_cal;
+        if (act == "begin") { cal_begin(m.cal, which, saved, which == ASTICK ? m.s.a_scaler : m.s.c_scaler); m.calibrating = true; m.last_buttons = 0xFFFF; }
+        if (act == "notchfix") { m.calibrating = cal_begin_notch_fix(m.cal, which, saved, which == ASTICK ? m.s.a_scaler : m.s.c_scaler); m.last_buttons = 0xFFFF; }
+        if (arg("remap:") >= 0) { m.remap_step = arg("remap:"); m.last_buttons = 0xFFFF; }
+        if (arg("input:") >= 0) m.time_input = arg("input:");
+        if (arg("measure:") >= 0) m.time_measure = arg("measure:");
+        if (arg("map:") >= 0) m.stickmap = arg("map:");
+        if (arg("cursor:") >= 0) m.cursor[m.screen] = arg("cursor:");
+      }
+      g_changed_at = in_frame.time - 1.0;
+    }
+  }
+  pm::font_ensure();
+  ImDrawList* dl = ImGui::GetBackgroundDrawList();
+  const float gx0 = in_frame.x0, gy0 = in_frame.y0, gx1 = in_frame.x1, gy1 = in_frame.y1;
+  const float u = (gy1 - gy0) / 720.0f, W = gx1 - gx0;
+  const float a = ease((float)(in_frame.time - g_changed_at) / 0.12f) * 0.25f + 0.75f;
+  const Settings before = m.s;
+  bool changed = false;
+
+  // The game behind, darkened more on the menu's side.
+  {
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y), IM_COL32(0, 0, 0, 246));
+    ImGui::ShadeVertsLinearColorGradientKeepAlpha(dl, v0, dl->VtxBuffer.Size, ImVec2(gx0, 0), ImVec2(gx1, 0), IM_COL32(0, 0, 0, 246), IM_COL32(0, 0, 0, 228));
+  }
+
+  // Calibration takes the whole screen and the controller being calibrated. Its screens have no
+  // rows of their own; outside a calibration they show the calibration page.
+  if (!m.calibrating && (m.screen == ASTICKCAL || m.screen == ANOTCHFIX || m.screen == CSTICKCAL || m.screen == CNOTCHFIX)) m.screen = CALIBRATE;
+  if (m.calibrating) {
+    pm::gold::title(dl, gx0 + 48 * u, gy0 + 40 * u, u, "PHOBGCC", a);
+    text(dl, gx0 + 52 * u, gy0 + 76 * u, 17 * u, with_alpha(kGoldText, a), node(m.cal.which == ASTICK ? (m.cal.step >= kCalPoints ? ANOTCHFIX : ASTICKCAL) : (m.cal.step >= kCalPoints ? CNOTCHFIX : CSTICKCAL)).name);
+    changed |= run_calibration(dl, port, m, gx0, gy0, gx1, gy1, u, a);
+  } else {
+    // Rows, then the controller.
+    std::vector<Row> rows = rows_for(port, m);
+    int& cur = m.cursor[m.screen];
+    cur = rows.empty() ? 0 : std::clamp(cur, 0, (int)rows.size() - 1);
+    // Remapping and the reaction test read the controller itself; the menu takes no input meanwhile.
+    host::phob::HardwareInput hw;
+    const bool have_hw = host::gcadapter_phob_raw(port, hw);
+    const uint16_t hb = have_hw ? hw.buttons : 0;
+    const uint16_t hpressed = m.last_buttons == 0xFFFF ? 0 : (uint16_t)(hb & ~m.last_buttons);
+    const bool listening = m.remap_step >= 0 || m.reaction_waiting || (m.screen == REACTION && m.cap.mode == Mode::Reaction && !m.cap.done);
+    if (listening) m.last_buttons = hb;
+    // The controller in the socket being set up drives the menu too, whichever port the game gives
+    // it (or none), once it has been let go since the menu opened.
+    PhobNativeIn nav = in_frame;
+    if (have_hw) {
+      const uint16_t nb = hb & (PAD_A | PAD_B | PAD_X | PAD_Y | PAD_Z | PAD_START | PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
+      const int sx = (int)hw.ax - hw.ax0, sy = (int)hw.ay - hw.ay0;
+      if (!g_socket_armed) g_socket_armed = nb == 0 && std::abs(sx) < 30 && std::abs(sy) < 30;
+      if (g_socket_armed) {
+        nav.armed = true;
+        nav.buttons |= nb;
+        if (std::abs(nav.stick_x) < 30 && std::abs(nav.stick_y) < 30) { nav.stick_x = (int8_t)std::clamp(sx, -127, 127); nav.stick_y = (int8_t)std::clamp(sy, -127, 127); }
+      }
+    }
+    if (std::getenv("MELEE_TEST_PHOB")) {   // test runs: what the menu's controller does
+      static uint32_t last = 0xFFFFFFFF;
+      const uint32_t sig = nav.buttons | (nav.armed ? 0x10000u : 0);
+      if (sig != last) { last = sig; host::log("phob test: menu pad %04X armed %d screen %d", nav.buttons, (int)nav.armed, (int)m.screen); }
+    }
+    const bool measures_stick = m.screen == INPUTVIEW || m.screen == XYSCOPE || m.screen == TIMESCOPE || m.screen == PRESSTIME ||
+                                m.screen == REACTION || m.screen == CONTSCOPE || m.screen == GATE || m.screen == PHOBCHECK;
+    Input in = listening ? Input{} : read_input(nav, !measures_stick);
+    if (listening) g_prev = 0xFFFF;
+    if (m.remap_step >= 0) {
+      if (hpressed & PAD_START) m.remap_step = -1;
+      for (int i = 0; i < REMAP_COUNT && m.remap_step >= 0; i++)
+        if (hpressed & kRemapBits[i]) { m.s.remap[m.remap_step] = (uint8_t)(1 << i); m.remap_step = -1; }
+      if (m.remap_step < 0) g_prev = 0xFFFF;   // the press that answered must not also move the menu
+    }
+    if (!rows.empty()) {
+      const int count = (int)rows.size();
+      if (in.up) cur = (cur + count - 1) % count;
+      if (in.down) cur = (cur + 1) % count;
+      Row& r = rows[(size_t)cur];
+      if ((in.left || in.right) && r.kind == Kind::Value && r.enabled && r.v) {
+        const int dir = in.right ? 1 : -1;
+        const int before_v = *r.v;
+        *r.v = r.hi - r.lo <= 1 ? (*r.v == r.lo ? r.hi : r.lo) : std::clamp(*r.v + dir * r.step, r.lo, r.hi);
+        if (*r.v != before_v && r.act) r.act();
+      }
+      if (in.a && r.enabled) {
+        if (r.kind == Kind::Page) { m.screen = r.target; g_changed_at = in_frame.time; m.reset_pending = -1; m.cap.mode = Mode::None; m.have_shown = false; m.reaction_waiting = false;
+                                    m.cap.stick_thresh = r.target == PRESSTIME || r.target == REACTION ? 23 : 10; m.cap.trigger_thresh = r.target == REACTION ? 49 : 255; }
+        else if (r.kind == Kind::Action && r.act) r.act();
+        else if (r.kind == Kind::Value && r.v && r.hi - r.lo <= 1) { *r.v = *r.v == r.lo ? r.hi : r.lo; if (r.act) r.act(); }
+      }
+    }
+    if (in.start) {
+      if (records_with_start(m.screen)) {
+        if (m.screen == XYSCOPE) { m.cap.stick_thresh = 10; begin_capture(port, m, Mode::StickMap); m.view_index = 0; }
+        else if (m.screen == TIMESCOPE) begin_capture(port, m, time_mode(m));
+        else if (m.screen == PRESSTIME) begin_capture(port, m, Mode::Press);
+        else if (m.screen == REACTION) { for (Row& r : rows) if (r.label == "Start Test" && r.act) r.act(); }
+      } else {
+        out.close_all = true;
+      }
+    }
+    if (in.b) {
+      if (m.screen == MAIN) out.back_to_panel = true;
+      else { m.screen = node(m.screen).parent; g_changed_at = in_frame.time; m.reset_pending = -1; m.cap.mode = Mode::None; m.have_shown = false; m.reaction_waiting = false; }
+    }
+
+    // PhobScope: keep the recordings going.
+    if (m.screen == TIMESCOPE) {
+      const Mode mode = time_mode(m);
+      m.cap.c_stick = m.time_input >= 4 ? m.time_input == 5 : m.time_input >= 2;
+      m.cap.y_axis = m.time_input < 4 && (m.time_input == 1 || m.time_input == 3);
+      if (m.cap.mode != mode && (m.cap.mode != Mode::None || (m.auto_repeat && std::chrono::steady_clock::now() >= m.repeat_at)))
+        begin_capture(port, m, mode);
+      if (feed_capture(port, m)) {
+        m.shown = m.cap; m.have_shown = true;
+        if (std::getenv("MELEE_TEST_PHOB")) host::log("phob test: result %d %.1f %.1f %.1f", (int)mode, m.cap.percents[0], m.cap.percents[1], m.cap.percents[2]);
+        if (mode == Mode::Snapback) m.last_snapback = std::fmax(0.0f, 100 - m.cap.percents[0]);
+        if (mode == Mode::Dashback) { m.last_db_van = m.cap.percents[0]; m.last_db_ucf = m.cap.percents[1]; }
+        if (mode == Mode::Pivot) for (int i = 0; i < 3; i++) m.last_pivot[i] = m.cap.percents[i];
+        if (mode == Mode::Trigger) for (int i = 0; i < 3; i++) m.last_trig[i] = m.cap.percents[i];
+        m.cap.mode = Mode::None;
+        m.repeat_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);   // the firmware's repeatTimer
+      }
+    } else if (m.screen == XYSCOPE) {
+      if (feed_capture(port, m)) { m.shown = m.cap; m.have_shown = true; m.cap.mode = Mode::None; }
+    } else if (m.screen == PRESSTIME) {
+      if (m.cap.mode == Mode::None && m.auto_repeat && std::chrono::steady_clock::now() >= m.repeat_at) begin_capture(port, m, Mode::Press);
+      if (feed_capture(port, m)) { m.shown = m.cap; m.have_shown = true; m.cap.mode = Mode::None; m.repeat_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250); }
+    } else if (m.screen == REACTION) {
+      if (m.reaction_waiting && std::chrono::steady_clock::now() >= m.reaction_at) { m.reaction_waiting = false; begin_capture(port, m, Mode::Reaction); }
+      if (feed_capture(port, m) && m.cap.mode == Mode::Reaction) m.shown = m.cap, m.have_shown = true;
+    }
+
+    // Draw: title and path, hints, the bars, the card, the description.
+    rows = rows_for(port, m);
+    int& cur2 = m.cursor[m.screen];
+    cur2 = rows.empty() ? 0 : std::clamp(cur2, 0, (int)rows.size() - 1);
+    pm::gold::title(dl, gx0 + 48 * u, gy0 + 34 * u, u, "PHOBGCC", a);
+    std::string path;
+    for (Screen sc = m.screen; sc != MAIN; sc = node(sc).parent) path = std::string(node(sc).name) + (path.empty() ? "" : "  >  " + path);
+    if (path.empty()) path = m.s.phob_hardware ? "PhobGCC Controller" : "Stock Controller";
+    // A path wider than the screen is drawn smaller, and if still too wide loses its first steps.
+    const float path_room = W - 82 * u;
+    for (size_t cut; tw(13 * u, path) > path_room && (cut = path.find("  >  ", 4)) != std::string::npos;)
+      path = "...  >  " + path.substr(cut + 5);
+    const float path_px = std::max(13 * u, std::min(17 * u, 17 * u * path_room / std::max(1.0f, tw(17 * u, path))));
+    text(dl, gx0 + 52 * u, gy0 + 70 * u + (17 * u - path_px) * 0.5f, path_px, with_alpha(kGoldText, a), path);
+    const char* spec = records_with_start(m.screen) ? "D:Move|A:Pick|B:Back|S:Record"
+                     : measures_stick ? "D:Move|A:Pick|B:Back|S:Close"
+                     : m.screen == MAIN ? "A:Pick|B:Controls|S:Close" : "A:Pick|B:Back|S:Close";
+    const float hw2 = pm::legend(dl, 0, 0, u, spec, a, false);
+    pm::legend(dl, gx1 - hw2 - 40 * u, gy0 + 52 * u, u, spec, a);
+
+    const float list_x0 = gx0 + 66 * u, list_x1 = gx0 + W * 0.52f, top = gy0 + 112 * u;
+    const float h = 44 * u, pitch = 54 * u;
+    const float desc_y = gy1 - 128 * u;
+    const int visible = std::max(1, (int)((desc_y - 24 * u - top) / pitch));
+    int& t = m.top[m.screen];
+    if (cur2 < t) t = cur2;
+    if (cur2 >= t + visible) t = cur2 - visible + 1;
+    t = std::clamp(t, 0, std::max(0, (int)rows.size() - visible));
+    const float since = (float)(in_frame.time - g_changed_at);
+    for (int i = 0; i < std::min(visible, (int)rows.size()); ++i) {
+      const int idx = t + i;
+      const Row& r = rows[(size_t)idx];
+      const bool lit = idx == cur2;
+      const float slide = (1.0f - ease((since - 0.025f * i) / 0.18f)) * 70.0f * u;
+      const float ba = a * ease((since - 0.025f * i) / 0.14f);
+      const float y = top + i * pitch;
+      const float l = list_x0 + (lit ? 14 * u : 0) - slide, rr = list_x1 + (lit ? 14 * u : 0) - slide;
+      std::string val = value_text(r);
+      const float maxw = (rr - l) - tw(h * 0.5f * 0.7f, r.label) - 90 * u;   // the label may shrink to 0.7 to make room
+      // A summary that does not fit is left off rather than cut, so a cut value cannot misread.
+      if (r.kind != Kind::Value && tw(h * 0.5f * 0.84f, val) > maxw) val.clear();
+      while (!val.empty() && tw(h * 0.5f * 0.84f, val) > maxw) val.pop_back();
+      pm::gold::bar(dl, l, y, rr, h, u, lit, r.label.c_str(), val, r.enabled, ba);
+      if (lit) {
+        pm::gold::ring(dl, rr - 6 * u, y + h * 0.5f, u, (float)in_frame.time, ba);
+        if (r.kind == Kind::Value && r.enabled && r.hi - r.lo > 1) {
+          const float vpx = h * 0.5f * 0.84f, vw = tw(vpx, val), vx = rr - 45 * u - vw, cy = y + h * 0.5f;
+          const ImU32 dark = with_alpha(IM_COL32(18, 16, 10, 255), ba);
+          dl->AddTriangleFilled(ImVec2(vx - 9 * u, cy - 6 * u), ImVec2(vx - 9 * u, cy + 6 * u), ImVec2(vx - 17 * u, cy), dark);
+          dl->AddTriangleFilled(ImVec2(vx + vw + 7 * u, cy - 6 * u), ImVec2(vx + vw + 7 * u, cy + 6 * u), ImVec2(vx + vw + 15 * u, cy), dark);
+        }
+      }
+    }
+    if ((int)rows.size() > visible) {
+      const float x = list_x1 + 34 * u, y0 = top + 4 * u, y1 = top + (visible - 1) * pitch + h - 4 * u;
+      dl->AddRectFilled(ImVec2(x, y0), ImVec2(x + 5 * u, y1), with_alpha(IM_COL32(255, 255, 255, 34), a), 3 * u);
+      const float span = y1 - y0, th = span * visible / rows.size(), ty = y0 + (span - th) * t / (float)(rows.size() - visible);
+      dl->AddRectFilled(ImVec2(x, ty), ImVec2(x + 5 * u, ty + th), with_alpha(kGold, a), 3 * u);
+    }
+    draw_card(dl, port, m, list_x1 + 56 * u, top, gx1 - 46 * u, desc_y - 24 * u, u, a);
+    std::string about = rows.empty() ? node(m.screen).about : rows[(size_t)cur2].about;
+    if (m.remap_step >= 0) about = std::string("Press the button that should press ") + kRemapNames[m.remap_step] + ". Start cancels.";
+    if (!m.status.empty() && in_frame.time < m.status_until) about = m.status;
+    pm::gold::description(dl, gx0 + 46 * u, desc_y, W - 92 * u, u, about, a);
+  }
+
+  if (std::memcmp(&before, &m.s, sizeof(Settings)) != 0) changed = true;
   if (changed) {
     clamp(m.s);
-    if (!host::phob_store_save(port, m.s)) m.status = "Could not save the settings file.";
+    if (!host::phob_store_save(port, m.s)) say(m, "Could not save the settings file.");
+    out.changed = true;
   }
-  return changed;
+  return out;
+}
+
+// ---- the Controls tab's entry ----
+bool draw_phob_menu(int port) {
+  load_port(port);
+  MenuState& m = g_menu[port];
+  m.s = host::gcadapter_phob_get(port);
+  const Settings& s = m.s;
+  std::string state = s.phob_hardware ? "PhobGCC controller: PhobScope and Phob Check"
+                    : !s.enabled ? "Off"
+                    : std::string("On") + (s.a_cal.measured ? ", left stick calibrated" : "") + (s.c_cal.measured ? ", C-stick calibrated" : "");
+  ImGui::TextWrapped("PhobGCC's calibration, notches, snapback filter, trigger modes, PhobScope and Phob Check for this socket.");
+  ImGui::TextDisabled("%s", state.c_str());
+  if (ImGui::Button("Open PhobGCC menu", ImVec2(260, 0))) phob_native_request(port);
+  ImGui::TextDisabled("From PhobGCC by Phobos132, FrostSSBM, CarVac, NiceMitch and contributors.");
+  return false;
 }
 
 }  // namespace gx

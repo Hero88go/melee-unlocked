@@ -2538,7 +2538,6 @@ void load_pc_settings(RenderOptions& options, int& volume) {
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
 std::atomic<bool> g_textures_dirty{false};
-static bool g_phob_drawn = false;   // the PhobGCC section was drawn this frame
 // "texpackoff <name>" per pack the player switched off, written with the rest of the settings.
 // Tooltips are clipped to the OS window, and the standalone settings window is deliberately narrow,
 // so a long one ran off the right edge. Wrapping them at a fixed width keeps every line on screen
@@ -4720,12 +4719,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 have_pad ? pad.stick_x : 0, have_pad ? pad.stick_y : 0, have_pad ? pad.sub_x : 0, have_pad ? pad.sub_y : 0);
     }
   }
-  // A Phob screen that was not drawn last frame (header closed, tab or page changed, panel shut)
-  // stops listening to the controller.
-  if (!g_phob_drawn) phob_menu_not_drawn();
-  g_phob_drawn = false;
-  // A Phob calibration or remap reads the controller itself: the panel gets none of it.
-  if (have_pad && nav_active && state.practice_pad_armed && phob_menu_capturing()) {
+  // Test runs (MELEE_TEST_PHOB): the PhobGCC menu opens on adapter socket 1 with the panel.
+  {
+    static bool phob_test_opened = false;
+    if (!phob_test_opened && state.open && std::getenv("MELEE_TEST_PHOB")) { phob_test_opened = true; phob_native_request(0); }  }
+  if (!state.open && phob_native_open()) phob_native_close();
+  // The PhobGCC menu reads the controller itself: the panel gets none of it.
+  if (have_pad && nav_active && state.practice_pad_armed && phob_native_open()) {
     auto& io = ImGui::GetIO();
     for (ImGuiKey k : {ImGuiKey_GamepadStart, ImGuiKey_GamepadBack, ImGuiKey_GamepadFaceDown, ImGuiKey_GamepadFaceRight,
                        ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight})
@@ -4734,7 +4734,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-    io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.button & 0x1000) != 0 && !phob_menu_owns_start());
+    io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.button & 0x1000) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.button & 0x10) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (pad.button & 0x100) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (pad.button & 0x200) != 0);
@@ -4984,10 +4984,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
-  if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
+  if (state.open && !phob_native_open() && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
       !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && state.rebind_action < 0)
     state.open = false;
-  if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) &&
+  if (state.open && !phob_native_open() && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) &&
       !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && state.rebind_action < 0) {
     if (options.overlay_style == 0 && state.clean_detail_open) state.clean_detail_open = false;
     else if (options.overlay_style == 1 && state.dashboard_detail_open) state.dashboard_detail_open = false;
@@ -5003,7 +5003,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // screen; on the category screen it asks to quit (Quit / Cancel), so Esc, Esc, Enter still exits
   // the game the way the old Esc menu did. Esc on that prompt cancels it. The legacy menus and the
   // launcher's settings window keep Esc = close.
-  if (host::window_take_escape() && state.rebind_action < 0) {
+  if (phob_native_open() && host::window_take_escape()) {
+    phob_native_close();   // Esc leaves the PhobGCC menu for the Controls tab
+  } else if (host::window_take_escape() && state.rebind_action < 0) {
     const int style = options.overlay_style;
     const bool on_page = (style == 0 && state.clean_detail_open) || (style == 1 && state.dashboard_detail_open) ||
                          (style == 2 && state.gd_detail_open) || (style == 3 && state.radial_detail_open) ||
@@ -5057,7 +5059,24 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   const float clean_step = ImGui::GetIO().DeltaTime * 60.0f;
   state.clean_detail_frames = std::clamp(state.clean_detail_frames +
       (state.clean_detail_open ? clean_step : -clean_step), 0.0f, 14.0f);
-  const bool panel_visible = state.open || state.panel_slide_x > -720.0f;
+  // The PhobGCC menu (phob_menu.cpp) draws instead of the panel; the panel stays open underneath,
+  // so the game keeps its controllers away exactly as with the panel.
+  if (state.open && phob_native_open()) {
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    PhobNativeIn pin;
+    const float aspect = presented_aspect(options, (int)screen.x, (int)screen.y, true);
+    float gw = screen.x, gh = gw / std::max(aspect, 0.1f);
+    if (gh > screen.y) { gh = screen.y; gw = gh * aspect; }
+    pin.x0 = (screen.x - gw) * 0.5f; pin.y0 = (screen.y - gh) * 0.5f; pin.x1 = pin.x0 + gw; pin.y1 = pin.y0 + gh;
+    if (have_pad) { pin.buttons = pad.button; pin.stick_x = pad.stick_x; pin.stick_y = pad.stick_y; }
+    pin.armed = state.practice_pad_armed;
+    pin.time = ImGui::GetTime();
+    const PhobNativeOut pout = phob_native_frame(pin);
+    if (pout.back_to_panel) { phob_native_close(); state.practice_pad_armed = false; }
+    // The Start that closed it must not reach the game (it would pause): hold the controllers until let go.
+    if (pout.close_all) { phob_native_close(); state.open = false; state.practice_release_capture = true; }
+  }
+  const bool panel_visible = (state.open || state.panel_slide_x > -720.0f) && !phob_native_open();
   const bool practice_capture = state.practice_open || practice_force_capture ||
                                 state.practice_release_capture;
   host::window_input_capture(state.open || state.menu_open || practice_capture || replay_bar::wants_cursor());
@@ -9335,13 +9354,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             changed |= binding_level_slider(tab_kind, tab_index, i);
           }
         }
-        if (tab_kind == host::CaptureDevice::GCAdapter && std::getenv("MELEE_TEST_PHOB")) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         if (tab_kind == host::CaptureDevice::GCAdapter && ImGui::CollapsingHeader("PhobGCC")) {
           ImGui::PushID("phob");
           draw_phob_menu(tab_index);
-          if (std::getenv("MELEE_TEST_PHOB")) ImGui::SetScrollHereY(1.0f);   // test runs: keep the end of the section in view
           ImGui::PopID();
-          g_phob_drawn = true;
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {
           if (ImGui::Button("B0XX (vJoy / b0xx-ahk)")) { host::g_hid_bindings[tab_index] = host::vjoy_b0xx_bindings(); changed = true; }

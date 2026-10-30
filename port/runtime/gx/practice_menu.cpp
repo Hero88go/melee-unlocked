@@ -978,10 +978,15 @@ void draw_bar(ImDrawList* dl, float left, float top, float right, float h, float
     dl->AddLine(ImVec2(cx - 3.0f * u, cy - r), ImVec2(cx, cy - r), with_alpha(kGold, a), 3.6f * u);
     dl->AddLine(ImVec2(cx - 3.0f * u, cy + r), ImVec2(cx, cy + r), with_alpha(kGold, a), 3.6f * u);
   }
-  const float px = h * 0.5f, vy = top + h * 0.5f - px * 0.56f;
+  const float px = h * 0.5f;
+  // A label too long for the bar (beside its value and the cursor ring) is drawn smaller.
+  const float value_w = value.empty() ? 0.0f : text_width(px * 0.84f, value.c_str()) + 24.0f * u;
+  const float room = right - rim - 40.0f * u - value_w - (left + 18.0f * u), label_w = text_width(px, label);
+  const float lpx = label_w > room && room > 0 ? std::max(px * 0.7f, px * room / label_w) : px;
+  const float vy = top + h * 0.5f - lpx * 0.56f;
   const float da = enabled ? a : a * 0.45f;
-  if (lit) text(dl, left + 18.0f * u, vy, px, with_alpha(IM_COL32(18, 16, 10, 255), da), label, 0.0f, false);
-  else text(dl, left + 18.0f * u, vy, px, with_alpha(kGoldText, da), label, 0.19f);
+  if (lit) text(dl, left + 18.0f * u, vy, lpx, with_alpha(IM_COL32(18, 16, 10, 255), da), label, 0.0f, false);
+  else text(dl, left + 18.0f * u, vy, lpx, with_alpha(kGoldText, da), label, 0.19f);
   if (!value.empty()) {
     const float vpx = px * 0.84f, w = text_width(vpx, value.c_str());
     const float vx = right - rim - (lit ? 40.0f : 22.0f) * u - w;
@@ -1634,6 +1639,22 @@ float legend(ImDrawList* dl, float x, float cy, float u, const char* spec, float
 std::vector<std::string> wrap_text(const std::string& s, float px, float width) { return wrap(s, px, width); }
 
 // ---------------------------------------------------------------------------------------------
+namespace gold {
+void bar(ImDrawList* dl, float left, float top, float right, float h, float u, bool lit, const char* label,
+         const std::string& value, bool enabled, float a) {
+  draw_bar(dl, left, top, right, h, u, lit, label, value, enabled, a, false);
+}
+void ring(ImDrawList* dl, float cx, float cy, float u, float t, float a) { draw_ring(dl, ImVec2(cx, cy), u, t, a); }
+void title(ImDrawList* dl, float x, float y, float u, const char* t, float a) { draw_title(dl, x, y, u, t, a); }
+void description(ImDrawList* dl, float x, float y, float w, float u, const std::string& s, float a) {
+  draw_description(dl, x, y, w, u, s, a);
+}
+void fill_rect(ImDrawList* dl, float x0, float y0, float x1, float y1, uint32_t top, uint32_t bottom, float rounding) {
+  rect_gradient(dl, ImVec2(x0, y0), ImVec2(x1, y1), top, bottom, rounding);
+}
+}  // namespace gold
+void font_ensure() { font_ready(); }
+
 void opened() {
   if (g_stack.empty()) g_stack.push_back(Level{});
   // Back to the top level unless the player is mid-way through a page.
