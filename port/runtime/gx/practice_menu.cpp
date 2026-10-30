@@ -451,7 +451,8 @@ std::vector<Row> rows_for(Page p) {
       rows.push_back(page_row("Ledge", Page::Ledge, top_name(kLedge, c.ledge_odds, MU_PC_LEDGE_COUNT),
                               "Ledge options and recovery."));
       int tools = 0;
-      for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP, MU_PC_TOOL_FRAME_ADVANCE})
+      for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP, MU_PC_TOOL_FRAME_ADVANCE,
+                        MU_PC_TOOL_PROJECTILE_HITBOXES, MU_PC_TOOL_COMBO_COUNTER})
         tools += (c.tools & m) ? 1 : 0;
       char t[24]; std::snprintf(t, sizeof t, tools ? "%d on" : "Off", tools);
       rows.push_back(page_row("Tools", Page::Tools, t, g_f.native_source ? "Save states, hitboxes, inputs, frame advance." : "Frame advance."));
@@ -560,6 +561,8 @@ std::vector<Row> rows_for(Page p) {
           {"Loop recording", MU_PC_TOOL_LOOP, "A played back recording starts again from the kept moment."},
           {"Hitboxes", MU_PC_TOOL_HITBOXES, "Hitboxes and hurtboxes over the fighters."},
           {"Hitboxes only", MU_PC_TOOL_HITBOXES_ONLY, "Hitboxes without the models."},
+          {"Projectile hitboxes", MU_PC_TOOL_PROJECTILE_HITBOXES, "Lasers, bombs and items show their hitboxes too."},
+          {"Combo counter", MU_PC_TOOL_COMBO_COUNTER, "Counts the hits of each combo over your damage."},
           {"Inputs", MU_PC_TOOL_OVERLAY, "Both players' inputs and your frame advantage."},
       };
       {

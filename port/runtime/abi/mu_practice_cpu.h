@@ -193,6 +193,8 @@ typedef struct MuPcConfig {
 #define MU_PC_TOOL_OVERLAY 0x08u       /* inputs, action and frame advantage */
 #define MU_PC_TOOL_LOOP 0x10u          /* a played back recording repeats */
 #define MU_PC_TOOL_FRAME_ADVANCE 0x20u /* L+R+Z freezes Training, Z steps a frame (host side) */
+#define MU_PC_TOOL_PROJECTILE_HITBOXES 0x40u /* item and projectile hitboxes (the Arcade look's switch, host side) */
+#define MU_PC_TOOL_COMBO_COUNTER 0x80u /* "N HITS" over the attacker (the Arcade look's counter, host side) */
 
 /* One fighter as the model needs it. Positions are game units; facing is +1 right, -1 left. */
 typedef struct MuPcFighter {

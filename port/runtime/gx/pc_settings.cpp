@@ -3588,6 +3588,9 @@ static void apply_practice_tools(RenderOptions& options) {
   // copy is masked off at load and rebuilt from the practice settings).
   options.te_options = te;
   if (RenderOptions::kModFeaturesAvailable) RenderOptions::live_te_options() = te;
+  // The Arcade look's projectile hitboxes and combo counter, for as long as these rows are on.
+  set_arcade_display(ArcadeSource::Practice, ((cfg.tools & MU_PC_TOOL_PROJECTILE_HITBOXES) ? kArcadeProjectileHitboxes : 0u) |
+                                            ((cfg.tools & MU_PC_TOOL_COMBO_COUNTER) ? kArcadeComboCounter : 0u));
 }
 
 // The practice CPU tabs. Returns true when a setting changed (saved by the caller).
@@ -3689,6 +3692,9 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     ImGui::BeginDisabled(!options.native_source);
     changed |= flag_row("Hitboxes and hurtboxes", &c.tools, MU_PC_TOOL_HITBOXES, nullptr);
     changed |= flag_row("Hitboxes only (no models)", &c.tools, MU_PC_TOOL_HITBOXES_ONLY, nullptr);
+    changed |= flag_row("Projectile hitboxes", &c.tools, MU_PC_TOOL_PROJECTILE_HITBOXES, nullptr);
+    changed |= flag_row("Combo counter", &c.tools, MU_PC_TOOL_COMBO_COUNTER,
+                        "Counts the hits of each combo over the attacker's damage.");
     changed |= flag_row("Inputs and frame advantage", &c.tools, MU_PC_TOOL_OVERLAY,
                         "Both players' inputs and actions, and your frame advantage after each hit or shield.");
     ImGui::EndDisabled();
