@@ -61,14 +61,42 @@ def canonical_indices(frame_ids):
     return last[np.argsort(ids[last])]
 
 
-def extract(path, pro, port_hint):
+def extract(path, pro, port_hint, tournament_link=None):
     g = peppi_py.read_slippi(str(path))
     ports = [p for p in g.start.players]
-    if len(ports) != 2:
+    if len(ports) != 2 or g.start.is_teams or any(int(p.type) != 0 for p in ports):
         return None
-    me = verified_port(ports, pro)
-    if me is None:
-        return None
+    if tournament_link is None:
+        me = verified_port(ports, pro)
+        if me is None:
+            return None
+        identity_method = 'exact_connect_code_v1'
+    else:
+        # Secondary path for no-code tournament recordings: the caller supplies a unique
+        # replayId->official set-game attestation. Still require the matching SLP player name,
+        # expected character and empty-or-exact connect code in the raw replay itself.
+        link = tournament_link
+        if (link.get('identity_method') != 'linked_tournament_set_v1' or
+                str(link.get('replay_id')) != Path(path).stem or
+                link.get('set_source') != 'startgg-export' or
+                link.get('set_game_replay_id') != Path(path).stem or
+                int(link.get('set_port', 0)) != int(link.get('expected_player_index', -1)) + 1 or
+                link.get('character_id') != PLAYERS[pro]['css_character'] or
+                not link.get('participant_name') or not link.get('tournament_key')):
+            return None
+        wanted_name = ' '.join(str(link['replay_display_name']).casefold().split())
+        matches = []
+        for index, player in enumerate(ports):
+            netplay = player.netplay
+            code = (netplay.code or '').replace('＃', '#').strip().upper() if netplay else ''
+            name = ' '.join((netplay.name or '').casefold().split()) if netplay else ''
+            if (int(player.character) == PLAYERS[pro]['css_character'] and name == wanted_name and
+                    code in ('', PLAYERS[pro]['code'])):
+                matches.append(index)
+        if len(matches) != 1:
+            return None
+        me = matches[0]
+        identity_method = link['identity_method']
     opp = 1 - me
     f = g.frames
     fids = a(f.id, np.int32)
@@ -83,12 +111,19 @@ def extract(path, pro, port_hint):
         return None
     # Persist the attribution evidence in the training file. Legacy arrays without these fields
     # remain untouched and are explicitly unverified by the next training pipeline.
-    d['identity_code'] = np.array(PLAYERS[pro]['code'])
-    d['identity_method'] = np.array('exact_connect_code_v1')
+    d['identity_code'] = np.array(PLAYERS[pro]['code'] if identity_method == 'exact_connect_code_v1' else '')
+    d['identity_method'] = np.array(identity_method)
     d['identity_port'] = np.int8(me)
     d['source_sha256'] = np.array(hashlib.sha256(Path(path).read_bytes()).hexdigest())
     d['source_replay_id'] = np.array(Path(path).stem)
     d['extract_version'] = np.int16(2)
+    d['source_start_at'] = np.array((g.metadata or {}).get('startAt', ''))
+    d['source_match'] = np.array(str(g.start.match))
+    if tournament_link is not None:
+        for key in ('set_id', 'set_source', 'set_game_replay_id', 'participant_name',
+                    'participant_prefix', 'set_port', 'expected_player_index', 'tournament_key',
+                    'replay_display_name'):
+            d['identity_' + key] = np.array(str(tournament_link[key]))
     return d
 
 

@@ -70,6 +70,12 @@ Static Recomp (the original game code translated ahead of time; mod discs such a
 it). A compatibility build for older processors is included. Optional experimental DLSS 5 uses
 NVIDIA's separate model, which is not included in this archive.
 
+Pro ghosts (Source Port)
+------------------------
+In Training, open the Practice menu (Start + Up + Z) and choose Fight a pro: Mang0, Zain,
+Cody Schwab or aMSa. The CPU becomes that player's character and plays the way that player does,
+learned from their own games. It runs on your PC, works offline and is never used online.
+
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
 Native DualShock 4 support is experimental: connect by USB or Bluetooth, then select a DS4
@@ -95,7 +101,7 @@ either. Your ISO has to be next to it named melee.iso. A replay recorded by a mu
 Slippi version may not line up with this build; when that happens the log says so rather than
 playing something subtly wrong.
 
-Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
+Saves: memory card slot A is the folder User\\GC\\CardA, one .gci per file (Dolphin's GCI folder
 format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
 
 Mods: put your own mod files in the Mods folder (or drop them on the launcher's Mods page). The
@@ -138,6 +144,21 @@ The default DSP coefficient table is the generated free table described in
 licenses\\dsp-coefficients.txt. A player's own dump in User\\GC\\dsp_coef.bin takes priority.
 """
 
+def readme_text(version, playback_exe, local_candidate=False):
+    text = README.format(version=version)
+    if local_candidate:
+        public_source = f"Source code for this version: https://github.com/hero88go/melee-unlocked/tree/v{version}"
+        text = text.replace(public_source, "Source code for this local candidate is not published yet.")
+    if not playback_exe:
+        start = text.find("\nWatching replays:")
+        if start >= 0:
+            end = text.find("\nSaves:", start)
+            if end < 0:
+                raise SystemExit("README replay instructions have no following section")
+            text = text[:start] + text[end:]
+    return text
+
+
 BAT = """@echo off
 cd /d "%~dp0"
 set "ISO=%~dp0melee.iso"
@@ -147,7 +168,7 @@ if not exist "%ISO%" (
   pause
   exit /b 1
 )
-melee_port.exe --iso "%ISO%" --settings-path "%~dp0port-settings.ini" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer
+melee_port.exe --iso "%ISO%" --settings-path "%~dp0port-settings.ini" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\\GC\\CardA" --threaded-renderer
 if errorlevel 1 pause
 """
 
@@ -205,6 +226,8 @@ def imgui_font_notice():
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
+    ap.add_argument("--local-candidate", action="store_true",
+                    help="mark this package as an unpublished local build in its README")
     ap.add_argument("--exe", type=Path, default=ROOT / "build-integration/port/Release/melee_port.exe")
     # The same game built for processors without AVX2, shipped alongside so the ordinary build
     # keeps its instruction set. The launcher picks between them by asking the processor.
@@ -229,6 +252,8 @@ def main():
                     help="optional melee_game.dbg paired with --source-dll")
     ap.add_argument("--ghost-ai", type=Path, default=None,
                     help="the pro AI network (ghost_ai.bin); default: beside --source-exe")
+    ap.add_argument("--ghost-ai-dir", type=Path, default=None,
+                    help="directory containing the released player-specific models ghost_ai_{mang0,zain,cody,amsa}.bin")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.compat_exe and not args.skip_compat_exe:
@@ -301,10 +326,23 @@ def main():
                 raise SystemExit(f"missing Source Port debug file: {args.source_dbg}")
             shutil.copy2(args.source_dbg, folder / "melee_game.dbg")
         # Fight a pro: the network the practice CPU plays with (port/runtime/hle/ghost_ai.cpp).
-        ghost = args.ghost_ai or args.source_exe.parent / "ghost_ai.bin"
-        if not ghost.is_file():
-            raise SystemExit(f"missing pro AI file: {ghost} (ghost-ai/export.py)")
-        shutil.copy2(ghost, folder / "ghost_ai.bin")
+        if args.ghost_ai_dir:
+            specialists = ("mang0", "zain", "cody", "amsa")
+            for pro in specialists:
+                source = args.ghost_ai_dir / f"ghost_ai_{pro}.bin"
+                if not source.is_file():
+                    raise SystemExit(f"missing player-specific pro AI file: {source}")
+                shutil.copy2(source, folder / source.name)
+            model_manifest = args.ghost_ai_dir / "ghost_ai_models.json"
+            if not model_manifest.is_file():
+                raise SystemExit(f"missing verified pro AI provenance manifest: {model_manifest}")
+            shutil.copy2(model_manifest, folder / model_manifest.name)
+            print("source port pro ghosts: " + ", ".join(specialists))
+        else:
+            ghost = args.ghost_ai or args.source_exe.parent / "ghost_ai.bin"
+            if not ghost.is_file():
+                raise SystemExit(f"missing pro AI file: {ghost} (ghost-ai/export.py or --ghost-ai-dir)")
+            shutil.copy2(ghost, folder / "ghost_ai.bin")
         print(f"source port: {args.source_exe} + {args.source_dll}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
@@ -415,7 +453,11 @@ def main():
     (folder / "MeleeUnlocked.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))
     if args.playback_exe:
         (folder / "WatchReplay.bat").write_bytes(PLAYBACK_BAT.replace("\n", "\r\n").encode("utf-8"))
-    (folder / "README.txt").write_text(README.format(version=args.version), encoding="utf-8")
+    (folder / "README.txt").write_text(
+        readme_text(args.version, args.playback_exe, args.local_candidate), encoding="utf-8")
+    release_notes = ROOT / "release" / f"RELEASE_NOTES_{args.version}.md"
+    if release_notes.is_file():
+        shutil.copy2(release_notes, folder / "RELEASE_NOTES.md")
     licenses = folder / "licenses"
     licenses.mkdir()
     # The program's own license and every third-party notice its files need (GPL-3.0 sections 4
@@ -487,7 +529,7 @@ def main():
     if not path_shader.is_file():
         raise SystemExit(f"missing DXR shader: {path_shader}")
     shutil.copy2(path_shader, folder / path_shader.name)
-    (folder / "README.txt").write_text(README.format(version=args.version) +
+    (folder / "README.txt").write_text(readme_text(args.version, args.playback_exe, args.local_candidate) +
         "\nThis experimental Mod Update includes Source Port and Static Recomp game builds.\n"
         "DLSS 5 requires NVIDIA's separate model (nvngx_dlssnr.dll), which is not included.\n"
         "Experimental DXR path tracing and Ray Reconstruction are off by default.\n",

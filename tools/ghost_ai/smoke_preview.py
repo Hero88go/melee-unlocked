@@ -1,4 +1,4 @@
-"""Bounded hidden functional checks of the current four-pro preview, never a strength benchmark."""
+"""Bounded hidden functional checks of the five player-specific ghosts, never a strength benchmark."""
 import argparse
 import concurrent.futures
 import json
@@ -48,7 +48,7 @@ def main():
 
     # The operator checks that the owner is not gaming before invoking this script.
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(run, [(0, 20, 22), (1, 9, 18), (2, 15, 15), (3, 2, 1)]))
+        results = list(pool.map(run, [(0, 20, 22), (1, 9, 18), (2, 15, 15), (3, 2, 1), (4, 17, 14)]))
     (folder / 'results.json').write_text(json.dumps(results, indent=2))
     return 0 if all(r.get('exit_code') == 0 and r.get('loaded_model') and
                     r.get('drove_selected_fighter') and r.get('training_entered') for r in results) else 1

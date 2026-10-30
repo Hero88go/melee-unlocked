@@ -7,5 +7,7 @@
 namespace ghost_ai {
 void enable();                                     // the Source Port calls this; elsewhere the AI stays off
 bool available();                                  // the file is beside the game and readable
+bool available(unsigned pro);                     // selected specialist or a matching shared-model row
+bool specialist_available(unsigned pro);           // an independent named-player file is present
 bool act(const MuGhostObs& obs, MuGhostAct& out);  // false: no file, or a bad request
 }  // namespace ghost_ai

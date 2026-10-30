@@ -71,7 +71,7 @@ bool ghost(int index, MuPcConfig& c) {
   if (gh.aggression) c.aggression = gh.aggression;
   c.tools = tools;
   // With the pro AI file beside the game, that pro's network plays; the habits above stay as the fallback.
-  c.preset = ghost_ai::available() ? (uint8_t)MU_PC_PRESET_PRO(index) : 0;
+    c.preset = ghost_ai::specialist_available((unsigned)index) ? (uint8_t)MU_PC_PRESET_PRO(index) : 0;
   return true;
 }
 

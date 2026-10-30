@@ -10,6 +10,7 @@ import torch
 import features as ft
 import train
 from extract import canonical_indices
+from players import PLAYERS
 
 HERE = Path(os.environ.get('MELEE_GHOST_AI_HOME', Path(__file__).resolve().parent))
 
@@ -19,16 +20,30 @@ def main():
     parser.add_argument('--test-exe', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--checkpoint', type=Path, default=HERE / 'model.pt')
+    parser.add_argument('--pro', choices=list(PLAYERS), help='check one independent specialist on exact verified replays')
     args = parser.parse_args()
     sd = torch.load(args.checkpoint, map_location='cpu', weights_only=True)
     net = train.Net(n_pros=sd['pro.weight'].shape[0]).eval()
     net.load_state_dict(sd)
     out = HERE / 'runs' / 'pro-fidelity-plan' / 'runtime-parity.bin'
     count = 64
+    sources = [(0, args.pro)] if args.pro else list(enumerate(ft.PROS))
     with out.open('wb') as f:
-        f.write(struct.pack('<I', count * len(ft.PROS)))
-        for pro_index, pro in enumerate(ft.PROS):
-            file = next((HERE / 'data' / pro / 'frames').glob('*.npz'))
+        f.write(struct.pack('<I', count * len(sources)))
+        for pro_index, pro in sources:
+            source_folder = (HERE / 'data' / pro / 'verified' / 'frames') if args.pro else (HERE / 'data' / pro / 'frames')
+            file = None
+            for candidate in sorted(source_folder.glob('*.npz')):
+                if not args.pro:
+                    file = candidate
+                    break
+                with np.load(candidate, allow_pickle=False) as source:
+                    if (str(source['identity_code'].item()) == PLAYERS[pro]['code'] and
+                            str(source['identity_method'].item()) == 'exact_connect_code_v1'):
+                        file = candidate
+                        break
+            if file is None:
+                raise SystemExit('No exact verified replay found for ' + pro)
             with np.load(file) as source:
                 indices = canonical_indices(source['frame'])
                 n = len(source['frame'])

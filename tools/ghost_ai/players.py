@@ -4,8 +4,9 @@ PLAYERS = {
     'zain': {'code': 'ZAIN#0', 'css_character': 9, 'internal_character': 18},
     'hbox': {'code': 'HBOX#305', 'css_character': 15, 'internal_character': 15},
     'cody': {'code': 'IBDW#0', 'css_character': 2, 'internal_character': 1},
-    # Owner excluded Ginger for popularity. aMSa adds Yoshi and has 15,552 main-character
-    # games in the surveyed profile. This is a collection identity, not a deployed policy.
+    # Owner excluded Ginger for popularity. aMSa adds Yoshi and ranked first among the surveyed
+    # fifth-player candidates by main-character replay availability. The profile count is not an
+    # audited training-game count.
     'amsa': {'code': 'AMSA#0', 'css_character': 17, 'internal_character': 14},
 }
 

@@ -14,6 +14,12 @@ static int failures = 0;
 
 int main(int argc, char** argv) {
   using namespace ghost_ai;
+  // This test injects its own model; installed specialist files must not change its evidence.
+  std::fill(std::begin(g_specialist_status), std::end(g_specialist_status), -1);
+  if (argc == 2) {
+    Model model;
+    return load_file(argv[1], model) ? 0 : 1;
+  }
   if (argc == 3) {
     // Python generates independent PyTorch recurrent outputs from real replay observations.
     // Compare those with the actual shipped C++ inference implementation, not another port of it.
@@ -61,13 +67,38 @@ int main(int argc, char** argv) {
   constexpr size_t numbers = 1 + 1 + 1 + 4 + 2 * 141 + 2 + 3 * 2 * 2 +
       3 * 2 * 2 + 6 * 2 + 2 * 4 + 2 + 91 * 3 + 162;
   std::vector<float> weights(numbers, 0.f);
+  uint32_t file_version = 1;
+  float first_scale = 1.f;
   auto write = [&] {
     std::ofstream f(path, std::ios::binary);
-    const uint32_t version = MU_GHOST_VERSION;
     f.write("MUGA", 4);
-    f.write(reinterpret_cast<const char*>(&version), 4);
+    f.write(reinterpret_cast<const char*>(&file_version), 4);
     f.write(reinterpret_cast<const char*>(dims.data()), 48);
-    f.write(reinterpret_cast<const char*>(weights.data()), weights.size() * sizeof(float));
+    if (file_version == 1) {
+      f.write(reinterpret_cast<const char*>(weights.data()), weights.size() * sizeof(float));
+    } else {
+      const uint32_t layout[][3] = {
+          {1,1,1}, {1,1,1}, {1,1,1}, {dims[7],1,1}, {2,141,1}, {1,2,0},
+          {6,2,1}, {6,2,1}, {1,6,0}, {1,6,0}, {2,4,1}, {1,2,0},
+          {81,2,1}, {1,81,0}, {5,2,1}, {1,5,0}, {5,2,1}, {1,5,0}, {1,162,0}};
+      size_t offset = 0;
+      for (const auto& a : layout) {
+        for (uint32_t row = 0; row < a[0]; ++row) {
+          if (a[2]) {
+            const float scale = offset == 0 ? first_scale : 1.f;
+            f.write(reinterpret_cast<const char*>(&scale), 4);
+            for (uint32_t col = 0; col < a[1]; ++col) {
+              const int8_t value = offset == 0 ? 1 : 0;
+              f.write(reinterpret_cast<const char*>(&value), 1);
+              ++offset;
+            }
+          } else {
+            f.write(reinterpret_cast<const char*>(weights.data() + offset), a[1] * sizeof(float));
+            offset += a[1];
+          }
+        }
+      }
+    }
   };
   write();
   Model model;
@@ -88,7 +119,27 @@ int main(int argc, char** argv) {
   weights.push_back(0); weights.push_back(0); write(); CHECK(!load_file(path.string(), model)); // trailing data
   weights.pop_back(); write(); CHECK(load_file(path.string(), model));
 
+  file_version = 2; first_scale = 0.25f;
+  write(); CHECK(load_file(path.string(), model)); CHECK(model.state[0] == 0.25f);
+  first_scale = 0.f; write(); CHECK(!load_file(path.string(), model));
+  first_scale = -1.f; write(); CHECK(!load_file(path.string(), model));
+  first_scale = std::numeric_limits<float>::infinity(); write(); CHECK(!load_file(path.string(), model));
+  first_scale = std::numeric_limits<float>::quiet_NaN(); write(); CHECK(!load_file(path.string(), model));
+  first_scale = 1.f; write();
+  std::filesystem::resize_file(path, std::filesystem::file_size(path) - 1);
+  CHECK(!load_file(path.string(), model));
+  write(); { std::ofstream f(path, std::ios::binary | std::ios::app); f.put(0); }
+  CHECK(!load_file(path.string(), model));
+  // Compact files retain dynamic player-count support.
+  dims[7] = 5; weights.insert(weights.begin() + 7, 0.f);
+  write(); CHECK(load_file(path.string(), model));
+  dims[7] = 1; weights.erase(weights.begin() + 4, weights.begin() + 8);
+  write(); CHECK(load_file(path.string(), model));
+  dims[7] = 4; weights.insert(weights.begin() + 4, 3, 0.f);
+  write(); CHECK(load_file(path.string(), model));
+
   g_model = model; g_loaded = 1; g_enabled = true;
+  CHECK(available(0) && !specialist_available(0)); // shared fallback is not a named-player release ghost
   MuGhostObs obs{};
   obs.version = MU_GHOST_VERSION; obs.frame = 100;
   obs.self.motion = obs.opp.motion = 14;
@@ -110,8 +161,17 @@ int main(int argc, char** argv) {
   obs.pro = 0; obs.slot = 4; CHECK(!act(obs, a));
   obs.slot = 0; obs.self.num[0] = std::numeric_limits<float>::infinity(); CHECK(!act(obs, a));
   obs.self.num[0] = 0;
+  g_specialists[4] = model; g_specialists[4].n_pros = 1; g_specialists[4].pro.resize(1);
+  g_specialist_status[4] = 1;
+  CHECK(available(4)); CHECK(specialist_available(4)); CHECK(!available(5));
+  uint32_t row = 999;
+  CHECK(selected_model(4, 1, row) == &g_specialists[4] && row == 0);
+  obs.slot = 1; obs.pro = 4;
+  CHECK(act(obs, a)); CHECK(g_slots[1].pro == 4);
   g_has_p1 = true; g_model_p1 = model; g_model_p1.n_pros = 1;
-  obs.pro = 1; CHECK(!act(obs, a)); // validate against the selected model, not P2's
+  obs.slot = 0; obs.pro = 1; CHECK(act(obs, a)); // explicit one-policy comparison files use row zero
+  g_model_p1.n_pros = 2; obs.pro = 3;
+  CHECK(!act(obs, a)); // validate against the selected model, not P2's
   std::filesystem::remove(path);
   std::printf("ghost AI: %d failures\n", failures);
   return failures ? 1 : 0;

@@ -51,6 +51,10 @@ std::mutex g_mutex;
 Model g_model;
 Model g_model_p1;    // tests: MELEE_GHOST_AI_FILE_P1 gives port 1 another network (old against new)
 bool g_has_p1 = false;
+constexpr unsigned kSpecialists = 5;
+const char* const kSpecialistNames[kSpecialists] = {"mang0", "zain", "hbox", "cody", "amsa"};
+Model g_specialists[kSpecialists];
+int g_specialist_status[kSpecialists] = {}; // tried only when selected: 0 unknown, 1 loaded, -1 absent/bad
 int g_loaded = 0;   // 0 not tried, 1 loaded, -1 missing or bad
 bool g_enabled = false;
 Slot g_slots[4];
@@ -71,7 +75,7 @@ bool load_file(const std::string& path, Model& m) {
   char magic[4] = {};
   uint32_t version = 0, dims[12] = {};
   bool ok = std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "MUGA", 4) == 0 && std::fread(&version, 4, 1, f) == 1 &&
-            version == MU_GHOST_VERSION && std::fread(dims, 4, 12, f) == 12;
+            (version == 1 || version == 2) && std::fread(dims, 4, 12, f) == 12;
   if (ok) {
     m.cont = dims[0]; m.n_states = dims[1]; m.e_state = dims[2]; m.n_chars = dims[3]; m.e_char = dims[4]; m.n_stages = dims[5];
     m.e_stage = dims[6]; m.n_pros = dims[7]; m.e_pro = dims[8]; m.h_in = dims[9]; m.h_rnn = dims[10]; m.h_out = dims[11];
@@ -82,45 +86,58 @@ bool load_file(const std::string& path, Model& m) {
          m.n_pros && m.n_pros <= 256 && m.e_pro && m.e_pro <= 256 &&
          m.h_in && m.h_in <= 4096 && m.h_rnn && m.h_rnn <= 4096 && m.h_out && m.h_out <= 4096;
   }
+  struct Array {
+    std::vector<float>* values;
+    uint32_t rows, cols;
+    bool matrix;
+  };
+  // Format 1 stores every array as float32. Format 2 stores each matrix row as one float32
+  // scale followed by signed int8 weights. Biases and stick means stay float32. Both formats
+  // dequantize into the same inference representation, so this reduces disk size, not RAM.
+  const Array arrays[] = {
+      {&m.state, m.n_states, m.e_state, true}, {&m.chr, m.n_chars, m.e_char, true},
+      {&m.stage, m.n_stages, m.e_stage, true}, {&m.pro, m.n_pros, m.e_pro, true},
+      {&m.inp_w, m.h_in, m.n_in(), true}, {&m.inp_b, 1, m.h_in, false},
+      {&m.w_ih, 3 * m.h_rnn, m.h_in, true}, {&m.w_hh, 3 * m.h_rnn, m.h_rnn, true},
+      {&m.b_ih, 1, 3 * m.h_rnn, false}, {&m.b_hh, 1, 3 * m.h_rnn, false},
+      {&m.mid_w, m.h_out, m.h_rnn + m.h_in, true}, {&m.mid_b, 1, m.h_out, false},
+      {&m.st_w, kStick, m.h_out, true}, {&m.st_b, 1, kStick, false},
+      {&m.cs_w, kCStick, m.h_out, true}, {&m.cs_b, 1, kCStick, false},
+      {&m.bt_w, kBtn, m.h_out, true}, {&m.bt_b, 1, kBtn, false},
+      {&m.stick_mean, 1, kStick * 2, false},
+  };
   if (ok) {
     // Validate the complete layout before allocating. A wrong pro count shifts every later layer;
     // accepting trailing bytes used to make such a model appear to load successfully.
-    const uint64_t count = uint64_t(m.n_states) * m.e_state + uint64_t(m.n_chars) * m.e_char +
-        uint64_t(m.n_stages) * m.e_stage + uint64_t(m.n_pros) * m.e_pro +
-        uint64_t(m.h_in) * m.n_in() + m.h_in + uint64_t(3) * m.h_rnn * m.h_in +
-        uint64_t(3) * m.h_rnn * m.h_rnn + 6 * m.h_rnn +
-        uint64_t(m.h_out) * (m.h_rnn + m.h_in) + m.h_out +
-        uint64_t(kStick + kCStick + kBtn) * (m.h_out + 1) + kStick * 2;
+    uint64_t count = 0, bytes = 0;
+    for (const Array& a : arrays) {
+      const uint64_t n = uint64_t(a.rows) * a.cols;
+      count += n;
+      bytes += version == 2 && a.matrix ? n + uint64_t(a.rows) * sizeof(float) : n * sizeof(float);
+    }
     const long start = std::ftell(f);
     ok = count <= (256u * 1024u * 1024u / sizeof(float)) && std::fseek(f, 0, SEEK_END) == 0;
-    if (ok) ok = std::ftell(f) == start + count * sizeof(float) && std::fseek(f, start, SEEK_SET) == 0;
+    if (ok) ok = std::ftell(f) == start + bytes && std::fseek(f, start, SEEK_SET) == 0;
   }
-  const auto read = [&](std::vector<float>& v, size_t n) {
-    if (!ok) return;
-    v.resize(n);
-    ok = std::fread(v.data(), sizeof(float), n, f) == n &&
-         std::all_of(v.begin(), v.end(), [](float x) { return std::isfinite(x); });
-  };
   if (ok) {
-    read(m.state, (size_t)m.n_states * m.e_state);
-    read(m.chr, (size_t)m.n_chars * m.e_char);
-    read(m.stage, (size_t)m.n_stages * m.e_stage);
-    read(m.pro, (size_t)m.n_pros * m.e_pro);
-    read(m.inp_w, (size_t)m.h_in * m.n_in());
-    read(m.inp_b, m.h_in);
-    read(m.w_ih, (size_t)3 * m.h_rnn * m.h_in);
-    read(m.w_hh, (size_t)3 * m.h_rnn * m.h_rnn);
-    read(m.b_ih, 3 * m.h_rnn);
-    read(m.b_hh, 3 * m.h_rnn);
-    read(m.mid_w, (size_t)m.h_out * (m.h_rnn + m.h_in));
-    read(m.mid_b, m.h_out);
-    read(m.st_w, (size_t)kStick * m.h_out);
-    read(m.st_b, kStick);
-    read(m.cs_w, (size_t)kCStick * m.h_out);
-    read(m.cs_b, kCStick);
-    read(m.bt_w, (size_t)kBtn * m.h_out);
-    read(m.bt_b, kBtn);
-    read(m.stick_mean, (size_t)kStick * 2);
+    for (const Array& a : arrays) {
+      if (!ok) break;
+      auto& v = *a.values;
+      const size_t n = (size_t)a.rows * a.cols;
+      v.resize(n);
+      if (version == 2 && a.matrix) {
+        std::vector<int8_t> q(a.cols);
+        for (uint32_t row = 0; row < a.rows && ok; ++row) {
+          float scale = 0.f;
+          ok = std::fread(&scale, sizeof scale, 1, f) == 1 && std::isfinite(scale) && scale > 0.f &&
+               std::fread(q.data(), sizeof(int8_t), a.cols, f) == a.cols;
+          if (ok) for (uint32_t col = 0; col < a.cols; ++col) v[(size_t)row * a.cols + col] = q[col] * scale;
+        }
+      } else {
+        ok = std::fread(v.data(), sizeof(float), n, f) == n;
+      }
+      ok = ok && std::all_of(v.begin(), v.end(), [](float x) { return std::isfinite(x); });
+    }
     if (ok) ok = std::all_of(m.stick_mean.begin(), m.stick_mean.end(), [](float x) { return std::fabs(x) <= 1.f; });
   }
   std::fclose(f);
@@ -138,6 +155,34 @@ bool ready() {
   if (!g_enabled) return false;
   if (g_loaded == 0) g_loaded = load() ? 1 : -1;
   return g_loaded == 1;
+}
+
+const Model* selected_model(unsigned pro, unsigned slot, uint32_t& row) {
+  if (!g_enabled || pro >= kSpecialists) return nullptr;
+  const bool base_ready = ready();
+  // Explicit evaluation files own the entire selection. Auto-discovered specialists must not
+  // replace either side of an old/new comparison requested by the test harness.
+  if (slot == 0 && g_has_p1) {
+    row = g_model_p1.n_pros == 1 ? 0 : pro;
+    return row < g_model_p1.n_pros ? &g_model_p1 : nullptr;
+  }
+  if (!std::getenv("MELEE_GHOST_AI_FILE") && pro < kSpecialists) {
+    if (g_specialist_status[pro] == 0) {
+      std::string path = model_path();
+      path.resize(path.find_last_of("\\/") + 1);
+      path += std::string("ghost_ai_") + kSpecialistNames[pro] + ".bin";
+      const bool loaded = load_file(path, g_specialists[pro]);
+      g_specialist_status[pro] = loaded && g_specialists[pro].n_pros == 1 ? 1 : -1;
+      if (loaded && g_specialist_status[pro] != 1)
+        host::log("ghost ai: specialist %s needs one player embedding", kSpecialistNames[pro]);
+    }
+    if (g_specialist_status[pro] == 1) {
+      row = 0;
+      return &g_specialists[pro];
+    }
+  }
+  row = std::getenv("MELEE_GHOST_AI_FILE") && g_model.n_pros == 1 ? 0 : pro;
+  return base_ready && row < g_model.n_pros ? &g_model : nullptr;
 }
 
 // y = W x + b, W row-major (rows x cols).
@@ -183,14 +228,36 @@ void enable() {
 
 bool available() {
   std::lock_guard<std::mutex> lk(g_mutex);
-  return ready();
+  if (ready()) return true;
+  uint32_t row;
+  for (unsigned pro = 0; pro < kSpecialists; ++pro)
+    if (selected_model(pro, 1, row)) return true;
+  return false;
+}
+
+bool available(unsigned pro) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  uint32_t row;
+  return selected_model(pro, 1, row) != nullptr;
+}
+
+bool specialist_available(unsigned pro) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  uint32_t row;
+  if (!selected_model(pro, 1, row)) return false;
+  // An explicit one-policy file is used by isolated runtime tests. A release menu must expose a
+  // named player only when that player's own independent file exists.
+  return std::getenv("MELEE_GHOST_AI_FILE") != nullptr ||
+         (pro < kSpecialists && g_specialist_status[pro] == 1);
 }
 
 bool act(const MuGhostObs& o, MuGhostAct& out) {
   std::lock_guard<std::mutex> lk(g_mutex);
-  if (!ready() || o.version != MU_GHOST_VERSION || o.slot >= 4) return false;
-  const Model& m = (g_has_p1 && o.slot == 0) ? g_model_p1 : g_model;
-  if (o.pro >= m.n_pros) return false;
+  if (o.version != MU_GHOST_VERSION || o.slot >= 4) return false;
+  uint32_t model_pro = 0;
+  const Model* selected = selected_model(o.pro, o.slot, model_pro);
+  if (!selected) return false;
+  const Model& m = *selected;
   for (const MuGhostFighter* f : {&o.self, &o.opp})
     for (float v : f->num) if (!std::isfinite(v)) return false;
   Slot& s = g_slots[o.slot];
@@ -267,7 +334,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   int stage = 0;
   for (const auto& st : kStages) if (st[0] == o.stage) stage = st[1];
   embed(m.stage, m.n_stages, m.e_stage, stage);
-  embed(m.pro, m.n_pros, m.e_pro, o.pro);
+  embed(m.pro, m.n_pros, m.e_pro, model_pro);
 
   const double t0 = host::now_seconds();
   const int H = (int)m.h_rnn, I = (int)m.h_in;
@@ -351,7 +418,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
     std::memcpy(r.flags + 5, o.opp.flags, 5);
     r.cat[0] = (int16_t)std::clamp((int)o.self.motion, 0, (int)m.n_states - 1);
     r.cat[1] = (int16_t)std::clamp((int)o.opp.motion, 0, (int)m.n_states - 1);
-    r.cat[2] = o.self.kind; r.cat[3] = o.opp.kind; r.cat[4] = (int16_t)stage; r.cat[5] = o.pro;
+    r.cat[2] = o.self.kind; r.cat[3] = o.opp.kind; r.cat[4] = (int16_t)stage; r.cat[5] = (int16_t)model_pro;
     r.stick = (uint8_t)stick; r.cstick = (uint8_t)cstick;
     float lp = logsoftmax(ls, kStick, stick) + logsoftmax(lc, kCStick, cstick);
     for (int b = 0; b < kBtn; ++b) {

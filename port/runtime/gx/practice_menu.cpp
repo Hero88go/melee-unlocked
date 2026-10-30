@@ -557,19 +557,17 @@ std::vector<Row> rows_for(Page p) {
     case Page::Ghosts:
       for (int i = 0; i < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]); ++i) {
         const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
-        char about[220], games[16];
-        if (gh.games >= 1000) std::snprintf(games, sizeof games, "%d,%03d", gh.games / 1000, gh.games % 1000);
-        else std::snprintf(games, sizeof games, "%d", gh.games);
-        if (ghost_ai::available())
+        char about[220];
+        const bool ai_ready = ghost_ai::specialist_available((unsigned)i);
+        if (ai_ready)
           std::snprintf(about, sizeof about,
-                        "An AI that learned from %s's own %s games, frame by frame, and plays the way they do. "
+                        "A player-specific policy trained from %s's own verified %s games, frame by frame. "
                         "The CPU becomes %s and Training starts again.",
                         gh.name, gh.character, gh.character);
         else
           std::snprintf(about, sizeof about,
-                        "%s's habits from %s of their games: attacks, movement, shielding, techs, getups, ledge "
-                        "options. The CPU becomes %s and Training starts again on this stage.", gh.name, games, gh.character);
-        rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about));
+                        "%s's separate player-specific policy is not installed. This choice is disabled.", gh.name);
+        rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about, ai_ready));
       }
       break;
     case Page::Presets:
@@ -580,10 +578,12 @@ std::vector<Row> rows_for(Page p) {
         // Ghosts: the odds measured from a player's own games (port/runtime/hle/practice_ghosts.h).
         const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
         char about[200];
-        std::snprintf(about, sizeof about,
-                      "%s's habits from %d of their %s games: attacks, specials, movement, shielding, techs, "
-                      "getups, ledge options, L-cancels. Pick %s for the CPU.", gh.name, gh.games, gh.character, gh.character);
-        rows.push_back(action_row((std::string(gh.name) + " ghost").c_str(), kActGhost + i, gh.character, about));
+        const bool ai_ready = ghost_ai::specialist_available((unsigned)i);
+        if (ai_ready)
+          std::snprintf(about, sizeof about, "Use %s's verified, player-specific policy as the Training CPU.", gh.name);
+        else
+          std::snprintf(about, sizeof about, "%s's separate player-specific policy is not installed; this choice is disabled.", gh.name);
+        rows.push_back(action_row((std::string(gh.name) + " ghost").c_str(), kActGhost + i, gh.character, about, ai_ready));
       }
       rows.push_back(page_row("Your setups", Page::Setups, "", "Save what is set now; load it any time."));
       rows.push_back(action_row("Defaults", kActDefaults, "", "Every CPU setting back to the start."));

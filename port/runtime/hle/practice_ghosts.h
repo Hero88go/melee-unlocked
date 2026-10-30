@@ -1,5 +1,5 @@
-// Habit ghosts: the practice CPU's odds from players' own games, made by tools/ghost_build.py from the
-// per-game stats of Lunar Melee (lunarmelee.com). Do not edit by hand; run the tool again.
+// Legacy hand-tuned CPU habit tables. The separately trained neural pro ghosts load from
+// ghost_ai_<player>.bin; these fallback tables are not their training data or model weights.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
@@ -29,6 +29,10 @@ inline const Ghost kGhosts[] = {
     {"Cody Schwab", "Fox", 1, 10000, 0,
      {2, 2, 47, 5, 3, 22, 6, 6, 6, 1}, {4, 0, 5, 4, 1, 4, 0, 2, 7, 0, 11, 2, 19, 11, 10, 7, 0, 0, 13, 0}, {27, 48, 8, 5, 5, 7}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0},
      {26, 12, 13, 49}, {24, 19, 29, 28, 0}, {1, 2, 3, 5, 49, 40}, {0, 0, 0, 0, 0}, 92, 64},
+    // Yoshi's exact-code corpus is being verified separately; zero odds keep safe defaults until
+    // its statistics and independent neural specialist are packaged.
+    {"aMSa", "Yoshi", 14, 0, 0,
+     {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}, 0, 0},
 };
 
 }  // namespace practice_ghosts
