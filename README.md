@@ -105,6 +105,8 @@ are included with Melee Unlocked.
   Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
   CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
+- PhobGCC settings for stock GameCube controllers on an adapter (calibration, notches, snapback
+  filter, trigger modes), with PhobScope and Phob Check: PC settings > Controls > adapter socket > PhobGCC > Open PhobGCC menu.
 - Practice menu in Training (Start + D-pad Up + Z): your own CPU, frame advance,
   save states, and searching for a match while you train. See [Practice](#practice).
 - Optional launcher with self-update
