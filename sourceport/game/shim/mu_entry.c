@@ -153,6 +153,7 @@ _Static_assert(MU_DISPLAY_HITBOXES == MU_DISPLAY_OPTION_HITBOXES, "display optio
 _Static_assert(MU_DISPLAY_PROJECTILE_HITBOXES == MU_DISPLAY_OPTION_PROJECTILE_HITBOXES, "display option bits");
 _Static_assert(MU_DISPLAY_HITBOXES_BEHIND == MU_DISPLAY_OPTION_HITBOXES_BEHIND, "display option bits");
 _Static_assert(MU_DISPLAY_GRID == MU_DISPLAY_OPTION_GRID, "display option bits");
+_Static_assert(MU_DISPLAY_ARCADE_CAMERA == MU_DISPLAY_OPTION_ARCADE_CAMERA, "display option bits");
 
 /* The Arcade look grid's colour (0 from a host before version 21: the default). */
 unsigned int mu_grid_color(void)

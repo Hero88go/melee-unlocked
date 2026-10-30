@@ -48299,7 +48299,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..5aa99bc6b 100644
+index 1a8206270..d3ba008c2 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -48985,8 +48985,8 @@ index 1a8206270..5aa99bc6b 100644
      lbRefract_8002247C(cobj);
      Camera_8002A4AC(gobj);
 +#ifdef MU_NATIVE
-+    /* The recognised 2D-style mod build's camera code (fn_800301D0+0x2C), shim/mu_arcade.c. */
-+    if (mu_arcade_pack()) {
++    /* The 2D-style build's camera code (fn_800301D0+0x2C), shim/mu_arcade.c: its disc, or the Arcade look's "2D camera" offline. */
++    if (mu_arcade_camera()) {
 +        mu_arcade_pack_camera(gobj);
 +    }
 +#endif

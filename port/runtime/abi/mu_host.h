@@ -398,6 +398,10 @@ typedef struct MuHostApi {
 /* Arcade look background "Grid": the game draws a grid behind the stage, every 5 units over the
  * stage's camera bounds, in MuHostApi.grid_color (the host hides the scenery as for "Plain colour"). */
 #define MU_DISPLAY_OPTION_GRID 0x100u
+/* Arcade look "2D camera", offline: the game runs the 2D-style build's own camera code (flat
+ * projection, eye straight in front of the action, its tracking and zoom) as with that build's disc.
+ * The host sends it only offline; online the renderer's flat projection stands in for it. */
+#define MU_DISPLAY_OPTION_ARCADE_CAMERA 0x200u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

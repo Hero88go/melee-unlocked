@@ -6276,9 +6276,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "player can act again. Offline matches and replays only.");
     changed |= settings_toggle("2D camera", &options.arcade_camera_2d);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("The match camera loses its perspective: fighters and platforms keep their\n"
-                        "size and place, and depth no longer shrinks the stage, like a 2D fighter.\n"
-                        "The camera itself moves as normal. Display only: safe online.");
+      ImGui::SetTooltip("The match camera loses its perspective, like a 2D fighter. Offline on the Source Port it\n"
+                        "is the 2D-style build's own camera: flat, straight in front of the action, with its\n"
+                        "tracking and zoom. Online, and on the Static Recomp, only the perspective goes.\n"
+                        "Display only: safe online.");
     {
       const char* backdrops[] = {"Stage", "Plain colour", "Grid"};
       if (settings_combo("Background##arcade", &options.arcade_backdrop, backdrops, 3)) changed = true;
@@ -8671,23 +8672,20 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     ImGui::EndDisabled();
 
-#ifndef MELEE_NO_SLIPPI   // only the Static Recomp runs this switch, so the build without it has no such section
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
     ImGui::TextUnformatted("Stage effects");
-    // The Source Port carries Lagless FoD as C at each patched site, latched at boot with the
-    // General Codes, so this switch only reaches the Static Recomp build for now. On the Source Port
-    // it follows the rule for settings one engine runs: greyed, with the reason on hover.
-    ImGui::BeginDisabled(options.native_source);
+    // Both engines. The Source Port reads it (MU_DISPLAY_OPTION_FOD_REFLECTIONS) as each Fountain of
+    // Dreams match is set up. It was greyed there with "always Lagless FoD", so a player who had
+    // turned it on (Static Recomp) kept the reflection on the Source Port with no way to turn it off.
     if (settings_toggle("Fountain of Dreams reflections", &options.fod_reflections)) changed = true;
-    ImGui::EndDisabled();
-    if (options.native_source)
-      engine_only_reason("Static Recomp only. The Source Port always runs Lagless FoD, as Slippi does,\n"
-                         "which leaves out the water reflection for a lower GPU cost.");
-    else if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
-                        "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
-#endif
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(options.native_source
+                          ? "On: keep Fountain of Dreams' water reflection and particles.\n"
+                            "Off: use the Lagless FoD code for lower GPU cost. Offline; online always uses Lagless FoD,\n"
+                            "as Slippi does. Applies from the next match on Fountain of Dreams."
+                          : "On: keep Fountain of Dreams' water reflection and particles.\n"
+                            "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
     // Both engines, every mode: it changes only how the menu background moves, never the game.
     if (settings_toggle("Character select background plays through", &options.css_background_free)) changed = true;
     if (ImGui::IsItemHovered())

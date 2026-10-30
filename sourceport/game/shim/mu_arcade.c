@@ -14,17 +14,32 @@
 int mu_option2_offline(unsigned int bit);
 unsigned int mu_display_options(void);
 unsigned int mu_grid_color(void);
+int mu_online_active(void);
+int mu_online_pending(void);
+int mu_widescreen(void);
+float mu_picture_widen(void);
 
 int mu_arcade_pack(void)
 {
     return mu_option2_offline(MU_TE2_ARCADE_PACK);
 }
 
+/* The camera code below, for the 2D-style build's disc or for the Arcade look's "2D camera" on any
+ * disc. The setting is display only: never online, where the host also leaves the bit off. */
+int mu_arcade_camera(void)
+{
+    if (mu_arcade_pack())
+        return 1;
+    return (mu_display_options() & MU_DISPLAY_ARCADE_CAMERA) != 0 && !mu_online_active() && !mu_online_pending();
+}
+
 /* "Camera (Widescreen)", C2 at fn_800301D0+0x2C, after Camera_8002A4AC sets the match camera up for
  * the frame: the camera becomes orthographic, its box scaled by the eye's distance from the point it
  * looks at; the eye moves to z 1000 straight in front of that point (no tilt or pan); and the stage's
  * camera tracking values are replaced. The code's paired-single products are single precision, in
- * this order. */
+ * this order. The code comes in two forms that differ only in the box's half width: 0.07 of the
+ * viewport for the widescreen code (Slippi's 16:9 code on), 0.05 for 4:3. True widescreen widens only
+ * perspective cameras in the renderer, so this flat box is widened here by the same factor. */
 void mu_arcade_pack_camera(HSD_GObj* gobj)
 {
     HSD_CObj* cobj = gobj->hsd_obj;
@@ -34,12 +49,18 @@ void mu_arcade_pack_camera(HSD_GObj* gobj)
     const f32 distance = (eye->pos.z - interest->pos.z) + 10.0F;
     const f32 height = cobj->viewport.ymax, width = cobj->viewport.xmax;   /* CObj +0x18 and +0x10 */
 
-    cobj->projection_type = PROJ_ORTHO;
-    cobj->projection_param.ortho.top = ((0.05F * height) / angle) * distance;
-    cobj->projection_param.ortho.bottom = ((-0.064F * height) / angle) * distance;
-    cobj->projection_param.ortho.left = ((-0.07F * width) / angle) * distance;
-    cobj->projection_param.ortho.right = ((0.07F * width) / angle) * distance;
-    eye->pos.z = 1000.0F;
+    /* The flat projection itself only for the build's own disc. For the Arcade look's setting the
+     * renderer flattens the picture (gx_shader.cpp build_projection), whose depth keeps the HUD
+     * timer in view; the game's orthographic box put it out of range. */
+    if (mu_arcade_pack()) {
+        const f32 half_width = mu_widescreen() ? 0.07F : 0.05F * mu_picture_widen();
+        cobj->projection_type = PROJ_ORTHO;
+        cobj->projection_param.ortho.top = ((0.05F * height) / angle) * distance;
+        cobj->projection_param.ortho.bottom = ((-0.064F * height) / angle) * distance;
+        cobj->projection_param.ortho.left = ((-half_width * width) / angle) * distance;
+        cobj->projection_param.ortho.right = ((half_width * width) / angle) * distance;
+        eye->pos.z = 1000.0F;   /* far back: the box above is sized by the old distance */
+    }
     eye->pos.x = interest->pos.x;
     eye->pos.y = interest->pos.y;
     stage_info.cam_info.cam_track_ratio = 1.25F;

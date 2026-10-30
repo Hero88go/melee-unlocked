@@ -134,6 +134,10 @@ int mu_arcade_hitboxes_behind(void);
  * (cm/camera.c fn_800301D0, shim/mu_arcade.c). Display only, online too. */
 #define MU_DISPLAY_GRID 0x100u
 void mu_arcade_grid(void);
+/* Arcade look "2D camera" (MU_DISPLAY_OPTION_ARCADE_CAMERA): mu_arcade_camera() is nonzero when the
+ * match camera runs mu_arcade_pack_camera, for the 2D-style build's disc or this setting, offline. */
+#define MU_DISPLAY_ARCADE_CAMERA 0x200u
+int mu_arcade_camera(void);
 /* "Shield colours" (MuHostApi.shield_color): this player's own colour for its shield bubble and KO
  * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
  * Team matches keep the team colours. */

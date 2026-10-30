@@ -100,8 +100,17 @@ bool digest_matches(const std::string& body, const std::string& digest) {
   return digest.empty() || sha256_hex(body) == digest;
 }
 
-// GET with redirects (GitHub release assets redirect to a CDN). Returns the body.
-bool http_get(const std::string& url, std::string* out, int* status) {
+// "Downloading update... 45% (110 of 241 MB)": the release zip is a few hundred MB, and a line that
+// never moved read as an update stuck after Yes.
+void download_progress(const char* what, size_t got, size_t total) {
+  const auto mb = [](size_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
+  if (total) set_message(std::string(what) + " " + std::to_string(got * 100 / total) + "% (" + mb(got) + " of " + mb(total) + " MB)");
+  else set_message(std::string(what) + " " + mb(got) + " MB");
+}
+
+// GET with redirects (GitHub release assets redirect to a CDN). Returns the body. `progress` names
+// the download in the status line ("Downloading update..."); null for the small API requests.
+bool http_get(const std::string& url, std::string* out, int* status, const char* progress = nullptr) {
   std::wstring wurl = widen(url);
   URL_COMPONENTS uc{}; uc.dwStructSize = sizeof uc;
   wchar_t host[256]{}, path[4096]{}, extra[1024]{};
@@ -129,13 +138,17 @@ bool http_get(const std::string& url, std::string* out, int* status) {
         bool have_length = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
             WINHTTP_HEADER_NAME_BY_INDEX, &expected, &expected_size, WINHTTP_NO_HEADER_INDEX) != FALSE;
         bool complete = false;
+        if (have_length) body.reserve(expected);
+        // One 1 MiB buffer, read until the response ends: asking for what is available first
+        // handed back a few KB per call, and each call allocated a fresh chunk.
+        std::vector<char> chunk(1u << 20);
+        ULONGLONG shown = 0;
         for (;;) {
-          DWORD avail = 0;
-          if (!WinHttpQueryDataAvailable(req, &avail)) break;
-          if (!avail) { complete = true; break; }
-          std::string chunk(avail, 0); DWORD got = 0;
-          if (!WinHttpReadData(req, chunk.data(), avail, &got) || !got) break;
+          DWORD got = 0;
+          if (!WinHttpReadData(req, chunk.data(), (DWORD)chunk.size(), &got)) break;
+          if (!got) { complete = true; break; }
           body.append(chunk.data(), got);
+          if (progress && GetTickCount64() - shown >= 250) { shown = GetTickCount64(); download_progress(progress, body.size(), have_length ? expected : 0); }
         }
         ok = complete && (!have_length || body.size() == expected);
         if (out && ok) *out = std::move(body);
@@ -748,7 +761,8 @@ void download_and_install() {
     std::string url, digest, tag; size_t expected;
     { std::lock_guard<std::mutex> lk(g_mutex); url = g_zip_url; expected = g_zip_size; digest = g_zip_digest; tag = g_latest; }
     std::string body; int status = 0;
-    if (!http_get(url, &body, &status) || status != 200 || body.size() < 1000000 || (expected && body.size() != expected)) { set_message("Download failed or incomplete"); g_state = State::Failed; return; }
+    if (!http_get(url, &body, &status, "Downloading update...") || status != 200 || body.size() < 1000000 || (expected && body.size() != expected)) { set_message("Download failed or incomplete"); g_state = State::Failed; return; }
+    set_message("Checking the download...");
     if (!digest_matches(body, digest)) {
       set_message("Download is damaged (checksum does not match the release); try again"); g_state = State::Failed;
       host::log("updater: %zu bytes downloaded, SHA-256 does not match the release's", body.size()); return;
@@ -793,6 +807,7 @@ void download_and_install() {
     }
 #endif
     {
+      set_message("Unpacking the update...");
       const auto tmp = directory / "update_tmp";
       std::error_code ec;
       std::filesystem::remove_all(tmp, ec);

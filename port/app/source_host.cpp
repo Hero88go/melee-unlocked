@@ -205,6 +205,10 @@ bool g_retail_view = false;
 // Every costume file of the loaded packs has a verdict here, served or not, for the log and the panel.
 std::vector<skins::Verdict> g_pack_skins;
 std::unordered_set<int32_t> g_pack_skin_served;
+// A pack costume with the standard skeleton (a look-only pack such as a one-click mod look) also takes
+// the player's own Mods-tab skin: that skin was checked against the standard costume, which this file
+// matches. A pack that changes the skeleton keeps its costume, as before.
+bool pack_costume_takes_skins(uint32_t entry) { return g_pack_skin_served.count((int32_t)entry) != 0; }
 slippi::online::NativeGameplayProfile g_mod_gameplay_profile = slippi::online::NativeGameplayProfile::Vanilla;
 std::string g_mod_display_name;
 
@@ -277,8 +281,13 @@ const KnownPack kKnownPacks[] = {
   // An m-ex build with its own camera, hitbox and HUD codes (run-source/arcade-0980/STUDY.md): its
   // files load as they are; its codes are native (shim/mu_arcade.c and the Arcade look switches).
   {"23859e58d0f6153bbc9a813f4eac2b3ae1b69e90d5e5a0ef1f57829b1ed588ff", "2D-style build 2.0"},
+  // Its later demo (the camera code and stage reskins published with it): the same main.dol and
+  // code list, except three draw-only additions (ledge snap boxes and a few move-specific hitbox
+  // shapes) in place of the five always-on hitbox switches, which the Arcade look's switches cover.
+  {"59933964cb939eb7e32c05f4b9cdfb332dd12043a3c82ccb9d1f204c7a314891", "2D-style build demo"},
 };
-constexpr const char kArcadePackName[] = "2D-style build 2.0";
+constexpr const char kArcadePackName[] = "2D-style build";
+bool arcade_pack_name(const char* name) { return std::strncmp(name, kArcadePackName, sizeof kArcadePackName - 1) == 0; }
 
 // An ISO layer's fingerprint covers what it changes: every changed or added file's path and
 // content, the changed main.dol runs and the retail files it drops. Hashing a whole modded disc
@@ -495,7 +504,7 @@ void load_mod_overlay() {
       }
     }
     if (known && std::strncmp(known->name, "Akaneia", 7) == 0) mods::status().akaneia = true;
-    if (known && std::strcmp(known->name, kArcadePackName) == 0) mods::status().arcade = true;
+    if (known && arcade_pack_name(known->name)) mods::status().arcade = true;
     host::log("mods: %s %s, content %s%s%s", kind, layer.path.u8string().c_str(), fingerprint.substr(0, 16).c_str(),
               known ? ", recognized as " : "", known ? known->name : "");
     summary += (summary.empty() ? "" : ", ") + (known ? std::string(known->name) : layer.path.filename().u8string());
@@ -528,7 +537,8 @@ void load_mod_overlay() {
   // Its camera code runs in the game (MU_GAME_OPTION2_ARCADE_PACK, offline); online, where the game
   // leaves it off, the renderer's 2D camera gives the same flat look.
   if (mods::status().arcade) {
-    gx::set_arcade_display(gx::ArcadeSource::Pack, gx::kArcadeGameBits | gx::kArcadeCamera2d);
+    // Not our grid: the build's own stages carry theirs, and on other stages ours covered the scenery.
+    gx::set_arcade_display(gx::ArcadeSource::Pack, (gx::kArcadeGameBits & ~gx::kArcadeGrid) | gx::kArcadeCamera2d);
     host::log("mods: %s found; its codes run natively", kArcadePackName);
   }
   // Training Mode CE: its disc's TM/ files carry the event menus and lab models; its code is
@@ -742,7 +752,8 @@ void load_cosmetics(bool always_vanilla_unsafe) {
       // Hack Pack's L / R costumes); they get an entry of their own and entry i stays the pack's
       // file, which is the standard costume of this session.
       const std::string applied = host::cosmetics::applied_asset(vanilla_start);
-      if (!host::cosmetics::session_pack_skin(applied) || i >= g_raw_paths.size() || g_raw_paths[i].empty()) {
+      if ((!host::cosmetics::session_pack_skin(applied) && !pack_costume_takes_skins(i)) || i >= g_raw_paths.size() ||
+          g_raw_paths[i].empty()) {
         host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
         continue;
       }
@@ -1020,6 +1031,10 @@ uint32_t h_display_options() {
          // The Arcade look's hitboxes: never in a network match (the game also checks). Its grid is a
          // picture like the rest of the background, so it stays.
          (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |
+         // Its 2D camera, offline: the game runs the 2D-style build's camera code; online the renderer's
+         // flat projection stands in (gx_shader.cpp build_projection).
+         (slippi::online::session_mode() >= 0 || source_p2p::requested() || !(gx::arcade_display() & gx::kArcadeCamera2d)
+              ? 0u : MU_DISPLAY_OPTION_ARCADE_CAMERA) |
          (gx::arcade_display() & gx::kArcadeGrid);
 }
 uint32_t h_shield_color(int32_t slot) { return gx::shield_color(slot); }
@@ -1426,7 +1441,7 @@ bool publish_cosmetic_files(const std::string& slot, const host::cosmetics::Repu
     // A file the loaded pack replaced: entry i is the pack's file, the standard costume of this
     // session, and only the pack's own sets may serve it instead (load_cosmetics).
     const bool pack_replaced = g_fst[i].offset != file.vanilla_start && g_fst[i].offset < kCosmeticBase;
-    if (pack_replaced && (!file.overridden || !host::cosmetics::session_pack_skin(file.asset_id))) {
+    if (pack_replaced && (!file.overridden || (!host::cosmetics::session_pack_skin(file.asset_id) && !pack_costume_takes_skins(i)))) {
       if (file.overridden) host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
       g_paths[g_raw_paths[i]] = (int32_t)i;
       continue;
