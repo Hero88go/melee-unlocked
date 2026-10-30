@@ -73,14 +73,67 @@ def paired_baseline_gain(model_report, baseline_report):
             'bootstrap95': bounds}
 
 
+def check_recipe(pro, audit, training):
+    if (training.get('pro') != pro or training.get('identity_code') != PLAYERS[pro]['code'] or
+            training.get('named_pro_only') is not True or training.get('teacher_used') is not False or
+            training.get('general_ranked_used') is not False or training.get('final_test_used') is not False):
+        raise SystemExit(f'{pro}: training manifest does not prove the pro-only recipe')
+    if training.get('source_manifest_sha256') != audit.get('manifest_sha256'):
+        raise SystemExit(f'{pro}: trained source manifest differs from the audited source manifest')
+    if training.get('games') != audit.get('split_games'):
+        raise SystemExit(f'{pro}: trained split counts differ from audited split counts')
+
+
+def check_model(pro, model_dir):
+    model = model_dir / f'ghost_ai_{pro}.bin'
+    if not model.is_file():
+        raise SystemExit(f'{pro}: missing quantized policy file {model}')
+    data = model.read_bytes()
+    if len(data) < 56 or data[:4] != b'MUGA':
+        raise SystemExit(f'{pro}: invalid runtime model header')
+    version = struct.unpack_from('<I', data, 4)[0]
+    dims = struct.unpack_from('<12I', data, 8)
+    if version != 2 or dims[7] != 1:
+        raise SystemExit(f'{pro}: expected an int8, one-player independent policy')
+    return {'file': model.name, 'sha256': digest(model), 'bytes': len(data),
+            'format_version': version, 'dimensions': list(dims), 'player_embeddings': dims[7]}
+
+
+def pending_entry(pro, audit, training, directory, model_dir):
+    """A pro whose sequential held-out evaluations have not finished: provenance, recipe and file only."""
+    check_recipe(pro, audit, training)
+    checkpoint = directory / 'model.pt'
+    if not checkpoint.is_file():
+        raise SystemExit(f'{pro}: missing selected float checkpoint')
+    return {
+        'identity_code': PLAYERS[pro]['code'],
+        'character_id': PLAYERS[pro]['css_character'],
+        'identity_methods': training.get('identity_methods'),
+        'games': audit['split_games'],
+        'split_groups': audit.get('split_group_counts'),
+        'canonical_frames': audit['canonical_frames'],
+        'source_manifest_sha256': audit['manifest_sha256'],
+        'checkpoint_sha256': digest(checkpoint),
+        'training': {key: training.get(key) for key in (
+            'architecture', 'training_objective', 'initialization', 'seed', 'learning_rate',
+            'weight_decay', 'steps', 'seconds', 'best_development_loss', 'complete_corpus_exposure')},
+        'evaluation': 'pending: sequential development and test evaluations not finished for this build',
+        'model': check_model(pro, model_dir),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model-dir', type=Path, required=True,
                         help='directory containing ghost_ai_<pro>.bin for all five pros')
     parser.add_argument('--version', default=(ROOT / 'VERSION').read_text(encoding='utf-8').strip())
     parser.add_argument('--out', type=Path, default=None)
+    parser.add_argument('--pending', default='',
+                        help='comma-separated pros whose held-out evaluations are still running: their provenance, '
+                             'recipe and file are checked and the evaluations are written as pending')
     args = parser.parse_args()
     model_dir = args.model_dir.resolve()
+    pending = {pro for pro in args.pending.split(',') if pro}
 
     audit_payload = read_json(HOME / 'runs' / 'specialist-data-audit.json')
     if not audit_payload.get('all_pass'):
@@ -102,6 +155,9 @@ def main():
             raise SystemExit(f'{pro}: missing or failed identity/hash/frame audit')
         directory = HOME / 'specialists' / pro
         training = read_json(directory / 'training-manifest.json')
+        if pro in pending:
+            result['players'][pro] = pending_entry(pro, audit, training, directory, model_dir)
+            continue
         development = read_json(directory / 'sequential-development.json')
         test = read_json(directory / 'sequential-test.json')
         quantized_development = read_json(directory / 'sequential-development-int8.json')
@@ -234,7 +290,7 @@ def main():
     tmp.replace(out)
     print(json.dumps({'output': str(out), 'players': {
         pro: {'bytes': row['model']['bytes'], 'sha256': row['model']['sha256'],
-              'games': row['games'], 'test_nll': row['test']['mean_game_joint_action_nll']}
+              'games': row['games'], 'test_nll': row.get('test', {}).get('mean_game_joint_action_nll')}
         for pro, row in result['players'].items()}}, indent=2))
 
 
