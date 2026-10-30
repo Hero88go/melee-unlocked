@@ -355,3 +355,5 @@ SSBM_Arte for subframe rollback: the idea and the original implementation of sen
 The PhobGCC team (Phobos132, FrostSSBM, CarVac, NiceMitch and contributors) for the PhobGCC firmware and PhobVision, which the PhobGCC controller settings are ported from.
 
 greenwave-1 for GCC Test Suite, whose tester views inspired the PhobScope additions.
+
+venus23gg for the Melee stickmaps, and Altimor for the Melee Stick Coordinate Visualizer they were made with.

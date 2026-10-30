@@ -14,6 +14,7 @@
 #include "phob.h"
 #define NOMINMAX
 #include <windows.h>
+#include <timeapi.h>
 #ifdef _WIN32
 #include <setupapi.h>
 #endif
@@ -23,9 +24,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -122,10 +127,14 @@ void phob_process(const uint8_t* report, std::chrono::steady_clock::time_point n
     s.raw_ax = (int8_t)((int)in.ax - in.ax0); s.raw_ay = (int8_t)((int)in.ay - in.ay0);
     s.raw_cx = (int8_t)((int)in.cx - in.cx0); s.raw_cy = (int8_t)((int)in.cy - in.cy0);
     s.raw_l = in.la; s.raw_r = in.ra;
-    s.raw_buttons = in.buttons;
+    s.raw_buttons = in.buttons; s.hw_ax = in.ax; s.hw_ay = in.ay; s.hw_cx = in.cx; s.hw_cy = in.cy;
     if (g_phob[port].s.enabled) {
       g_phob_out[port] = phob::step(g_phob[port], g_phob_state[port], in, steps);
       g_phob_live[port] = true;
+      // The firmware's "unfiltered" stick: through the calibration, before the filters.
+      auto unf = [](float v) { const long r = std::lround(v); return (int8_t)(r > 127 ? 127 : r < -128 ? -128 : r); };
+      s.raw_ax = unf(g_phob_state[port].ax_unfilt); s.raw_ay = unf(g_phob_state[port].ay_unfilt);
+      s.raw_cx = unf(g_phob_state[port].cx_unfilt); s.raw_cy = unf(g_phob_state[port].cy_unfilt);
       s.ax = g_phob_out[port].stick_x; s.ay = g_phob_out[port].stick_y;
       s.cx = g_phob_out[port].sub_x; s.cy = g_phob_out[port].sub_y;
       s.l = g_phob_out[port].trig_l; s.r = g_phob_out[port].trig_r;
@@ -692,7 +701,88 @@ void gcadapter_rumble(int port, bool on) {
   if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; g_rumble_wake.notify_one(); }
 }
 
+// ---- test runs: a scripted controller on socket 1 ----
+// MELEE_TEST_ADAPTER_SCRIPT=<file>, honoured only when the real adapter is off (--no-gc-adapter, as
+// every hidden test run is). One line per step: `<ms> <ax> <ay> <cx> <cy> <la> <ra> [buttons...]`,
+// raw adapter bytes (128 is centre), buttons A B X Y Z L R S DU DD DL DR. The steps play once at
+// 1 kHz through the same report path as a real adapter (phob_process); the last one then holds.
+struct ScriptStep { int ms; uint8_t ax, ay, cx, cy, la, ra; uint16_t buttons; };
+std::thread g_test_thread;
+std::atomic<bool> g_test_run{false};
+
+void test_script_thread(std::vector<ScriptStep> steps) {
+  // 1 ms sleeps, so a scripted 9 ms tilt lasts 9 ms (the default timer slice is about 15 ms).
+  timeBeginPeriod(1);
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+  uint8_t rep[37] = {0x21};
+  auto fill = [&](const ScriptStep& s) {
+    uint8_t* c = rep + 1;
+    c[0] = 0x10;
+    const uint16_t b = s.buttons;
+    c[1] = (uint8_t)((b & PAD_A ? 0x01 : 0) | (b & PAD_B ? 0x02 : 0) | (b & PAD_X ? 0x04 : 0) | (b & PAD_Y ? 0x08 : 0) |
+                     (b & PAD_LEFT ? 0x10 : 0) | (b & PAD_RIGHT ? 0x20 : 0) | (b & PAD_DOWN ? 0x40 : 0) | (b & PAD_UP ? 0x80 : 0));
+    c[2] = (uint8_t)((b & PAD_START ? 0x01 : 0) | (b & PAD_Z ? 0x02 : 0) | (b & PAD_R ? 0x04 : 0) | (b & PAD_L ? 0x08 : 0));
+    c[3] = s.ax; c[4] = s.ay; c[5] = s.cx; c[6] = s.cy; c[7] = s.la; c[8] = s.ra;
+  };
+  auto next = std::chrono::steady_clock::now();
+  size_t i = 0;
+  int left = steps.empty() ? 0 : steps[0].ms;
+  while (g_test_run.load()) {
+    if (!steps.empty()) fill(steps[i]);
+    next += std::chrono::milliseconds(1);
+    std::this_thread::sleep_until(next);
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lk(g_mutex);
+      if (!g_origin[0].set) { g_origin[0].set = true; g_origin[0].sx = g_origin[0].sy = g_origin[0].cx = g_origin[0].cy = 128; }
+      std::memcpy(g_report, rep, 37);
+      g_report_time = now;
+      g_have_report = true;
+      phob_process(rep, now);
+    }
+    g_poll_rate_hz.store(1000.0, std::memory_order_relaxed);
+    static int ticks = 0; static auto tick_start = now;
+    if (++ticks == 5000) { log("gc adapter: test script %.0f reports/s", 5000.0 / std::chrono::duration<double>(now - tick_start).count()); ticks = 0; tick_start = now; }
+    // Steps advance by the time that really passed (a sleep can last longer than 1 ms).
+    static auto last = now;
+    int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+    if (elapsed > 0) last += std::chrono::milliseconds(elapsed);
+    while (!steps.empty() && elapsed > 0) {
+      const int used = std::min(elapsed, left);
+      left -= used; elapsed -= used;
+      if (left <= 0) { if (i + 1 >= steps.size()) break; left = steps[++i].ms; fill(steps[i]); if (i % 20 == 0) log("gc adapter: test script step %zu", i); }
+    }
+    if (std::chrono::steady_clock::now() - next > std::chrono::milliseconds(50)) next = std::chrono::steady_clock::now();
+  }
+}
+
+void gcadapter_test_script_start() {
+  const char* path = std::getenv("MELEE_TEST_ADAPTER_SCRIPT");
+  if (!path || !options.no_gc_adapter || g_test_thread.joinable()) return;
+  std::ifstream in(path);
+  std::vector<ScriptStep> steps;
+  std::string line;
+  while (std::getline(in, line)) {
+    std::istringstream ls(line);
+    int ms, v[6];
+    if (!(ls >> ms >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5])) continue;
+    ScriptStep s{ms, (uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2], (uint8_t)v[3], (uint8_t)v[4], (uint8_t)v[5], 0};
+    std::string b;
+    while (ls >> b) {
+      if (b == "A") s.buttons |= PAD_A; else if (b == "B") s.buttons |= PAD_B; else if (b == "X") s.buttons |= PAD_X;
+      else if (b == "Y") s.buttons |= PAD_Y; else if (b == "Z") s.buttons |= PAD_Z; else if (b == "L") s.buttons |= PAD_L;
+      else if (b == "R") s.buttons |= PAD_R; else if (b == "S") s.buttons |= PAD_START; else if (b == "DU") s.buttons |= PAD_UP;
+      else if (b == "DD") s.buttons |= PAD_DOWN; else if (b == "DL") s.buttons |= PAD_LEFT; else if (b == "DR") s.buttons |= PAD_RIGHT;
+    }
+    steps.push_back(s);
+  }
+  log("gc adapter: test script %s, %zu steps", path, steps.size());
+  g_test_run.store(true);
+  g_test_thread = std::thread(test_script_thread, std::move(steps));
+}
+
 void gcadapter_shutdown() {
+  if (g_test_thread.joinable()) { g_test_run.store(false); g_test_thread.join(); timeEndPeriod(1); }
   if (g_scanner.joinable()) {
     { std::lock_guard<std::mutex> lock(g_scanner_mutex); g_scanner_run.store(false); }
     g_scanner_wake.notify_all();

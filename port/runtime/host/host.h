@@ -289,11 +289,15 @@ struct GCScopeSample {
   int8_t raw_ax, raw_ay, raw_cx, raw_cy, ax, ay, cx, cy;
   uint8_t raw_l, raw_r, l, r;
   uint16_t raw_buttons, buttons;
+  uint8_t hw_ax, hw_ay, hw_cx, hw_cy;   // the stick bytes exactly as the adapter reported them (calibration reads these)
 };
 // The latest `max` reports for `port`, oldest first; returns how many were written.
 int gcadapter_scope(int port, GCScopeSample* out, int max);
 // Saved Phob settings (phob_store.cpp): load reads every port's file and applies it, save applies
 // and writes one port. Setups are named copies a player can share.
+// Test runs only (MELEE_TEST_ADAPTER_SCRIPT with the adapter off): plays a scripted controller on
+// socket 1 through the adapter's report path. Started when the PhobGCC section first draws.
+void gcadapter_test_script_start();
 void phob_store_load(const std::string& settings_path);
 bool phob_store_save(int port, const phob::Settings& s);
 std::string phob_store_folder();   // the PhobGCC folder beside the settings file

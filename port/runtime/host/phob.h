@@ -73,6 +73,9 @@ struct StickCal {
 // Every setting of the Phob menus that acts on a controller here.
 struct Settings {
   bool enabled = false;
+  // The controller is itself a PhobGCC: its firmware already does all of this, so nothing here is
+  // applied (it would run twice) and the section offers only the tools that read it.
+  bool phob_hardware = false;
   uint8_t remap[REMAP_COUNT] = {1 << A_REMAP, 1 << B_REMAP, 1 << D_REMAP, 1 << L_REMAP,
                                 1 << R_REMAP, 1 << X_REMAP, 1 << Y_REMAP, 1 << Z_REMAP};
   int l_mode = 0, r_mode = 0;
@@ -191,6 +194,10 @@ CalPrompt cal_prompt(int step);
 // The notch being adjusted during steps 32..43.
 int cal_adjust_notch(int step);
 
+// From Altimor's Melee Stick Coordinate Visualizer (https://github.com/AltimorTASDK/ssbm-stickmap,
+// GPL-3.0, isDesyncCoordinate): true when Popo and Nana read this coordinate (clamped to Melee's
+// circle of 80) as different inputs, which desyncs the Ice Climbers.
+bool ic_desync_coordinate(int x, int y);
 // A stick coordinate pair as the Phob menus show it in Melee units (clamped to the unit circle).
 void melee_coords(int x, int y, float& mx, float& my);
 

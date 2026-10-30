@@ -401,17 +401,19 @@ StickCal::StickCal() {
 }
 
 void soft_reset(Settings& s) {
-  const bool enabled = s.enabled;
+  const bool enabled = s.enabled, hw = s.phob_hardware;
   const StickCal a = s.a_cal, c = s.c_cal;
   s = Settings{};
   s.enabled = enabled;
+  s.phob_hardware = hw;
   s.a_cal = a;
   s.c_cal = c;
 }
 void hard_reset(Settings& s) {
-  const bool enabled = s.enabled;
+  const bool enabled = s.enabled, hw = s.phob_hardware;
   s = Settings{};
   s.enabled = enabled;
+  s.phob_hardware = hw;
 }
 
 void clamp(Settings& s) {
@@ -426,6 +428,7 @@ void clamp(Settings& s) {
   c(s.a_cardinal, kCardinalMin, kCardinalMax); c(s.c_cardinal, kCardinalMin, kCardinalMax);
   c(s.a_scaler, kScalerMin, kScalerMax); c(s.c_scaler, kScalerMin, kScalerMax);
   c(s.tourney, kTourneyMin, kTourneyMax);
+  if (s.phob_hardware) s.enabled = false;   // never on top of a Phob's own processing
   for (StickCal* cal : {&s.a_cal, &s.c_cal})
     for (int i = 0; i < kCalPoints; i++) {
       if (!std::isfinite(cal->points_x[i]) || !std::isfinite(cal->points_y[i])) { *cal = StickCal{}; break; }
@@ -454,6 +457,7 @@ std::string serialize(const Settings& s) {
   o.precision(9);
   o << "# Melee Unlocked PhobGCC settings\n";
   o << "enabled " << (s.enabled ? 1 : 0) << "\n";
+  o << "phob_hardware " << (s.phob_hardware ? 1 : 0) << "\n";
   for (const IntField& f : kIntFields) o << f.key << " " << s.*(f.field) << "\n";
   for (int i = 0; i < REMAP_COUNT; i++) o << kRemapKeys[i] << " " << (int)s.remap[i] << "\n";
   const StickCal* cals[2] = {&s.a_cal, &s.c_cal};
@@ -483,6 +487,7 @@ void parse(const std::string& text, Settings& s) {
     std::string key;
     if (!(ls >> key) || key[0] == '#') continue;
     if (key == "enabled") { int v; if (ls >> v) s.enabled = v != 0; continue; }
+    if (key == "phob_hardware") { int v; if (ls >> v) s.phob_hardware = v != 0; continue; }
     bool done = false;
     for (const IntField& f : kIntFields) if (key == f.key) { int v; if (ls >> v) s.*(f.field) = v; done = true; }
     for (int i = 0; i < REMAP_COUNT && !done; i++) if (key == kRemapKeys[i]) { int v; if (ls >> v) s.remap[i] = (uint8_t)v; done = true; }
@@ -816,6 +821,25 @@ CalPrompt cal_prompt(int step) {
 int cal_adjust_notch(int step) {
   if (step < kCalPoints || step >= kCalSteps) return -1;
   return kNotchAdjOrder[step - kCalPoints];
+}
+
+bool ic_desync_coordinate(int x, int y) {
+  constexpr double kClamp = 80, kDeadzone = 22, kPiD = 3.14159265358979323846;
+  const double mul_x = x > 0 ? 127 : 128, mul_y = y > 0 ? 127 : 128;
+  const double popo_x = std::fabs(x / kClamp), popo_y = std::fabs(y / kClamp);
+  const double nana_x = std::fabs(std::trunc(popo_x * mul_x) / mul_x), nana_y = std::fabs(std::trunc(popo_y * mul_y) / mul_y);
+  const bool x_dz = std::abs(x) <= kDeadzone, y_dz = std::abs(y) <= kDeadzone, deadzone = x_dz || y_dz;
+  const bool popo50 = std::atan(popo_y / popo_x) >= 50 * kPiD / 180, nana50 = std::atan(nana_y / nana_x) >= 50 * kPiD / 180;
+  if (popo50 != nana50 && !deadzone) return true;
+  if ((nana_x >= 0.8000) != (popo_x >= 0.8000)) return true;
+  if ((nana_y >= 0.6625) != (popo_y >= 0.6625)) return true;
+  if ((nana_x >= 0.7000) != (popo_x >= 0.7000) && y_dz) return true;
+  if (y < 0 && (nana_y >= 0.7000) != (popo_y >= 0.7000) && x_dz) return true;
+  if ((nana_x >= 0.6250) != (popo_x >= 0.6250)) return true;
+  if ((nana_x >= 0.7500) != (popo_x >= 0.7500)) return true;
+  if (y > 0 && (nana_y >= 0.5625) != (popo_y >= 0.5625)) return true;
+  if (y < 0 && popo_x <= 0.5875 && popo_y == 0.5500) return true;
+  return false;
 }
 
 // firmware (drawMenu.cpp): meleeCoordClamp

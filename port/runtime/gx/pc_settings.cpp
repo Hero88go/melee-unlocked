@@ -4734,7 +4734,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-    io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.button & 0x1000) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.button & 0x1000) != 0 && !phob_menu_owns_start());
     io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.button & 0x10) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (pad.button & 0x100) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (pad.button & 0x200) != 0);
@@ -9338,9 +9338,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (tab_kind == host::CaptureDevice::GCAdapter && std::getenv("MELEE_TEST_PHOB")) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         if (tab_kind == host::CaptureDevice::GCAdapter && ImGui::CollapsingHeader("PhobGCC")) {
           ImGui::PushID("phob");
-          static int phob_test_scroll = 0;   // test runs: bring the section to the top once it is laid out
-          if (std::getenv("MELEE_TEST_PHOB") && phob_test_scroll++ == 2) ImGui::SetScrollHereY(0.0f);
           draw_phob_menu(tab_index);
+          if (std::getenv("MELEE_TEST_PHOB")) ImGui::SetScrollHereY(1.0f);   // test runs: keep the end of the section in view
           ImGui::PopID();
           g_phob_drawn = true;
         }

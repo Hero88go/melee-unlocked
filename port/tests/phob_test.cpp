@@ -1,6 +1,7 @@
 // PhobGCC port: calibration hits the firmware's notch targets, filters behave, trigger modes match.
 // SPDX-License-Identifier: GPL-3.0-only
 #include "phob.h"
+#include "phobscope.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -312,6 +313,77 @@ int main() {
   }
   // A damaged settings file cannot produce NaN calibration.
   { Settings bad; parse("a_points_x nan nan\n", bad); CHECK(!bad.a_cal.measured); }
+
+  // Ice Climbers desync (Altimor's isDesyncCoordinate): axes and centre are safe; x = 64 (0.8)
+  // stays 0.8 for Nana (64/80*127 truncates to 101, 101/127 = 0.795) and so desyncs.
+  CHECK(!ic_desync_coordinate(80, 0) && !ic_desync_coordinate(0, 80) && !ic_desync_coordinate(0, -80));
+  CHECK(ic_desync_coordinate(64, 30));
+  // ---- PhobScope measurements (phobscope.h), against values worked out from the firmware's formulas ----
+  {
+    using namespace host::phobscope;
+    auto stick = [](int x, float unf) { Ms m; m.ax = (uint8_t)(127 + x); m.ax_unfilt = unf; return m; };
+    auto near = [](float a, float b) { return std::fabs(a - b) < 0.6f; };
+    // Dashback: straight from 0 to 100 is 100% vanilla.
+    { Capture c; start(c, Mode::Dashback); bool fin = false;
+      for (int i = 0; i < 20; i++) fin |= feed(c, stick(0, 0));
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, stick(100, 100));
+      CHECK(fin && near(c.percents[0], 100) && near(c.percents[1], 100)); }
+    // 8 ms in the tilt zone (30): vanilla (1 - 8/16.67) = 52%.
+    { Capture c; start(c, Mode::Dashback); bool fin = false;
+      for (int i = 0; i < 20; i++) fin |= feed(c, stick(0, 0));
+      for (int i = 0; i < 8; i++) fin |= feed(c, stick(30, 30));
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, stick(100, 100));
+      CHECK(fin && near(c.percents[0], 52.0f) && c.percents[1] >= c.percents[0]); }
+    // Snapback: a clean release from 100 never reads negative.
+    { Capture c; start(c, Mode::Snapback); bool fin = false;
+      for (int i = 0; i < 30; i++) fin |= feed(c, stick(100, 100));
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, stick(0, 0));
+      CHECK(fin && near(c.percents[0], 100)); }
+    // Snapback past centre to -40 for 34 ms: every 60 Hz phase sees it, 0% positive.
+    { Capture c; start(c, Mode::Snapback); bool fin = false;
+      for (int i = 0; i < 30; i++) fin |= feed(c, stick(100, 100));
+      for (int i = 0; i < 34; i++) fin |= feed(c, stick(-40, -40));
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, stick(0, 0));
+      CHECK(fin && near(c.percents[0], 0)); }
+    // Pivot: 10 ms past 80 the other way = 0.6 frames: no turn 40, empty pivot 60, dashback 0.
+    { Capture c; start(c, Mode::Pivot); bool fin = false;
+      for (int i = 0; i < 30; i++) fin |= feed(c, stick(100, 100));
+      for (int i = 0; i < 10; i++) fin |= feed(c, stick(-100, -100));
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, stick(0, 0));
+      CHECK(fin && near(c.percents[0], 40) && near(c.percents[1], 60) && near(c.percents[2], 0)); }
+    // Trigger: analog at 60 for 25 ms before the click = 1.5 frames: D 0, ADT 50, none 50.
+    { Capture c; start(c, Mode::Trigger); bool fin = false;
+      Ms m; m.la = 60;
+      for (int i = 0; i < 25; i++) fin |= feed(c, m);
+      m.l = true; m.la = 255;
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, m);
+      CHECK(fin && near(c.percents[0], 0) && near(c.percents[1], 50) && near(c.percents[2], 50)); }
+    // Click with no analog first: 100% digital powershield.
+    { Capture c; start(c, Mode::Trigger); bool fin = false;
+      Ms m; m.l = true; m.la = 255;
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, m);
+      CHECK(fin && near(c.percents[0], 100)); }
+    // Reaction: counts milliseconds until a press (Start does not count).
+    { Capture c; c.stick_thresh = 23; c.trigger_thresh = 49; start(c, Mode::Reaction);
+      Ms idle; Ms st; st.start = true; Ms a; a.a = true;
+      for (int i = 0; i < 200; i++) feed(c, i % 2 ? st : idle);
+      CHECK(!c.done);
+      CHECK(feed(c, a) && c.delay_ms == 201); }
+    // Stickmap: 100 samples starting once the stick moves more than 10.
+    { Capture c; c.stick_thresh = 10; start(c, Mode::StickMap); bool fin = false;
+      for (int i = 0; i < 50; i++) fin |= feed(c, stick(0, 0));
+      for (int i = 0; i < 200 && !fin; i++) fin |= feed(c, stick(i + 1, (float)(i + 1)));
+      uint8_t x[100]; ordered(c, c.a1, x);
+      CHECK(fin && x[1] - 127 >= 11 && x[1] - 127 <= 12 && x[99] > x[1]); }
+    // Button timing: 200 ms from the first press; marks a stick past its threshold.
+    { Capture c; c.stick_thresh = 23; c.trigger_thresh = 255; start(c, Mode::Press); bool fin = false;
+      Ms idle; for (int i = 0; i < 40; i++) fin |= feed(c, idle);
+      Ms jump; jump.x = true; fin |= feed(c, jump);
+      for (int i = 0; i < 5; i++) fin |= feed(c, idle);
+      Ms dash = stick(70, 70);
+      for (int i = 0; i < 300 && !fin; i++) fin |= feed(c, dash);
+      CHECK(fin && (c.buttons[0] & 4) && !(c.buttons[1] & 4) && (c.analog_marks[6] & 1) && !(c.analog_marks[5] & 1)); }
+  }
 
   if (g_failures) std::printf("%d failure(s)\n", g_failures);
   else std::printf("phob: all checks passed\n");
