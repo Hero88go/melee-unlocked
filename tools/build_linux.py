@@ -38,9 +38,13 @@ def main():
     game_build = args.game_build_dir.resolve()
     host_build = args.build_dir.resolve()
     if not args.host_only:
+        # The prepared game sources (tools/prepare_native_sources.py) when this tree has them, as the
+        # Windows game build uses; otherwise the submodule.
+        decomp = ROOT / 'build-native/decomp'
+        extra = ['-DMELEE_DECOMP_DIR=' + str(decomp)] if (decomp / 'src/melee').is_dir() else []
         run('cmake', '-S', ROOT / 'sourceport/game', '-B', game_build, '-G', 'Ninja',
             '-DCMAKE_C_COMPILER=gcc-14', '-DCMAKE_CXX_COMPILER=g++-14',
-            '-DCMAKE_BUILD_TYPE=Release', '-DMELEE_CPU_BASELINE=' + args.cpu)
+            '-DCMAKE_BUILD_TYPE=Release', '-DMELEE_CPU_BASELINE=' + args.cpu, *extra)
         run('cmake', '--build', game_build, '--target',
             'mu_game_tests' if args.test else 'melee_game', '-j', args.jobs)
         if args.test:

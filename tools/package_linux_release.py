@@ -150,6 +150,8 @@ def main():
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build-linux/port/linux/full')
     parser.add_argument('--game-build-dir', type=Path, default=ROOT / 'build-linux-game')
     parser.add_argument('--out', type=Path, default=ROOT / 'release')
+    parser.add_argument('--ghost-ai-dir', type=Path, default=ROOT / 'release/ghost-ai',
+                        help='ghost_ai_<pro>.bin for each released pro plus ghost_ai_models.json (Fight a pro)')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('run this inside Linux (WSL is fine)')
@@ -192,6 +194,13 @@ def main():
     run('objcopy', '--compress-debug-sections=zlib', folder / 'melee_game.dbg')
     subprocess.run(['objcopy', '--remove-section=.gnu_debuglink', '--add-gnu-debuglink=melee_game.dbg',
                     'melee_game.so'], cwd=folder, check=True)
+
+    # Fight a pro: one network per released pro beside the Source Port, as in the Windows zip.
+    for name in [f'ghost_ai_{pro}.bin' for pro in ('mang0', 'zain', 'cody', 'amsa')] + ['ghost_ai_models.json']:
+        source = args.ghost_ai_dir / name
+        if not source.is_file():
+            raise SystemExit(f'missing {source} (the pro AI files for Fight a pro)')
+        shutil.copy2(source, folder / name)
 
     # lib/: the bundled libraries and their license files.
     lib = folder / 'lib'

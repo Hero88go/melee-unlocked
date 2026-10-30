@@ -218,7 +218,17 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
             const char* v = getenv("MELEE_TEST_PC_PORT");
             only = v != NULL ? (int) (v[0] - '0') : -1;
         }
-        if (only >= 0 && fp->player_idx != only) return 0;
+        if (only >= 0) {
+            /* Both players' stocks whenever they change, from whichever fighter is still asked: the match's last
+             * KO ends it before the loser is asked again, so this is how tests tell who won. */
+            static int seen = -1;
+            const int now = Player_GetStocks(0) * 16 + Player_GetStocks(1);
+            if (now != seen) {
+                seen = now;
+                OSReport("[pc] stocks P1 %d P2 %d\n", Player_GetStocks(0), Player_GetStocks(1));
+            }
+            if (fp->player_idx != only) return 0;
+        }
         for (k = 0; k < 4 && opp == NULL; k++) {   /* the first human player (tests: any other player) */
             HSD_GObj* g;
             if (k == fp->player_idx) continue;
@@ -371,11 +381,30 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
             }
             out->buttons &= ~(MU_PC_L | MU_PC_R | MU_PC_Z);
             out->l = out->r = 0.0f;
+            /* Outside the stage's edge and below the ledge, no aerial attack either: one started there cannot be
+             * jumped out of, and the fighter fell past the ledge with its jump unused (Yoshi at 0 percent). Above the
+             * ledge the pro's edgeguards stay. */
+            if (ax > v.ledge_x && v.cpu.y < v.ledge_y - 2.0f) {
+                out->buttons &= ~MU_PC_A;
+                out->cx = out->cy = 0.0f;
+            }
         }
-        if (!no_net && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag && ((ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
-             (ax > v.ledge_x - 40.0f && v.cpu.y < v.ledge_y - 10.0f)))
+        /* Not on the ledge or leaving it by a ledge option: hanging is safe, and the pro's own choice there
+         * (getup, roll, drop and jump) is theirs. The net took over while it hung, let go and flew away.
+         * Falling well below the stage's top is off the stage wherever it is: right under the middle of the stage
+         * the net once left it alone and Yoshi's egg throws carried it down past the bottom. */
+        const int ledge = v.cpu.motion >= MU_PC_MS_CLIFF_CATCH && v.cpu.motion <= MU_PC_MS_CLIFF_LAST;
+        /* Once the net has taken over it keeps the fighter until it is back above the ledge, on it, landed or hit:
+         * handing back on the way up let the network's up special stop Yoshi's recovery jump. */
+        static int net_hold[6];
+        const int free_air = !no_net && !ledge && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag;
+        if (!free_air || v.cpu.y > v.ledge_y + 5.0f) net_hold[slot] = 0;
+        if (free_air && (net_hold[slot] ||
+            (ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
+            (v.cpu.y < v.ledge_y - 10.0f && v.cpu.vy < 0.0f)))
         {
             MuPcConfig rc = *c;
+            net_hold[slot] = 1;
             rc.enabled = 1;
             rc.freeze = 0;
             if (rc.recovery == MU_PC_RECOVER_GAME) rc.recovery = MU_PC_RECOVER_MIX;
