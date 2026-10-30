@@ -12,8 +12,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
+#include <iterator>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -350,6 +353,91 @@ bool unpack_zip(const std::filesystem::path& zip, const std::filesystem::path& d
   }
   return true;
 }
+// A name from an archive that stays inside the folder it is unpacked to: relative, forward slashes,
+// no drive, no "." or ".." part.
+bool relative_inside(const std::string& path) {
+  if (path.empty() || path[0] == '/' || path.find('\\') != std::string::npos || path.find(':') != std::string::npos) return false;
+  size_t start = 0;
+  while (start < path.size()) {
+    const size_t slash = path.find('/', start);
+    const std::string part = path.substr(start, slash == std::string::npos ? slash : slash - start);
+    if (part == ".." || part == ".") return false;
+    if (slash == std::string::npos) break;
+    start = slash + 1;
+  }
+  return true;
+}
+// A .tar.gz read in process (one gzip member, plain and GNU long-name tar entries), for downloads
+// that must unpack where there is no tar.exe: Wine, Proton and some Windows installs.
+bool unpack_tar_gz(const std::filesystem::path& archive, const std::filesystem::path& dest) {
+  std::ifstream f(archive, std::ios::binary);
+  if (!f) return false;
+  std::vector<unsigned char> gz((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (gz.size() < 18 || gz[0] != 0x1f || gz[1] != 0x8b || gz[2] != 8) return false;
+  const unsigned flags = gz[3];
+  size_t at = 10;
+  if (flags & 4) { if (at + 2 > gz.size()) return false; at += 2 + rd16(&gz[at]); }
+  if (flags & 8) { while (at < gz.size() && gz[at]) ++at; ++at; }
+  if (flags & 16) { while (at < gz.size() && gz[at]) ++at; ++at; }
+  if (flags & 2) at += 2;
+  if (at + 8 > gz.size()) return false;
+  const uint32_t crc = rd32(&gz[gz.size() - 8]), size = rd32(&gz[gz.size() - 4]);
+  if (size > 1536u * 1024 * 1024) return false;
+  std::vector<unsigned char> tar(size);
+  gz.resize(gz.size() - 8);
+  gz.insert(gz.end(), 16, 0);   // stb's inflate reads a few bytes past the stream (see unpack_zip)
+  if (size && stbi_zlib_decode_noheader_buffer((char*)tar.data(), (int)size, (const char*)gz.data() + at, (int)(gz.size() - at)) != (int)size)
+    return false;
+  std::vector<unsigned char>().swap(gz);
+  if (crc32_of(tar.data(), tar.size()) != crc) return false;
+  std::string long_name;
+  for (size_t pos = 0; pos + 512 <= tar.size();) {
+    const unsigned char* h = &tar[pos];
+    if (std::all_of(h, h + 512, [](unsigned char c) { return c == 0; })) break;
+    uint64_t length = 0;
+    for (int i = 124; i < 136 && h[i] >= '0' && h[i] <= '7'; ++i) length = length * 8 + (h[i] - '0');
+    const size_t data = pos + 512;
+    if (length > tar.size() - data) return false;
+    const char type = (char)h[156];
+    std::string name;
+    if (!long_name.empty()) { name.swap(long_name); }
+    else {
+      const std::string prefix((const char*)h + 345, strnlen((const char*)h + 345, 155));
+      name.assign((const char*)h, strnlen((const char*)h, 100));
+      if (std::memcmp(h + 257, "ustar", 5) == 0 && !prefix.empty()) name = prefix + "/" + name;
+    }
+    if (type == 'L') long_name.assign((const char*)&tar[data], strnlen((const char*)&tar[data], (size_t)length));
+    else if (type == 'x') {   // pax: "<length> path=<name>\n" records
+      const std::string records((const char*)&tar[data], (size_t)length);
+      for (size_t r = 0; r < records.size();) {
+        const size_t space = records.find(' ', r);
+        const size_t len = std::strtoul(records.c_str() + r, nullptr, 10);
+        if (space == std::string::npos || len == 0 || r + len > records.size()) break;
+        const std::string record = records.substr(space + 1, r + len - space - 2);
+        if (record.rfind("path=", 0) == 0) long_name = record.substr(5);
+        r += len;
+      }
+    } else if (type == '0' || type == '\0' || type == '5') {
+      while (!name.empty() && name.back() == '/') name.pop_back();
+      if (name.rfind("./", 0) == 0) name.erase(0, 2);
+      if (!name.empty() && name != ".") {
+        if (!relative_inside(name)) return false;
+        const std::filesystem::path target = dest / std::filesystem::u8path(name);
+        std::error_code ec;
+        if (type == '5') { std::filesystem::create_directories(target, ec); if (ec) return false; }
+        else {
+          std::filesystem::create_directories(target.parent_path(), ec);
+          std::ofstream o(target, std::ios::binary | std::ios::trunc);
+          if (length) o.write((const char*)&tar[data], (std::streamsize)length);
+          o.close();
+          if (!o) return false;
+        }
+      }
+    }   // links, pax headers and devices are not needed by any download: skipped
+    pos = data + (size_t)((length + 511) / 512 * 512);
+  }
+  return true;
+}
 }  // namespace
 
 void check(const std::string& current_version, bool install_experimental) {
@@ -414,6 +502,14 @@ bool download_matches(const std::string& body, const std::string& sha256_hex) { 
 bool unpack_archive(const std::string& zip_path_utf8, const std::string& dest_utf8) {
   return unpack_zip(std::filesystem::u8path(zip_path_utf8), std::filesystem::u8path(dest_utf8));
 }
+bool unpack_download(const std::string& archive_utf8, const std::string& dest_utf8) {
+  const auto archive = std::filesystem::u8path(archive_utf8), dest = std::filesystem::u8path(dest_utf8);
+  if (!is_zip(archive)) return unpack_tar_gz(archive, dest);
+  std::vector<ZipEntry> entries;
+  if (!zip_entries(archive, entries)) return false;
+  for (const ZipEntry& e : entries) if (!relative_inside(e.name)) return false;
+  return unpack_zip(archive, dest);
+}
 bool archive_inside(const std::string& zip_path_utf8, const std::string& root) {
   return archive_paths_safe(std::filesystem::u8path(zip_path_utf8), root);
 }
@@ -432,7 +528,7 @@ std::vector<unsigned long> install_processes(const std::string& install_root_utf
       L"melee_port_compat.exe", L"melee_port_dlss5.exe", L"melee_port_dlss5_compat.exe",
       L"MeleeUnlockedLauncher.exe",
       // The Linux build's programs, which carry no extension.
-      L"melee_source", L"MeleeUnlocked", L"melee_linux"};
+      L"melee_source", L"melee_source_compat", L"MeleeUnlocked", L"melee_linux"};
     bool game = false;
     for (const auto* name : names) game |= _wcsicmp(entry.szExeFile, name) == 0;
     if (!game) continue;

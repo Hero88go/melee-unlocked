@@ -87,6 +87,32 @@ int main(int argc, char** argv) {
     check(!host::updater::unpack_archive((root / "missing.zip").u8string(), out.u8string()), "a missing archive does not unpack");
     fs::remove(root / "MeleeUnlocked-9.9.9" / "Sys" / "big.bin", ec);
   }
+  // Mod downloads (.zip and .tar.gz) unpack in process too: pax (Windows' tar) and GNU long names,
+  // and nothing may land outside the folder.
+  {
+    const std::string deep(120, 'd');
+    fs::create_directories(root / "Mod" / deep, ec);
+    { std::ofstream(root / "Mod" / deep / "patch.xdelta", std::ios::binary) << "patch bytes"; }
+    { std::ofstream big(root / "Mod" / "big.bin", std::ios::binary); for (int i = 0; i < 300000; ++i) big << (char)(i * 13 % 241); }
+    const fs::path pax = root / "pax.tar.gz", gnu = root / "gnu.tar.gz", zip = root / "mod.zip";
+    check(make_zip(root, pax, L"--format pax -z Mod") && make_zip(root, gnu, L"--format gnutar -z Mod") && make_zip(root, zip, L"Mod"),
+          "mod test archives made");
+    for (const fs::path& archive : {pax, gnu, zip}) {
+      const fs::path out = root / ("mod-" + archive.stem().string());
+      const bool unpacked = host::updater::unpack_download(archive.u8string(), out.u8string());
+      std::ifstream patch(out / "Mod" / deep / "patch.xdelta", std::ios::binary), big(out / "Mod" / "big.bin", std::ios::binary);
+      const std::string p((std::istreambuf_iterator<char>(patch)), {}), b((std::istreambuf_iterator<char>(big)), {});
+      bool same = b.size() == 300000;
+      for (int i = 0; same && i < 300000; ++i) same = b[(size_t)i] == (char)(i * 13 % 241);
+      check(unpacked && p == "patch bytes" && same, ("a mod download unpacks without tar: " + archive.filename().string()).c_str());
+    }
+    { std::ofstream(root / "evil.txt") << "x"; }
+    const fs::path evil = root / "evil.tar.gz";
+    check(make_zip(root / "Mod", evil, L"-z -P ../evil.txt"), "an archive leaving its folder made");
+    check(!host::updater::unpack_download(evil.u8string(), (root / "mod-evil" / "in").u8string()) &&
+          !fs::exists(root / "mod-evil" / "evil.txt"), "an entry outside the folder is refused");
+    check(!host::updater::unpack_download((root / "missing.tar.gz").u8string(), (root / "x").u8string()), "a missing download does not unpack");
+  }
   // A Source game also keeps its DLL locked. Only this installation's processes
   // should hold up an update; a second installation may stay running.
   const fs::path install = root / L"install \u00e9", other = root / "second install";

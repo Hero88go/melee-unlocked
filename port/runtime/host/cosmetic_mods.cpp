@@ -7,6 +7,7 @@
 #include "stage_graft.h"
 
 #include "host.h"
+#include "updater.h"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -6864,24 +6865,12 @@ bool fetch_official(const OfficialFile& f, const fs::path& out, std::string* err
   return true;
 }
 
-// Windows' own tar (10 and 11) unpacks both the .tar.gz and the .zip; it refuses absolute paths and
-// "..", and every file used afterwards is checked against its pin anyway.
-bool unpack_with_tar(const fs::path& archive, const fs::path& dest, std::string* error) {
-  wchar_t system[MAX_PATH] = {};
-  if (!GetSystemDirectoryW(system, MAX_PATH)) { *error = "Windows' unpacking tool was not found."; return false; }
-  const fs::path tar = fs::path(system) / L"tar.exe";
-  std::wstring command = quote_windows_arg(tar.wstring()) + L" -xf " + quote_windows_arg(archive.wstring()) + L" -C " + quote_windows_arg(dest.wstring());
-  STARTUPINFOW startup{}; startup.cb = sizeof startup;
-  PROCESS_INFORMATION process{};
-  if (!CreateProcessW(tar.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
-    *error = "Windows' unpacking tool (tar) could not be started."; return false;
-  }
-  const DWORD wait = WaitForSingleObject(process.hProcess, 300000);
-  if (wait == WAIT_TIMEOUT) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
-  DWORD code = 1; GetExitCodeProcess(process.hProcess, &code);
-  CloseHandle(process.hThread); CloseHandle(process.hProcess);
-  if (wait != WAIT_OBJECT_0 || code != 0) { *error = "The download could not be unpacked."; return false; }
-  return true;
+// Unpacked in process, not by Windows' tar.exe: Wine and Proton have none, and some Windows installs
+// cannot start it. Entries leaving the folder are refused; every file used afterwards is checked
+// against its pin anyway.
+bool unpack_download(const fs::path& archive, const fs::path& dest, std::string* error) {
+  if (host::updater::unpack_download(archive.u8string(), dest.u8string())) return true;
+  *error = "The download could not be unpacked."; return false;
 }
 
 bool install_official(int which, const fs::path& retail, const fs::path& xdelta, const std::string& mods_folder, std::string* message) {
@@ -6896,7 +6885,7 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
   const fs::path archive = work / fs::u8path(f.file);
   official_status(which, "Downloading from the authors' page...", 0);
   bool ok = fetch_official(f, archive, message);
-  if (ok) { official_status(which, "Unpacking..."); ok = unpack_with_tar(archive, work / L"files", message); }
+  if (ok) { official_status(which, "Unpacking..."); ok = unpack_download(archive, work / L"files", message); }
   if (ok && which == 0) {
     official_status(which, "Building Diet Classic, Diet 64 and Crystal from your disc (a few minutes)...");
     ok = build_look_packs((work / L"files").u8string(), retail.u8string(), xdelta.u8string(), message);

@@ -27,6 +27,8 @@ bool download_matches(const std::string& body, const std::string& sha256_hex);
 bool archive_inside(const std::string& zip_path_utf8, const std::string& root);
 // Unpacks a release zip in process (no tar.exe, which Wine and Proton lack). Exposed for the unit test.
 bool unpack_archive(const std::string& zip_path_utf8, const std::string& dest_utf8);
+// Unpacks a downloaded .zip or .tar.gz in process, refusing any entry that would land outside `dest`.
+bool unpack_download(const std::string& archive_utf8, const std::string& dest_utf8);
 // The batch script an update hands over to (exposed for the unit test): `self` and `others` are
 // the processes it waits for, `relaunch` the command line it starts when the files are in place.
 // `show_failure` opens a console window with the reason when the update cannot be put in place.
