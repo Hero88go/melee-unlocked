@@ -6653,6 +6653,32 @@ std::string look_file_sha256(const fs::path& path) {
   return text.str();
 }
 
+// Why a disc that plays is still not the exact file the patches were made against: the game reads
+// files, the patches need every byte (padding included). Empty when the disc is that file.
+std::string retail_disc_problem(const fs::path& path) {
+  constexpr uint64_t kRetailSize = 1459978240;
+  std::error_code ec;
+  const uint64_t size = fs::file_size(path, ec);
+  char head[8]{};
+  std::ifstream file(path, std::ios::binary);
+  if (ec || !file || !file.read(head, sizeof head)) return "The game disc file could not be read.";
+  if (std::memcmp(head, "GALE01", 6) != 0) {
+    if (size != kRetailSize)
+      return "The game disc is a compressed or trimmed copy. These looks need the full 1.36 GB .iso: convert it to a "
+             "plain ISO in Dolphin (right-click the game, Convert File, ISO) and choose that file.";
+    return "The game disc is not the North American Melee disc these looks are made from.";
+  }
+  if ((uint8_t)head[7] != 2)
+    return "The game disc is NTSC version 1.0" + std::to_string((uint8_t)head[7]) +
+           ". These looks are made from version 1.02.";
+  if (size != kRetailSize)
+    return "The game disc is a trimmed copy of 1.02 (" + std::to_string(size / (1024 * 1024)) +
+           " MB, the full disc is 1392 MB). These looks need the untrimmed .iso.";
+  if (look_file_sha256(path) == kRetailSha) return {};
+  return "The game disc is 1.02 and plays, but its bytes differ from a clean copy: files were changed, or its unused "
+         "space was blanked out when it was shrunk or converted. These looks need an untouched dump of the disc.";
+}
+
 bool file_matches(const fs::path& file, uint64_t size, const char* sha) {
   std::error_code ec;
   return fs::is_regular_file(file, ec) && fs::file_size(file, ec) == size && !ec && look_file_sha256(file) == sha;
@@ -6728,7 +6754,7 @@ bool build_look_packs(const std::string& patcher_folder, const std::string& reta
   const fs::path folder = fs::u8path(patcher_folder), retail = fs::u8path(retail_disc), xdelta = fs::u8path(xdelta_tool);
   std::error_code ec;
   if (!fs::is_regular_file(xdelta, ec)) { *message = "The patch tool is missing from the game folder (tools" + std::string(1, '\\') + "xdelta3.exe)."; return false; }
-  if (look_file_sha256(retail) != kRetailSha) { *message = "The game disc is not the NTSC 1.02 disc these looks are made from."; return false; }
+  if (const std::string problem = retail_disc_problem(retail); !problem.empty()) { *message = problem; return false; }
   const fs::path classic_patch = find_named(folder, kLookClassicPatch);
   if (classic_patch.empty() || !file_matches(classic_patch, kLookClassicPatchSize, kLookClassicPatchSha)) {
     *message = "That folder does not hold the patch files these looks need (version 1.0.2)."; return false;
@@ -6880,7 +6906,7 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
   std::error_code ec;
   fs::remove_all(work, ec);
   fs::create_directories(work / L"files", ec);
-  if (look_file_sha256(retail) != kRetailSha) { *message = "Your game disc is not the clean NTSC 1.02 disc these are made from."; return false; }
+  if (const std::string problem = retail_disc_problem(retail); !problem.empty()) { *message = problem; return false; }
   const OfficialFile& f = which == 0 ? kDietArchive : kAnimeleeArchive;
   const fs::path archive = work / fs::u8path(f.file);
   official_status(which, "Downloading from the authors' page...", 0);
