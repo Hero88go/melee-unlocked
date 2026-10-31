@@ -150,6 +150,16 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
   //    another file, or a joint of a model kept from the original. Otherwise that model is paired
   //    joint by joint like the rest.
   const std::set<uint32_t> gameplay_b = {b.roots.at("coll_data"), b.roots.at("grGroundParam")};
+  // Image descriptors the stage code finds by their address: Stadium's jumbotron is the texture whose
+  // descriptor is the file's GrdPStadiumBG_OVDummy..._image_desc root (grStadium_801D3138 compares the
+  // pointers). A skin mesh using its own copy of such a root uses the original's, or the screen never
+  // shows the picture the stage draws into it.
+  std::map<uint32_t, uint32_t> shared_root;   // skin root object -> the original's root of that name
+  for (const auto& [name, at] : b.roots) {
+    static const std::string kDesc = "_image_desc";
+    if (name.size() > kDesc.size() && name.compare(name.size() - kDesc.size(), kDesc.size(), kDesc) == 0 && a.roots.count(name))
+      shared_root[at] = a.roots.at(name);
+  }
   std::set<uint32_t> whole_joints;   // the skin's joints under the models asked for whole
   std::function<void(const Archive&, uint32_t, std::set<uint32_t>&, unsigned)> tree =
       [&](const Archive& z, uint32_t j, std::set<uint32_t>& into, unsigned depth) {
@@ -183,6 +193,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     while (!pending.empty() && ok) {
       const uint32_t at = pending.back(); pending.pop_back();
       if (gameplay_b.count(at) || at >= b.size || (b.joint_offsets.count(at) && !whole_joints.count(at))) { ok = false; break; }
+      if (shared_root.count(at)) continue;
       if (!reach.insert(at).second) continue;
       if (whole_joints.count(at) && (b.get(at + 4) & kBehaviourJoint)) { ok = false; break; }
       const uint32_t n = b.extent(at);
@@ -225,6 +236,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
         if (!original_joint.count(at)) ok = false;
         continue;
       }
+      if (shared_root.count(at)) continue;
       if (!reach.insert(at).second) continue;
       const uint32_t n = b.extent(at);
       // A slot the loader fills in from another file would arrive empty in the copy.
@@ -251,6 +263,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     while (!pending.empty() && ok) {
       const uint32_t at = pending.back(); pending.pop_back();
       if (paired_b.count(at) || gameplay_b.count(at) || whole_joints.count(at) || at >= b.size) { ok = false; break; }
+      if (shared_root.count(at)) continue;
       if (!reach.insert(at).second) continue;
       if (b.joint_offsets.count(at) && (b.get(at + 4) & kBehaviourJoint)) { ok = false; break; }
       const uint32_t n = b.extent(at);
@@ -290,6 +303,7 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
       const uint32_t at = to + (*p - from);
       const auto target = moved.find(b.get(*p));
       if (target != moved.end()) put(data, at, target->second);
+      else if (shared_root.count(b.get(*p))) put(data, at, shared_root.at(b.get(*p)));
       else {
         const auto joint = original_joint.find(b.get(*p));
         if (joint == original_joint.end()) { *note = "a skin mesh points outside what was copied"; return false; }

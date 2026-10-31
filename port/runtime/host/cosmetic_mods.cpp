@@ -5602,6 +5602,28 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         // two are given one length, the longer one's, since the game is told one length per file.
         online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
                          stage_online_form(clean, served, &online_form, &validation_error, disc_file.path);
+        // The English twin of a skin made from the .dat: the skin carries the Japanese text (the two
+        // files differ only in their SIS text, the Stadium jumbotron's). When the skin drawn over the
+        // English file keeps every one of its meshes, that is the skin with English text, so it is
+        // served offline too. Otherwise the skin as it is, Japanese text and all.
+        const std::string served_path = lower(disc_file.path);
+        if (online_allowed && !online_form.empty() && served_path.size() > 4 &&
+            served_path.compare(served_path.size() - 4, 4, ".usd") == 0 &&
+            lower(asset->info.target_path).find(".usd") == std::string::npos) {
+          unsigned drawn = 0, total = 0;
+          const size_t at = validation_error.rfind(" of the skin's ");
+          if (at != std::string::npos) {
+            size_t start = at;
+            while (start > 0 && std::isdigit((unsigned char)validation_error[start - 1])) --start;
+            drawn = (unsigned)std::strtoul(validation_error.c_str() + start, nullptr, 10);
+            total = (unsigned)std::strtoul(validation_error.c_str() + at + 15, nullptr, 10);
+          }
+          if (total && drawn == total) {
+            served = online_form;
+            host::log("cosmetics: %s keeps the English text (all %u of the skin's meshes drawn over it)",
+                      disc_file.path.c_str(), total);
+          }
+        }
         if (online_allowed && !online_form.empty()) {
           const size_t extent = std::max(served.size(), online_form.size());
           if (extent > std::numeric_limits<uint32_t>::max() || served.size() < 4 || online_form.size() < 4) {
