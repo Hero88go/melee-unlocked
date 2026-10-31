@@ -254,8 +254,8 @@ bool remove_pack(const fs::path& game_dir, const fs::path& pack, std::string* er
   } else if (!fs::is_regular_file(path, ec) || !fs::remove(path, ec) || ec) {
     *error = "Could not remove the installed pack."; return false;
   }
-  fs::remove(base / ".cache/scan.txt", ec);
-  fs::remove(base / ".cache/detected.json", ec);
+  // The scan cache and detected.json stay: the rescan that follows drops the removed file from both.
+  // Deleting them made every other mod read "Not installed" until each disc had been read again.
   return true;
 }
 bool enable_pack(const fs::path& settings, const std::string& key, bool on, std::string* error) {
