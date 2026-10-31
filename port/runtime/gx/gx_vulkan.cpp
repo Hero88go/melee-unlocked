@@ -44,6 +44,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -210,11 +211,16 @@ std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::st
 #endif
 
 // SPIR-V for one HLSL source, from the disk cache when it was compiled before.
-std::vector<uint32_t> spirv_for(const std::string& hlsl, bool vertex, const char* entry = "main", bool present = false) {
+uint64_t spirv_hash(const std::string& hlsl, bool vertex, const char* entry = "main", bool present = false) {
   uint64_t hash = hash_bytes(hlsl.data(), hlsl.size()) ^ (vertex ? 0x5653ull : 0x5053ull);
-  hash ^= hash_bytes(entry, std::strlen(entry)) * 31 + (present ? 0x7071ull : 0);
+  return hash ^ (hash_bytes(entry, std::strlen(entry)) * 31 + (present ? 0x7071ull : 0));
+}
+std::filesystem::path spirv_path(uint64_t hash, bool vertex) {
   char name[40]; std::snprintf(name, sizeof name, "%s-%016llx.spv", vertex ? "vs" : "ps", (unsigned long long)hash);
-  const auto path = shader_cache_dir() / name;
+  return shader_cache_dir() / name;
+}
+std::vector<uint32_t> spirv_for(const std::string& hlsl, bool vertex, const char* entry = "main", bool present = false) {
+  const auto path = spirv_path(spirv_hash(hlsl, vertex, entry, present), vertex);
   std::vector<uint32_t> words = read_spirv(path);
   if (!words.empty()) return words;
   std::string error;
@@ -356,6 +362,7 @@ class VulkanBackend final : public Backend {
     create_swapchain();
     scale_ = pick_scale();
     create_efb();
+    prewarm_pipelines();
     blit_vs_ = module(spirv_for(std::string("#define VERTEX 1\n") + kBlitShader, true));
     blit_ps_ = module(spirv_for(kBlitShader, false));
     copy_pipeline_ = blit_pipeline(VK_FORMAT_R8G8B8A8_UNORM);
@@ -408,6 +415,7 @@ class VulkanBackend final : public Backend {
     }
     vkDestroyPipelineLayout(device_, layout_, nullptr); vkDestroyPipelineLayout(device_, blit_layout_, nullptr);
     vkDestroyDescriptorSetLayout(device_, set_layout_, nullptr); vkDestroyDescriptorSetLayout(device_, blit_set_layout_, nullptr);
+    save_pipeline_recipes();
     if (pipeline_cache_) { save_pipeline_cache(); vkDestroyPipelineCache(device_, pipeline_cache_, nullptr); }
     heap_.destroy();
     vkDestroyDevice(device_, nullptr);
@@ -1013,11 +1021,62 @@ class VulkanBackend final : public Backend {
     // Bits 19 and up: the EFB's sample count, so an MSAA change builds its own pipelines.
     const PipelineKey key{vs.hash(), ps.hash(), pipeline_state(dc, topology, wire && wire_supported_) | (uint32_t(samples_) << 19)};
     if (auto i = pipelines_.find(key); i != pipelines_.end()) return i->second;
+    const std::string vs_hlsl = generate_vertex_shader(vs), ps_hlsl = generate_pixel_shader(ps);
+    VkPipeline p = game_pipeline(key, cached_module(key.vs, vs_hlsl, true), cached_module(key.ps, ps_hlsl, false));
+    if (recipes_.size() < kMaxRecipes) recipes_.push_back({key.vs, key.ps, spirv_hash(vs_hlsl, true), spirv_hash(ps_hlsl, false), key.state});
+    return p;
+  }
+
+  // Pipelines of earlier sessions, built before the first frame. A pipeline first needed mid-match
+  // compiled on the render thread and held that frame (a stutter at each new effect or stage piece),
+  // as on Direct3D 12 before its own prewarm. Each one the game builds is recorded with the SPIR-V
+  // files of its two shaders; at the next start those are read back and built through the pipeline
+  // cache. A recipe whose SPIR-V is gone (a cleared cache) is dropped.
+  struct Recipe { uint64_t vs, ps, vs_spv, ps_spv; uint32_t state, pad; };
+  static constexpr size_t kMaxRecipes = 16384;
+  static constexpr uint32_t kRecipeMagic = 0x564B5231u;   // "VKR1"
+  std::vector<Recipe> recipes_;
+
+  void prewarm_pipelines() {
+    std::ifstream f(shader_cache_dir() / "vk_recipes.bin", std::ios::binary);
+    uint32_t head[2]{};
+    if (!f.read(reinterpret_cast<char*>(head), sizeof head) || head[0] != kRecipeMagic || head[1] > kMaxRecipes) return;
+    std::vector<Recipe> saved(head[1]);
+    if (!f.read(reinterpret_cast<char*>(saved.data()), (std::streamsize)(saved.size() * sizeof(Recipe)))) return;
+    const auto start = std::chrono::steady_clock::now();
+    size_t built = 0;
+    for (const Recipe& r : saved) {
+      const PipelineKey key{r.vs, r.ps, r.state};
+      // Another MSAA sample count than this session's draws to other images: kept for when it is used.
+      if ((r.state >> 19) != uint32_t(samples_)) { recipes_.push_back(r); continue; }
+      if (pipelines_.count(key)) continue;
+      const uint64_t vk = key.vs ^ 0xA5A5000000000000ull, pk = key.ps ^ 0x5A5A000000000000ull;
+      VkShaderModule vm = VK_NULL_HANDLE, pm = VK_NULL_HANDLE;
+      if (auto i = modules_.find(vk); i != modules_.end()) vm = i->second;
+      else if (auto w = read_spirv(spirv_path(r.vs_spv, true)); !w.empty()) { vm = module(w); modules_.emplace(vk, vm); }
+      if (auto i = modules_.find(pk); i != modules_.end()) pm = i->second;
+      else if (auto w = read_spirv(spirv_path(r.ps_spv, false)); !w.empty()) { pm = module(w); modules_.emplace(pk, pm); }
+      if (!vm || !pm) continue;
+      game_pipeline(key, vm, pm);
+      recipes_.push_back(r);
+      ++built;
+    }
+    host::log("vulkan: prewarmed %zu pipelines from %zu recipes in %.1f ms", built, saved.size(),
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+  }
+
+  void save_pipeline_recipes() {
+    if (recipes_.empty()) return;
+    std::ofstream f(shader_cache_dir() / "vk_recipes.bin", std::ios::binary);
+    const uint32_t head[2] = {kRecipeMagic, (uint32_t)std::min(recipes_.size(), kMaxRecipes)};
+    f.write(reinterpret_cast<const char*>(head), sizeof head);
+    f.write(reinterpret_cast<const char*>(recipes_.data()), (std::streamsize)(head[1] * sizeof(Recipe)));
+  }
+
+  VkPipeline game_pipeline(const PipelineKey& key, VkShaderModule vs_module, VkShaderModule ps_module) {
     VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
-                 cached_module(key.vs, generate_vertex_shader(vs), true), "main", nullptr};
-    stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
-                 cached_module(key.ps, generate_pixel_shader(ps), false), "main", nullptr};
+    stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs_module, "main", nullptr};
+    stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, ps_module, "main", nullptr};
     // gx::Vertex in declaration order of the generated vertex shader's inputs (locations 0..14).
     VkVertexInputBindingDescription binding{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
     std::vector<VkVertexInputAttributeDescription> attrs;
