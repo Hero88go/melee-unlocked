@@ -21,7 +21,7 @@ enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored, AuthoredInter
 
 // Which graphics API renders the game. D3D12 is the default and the only one with DLSS; D3D11 is
 // for machines whose driver cannot start D3D12. Switching takes effect at the next launch.
-enum class RenderApi { D3D12, D3D11 };
+enum class RenderApi { D3D12, D3D11, Vulkan };
 
 // How the 640x480 image is fitted to the window. Presentation only: it changes nothing the game
 // computes, so it cannot desync and two players in one match may pick different values.

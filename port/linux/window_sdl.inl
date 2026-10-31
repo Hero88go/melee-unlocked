@@ -201,6 +201,9 @@ void apply_client_size(int w, int h) {
 }
 }  // namespace
 
+bool g_vulkan_window = false;
+void window_prefer_vulkan(bool on) { g_vulkan_window = on; }
+
 void* window_create(int w, int h, const wchar_t* title, bool visible) {
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
@@ -212,7 +215,7 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
   SDL_GL_SetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 0);
-  Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+  Uint32 flags = (g_vulkan_window ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
   flags |= visible ? SDL_WINDOW_SHOWN : SDL_WINDOW_HIDDEN;
   SDL_Window* window = SDL_CreateWindow(utf8_title(title).c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
   if (!window) die("cannot create the game window: %s", SDL_GetError());

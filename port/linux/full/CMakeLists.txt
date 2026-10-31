@@ -72,8 +72,11 @@ target_include_directories(full_monocypher PUBLIC "${PORT}/third_party/monocyphe
 add_library(full_imgui STATIC
   "${PORT}/third_party/imgui/imgui.cpp" "${PORT}/third_party/imgui/imgui_draw.cpp"
   "${PORT}/third_party/imgui/imgui_tables.cpp" "${PORT}/third_party/imgui/imgui_widgets.cpp"
-  "${PORT}/third_party/imgui/backends/imgui_impl_sdl2.cpp" "${PORT}/third_party/imgui/backends/imgui_impl_opengl3.cpp")
-target_include_directories(full_imgui PUBLIC "${PORT}/third_party/imgui" "${PORT}/third_party/imgui/backends")
+  "${PORT}/third_party/imgui/backends/imgui_impl_sdl2.cpp" "${PORT}/third_party/imgui/backends/imgui_impl_opengl3.cpp"
+  "${PORT}/third_party/imgui/backends/imgui_impl_vulkan.cpp")
+# The Vulkan renderer (runtime/gx/gx_vulkan.cpp) opens libvulkan at run time: headers only.
+target_include_directories(full_imgui PUBLIC "${PORT}/third_party/imgui" "${PORT}/third_party/imgui/backends" "${PORT}/third_party/vulkan-headers/include")
+target_compile_definitions(full_imgui PUBLIC IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
 target_compile_features(full_imgui PUBLIC cxx_std_17)
 target_link_libraries(full_imgui PUBLIC SDL2::SDL2 ${CMAKE_DL_LIBS})
 

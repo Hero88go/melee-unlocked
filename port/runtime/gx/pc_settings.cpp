@@ -23,6 +23,7 @@
 #include "ui_sources/gd_melee/motion.h"
 #include "radial_navigation.h"
 #include "gx_backend.h"
+#include "gx_vulkan.h"
 #include "gx_shader.h"
 #include "gx_d3d12.h"
 #ifdef MELEE_NO_SLIPPI
@@ -2357,7 +2358,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       // 20XX Hack Pack choices (MU_HP_SET_*): playlists, stage variants and page, its menu's switches.
       else if (key == "hp_settings") source_port::hackpack::settings_parse(value);
       else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
-      else if (key == "backend") options.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
+      else if (key == "backend") options.api = value == "d3d11" ? RenderApi::D3D11 : value == "vulkan" ? RenderApi::Vulkan : RenderApi::D3D12;
       else if (key == "volume") { volume = std::clamp(std::stoi(value), 0, 100); g_volume = volume; }
       else if (key.rfind("key_", 0) == 0) {
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
@@ -3313,7 +3314,8 @@ void settings_context_create(void* window, bool open_at_startup) {
     g_input_overlay_style = legacy;
   }
 #ifndef _WIN32
-  ImGui_ImplSDL2_InitForOpenGL(static_cast<SDL_Window*>(window), SDL_GL_GetCurrentContext());
+  if (SDL_GetWindowFlags(static_cast<SDL_Window*>(window)) & SDL_WINDOW_VULKAN) ImGui_ImplSDL2_InitForVulkan(static_cast<SDL_Window*>(window));
+  else ImGui_ImplSDL2_InitForOpenGL(static_cast<SDL_Window*>(window), SDL_GL_GetCurrentContext());
   // The window code decides when the pointer shows (window_sdl.inl show_cursor). Without this the
   // SDL backend turned it back on every frame, so it never hid on Linux.
   io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
@@ -4174,7 +4176,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
        << "\ndlss5defaults 2"
 #endif
-       << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+       << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : options.api == RenderApi::Vulkan ? "vulkan" : "d3d12")
        << "\ncrt_filter " << options.crt_filter << "\ncrt_curve " << options.crt_curve << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
@@ -6330,19 +6332,29 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // Creating a device and a swapchain on another API means restarting; the choice is saved and
     // read again at the next launch (see load_pc_settings and --backend).
 #ifndef _WIN32
-    // Linux draws with OpenGL only; Direct3D, DLSS and XeSS are Windows parts.
-    ImGui::TextUnformatted("Graphics backend: OpenGL");
+    // Linux: OpenGL, or Vulkan where a Vulkan 1.3 GPU is present. Direct3D, DLSS and XeSS are Windows parts.
+    {
+      const char* linux_backends[] = {"OpenGL (default)", "Vulkan (experimental)"};
+      int linux_index = options.api == RenderApi::Vulkan ? 1 : 0;
+      if (vulkan_available()) {
+        if (settings_combo("Graphics backend", &linux_index, linux_backends, 2)) { options.api = linux_index ? RenderApi::Vulkan : RenderApi::D3D12; changed = true; }
+        settings_hint("Takes effect at the next launch: save settings, then restart.");
+      } else ImGui::TextUnformatted("Graphics backend: OpenGL");
+    }
     const bool d3d11 = true;   // the upscaler row below stays disabled
     if (false)
 #endif
     {
-    const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)"};
-    int api_index = options.api == RenderApi::D3D11 ? 1 : 0;
-    if (settings_combo("Graphics backend", &api_index, backends, 2)) { options.api = api_index ? RenderApi::D3D11 : RenderApi::D3D12; changed = true; }
+    // Vulkan is offered only where a Vulkan 1.3 GPU is present; it draws without DLSS, XeSS and the CRT model.
+    const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)", "Vulkan (experimental)"};
+    int api_index = options.api == RenderApi::D3D11 ? 1 : options.api == RenderApi::Vulkan ? 2 : 0;
+    if (settings_combo("Graphics backend", &api_index, backends, vulkan_available() ? 3 : 2)) {
+      options.api = api_index == 1 ? RenderApi::D3D11 : api_index == 2 ? RenderApi::Vulkan : RenderApi::D3D12; changed = true;
+    }
     settings_hint("Takes effect at the next launch: save settings, then restart.");
     }
 #ifdef _WIN32
-    const bool d3d11 = options.api == RenderApi::D3D11;
+    const bool d3d11 = options.api == RenderApi::D3D11 || options.api == RenderApi::Vulkan;   // no upscalers on either
 #endif
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance",
                                "XeSS AA", "XeSS Ultra Quality", "XeSS Quality", "XeSS Balanced", "XeSS Performance"};
@@ -7031,7 +7043,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // new launch: say so here.
     {
       // The backend is the one thing here that cannot change while the game is running.
-      const RenderApi running = state.running_d3d11 ? RenderApi::D3D11 : RenderApi::D3D12;
+      const RenderApi running = state.running_d3d11 ? RenderApi::D3D11 : state.running_vulkan ? RenderApi::Vulkan : RenderApi::D3D12;
 #ifdef _WIN32
       if (options.api != running)
 #else
@@ -7040,7 +7052,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #endif
       {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Graphics backend: %s at the next launch. Save settings, then restart.",
-                           options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
+                           options.api == RenderApi::D3D11 ? "Direct3D 11" : options.api == RenderApi::Vulkan ? "Vulkan" : "Direct3D 12");
         restart_now_button("backend");
       }
     }

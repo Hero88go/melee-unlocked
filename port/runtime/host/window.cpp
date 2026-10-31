@@ -168,6 +168,8 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }  // namespace
 
 #ifdef _WIN32
+void window_prefer_vulkan(bool) {}   // a Win32 window takes any renderer
+
 void* window_create(int w, int h, const wchar_t* title, bool visible) {
   HINSTANCE inst = GetModuleHandleW(nullptr);
   WNDCLASSEXW wc{};

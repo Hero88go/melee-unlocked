@@ -732,7 +732,7 @@ static void usage() {
               "           [--dlss-mode 0..5 --frame-generation[=2x|3x|4x|5x|6x|dynamic]] [--ssao 0..1]\n"
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
-              "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--fullscreen] [--backend d3d12|d3d11|vulkan] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--vanilla-only] [--no-mod-autodetect]\n"
               "           [--settings-path file --load-settings --import-cosmetic file|--scan-disc-skins mod.iso|--select-cosmetic id|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
@@ -1606,8 +1606,9 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--fullscreen") gfx.fullscreen = true;
     else if (a == "--backend") { std::string v = next();
       if (v == "d3d11" || v == "dx11" || v == "11") gfx.api = gx::RenderApi::D3D11;
+      else if (v == "vulkan" || v == "vk") gfx.api = gx::RenderApi::Vulkan;
       else if (v == "d3d12" || v == "dx12" || v == "12") gfx.api = gx::RenderApi::D3D12;
-      else { std::fprintf(stderr, "--backend d3d12|d3d11\n"); return 2; } }
+      else { std::fprintf(stderr, "--backend d3d12|d3d11|vulkan\n"); return 2; } }
 #ifdef GX_DLSS5
     else if (a == "--dlss5") gfx.dlss5 = true;                  // EXPERIMENTAL (gx_dlss5.h); needs --dlss
 #endif
@@ -2040,6 +2041,7 @@ static int melee_main(int argc, char** argv) {
   if (!headless && threaded) {
     backend = gx::create_threaded_backend(gfx, !hidden);
   } else if (!headless) {
+    host::window_prefer_vulkan(gfx.api == gx::RenderApi::Vulkan);
     void* hwnd = host::window_create(gfx.window_w, gfx.window_h, host::window_title_base().c_str(), !hidden);
     if (gfx.fullscreen && !gfx.exclusive_fullscreen) host::window_set_fullscreen(true);
     backend.reset(gx::create_render_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
@@ -2079,7 +2081,7 @@ static int melee_main(int argc, char** argv) {
   {
     static const char* const subframes[] = {"off", "extrapolate", "interpolate", "authored", "authored + interpolate"};
     host::log("settings: %s, frame cap %s, sub-frame %s, internal resolution %s, upscaler %d, vsync %s, %s",
-              gfx.api == gx::RenderApi::D3D11 ? "D3D11" : "D3D12",
+              gfx.api == gx::RenderApi::D3D11 ? "D3D11" : gfx.api == gx::RenderApi::Vulkan ? "Vulkan" : "D3D12",
               gfx.fps_cap < 0 ? "monitor" : gfx.fps_cap == 0 ? "off" : std::to_string((int)gfx.fps_cap).c_str(),
               subframes[std::min<size_t>((size_t)gfx.subframe, 4)],
               gfx.efb_scale ? ("x" + std::to_string(gfx.efb_scale)).c_str() : "auto", gfx.dlss_mode,

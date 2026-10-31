@@ -7,10 +7,12 @@
 #include "host.h"
 #include "window.h"
 #include "renderer_gl.h"
+#include "gx_vulkan.h"
 #include "exi_slippi.h"
 #include "gx_shader.h"
 #include <GL/glew.h>
 #include <SDL.h>
+#include <SDL_vulkan.h>
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -41,6 +43,28 @@ bool d3d11_available() { return false; }
 
 Backend* create_render_backend(void* hwnd, int client_w, int client_h, const RenderOptions& options) {
   auto* window = static_cast<SDL_Window*>(hwnd);
+  // Vulkan (PC settings > Graphics backend): the same renderer as on Windows, with its own settings
+  // panel. main.cpp made this a Vulkan window; if Vulkan does not start, the game cannot fall back to
+  // OpenGL on it, so it stops with the reason (set the backend back to OpenGL in melee_settings.txt).
+  if (options.api == RenderApi::Vulkan) {
+    VulkanWindow vw;
+    vw.window = window;
+    vw.drawable_size = [window](int* w, int* h) { SDL_Vulkan_GetDrawableSize(window, w, h); };
+    vw.instance_extensions = [window] {
+      unsigned n = 0;
+      SDL_Vulkan_GetInstanceExtensions(window, &n, nullptr);
+      std::vector<const char*> names(n);
+      SDL_Vulkan_GetInstanceExtensions(window, &n, names.data());
+      return names;
+    };
+    vw.create_surface = [window](void* instance, void* surface) {
+      return SDL_Vulkan_CreateSurface(window, static_cast<VkInstance>(instance), static_cast<VkSurfaceKHR*>(surface)) == SDL_TRUE;
+    };
+    RenderOptions vulkan_options = options;
+    vulkan_options.dlss_mode = 0;
+    if (Backend* backend = create_vulkan_backend(vw, client_w, client_h, vulkan_options)) return backend;
+    host::die("Vulkan did not start on this system (see melee_port.log). Choose OpenGL: delete the line \"backend vulkan\" from melee_settings.txt.");
+  }
   g_presentation = std::make_unique<LinuxPresentation>();
   g_presentation->options = options;
   RenderOptions& opts = g_presentation->options;

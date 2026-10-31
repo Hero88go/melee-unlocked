@@ -127,8 +127,11 @@ if(MELEE_NO_SLIPPI)
   add_library(port_imgui STATIC
     third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
-    third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp)
-  target_include_directories(port_imgui PUBLIC third_party/imgui)
+    third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp
+    third_party/imgui/backends/imgui_impl_vulkan.cpp)
+  # The Vulkan renderer (gx_vulkan.cpp) opens the loader at run time: headers only, no import library.
+  target_include_directories(port_imgui PUBLIC third_party/imgui third_party/vulkan-headers/include)
+  target_compile_definitions(port_imgui PUBLIC IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
   target_compile_features(port_imgui PUBLIC cxx_std_17)
   target_compile_options(port_imgui PRIVATE ${MELEE_ARCH_FLAG})
   target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
@@ -1022,8 +1025,11 @@ endforeach()
 add_library(port_imgui STATIC
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
-  third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp)
-target_include_directories(port_imgui PUBLIC third_party/imgui)
+  third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp
+  third_party/imgui/backends/imgui_impl_vulkan.cpp)
+# The Vulkan renderer (gx_vulkan.cpp) opens the loader at run time: headers only, no import library.
+target_include_directories(port_imgui PUBLIC third_party/imgui third_party/vulkan-headers/include)
+target_compile_definitions(port_imgui PUBLIC IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
 target_compile_features(port_imgui PUBLIC cxx_std_17)
 target_compile_options(port_imgui PRIVATE ${MELEE_ARCH_FLAG})
 target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
