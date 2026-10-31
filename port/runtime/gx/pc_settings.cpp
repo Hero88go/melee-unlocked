@@ -2146,7 +2146,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "contrast") options.contrast = std::clamp(std::stof(value), 0.5f, 1.5f);
       else if (key == "vibrance") options.vibrance = std::clamp(std::stof(value), 0.0f, 2.0f);
       else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
-      else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
+      else if (key == "ssaa") { int a = std::stoi(value); if (a >= 1 && a <= 4) options.ssaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "onlineframeprotection") options.online_frame_protection = value == "1";
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
@@ -2342,7 +2342,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "lowspec_prev_backend") options.low_spec_previous.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
       else if (key == "lowspec_prev_fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || rate >= 30) options.low_spec_previous.fps_cap = std::min(rate, 2000.0); }
       else if (key == "lowspec_prev_scale") { int n = std::stoi(value); if (n >= 0 && n <= 8) options.low_spec_previous.efb_scale = n; }
-      else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n == 1 || n == 2) options.low_spec_previous.ssaa = n; }
+      else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n >= 1 && n <= 4) options.low_spec_previous.ssaa = n; }
       else if (key == "lowspec_prev_anisotropy") { int n = std::stoi(value); if (n == 1 || n == 2 || n == 4 || n == 8 || n == 16) options.low_spec_previous.anisotropy = n; }
       else if (key == "lowspec_prev_effects") { int n = std::stoi(value); if (n >= 0 && n <= 3) options.low_spec_previous.effects_level = n; }
       else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 10) options.low_spec_previous.dlss_mode = n; }
@@ -3250,6 +3250,8 @@ void settings_context_create(void* window, bool open_at_startup) {
   (void)open_at_startup;
   IMGUI_CHECKVERSION(); ImGui::CreateContext();
   auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
+  // The duplicate-ID tooltip offers a debugger break; without a debugger that click crashed the game.
+  io.ConfigDebugHighlightIdConflicts = false; io.ConfigDebugHighlightIdConflictsShowItemPicker = false;
   g_settings_old_font = io.Fonts->AddFontDefault();
 #ifdef _WIN32
   if (GetFileAttributesW(L"C:\\Windows\\Fonts\\segoeui.ttf") != INVALID_FILE_ATTRIBUTES)
@@ -3485,7 +3487,7 @@ void heading(const char* title, const char* subtitle = nullptr) {
 
 // One option of an odds group: name, a weight bar 0..100, and its share of the group.
 bool odds_row(const char* label, uint8_t* weight, int total) {
-  ImGui::PushID(label);
+  ImGui::PushID(weight);  // two options of a group can share a name
   const float avail = ImGui::GetContentRegionAvail().x;
   const float name_w = std::min(190.0f, avail * 0.38f);
   ImGui::AlignTextToFramePadding();
@@ -5874,10 +5876,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     changed |= settings_combo("Internal resolution", &options.efb_scale, scales, 9);
     // DLSS (DLAA included) does its own anti-aliasing, so supersampling on top would render larger
     // for a second pass over the same edges: grey it out rather than let the two stack.
-    const char* aa[] = {"None", "4x SSAA (supersampling)"};
-    int aa_index = options.ssaa == 2 ? 1 : 0;
+    // Factor per side: 2 = 4 samples per pixel, 3 = 9, 4 = 16 (16x renders 16 times the pixels).
+    const char* aa[] = {"None", "4x SSAA (supersampling)", "9x SSAA (heavier)", "16x SSAA (heaviest)"};
+    int aa_index = std::clamp(options.ssaa, 1, 4) - 1;
     if (options.dlss_mode && !dlss_picks_resolution) ImGui::BeginDisabled();
-    if (settings_combo("Anti-aliasing", &aa_index, aa, 2)) { options.ssaa = aa_index ? 2 : 1; changed = true; }
+    if (settings_combo("Anti-aliasing", &aa_index, aa, 4)) { options.ssaa = aa_index + 1; changed = true; }
     if (options.dlss_mode && !dlss_picks_resolution) ImGui::EndDisabled();
     if (dlss_picks_resolution) ImGui::EndDisabled();
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};

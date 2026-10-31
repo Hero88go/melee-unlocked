@@ -358,7 +358,7 @@ struct RenderOptions {
   bool ray_reconstruction = false; // DLSS-RR denoising of the path-traced HDR input; needs NVIDIA runtime
   float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;
   int anisotropy = 4;         // texture anisotropic filtering 1..16 (4: the High preset, the default)
-  int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)
+  int ssaa = 1;               // supersampling factor per side: 1 off, 2/3/4 = 4x/9x/16x SSAA (EFB rendered larger, box filtered)
   std::string capture_path;   // write a PPM of the presented image at capture_frame
   uint32_t capture_frame = 0;
   uint32_t capture_every = 0;  // if set, capture every N presented frames as <capture_path>_<frame>.ppm

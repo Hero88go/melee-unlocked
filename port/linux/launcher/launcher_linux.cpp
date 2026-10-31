@@ -722,6 +722,7 @@ int main(int argc, char** argv) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;
+  io.ConfigDebugHighlightIdConflicts = false; io.ConfigDebugHighlightIdConflictsShowItemPicker = false;
   for (const char* font : {"ui_sources/gd_melee/kit/SourceSans3-Regular.otf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
                            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"}) {
     const std::string path = font[0] == '/' ? font : g_dir + "/" + font;
