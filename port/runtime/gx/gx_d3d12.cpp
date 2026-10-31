@@ -695,6 +695,9 @@ class D3D12Backend : public Backend {
   int msaa_applied_ = 1;
   void resolve_efb();
   uint32_t msaa_wanted() const;
+  // MSAA draws only while nothing else reads the EFB itself: DLSS/XeSS and path tracing can be turned
+  // on while the game runs, and their pipelines expect the single-sample targets.
+  bool msaa_on() const { return msaa_samples_ > 1 && msaa_color_ && !dlss_active_ && !opts_.path_tracing; }
   // Frames in flight: each slot owns a command allocator, upload rings and the resources it
   // retired; a slot is reused only after the fence value recorded at its submission completes.
   // Two slots, not three: with three the CPU could run two whole GPU frames ahead, and when the GPU
@@ -1272,7 +1275,7 @@ uint32_t D3D12Backend::msaa_wanted() const {
 // The blit pipeline for drawing into the EFB itself (video backgrounds): MSAA needs one with the
 // EFB's sample count.
 ID3D12PipelineState* D3D12Backend::efb_blit_pso() {
-  if (msaa_samples_ <= 1 || !msaa_color_) return blit_pso_.Get();
+  if (!msaa_on()) return blit_pso_.Get();
   if (blit_msaa_samples_ != msaa_samples_) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
     pd.pRootSignature = blit_root_.Get();
@@ -1290,7 +1293,7 @@ ID3D12PipelineState* D3D12Backend::efb_blit_pso() {
 }
 
 void D3D12Backend::resolve_efb() {
-  if (msaa_samples_ <= 1 || !msaa_color_) return;
+  if (!msaa_on()) return;
   D3D12_RESOURCE_BARRIER b[3]{};
   for (auto& x : b) x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {msaa_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE};
@@ -1326,7 +1329,7 @@ void D3D12Backend::bind_efb_targets() {
   rtvs[1] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[1].ptr += 5 * rtv_size_;
   rtvs[2] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[2].ptr += 6 * rtv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-  if (msaa_samples_ > 1 && msaa_color_) {
+  if (msaa_on()) {
     rtvs[0] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[0].ptr += 8 * rtv_size_;
     dsv.ptr += device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     list_->OMSetRenderTargets(1, rtvs, FALSE, &dsv);
@@ -1971,7 +1974,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   PSUid psu = make_ps_uid(dc);
   vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
   uint64_t vh = vsu.hash(), ph = psu.hash();
-  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, (dlss_active_ ? 1u : 0u) | (msaa_samples_ > 1 ? msaa_samples_ << 4 : 0u)};
+  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, (dlss_active_ ? 1u : 0u) | (msaa_on() ? msaa_samples_ << 4 : 0u)};
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
@@ -2131,7 +2134,7 @@ void D3D12Backend::draw_video_background(
   ID3D12PipelineState* video_pso = efb_blit_pso();
   if (!video_pso) return;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-  rtv.ptr += (msaa_samples_ > 1 && msaa_color_ ? 8 : 3) * rtv_size_;
+  rtv.ptr += (msaa_on() ? 8 : 3) * rtv_size_;
   list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   const float s = (float)scale_;
   D3D12_VIEWPORT vp{screen.src_x * s, screen.src_y * s,
@@ -2618,7 +2621,7 @@ void D3D12Backend::clear_efb(const EfbCopy& c) {
   D3D12_RECT r{(LONG)(c.src_x * s), (LONG)(c.src_y * s), (LONG)((c.src_x + c.src_w) * s), (LONG)((c.src_y + c.src_h) * s)};
   const uint32_t clear_colour = look_clear_colour(in_match_, c.clear_color);   // the look's background
   float color[4] = {((clear_colour >> 16) & 0xFF) / 255.0f, ((clear_colour >> 8) & 0xFF) / 255.0f, (clear_colour & 0xFF) / 255.0f, ((clear_colour >> 24) & 0xFF) / 255.0f};
-  const bool msaa = msaa_samples_ > 1 && msaa_color_;
+  const bool msaa = msaa_on();
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += (msaa ? 8 : 3) * rtv_size_;
   list_->ClearRenderTargetView(rtv, color, 1, &r);
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
