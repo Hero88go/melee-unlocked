@@ -626,7 +626,7 @@ void coord_lines(ImDrawList* dl, float x, float y, float u, float a, const char*
   const double qa = std::atan2(std::fabs((double)sy), std::fabs((double)sx)) * 180 / 3.14159265358979;
   std::snprintf(b, sizeof b, "Angle %.2f  Magnitude %.4f", qa, std::sqrt((double)sx * sx + (double)sy * sy) / 80);
   text(dl, x, y + 50 * u, 15 * u, with_alpha(IM_COL32(200, 185, 150, 255), a), b);
-  if (desync_check && (sx || sy) && ic_desync_coordinate(sx, sy)) text(dl, x, y + 72 * u, 15 * u, with_alpha(kOrange, a), "Desyncs the Ice Climbers");
+  if (desync_check && (sx || sy) && ic_desync_coordinate(sx, sy)) text(dl, x, y + 72 * u, 15 * u, with_alpha(kOrange, a), "Ice Climbers desync spot (a note, not an error)");
 }
 
 void plot_area(ImDrawList* dl, float x0, float y0, float x1, float y1, float u, float a) {
