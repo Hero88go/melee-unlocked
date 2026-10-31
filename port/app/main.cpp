@@ -1780,8 +1780,11 @@ static int melee_main(int argc, char** argv) {
     // compiler's nesting limit in the Source Port build.
     else if (a == "--border") { gfx.border_art = next(); if (gfx.border_art.rfind("sharp:", 0) == 0) { gfx.border_edge = 0; gfx.border_art.erase(0, 6); } }
     else if (a == "--shader") gfx.shader_preset = next();
-    else if (a == "--ssaa") gfx.ssaa = std::clamp(std::atoi(next()), 1, 4);
-    else if (a == "--msaa") { const int n = std::atoi(next()); gfx.msaa = n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1; }
+    // One branch for both: this else-if chain is at MSVC's nesting limit (C1061) with DLSS 5 built in.
+    else if (a == "--ssaa" || a == "--msaa") {
+      const int n = std::atoi(next());
+      if (a == "--ssaa") gfx.ssaa = std::clamp(n, 1, 4); else gfx.msaa = n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1;
+    }
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
     // Hidden runs never load the settings file, so the quality level needs a flag to be measurable.
     // The same for the "Lightweight" ladder; the backend stays the one asked for (no Direct3D 11
