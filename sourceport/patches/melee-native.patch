@@ -100278,7 +100278,7 @@ index bdc4d71b6..e5541a3bf 100644
  typedef struct ChallengerData ChallengerData;
  typedef struct MatchEnd MatchEnd;
 diff --git a/src/melee/gm/gm_1601.c b/src/melee/gm/gm_1601.c
-index 7ad706ec1..32f700e31 100644
+index 7ad706ec1..45b723788 100644
 --- a/src/melee/gm/gm_1601.c
 +++ b/src/melee/gm/gm_1601.c
 @@ -10,9 +10,9 @@
@@ -100407,7 +100407,7 @@ index 7ad706ec1..32f700e31 100644
  }
  
  u8 gm_SelKindToUnlockIndex(SelectableCharacterKind selkind)
-@@ -707,6 +754,18 @@ GXColor gm_80160968(u32 arg0)
+@@ -707,6 +754,23 @@ GXColor gm_80160968(u32 arg0)
  /// Get SJIS character name for a given CharacterKind
  const char* gm_80160980(u8 ckind)
  {
@@ -100422,11 +100422,16 @@ index 7ad706ec1..32f700e31 100644
 +    if (mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS()) != NULL) {
 +        return mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS());
 +    }
++    /* A fighter id past the name tables (a save or a mod's record) read a pointer past
++     * them, which the name text then used as its format: a crash on the Records screen. */
++    if (ckind >= ARRAY_SIZE(lbl_803D4FDC) || ckind >= ARRAY_SIZE(lbl_803D4D74)) {
++        return "";
++    }
 +#endif
      if (lbLang_IsSavedLanguageUS()) {
          return lbl_803D4FDC[ckind];
      } else {
-@@ -716,6 +775,17 @@ const char* gm_80160980(u8 ckind)
+@@ -716,6 +780,22 @@ const char* gm_80160980(u8 ckind)
  
  const char* fn_801609E0(u8 ckind)
  {
@@ -100440,11 +100445,16 @@ index 7ad706ec1..32f700e31 100644
 +    if (mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS()) != NULL) {
 +        return mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS());
 +    }
++    /* A fighter id past the name tables (a save or a mod's record) read a pointer past
++     * them, which the name text then used as its format: a crash on the Records screen. */
++    if (ckind >= ARRAY_SIZE(lbl_803D4FDC) || ckind >= ARRAY_SIZE(lbl_803D4D74)) {
++        return "";
++    }
 +#endif
      if (lbLang_IsSavedLanguageUS()) {
          if (lbl_803D50E4[ckind] != NULL) {
              return lbl_803D50E4[ckind];
-@@ -735,6 +805,11 @@ const char* gm_80160A60(int arg0)
+@@ -735,6 +815,11 @@ const char* gm_80160A60(int arg0)
  
      if (Player_GetPlayerSlotType(arg0) != Gm_PKind_NA) {
          ckind = Player_GetPlayerCharacter(arg0);
@@ -100456,7 +100466,7 @@ index 7ad706ec1..32f700e31 100644
          if (ckind == CKind_Zelda || ckind == CKind_Seak) {
              if (Player_80036394(arg0) == Ft_Kind_Seak) {
                  if (lbLang_IsSavedLanguageUS()) {
-@@ -750,6 +825,12 @@ const char* gm_80160A60(int arg0)
+@@ -750,6 +835,12 @@ const char* gm_80160A60(int arg0)
                  }
              }
          }
@@ -100469,7 +100479,7 @@ index 7ad706ec1..32f700e31 100644
          if (lbLang_IsSavedLanguageUS()) {
              return lbl_803D4FDC[ckind];
          } else {
-@@ -776,6 +857,12 @@ void gm_80160B40(HSD_Text* text, u8 ckind, u8 arg2)
+@@ -776,6 +867,12 @@ void gm_80160B40(HSD_Text* text, u8 ckind, u8 arg2)
  
      gm_80160B40_init_text(text, &tmp_text);
      str = arg2 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
@@ -100482,7 +100492,7 @@ index 7ad706ec1..32f700e31 100644
      if (lbLang_IsSavedLanguageUS()) {
          bool tmp = arg2 && lbl_803D50E4[tmp_ckind] != NULL;
          var_f31 = tmp ? lbl_803B7784[tmp_ckind] : lbl_803B767C[tmp_ckind];
-@@ -800,6 +887,14 @@ void gm_80160C90(HSD_Text* text, u8 fighter_id, u8 arg2)
+@@ -800,6 +897,14 @@ void gm_80160C90(HSD_Text* text, u8 fighter_id, u8 arg2)
      }
      str = arg2 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
  
@@ -100497,7 +100507,7 @@ index 7ad706ec1..32f700e31 100644
      if (lbLang_IsSavedLanguageUS() != 0) {
          f32 temp;
          use_alt_name = false;
-@@ -844,6 +939,13 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -844,6 +949,13 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
      }
      str = arg3 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
  
@@ -100511,7 +100521,7 @@ index 7ad706ec1..32f700e31 100644
      if (lbLang_IsSavedLanguageUS() != 0) {
          f32 temp;
          use_alt_name = false;
-@@ -851,9 +953,9 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -851,9 +963,9 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
              use_alt_name = true;
          }
          if (use_alt_name) {
@@ -100523,7 +100533,7 @@ index 7ad706ec1..32f700e31 100644
          }
          size = temp;
      } else {
-@@ -863,7 +965,7 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -863,7 +975,7 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
              use_alt_name = true;
          }
          if (use_alt_name) {
@@ -100532,7 +100542,7 @@ index 7ad706ec1..32f700e31 100644
          } else {
              temp = lbl_803B75F8[tmp_ckind];
          }
-@@ -876,6 +978,11 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -876,6 +988,11 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
  f32 fn_80160F58(u8 ckind)
  {
      f32 result;
@@ -100544,7 +100554,7 @@ index 7ad706ec1..32f700e31 100644
      if (lbLang_IsSavedLanguageUS()) {
          result = lbl_803D50E4[ckind] != NULL ? lbl_803B7784[ckind]
                                               : lbl_803B767C[ckind];
-@@ -962,8 +1069,8 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -962,8 +1079,8 @@ s32 fn_80161154(MatchEnd* arg0)
          if (spC[i]) {
              if (idx == 4) {
                  idx = i;
@@ -100555,7 +100565,7 @@ index 7ad706ec1..32f700e31 100644
              {
                  idx = i;
              }
-@@ -974,7 +1081,7 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -974,7 +1091,7 @@ s32 fn_80161154(MatchEnd* arg0)
      for (i = 0; i < 4; i++) {
          if (spC[i] && idx != i) {
              player = &arg0->player_standings[i];
@@ -100564,7 +100574,7 @@ index 7ad706ec1..32f700e31 100644
                  cnt += 1;
              } else {
                  spC[i] = 0;
-@@ -1079,29 +1186,6 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -1079,29 +1196,6 @@ s32 fn_80161154(MatchEnd* arg0)
      }
  }
  
@@ -100594,7 +100604,7 @@ index 7ad706ec1..32f700e31 100644
  static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
  {
      u32 count = 0;
-@@ -1115,31 +1199,23 @@ static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
+@@ -1115,31 +1209,23 @@ static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
      return count;
  }
  
@@ -100637,7 +100647,7 @@ index 7ad706ec1..32f700e31 100644
      {
          if (arg1 == fn_80165548(arg0, fn_80165418(arg0), fn_801654A0(arg0))) {
              flag = 1;
-@@ -1147,7 +1223,7 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
+@@ -1147,7 +1233,7 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
              flag = 0;
          }
          if (flag != 0) {
@@ -100646,7 +100656,7 @@ index 7ad706ec1..32f700e31 100644
          }
      }
      if (arg1 == fn_80161154(arg0)) {
-@@ -1156,36 +1232,21 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
+@@ -1156,36 +1242,21 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
          flag = 0;
      }
      if (flag != 0) {
@@ -100694,7 +100704,7 @@ index 7ad706ec1..32f700e31 100644
      }
  }
  
-@@ -1203,12 +1264,22 @@ void fn_80162068(MatchEnd* match_end)
+@@ -1203,12 +1274,22 @@ void fn_80162068(MatchEnd* match_end)
          if (pdata_i->pkind == 3) {
              continue;
          }
@@ -100717,7 +100727,7 @@ index 7ad706ec1..32f700e31 100644
              if (pdata_i->kills[j] +
                      fd->fighter_kos[gm_CKindToSelKind(pdata_j->ckind)] >
                  U16_MAX)
-@@ -1220,7 +1291,7 @@ void fn_80162068(MatchEnd* match_end)
+@@ -1220,7 +1301,7 @@ void fn_80162068(MatchEnd* match_end)
              }
              fd->fighter_kos[gm_CKindToSelKind(pdata_j->ckind)] = (u16) sum;
          }
@@ -100726,7 +100736,7 @@ index 7ad706ec1..32f700e31 100644
      }
  }
  void fn_80162170(MatchEnd* arg0)
-@@ -1242,6 +1313,11 @@ void fn_80162170(MatchEnd* arg0)
+@@ -1242,6 +1323,11 @@ void fn_80162170(MatchEnd* arg0)
          if (p->x4 == 0x78) {
              continue;
          }
@@ -100738,7 +100748,7 @@ index 7ad706ec1..32f700e31 100644
          {
              struct NameTagData* nt = GetPersistentNameData(p->x4);
              for (j = 0; j < 4; j++) {
-@@ -1269,7 +1345,7 @@ void fn_80162170(MatchEnd* arg0)
+@@ -1269,7 +1355,7 @@ void fn_80162170(MatchEnd* arg0)
                  nt->play_time_by_fighter[gm_CKindToSelKind(p->ckind)] =
                      play_time;
              }
@@ -100747,7 +100757,7 @@ index 7ad706ec1..32f700e31 100644
          }
      }
  }
-@@ -1359,6 +1435,12 @@ void gm_80162574(u8 arg0, u8 arg1)
+@@ -1359,6 +1445,12 @@ void gm_80162574(u8 arg0, u8 arg1)
      u16* ptr;
      u32 val;
  
@@ -100760,7 +100770,7 @@ index 7ad706ec1..32f700e31 100644
      if (arg1 == 7) {
          return;
      }
-@@ -1389,7 +1471,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1389,7 +1481,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
  
      if ((u8) (arg1 - 7) <= 1) {
          u32* p = gmMainLib_GetMatchResetCounter();
@@ -100769,7 +100779,7 @@ index 7ad706ec1..32f700e31 100644
          return;
      }
      if (gm_GetCurrentGameMode() == GM_STAMINA_VS) {
-@@ -1406,7 +1488,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1406,7 +1498,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
              counter = gmMainLib_GetCoinMatchTotal();
              {
                  struct gmm_retval_EDBC* q = gmMainLib_8015EDBC();
@@ -100778,7 +100788,7 @@ index 7ad706ec1..32f700e31 100644
              }
              break;
          case MatchKind_Bonus:
-@@ -1414,18 +1496,18 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1414,18 +1506,18 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
              break;
          }
      }
@@ -100801,7 +100811,7 @@ index 7ad706ec1..32f700e31 100644
      }
  }
  
-@@ -1562,6 +1644,12 @@ bool fn_80162BFC(s8 ckind, int arg1)
+@@ -1562,6 +1654,12 @@ bool fn_80162BFC(s8 ckind, int arg1)
  {
      int* temp_r3;
  
@@ -100814,7 +100824,7 @@ index 7ad706ec1..32f700e31 100644
      temp_r3 = (int*) gmMainLib_8015D0C0(gm_CKindToSelKind((u8) ckind));
      if ((u32) *temp_r3 < (u32) arg1) {
          *temp_r3 = arg1;
-@@ -1615,14 +1703,12 @@ u8 gm_80162D6C(void)
+@@ -1615,14 +1713,12 @@ u8 gm_80162D6C(void)
      s32 i;
      u8 min;
  
@@ -100831,7 +100841,7 @@ index 7ad706ec1..32f700e31 100644
  
      return min;
  }
-@@ -1636,6 +1722,12 @@ s32 fn_80162DF8(u8 ckind, u32 arg1)
+@@ -1636,6 +1732,12 @@ s32 fn_80162DF8(u8 ckind, u32 arg1)
  {
      s32* temp_r3;
  
@@ -100844,7 +100854,7 @@ index 7ad706ec1..32f700e31 100644
      temp_r3 = gmMainLib_8015D1E8(gm_CKindToSelKind(ckind));
      if (*temp_r3 < arg1) {
          *temp_r3 = arg1;
-@@ -1692,14 +1784,12 @@ u8 gm_80162F68(void)
+@@ -1692,14 +1794,12 @@ u8 gm_80162F68(void)
      s32 i;
      u8 min;
  
@@ -100861,7 +100871,7 @@ index 7ad706ec1..32f700e31 100644
  
      return min;
  }
-@@ -1713,6 +1803,12 @@ bool fn_80162FF4(u8 ckind, u32 arg1)
+@@ -1713,6 +1813,12 @@ bool fn_80162FF4(u8 ckind, u32 arg1)
  {
      s32* temp_r3;
  
@@ -100874,7 +100884,7 @@ index 7ad706ec1..32f700e31 100644
      temp_r3 = gmMainLib_8015D310(gm_CKindToSelKind(ckind));
      if (*temp_r3 < arg1) {
          *temp_r3 = arg1;
-@@ -1766,14 +1862,12 @@ u8 gm_80163164(void)
+@@ -1766,14 +1872,12 @@ u8 gm_80163164(void)
      s32 i;
      u8 min;
  
@@ -100891,7 +100901,7 @@ index 7ad706ec1..32f700e31 100644
  
      return min;
  }
-@@ -1814,6 +1908,11 @@ bool gm_80163298(s8 c_kind, u16 arg1)
+@@ -1814,6 +1918,11 @@ bool gm_80163298(s8 c_kind, u16 arg1)
      u16* record;
      u16 score;
  
@@ -100903,7 +100913,7 @@ index 7ad706ec1..32f700e31 100644
      index = gm_CKindToSelKind(c_kind);
      record = gmMainLib_8015D7EC(index);
      score = arg1;
-@@ -2136,6 +2235,11 @@ u8 gm_SelKindToCKind(u8 selkind)
+@@ -2136,6 +2245,11 @@ u8 gm_SelKindToCKind(u8 selkind)
  
  u8 gm_CKindToSelKind(u8 ckind)
  {
@@ -100915,7 +100925,7 @@ index 7ad706ec1..32f700e31 100644
      return ckind_to_selkind_map[ckind];
  }
  
-@@ -2199,25 +2303,23 @@ bool gm_IsStageUnlocked(u16 stkind)
+@@ -2199,25 +2313,23 @@ bool gm_IsStageUnlocked(u16 stkind)
  
  bool fn_801642A0(void)
  {
@@ -100953,7 +100963,7 @@ index 7ad706ec1..32f700e31 100644
          return false;
      }
      return true;
-@@ -2256,63 +2358,64 @@ bool gm_80164330(s32 arg0)
+@@ -2256,63 +2368,64 @@ bool gm_80164330(s32 arg0)
                                                                        : false;
  }
  
@@ -101050,7 +101060,7 @@ index 7ad706ec1..32f700e31 100644
          gmMainLib_8015D818(notify_val);
          *stage_unlock_mask |= (1LL << (s32) unlock_idx);
      }
-@@ -2326,6 +2429,11 @@ bool gm_80164600(void)
+@@ -2326,6 +2439,11 @@ bool gm_80164600(void)
  
      for (i = 0; i < NUM_UNLOCKABLE_STAGES; i++) {
          if (!(*stage_unlock_mask & (1LL << i))) {
@@ -101062,7 +101072,7 @@ index 7ad706ec1..32f700e31 100644
              return false;
          }
      }
-@@ -2351,6 +2459,17 @@ void gm_801647D0(void)
+@@ -2351,6 +2469,17 @@ void gm_801647D0(void)
  int gm_801647F8(u8 arg0)
  {
      struct lbl_803D5168_t* var_r5 = lbl_803D5168;
@@ -101080,7 +101090,7 @@ index 7ad706ec1..32f700e31 100644
      if (arg0 == 0x20) {
          arg0 = 0xE;
      }
-@@ -2366,6 +2485,12 @@ int gm_801647F8(u8 arg0)
+@@ -2366,6 +2495,12 @@ int gm_801647F8(u8 arg0)
  /// Is a specific character unlocked?
  bool gm_IsCKindUnlocked(u8 ckind)
  {
@@ -101093,7 +101103,7 @@ index 7ad706ec1..32f700e31 100644
      u16* unlocked_chars_bitmask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
      u8 selkind = ckind_to_selkind_map[ckind];
      u8 unlock_bit = gm_SelKindToUnlockIndex(selkind);
-@@ -2375,6 +2500,11 @@ bool gm_IsCKindUnlocked(u8 ckind)
+@@ -2375,6 +2510,11 @@ bool gm_IsCKindUnlocked(u8 ckind)
      {
          return true;
      }
@@ -101105,7 +101115,7 @@ index 7ad706ec1..32f700e31 100644
      return false;
  }
  
-@@ -2386,6 +2516,11 @@ void gm_UnlockCKind(CharacterKind ckind)
+@@ -2386,6 +2526,11 @@ void gm_UnlockCKind(CharacterKind ckind)
      u8 unlock_idx;
      u8 notify_val;
  
@@ -101117,7 +101127,7 @@ index 7ad706ec1..32f700e31 100644
      char_unlock_mask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
      selkind = ckind_to_selkind_map[(u8) ckind];
  
-@@ -2409,6 +2544,11 @@ void gm_UnlockCKind(CharacterKind ckind)
+@@ -2409,6 +2554,11 @@ void gm_UnlockCKind(CharacterKind ckind)
  /// Lock character?
  void gm_80164A0C(u8 ckind)
  {
@@ -101129,7 +101139,7 @@ index 7ad706ec1..32f700e31 100644
      u16* unlockable_character_bitfield =
          gmMainLib_GetUnlockedCharactersBitmaskPtr();
      s32 selkind = ckind_to_selkind_map[ckind];
-@@ -2428,6 +2568,11 @@ bool gm_80164ABC(void)
+@@ -2428,6 +2578,11 @@ bool gm_80164ABC(void)
          if (!(*unlockable_character_bitfield & (1LL << i))) {
              /// @remarks Gekko codes which unlock all characters change this to
              ///          return @c true.
@@ -101141,7 +101151,7 @@ index 7ad706ec1..32f700e31 100644
              return false;
          }
      }
-@@ -2697,8 +2842,8 @@ u32 fn_801656A8(MatchEnd* arg0, u32 arg1)
+@@ -2697,8 +2852,8 @@ u32 fn_801656A8(MatchEnd* arg0, u32 arg1)
          s32 j;
          for (j = 0; j < 6; j++) {
              if (arg0->player_standings[j].pkind != 3 &&
@@ -101152,7 +101162,7 @@ index 7ad706ec1..32f700e31 100644
              {
                  cnt_gt += 1;
              }
-@@ -2738,35 +2883,37 @@ static inline s32 fn_8016588C_clamp(s32 v)
+@@ -2738,35 +2893,37 @@ static inline s32 fn_8016588C_clamp(s32 v)
      return result;
  }
  
@@ -101206,7 +101216,7 @@ index 7ad706ec1..32f700e31 100644
      }
  }
  
-@@ -2940,10 +3087,10 @@ s32 fn_801661E0(MatchEnd* arg0)
+@@ -2940,10 +3097,10 @@ s32 fn_801661E0(MatchEnd* arg0)
      return (s32) arg0;
  }
  
@@ -101219,7 +101229,7 @@ index 7ad706ec1..32f700e31 100644
      u64 stack_padding;
      f32 sp48_y;
      f32 sp48_x;
-@@ -2964,7 +3111,7 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
+@@ -2964,7 +3121,7 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
              arg0->player_standings[i].ckind = Player_GetPlayerCharacter(i);
              arg0->player_standings[i].ftkind = Player_80036394(i);
              arg0->player_standings[i].stocks = Player_GetStocks(i);
@@ -101228,7 +101238,7 @@ index 7ad706ec1..32f700e31 100644
              arg0->player_standings[i].x4 = Player_GetNametagSlotID(i);
              arg0->player_standings[i].x1C = Player_GetCoins(i);
              arg0->player_standings[i].x28 = Player_GetMatchFrameCount(i);
-@@ -2972,12 +3119,12 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
+@@ -2972,12 +3129,12 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
                  arg0->player_standings[i].x28 = gm_GetFrameCount();
              }
              arg0->player_standings[i].self_destructs =
@@ -101244,7 +101254,7 @@ index 7ad706ec1..32f700e31 100644
              arg0->player_standings[i].x9 = (s8) Player_GetRemainingHP(i);
              cnt = Player_GetJoystickCountByIndex(i, 0);
              sp48_y = (a = 0.031f) * ((f32) cnt * fn_8016B5B0());
-@@ -3082,6 +3229,20 @@ float fn_80166A8C(register Vec3* src, register Vec3* dst)
+@@ -3082,6 +3239,20 @@ float fn_80166A8C(register Vec3* src, register Vec3* dst)
      register float x = src->x;
      asm { psq_st x, Vec3.x(dst), 1, qr3 }
      return x;
@@ -101265,7 +101275,7 @@ index 7ad706ec1..32f700e31 100644
  #endif
  }
  
-@@ -3112,7 +3273,7 @@ s32 gm_80166A98(MatchEnd* arg0, u8 arg1, s8 arg2, u8 arg3, s8 arg4, u8 arg5,
+@@ -3112,7 +3283,7 @@ s32 gm_80166A98(MatchEnd* arg0, u8 arg1, s8 arg2, u8 arg3, s8 arg4, u8 arg5,
  
      // Apply player color to all 4 players?
      for (i = 0; i < 4; i++) {
@@ -101274,7 +101284,7 @@ index 7ad706ec1..32f700e31 100644
      }
  
      arg0->player_standings[0].score = score0;
-@@ -3274,12 +3435,12 @@ void fn_8016719C(s32 slot, s32 subchar)
+@@ -3274,12 +3445,12 @@ void fn_8016719C(s32 slot, s32 subchar)
  {
      Vec3 respawn_pos;
      Vec3 offset;
@@ -101289,7 +101299,7 @@ index 7ad706ec1..32f700e31 100644
      stkind = gm_GetStKind();
      if (Stage_80224DC8(stkind) != 0) {
          var_r30 = Ground_801C5774();
-@@ -3305,11 +3466,12 @@ void fn_8016719C(s32 slot, s32 subchar)
+@@ -3305,11 +3476,12 @@ void fn_8016719C(s32 slot, s32 subchar)
      respawn_pos.y = Stage_GetCamBoundsTopOffset();
      Player_80032768(slot, &respawn_pos);
      Player_SetFacingDirection(slot, respawn_pos.x >= 0.0f ? -1.0f : 1.0f);
@@ -101304,7 +101314,7 @@ index 7ad706ec1..32f700e31 100644
          if (temp_r4->b0) {
              temp_r4->b0 = true;
              Camera_800310E8();
-@@ -3386,22 +3548,22 @@ void gm_801674C4(s8 arg0, u8 arg1, s8 arg2, s8 arg3, GmRouteCallback arg4)
+@@ -3386,22 +3558,22 @@ void gm_801674C4(s8 arg0, u8 arg1, s8 arg2, s8 arg3, GmRouteCallback arg4)
  
  void fn_8016758C(void)
  {
@@ -101334,7 +101344,7 @@ index 7ad706ec1..32f700e31 100644
              return i;
          }
      }
-@@ -3432,10 +3594,10 @@ s32 fn_80167638(s32 arg0, Vec3* arg1, Vec3* arg2)
+@@ -3432,10 +3604,10 @@ s32 fn_80167638(s32 arg0, Vec3* arg1, Vec3* arg2)
              arg2->y = 0.0f;
          }
          {
@@ -101348,7 +101358,7 @@ index 7ad706ec1..32f700e31 100644
          }
      }
      return tmp;
-@@ -3463,7 +3625,7 @@ u8 gm_801677F0(void)
+@@ -3463,7 +3635,7 @@ u8 gm_801677F0(void)
  bool gm_RumbleEnabledForPlayer(int port, int nametag)
  {
      bool result = false;
@@ -101357,7 +101367,7 @@ index 7ad706ec1..32f700e31 100644
          if (GetRumbleSettingOfPort(port)) {
              result = true;
          }
-@@ -3500,7 +3662,7 @@ void gm_SetupPlayerDefaults(struct PlayerInitData* player)
+@@ -3500,7 +3672,7 @@ void gm_SetupPlayerDefaults(struct PlayerInitData* player)
      player->handicap = 9;
      player->team = 0;
      player->rumble_enabled = false;
@@ -101366,7 +101376,7 @@ index 7ad706ec1..32f700e31 100644
      player->xC_b1 = true;
      player->cpu_kind = 4;
      player->cpu_level = 0;
-@@ -3627,6 +3789,14 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3627,6 +3799,14 @@ void gm_80167BC8(VsModeData* vs_data)
              }
              break;
          case 2:
@@ -101381,7 +101391,7 @@ index 7ad706ec1..32f700e31 100644
              vs_data->start.players[i].attack_ratio =
                  lbl_803B7930[(u8) vs_data->start.players[i].handicap - 1].x;
              vs_data->start.players[i].defense_ratio =
-@@ -3639,8 +3809,7 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3639,8 +3819,7 @@ void gm_80167BC8(VsModeData* vs_data)
      vs_data->start.rules.x30 = 0.1f * rules->damage_ratio;
      vs_data->start.rules.item_freq = (s8) prefs->item_freq;
      prefs = gmMainLib_GetGamePrefs();
@@ -101391,7 +101401,7 @@ index 7ad706ec1..32f700e31 100644
          u8 item = lbl_803B7844[(u8) i];
          if ((s32) item != 0x23) {
              if (prefs->item_mask & (1LL << i)) {
-@@ -3649,8 +3818,7 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3649,8 +3828,7 @@ void gm_80167BC8(VsModeData* vs_data)
                  vs_data->start.rules.x20 &= ~(1LL << item);
              }
          }
@@ -101401,7 +101411,7 @@ index 7ad706ec1..32f700e31 100644
  
      switch (gmMainLib_8015ED30()) {
      case 1:
-@@ -3669,6 +3837,12 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3669,6 +3847,12 @@ void gm_80167BC8(VsModeData* vs_data)
      } else {
          vs_data->start.rules.disable_pausing = 1;
      }
@@ -101414,7 +101424,7 @@ index 7ad706ec1..32f700e31 100644
      if ((rules->score_display != 0) && (rules->mode == 0)) {
          vs_data->start.rules.x3_0 = 1;
          return;
-@@ -3850,54 +4024,69 @@ int gm_80168940(MatchEnd* match_end)
+@@ -3850,54 +4034,69 @@ int gm_80168940(MatchEnd* match_end)
  
  void gm_8016895C(HSD_JObj* arg0, DynamicModelDesc* arg1, int idx)
  {
@@ -101504,7 +101514,7 @@ index 7ad706ec1..32f700e31 100644
      if (ckind == CKind_GKoops) {
          return 58.0F;
      }
-@@ -3930,11 +4119,40 @@ float gm_80168BF8(int arg0)
+@@ -3930,11 +4129,40 @@ float gm_80168BF8(int arg0)
  {
      CharacterKind ckind = Player_GetPlayerCharacter(arg0);
      u32 costume = Player_GetCostumeId(arg0);
@@ -101546,7 +101556,7 @@ index 7ad706ec1..32f700e31 100644
      switch (arg0) {
      case 0:
          lbAudioAx_800243F4(0x7C830);
-@@ -4164,14 +4382,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
+@@ -4164,14 +4392,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
          HSD_Randi(0);
          HSD_Randi(0);
      }
@@ -101579,7 +101589,7 @@ index 7ad706ec1..32f700e31 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4180,6 +4416,11 @@ u8 gm_80169264(u8 ckind)
+@@ -4180,6 +4426,11 @@ u8 gm_80169264(u8 ckind)
  
  u8 gm_80169290(u8 ckind)
  {
@@ -101591,7 +101601,7 @@ index 7ad706ec1..32f700e31 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4188,6 +4429,11 @@ u8 gm_80169290(u8 ckind)
+@@ -4188,6 +4439,11 @@ u8 gm_80169290(u8 ckind)
  
  u8 gm_801692BC(u8 ckind)
  {
@@ -143427,7 +143437,7 @@ index 6d7000275..d67b9cf18 100644
  /* 2FC3BC */ void ifMagnify_802FC3BC(void);
  /* 2FC3C0 */ void ifMagnify_802FC3C0(s32 slot);
 diff --git a/src/melee/if/ifnametag.c b/src/melee/if/ifnametag.c
-index f8c4573e8..89f026a7b 100644
+index f8c4573e8..e94643691 100644
 --- a/src/melee/if/ifnametag.c
 +++ b/src/melee/if/ifnametag.c
 @@ -100,8 +100,8 @@
@@ -143590,7 +143600,29 @@ index f8c4573e8..89f026a7b 100644
      {
          HSD_JObjClearFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
      } else {
-@@ -263,31 +289,40 @@ static inline float inlineA1(float var_f31)
+@@ -244,6 +270,21 @@ void fn_802FCC44(HSD_GObj* gobj)
+     Player_LoadPlayerCoords(*slot, &vec);
+     vec.y += Player_800360D8(*slot);
+     vec.y -= 2.5f;
++#ifdef MU_NATIVE
++    /* "Always show player tags" also reaches players the console never tags (KO, entry,
++     * transform), whose position can be far out or not a number; WorldToScreen stops the
++     * game on those. Hide the tag this frame instead. */
++    if (!(vec.x > -50000.0F && vec.x < 50000.0F && vec.y > -50000.0F &&
++          vec.y < 50000.0F && vec.z > -50000.0F && vec.z < 50000.0F))
++    {
++        HSD_JObjSetFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
++        if (has_nametag(*slot)) {
++            HSD_SisLib_803A746C(un_804D6D78, un_804A1EF8[*slot], -5000.0f,
++                                0.0f);
++        }
++        return;
++    }
++#endif
+     lbVector_WorldToScreen(Camera_80030A50()->hsd_obj, &vec, &vec2, 0);
+     HSD_JObjSetTranslateX(jobj, vec2.x);
+     HSD_JObjSetTranslateY(jobj, -vec2.y);
+@@ -263,31 +304,40 @@ static inline float inlineA1(float var_f31)
      }
  }
  
@@ -143640,7 +143672,7 @@ index f8c4573e8..89f026a7b 100644
              }
              HSD_JObjReqAnimAll(jobj, f);
          }
-@@ -301,20 +336,48 @@ void NameTag_Create(int slot)
+@@ -301,20 +351,48 @@ void NameTag_Create(int slot)
      HSD_GObj_SetupProc(gobj, fn_802FCC44, 17);
  }
  
@@ -143692,7 +143724,7 @@ index f8c4573e8..89f026a7b 100644
      }
      HSD_JObjReqAnimAll(jobj, f);
      HSD_JObjAnimAll(jobj);
-@@ -361,10 +424,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
+@@ -361,10 +439,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
      return GObj_Create(0xE, arg0, 0);
  }
  
@@ -143715,7 +143747,7 @@ index f8c4573e8..89f026a7b 100644
      int i;
      PAD_STACK(0x10);
      for (i = 0; i < Gm_Player_NumMax; i++) {
-@@ -374,18 +448,20 @@ void un_802FD4C8(void)
+@@ -374,18 +463,20 @@ void un_802FD4C8(void)
      un_804D6D6C = 0;
      memzero(un_804D6D70, i = sizeof(un_804D6D70));
      un_804D6D68 = (gobj = un_802FD4C8_inline(15));
