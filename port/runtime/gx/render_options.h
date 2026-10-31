@@ -358,6 +358,7 @@ struct RenderOptions {
   bool ray_reconstruction = false; // DLSS-RR denoising of the path-traced HDR input; needs NVIDIA runtime
   float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;
   int anisotropy = 4;         // texture anisotropic filtering 1..16 (4: the High preset, the default)
+  int msaa = 1;               // multisampling: 1 off, 2/4/8 samples (EFB drawn multisampled, resolved before every read)
   int ssaa = 1;               // supersampling factor per side: 1 off, 2/3/4 = 4x/9x/16x SSAA (EFB rendered larger, box filtered)
   std::string capture_path;   // write a PPM of the presented image at capture_frame
   uint32_t capture_frame = 0;
@@ -444,6 +445,7 @@ inline void apply_low_spec(RenderOptions& o, bool d3d11_available) {
   o.fps_cap = 60;
   o.efb_scale = 1;                  // native 640x528, the floor
   o.ssaa = 1;                       // no supersampling
+  o.msaa = 1;                       // no multisampling
   o.anisotropy = 1;                 // no anisotropic filtering
   o.dlss_mode = 0;                  // NVIDIA and Direct3D 12 only
   o.subframe = SubFrameMode::Off;   // the sub-frame solver is the largest CPU cost here

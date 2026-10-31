@@ -430,6 +430,17 @@ class D3D11Backend : public Backend {
   ComPtr<ID3D11ShaderResourceView> efb_srv_;
   ComPtr<ID3D11ShaderResourceView> efb_depth_srv_;
   ComPtr<ID3D11DepthStencilView> efb_dsv_;
+  // MSAA: efb_rtv_/efb_dsv_ then point at these multisampled textures; efb_color_/efb_depth_ hold the
+  // resolve (colour averaged, depth from sample 0) that every reader samples. 1 = off.
+  ComPtr<ID3D11Texture2D> msaa_color_, msaa_depth_;
+  ComPtr<ID3D11ShaderResourceView> msaa_depth_srv_;
+  ComPtr<ID3D11DepthStencilView> efb_resolve_dsv_;
+  ComPtr<ID3D11VertexShader> depth_resolve_vs_;
+  ComPtr<ID3D11PixelShader> depth_resolve_ps_;
+  ComPtr<ID3D11DepthStencilState> depth_resolve_ds_;
+  UINT msaa_samples_ = 1;
+  int msaa_applied_ = 1;
+  void resolve_efb();
   ComPtr<ID3D11InputLayout> layout_;
   ComPtr<ID3D11VertexShader> blit_vs_, clear_vs_;
   ComPtr<ID3D11PixelShader> blit_ps_, crt_ps_, clear_ps_;
@@ -940,9 +951,72 @@ void D3D11Backend::create_efb() {
   D3D11_SHADER_RESOURCE_VIEW_DESC depth_srv{}; depth_srv.Format = DXGI_FORMAT_R32_FLOAT; depth_srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
   depth_srv.Texture2D.MipLevels = 1;
   fail(device_->CreateShaderResourceView(efb_depth_.Get(), &depth_srv, &efb_depth_srv_), "efb depth srv");
+  msaa_color_.Reset(); msaa_depth_.Reset(); msaa_depth_srv_.Reset(); efb_resolve_dsv_.Reset();
+  msaa_applied_ = opts_.msaa;
+  msaa_samples_ = 1;
+  for (UINT n = (UINT)std::min(opts_.msaa, 8); n > 1; n /= 2) {
+    UINT qc = 0, qd = 0;
+    if (SUCCEEDED(device_->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, n, &qc)) && qc &&
+        SUCCEEDED(device_->CheckMultisampleQualityLevels(DXGI_FORMAT_D32_FLOAT, n, &qd)) && qd) { msaa_samples_ = n; break; }
+  }
+  if (msaa_samples_ > 1) {
+    efb_resolve_dsv_ = efb_dsv_;   // the single-sample depth, written by the depth resolve
+    D3D11_TEXTURE2D_DESC md = td;
+    md.SampleDesc.Count = msaa_samples_; md.Format = DXGI_FORMAT_R8G8B8A8_UNORM; md.BindFlags = D3D11_BIND_RENDER_TARGET;
+    fail(device_->CreateTexture2D(&md, nullptr, &msaa_color_), "msaa color");
+    efb_rtv_.Reset();
+    fail(device_->CreateRenderTargetView(msaa_color_.Get(), nullptr, &efb_rtv_), "msaa rtv");
+    md.Format = DXGI_FORMAT_R32_TYPELESS; md.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    fail(device_->CreateTexture2D(&md, nullptr, &msaa_depth_), "msaa depth");
+    D3D11_DEPTH_STENCIL_VIEW_DESC mdv{}; mdv.Format = DXGI_FORMAT_D32_FLOAT; mdv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+    efb_dsv_.Reset();
+    fail(device_->CreateDepthStencilView(msaa_depth_.Get(), &mdv, &efb_dsv_), "msaa dsv");
+    D3D11_SHADER_RESOURCE_VIEW_DESC msv{}; msv.Format = DXGI_FORMAT_R32_FLOAT; msv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
+    fail(device_->CreateShaderResourceView(msaa_depth_.Get(), &msv, &msaa_depth_srv_), "msaa depth srv");
+    if (!depth_resolve_ps_) {
+      const char* dr = "Texture2DMS<float> msdepth : register(t0);\n"
+                       "float4 VS(uint id : SV_VertexID) : SV_Position { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, 0, 1); }\n"
+                       "float PS(float4 pos : SV_Position) : SV_Depth { return msdepth.Load(int2(pos.xy), 0); }\n";
+      ComPtr<ID3DBlob> dvs, dps, derr;
+      if (SUCCEEDED(D3DCompile(dr, strlen(dr), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &dvs, &derr)) &&
+          SUCCEEDED(D3DCompile(dr, strlen(dr), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &dps, &derr))) {
+        device_->CreateVertexShader(dvs->GetBufferPointer(), dvs->GetBufferSize(), nullptr, &depth_resolve_vs_);
+        device_->CreatePixelShader(dps->GetBufferPointer(), dps->GetBufferSize(), nullptr, &depth_resolve_ps_);
+        D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_ALWAYS;
+        device_->CreateDepthStencilState(&dd, &depth_resolve_ds_);
+      } else host::log("d3d11: MSAA depth resolve shader failed");
+    }
+    host::log("d3d11: %ux MSAA", msaa_samples_);
+  }
   const float black[4] = {0, 0, 0, 0};
   context_->ClearRenderTargetView(efb_rtv_.Get(), black);
   context_->ClearDepthStencilView(efb_dsv_.Get(), D3D11_CLEAR_DEPTH, 0.0f, 0);
+}
+
+// Before anything reads the EFB: colour by the hardware resolve, depth by a pass that copies sample
+// 0 (D3D11 resolves no depth formats). Leaves the MSAA targets bound again.
+void D3D11Backend::resolve_efb() {
+  if (msaa_samples_ <= 1 || !msaa_color_) return;
+  context_->ResolveSubresource(efb_color_.Get(), 0, msaa_color_.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+  if (depth_resolve_ps_ && depth_resolve_ds_) {
+    unbind_shader_resources();
+    context_->OMSetRenderTargets(0, nullptr, efb_resolve_dsv_.Get());
+    D3D11_VIEWPORT vp{0, 0, (float)efb_w_, (float)efb_h_, 0, 1};
+    context_->RSSetViewports(1, &vp);
+    context_->RSSetState(nullptr);
+    context_->OMSetDepthStencilState(depth_resolve_ds_.Get(), 0);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(depth_resolve_vs_.Get(), nullptr, 0);
+    context_->PSSetShader(depth_resolve_ps_.Get(), nullptr, 0);
+    ID3D11ShaderResourceView* srv = msaa_depth_srv_.Get();
+    context_->PSSetShaderResources(0, 1, &srv);
+    context_->Draw(3, 0);
+    ID3D11ShaderResourceView* none = nullptr;
+    context_->PSSetShaderResources(0, 1, &none);
+    reset_bound();
+  }
+  bind_efb_targets();
 }
 
 void D3D11Backend::unbind_shader_resources() {
@@ -1586,6 +1660,7 @@ void D3D11Backend::clear_efb(const EfbCopy& c) {
 
 // EFB -> texture at a guest address. Kept at the internal resolution, like Dolphin's scaled EFB copies.
 void D3D11Backend::execute_copy(const EfbCopy& c) {
+  resolve_efb();
   unbind_shader_resources();   // the destination may still be bound as a texture from an earlier draw
   uint32_t w = c.src_w, h = c.src_h;
   if (c.half_scale) { w = std::max(1u, w / 2); h = std::max(1u, h / 2); }
@@ -1656,6 +1731,7 @@ void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3
 }
 
 void D3D11Backend::present_efb(const EfbCopy& c) {
+  resolve_efb();
   unbind_shader_resources();
   ID3D11RenderTargetView* rtv = backbuffer_rtv_.Get();
   context_->OMSetRenderTargets(1, &rtv, nullptr);
@@ -1780,6 +1856,7 @@ void D3D11Backend::capture_backbuffer() {
 // both, so min(to previous, to next) exceeds the distance between previous and next. That ratio is
 // the test, and it does not care whether the frame is too bright, too dark or in the wrong place.
 void D3D11Backend::flicker_scan() {
+  resolve_efb();
   if (!scan_rt_) {
     D3D11_TEXTURE2D_DESC td{};
     td.Width = td.Height = kScanGrid; td.MipLevels = 1; td.ArraySize = 1;
@@ -1986,9 +2063,9 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_pipelines();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }
-  if (opts_.ssaa != ssaa_applied_ || pick_scale() != scale_) {
+  if (opts_.ssaa != ssaa_applied_ || pick_scale() != scale_ || opts_.msaa != msaa_applied_) {
     ssaa_applied_ = opts_.ssaa;
-    if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); host::log("d3d11: internal resolution now EFB x%d", scale_); }
+    if (pick_scale() != scale_ || opts_.msaa != msaa_applied_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); host::log("d3d11: internal resolution now EFB x%d", scale_); }
   }
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();

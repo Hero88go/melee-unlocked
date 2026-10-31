@@ -2148,6 +2148,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "vibrance") options.vibrance = std::clamp(std::stof(value), 0.0f, 2.0f);
       else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
       else if (key == "ssaa") { int a = std::stoi(value); if (a >= 1 && a <= 4) options.ssaa = a; }
+      else if (key == "msaa") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8) options.msaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "onlineframeprotection") options.online_frame_protection = value == "1";
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
@@ -4179,7 +4180,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : options.api == RenderApi::Vulkan ? "vulkan" : "d3d12")
        << "\ncrt_filter " << options.crt_filter << "\ncrt_curve " << options.crt_curve << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
-       << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
+       << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa << "\nmsaa " << options.msaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
        << "\nonlineframeprotection " << (options.online_frame_protection ? 1 : 0)
        << "\nmusicpacks " << (slippi::jukebox::music_packs_enabled() ? 1 : 0)
@@ -5878,11 +5879,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     changed |= settings_combo("Internal resolution", &options.efb_scale, scales, 9);
     // DLSS (DLAA included) does its own anti-aliasing, so supersampling on top would render larger
     // for a second pass over the same edges: grey it out rather than let the two stack.
-    // Factor per side: 2 = 4 samples per pixel, 3 = 9, 4 = 16 (16x renders 16 times the pixels).
-    const char* aa[] = {"None", "4x SSAA (supersampling)", "9x SSAA (heavier)", "16x SSAA (heaviest)"};
-    int aa_index = std::clamp(options.ssaa, 1, 4) - 1;
+    // MSAA smooths polygon edges only and costs little; SSAA renders every pixel 4, 9 or 16 times
+    // (factor 2, 3, 4 per side) and also smooths textures and effects. One choice, never both.
+    const char* aa[] = {"None", "2x MSAA (light)", "4x MSAA", "8x MSAA", "4x SSAA (supersampling)", "9x SSAA (heavier)", "16x SSAA (heaviest)"};
+    int aa_index = options.ssaa > 1 ? 2 + std::clamp(options.ssaa, 2, 4) : options.msaa >= 8 ? 3 : options.msaa >= 4 ? 2 : options.msaa >= 2 ? 1 : 0;
     if (options.dlss_mode && !dlss_picks_resolution) ImGui::BeginDisabled();
-    if (settings_combo("Anti-aliasing", &aa_index, aa, 4)) { options.ssaa = aa_index + 1; changed = true; }
+    if (settings_combo("Anti-aliasing", &aa_index, aa, 7)) {
+      options.msaa = aa_index >= 1 && aa_index <= 3 ? 1 << aa_index : 1;
+      options.ssaa = aa_index >= 4 ? aa_index - 2 : 1;
+      changed = true;
+    }
     if (options.dlss_mode && !dlss_picks_resolution) ImGui::EndDisabled();
     if (dlss_picks_resolution) ImGui::EndDisabled();
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};

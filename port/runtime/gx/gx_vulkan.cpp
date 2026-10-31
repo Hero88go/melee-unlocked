@@ -378,7 +378,7 @@ class VulkanBackend final : public Backend {
     for (auto& t : textures_) destroy(t.second);
     for (auto& c : copies_) destroy(c.second);
     for (auto& f : frames_) { for (auto& img : f.dead) destroy(img); f.dead.clear(); }
-    destroy(efb_color_); destroy(efb_depth_); destroy(white_);
+    destroy(efb_color_); destroy(efb_depth_); destroy(msaa_color_); destroy(msaa_depth_); destroy(white_);
     for (auto& s : samplers_) vkDestroySampler(device_, s.second, nullptr);
     vkDestroySampler(device_, linear_, nullptr); vkDestroySampler(device_, nearest_, nullptr);
     vkDestroyPipeline(device_, copy_pipeline_, nullptr); vkDestroyPipeline(device_, present_pipeline_, nullptr);
@@ -649,12 +649,20 @@ class VulkanBackend final : public Backend {
     return std::clamp(s * ssaa, 1, max_scale);
   }
 
+  VkSampleCountFlagBits supported_samples(int wanted) const {
+    const VkSampleCountFlags ok = limits_.framebufferColorSampleCounts & limits_.framebufferDepthSampleCounts;
+    for (int n = std::clamp(wanted, 1, 8); n > 1; n /= 2)
+      if (ok & VkSampleCountFlags(n)) return VkSampleCountFlagBits(n);
+    return VK_SAMPLE_COUNT_1_BIT;
+  }
+
   // ---- Images ----
-  Image make_image(uint32_t w, uint32_t h, uint32_t levels, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect) {
+  Image make_image(uint32_t w, uint32_t h, uint32_t levels, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
     Image img; img.width = w; img.height = h; img.levels = levels; img.format = format;
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D; info.format = format; info.extent = {w, h, 1}; info.mipLevels = levels; info.arrayLayers = 1;
-    info.samples = VK_SAMPLE_COUNT_1_BIT; info.tiling = VK_IMAGE_TILING_OPTIMAL; info.usage = usage;
+    info.samples = samples; info.tiling = VK_IMAGE_TILING_OPTIMAL; info.usage = usage;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     check(vkCreateImage(device_, &info, nullptr, &img.image), "image");
     VkMemoryRequirements req; vkGetImageMemoryRequirements(device_, img.image, &req);
@@ -698,6 +706,15 @@ class VulkanBackend final : public Backend {
                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     efb_depth_ = make_image(width_, height_, 1, VK_FORMAT_D32_SFLOAT,
                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    // MSAA: the draws go to multisampled copies, resolved into the images above (colour averaged,
+    // depth from sample 0) whenever an EFB pass ends, which is before every copy and present.
+    samples_ = supported_samples(opts_.msaa);
+    if (samples_ != VK_SAMPLE_COUNT_1_BIT) {
+      msaa_color_ = make_image(width_, height_, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, samples_);
+      msaa_depth_ = make_image(width_, height_, 1, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, samples_);
+    }
+    msaa_applied_ = opts_.msaa;
+    if (samples_ != VK_SAMPLE_COUNT_1_BIT) host::log("vulkan: %dx MSAA", (int)samples_);
     efb_cleared_ = false;
   }
 
@@ -758,7 +775,7 @@ class VulkanBackend final : public Backend {
       const int old_scale = scale_;
       const bool old_vsync = opts_.vsync;
       if (settings_frame(settings_state_, opts_)) {
-        if (pick_scale() != old_scale) rebuild_efb();
+        if (pick_scale() != old_scale || opts_.msaa != msaa_applied_) rebuild_efb();
         if (opts_.vsync != old_vsync) swapchain_dirty_ = true;
       }
     }
@@ -819,13 +836,24 @@ class VulkanBackend final : public Backend {
     Frame_& f = frames_[slot_];
     barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
+    if (msaa) {
+      barrier(f.cmd, msaa_color_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      barrier(f.cmd, msaa_depth_, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = efb_color_.view; color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.imageView = msaa ? msaa_color_.view : efb_color_.view; color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = clear_all ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.clearValue.color = {{0, 0, 0, 1}};
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = efb_depth_.view; depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.imageView = msaa ? msaa_depth_.view : efb_depth_.view; depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = color.loadOp; depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE; depth.clearValue.depthStencil = {0.0f, 0};
+    if (msaa) {
+      color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT; color.resolveImageView = efb_color_.view;
+      color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT; depth.resolveImageView = efb_depth_.view;
+      depth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    }
     VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
     info.renderArea = {{0, 0}, {width_, height_}}; info.layerCount = 1;
     info.colorAttachmentCount = 1; info.pColorAttachments = &color; info.pDepthAttachment = &depth;
@@ -843,7 +871,7 @@ class VulkanBackend final : public Backend {
     vkDeviceWaitIdle(device_);
     host::log("vulkan: internal scale %d -> %d", scale_, pick_scale());
     end_efb();
-    retire(efb_color_); retire(efb_depth_);
+    retire(efb_color_); retire(efb_depth_); retire(msaa_color_); retire(msaa_depth_);
     for (auto& c : copies_) retire(c.second);
     copies_.clear();
     scale_ = pick_scale();
@@ -888,7 +916,8 @@ class VulkanBackend final : public Backend {
   VkPipeline build_pipeline(const VkPipelineShaderStageCreateInfo* stages, const VkPipelineVertexInputStateCreateInfo& vi,
                             VkPrimitiveTopology topology, VkPolygonMode fill, VkCullModeFlags cull,
                             const VkPipelineColorBlendAttachmentState& blend, bool depth_test, bool depth_write, VkCompareOp compare,
-                            VkPipelineLayout layout, VkFormat color, VkFormat depth) {
+                            VkPipelineLayout layout, VkFormat color, VkFormat depth,
+                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = topology;
     VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -896,7 +925,7 @@ class VulkanBackend final : public Backend {
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = fill; rs.cullMode = cull; rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = samples;
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = depth_test; ds.depthWriteEnable = depth_write; ds.depthCompareOp = compare;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -939,7 +968,8 @@ class VulkanBackend final : public Backend {
 
   VkPipeline pipeline(const DrawCall& dc, DrawTopology topology, bool wire) {
     const auto vs = make_vs_uid(dc); const auto ps = make_ps_uid(dc);
-    const PipelineKey key{vs.hash(), ps.hash(), pipeline_state(dc, topology, wire && wire_supported_)};
+    // Bits 19 and up: the EFB's sample count, so an MSAA change builds its own pipelines.
+    const PipelineKey key{vs.hash(), ps.hash(), pipeline_state(dc, topology, wire && wire_supported_) | (uint32_t(samples_) << 19)};
     if (auto i = pipelines_.find(key); i != pipelines_.end()) return i->second;
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
@@ -979,7 +1009,7 @@ class VulkanBackend final : public Backend {
     VkPipeline p = build_pipeline(stages, vi, bits(s, 17, 1) ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                                   wire_on ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL, wire_on ? VK_CULL_MODE_NONE : culls[bits(s, 15, 2)],
                                   blend, bits(s, 10, 1), bits(s, 11, 1), compare[bits(s, 12, 3)], layout_,
-                                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT);
+                                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, samples_);
     pipelines_.emplace(key, p);
     return p;
   }
@@ -1428,7 +1458,9 @@ class VulkanBackend final : public Backend {
   uint32_t image_index_ = 0;
   int scale_ = 1;
   uint32_t width_ = 0, height_ = 0;
-  Image efb_color_, efb_depth_, white_;
+  Image efb_color_, efb_depth_, white_, msaa_color_, msaa_depth_;
+  VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+  int msaa_applied_ = 1;
   bool efb_cleared_ = false, pending_white_ = false, rendering_ = false, skip_present_ = false;
   VkShaderModule blit_vs_ = VK_NULL_HANDLE, blit_ps_ = VK_NULL_HANDLE;
   VkPipeline copy_pipeline_ = VK_NULL_HANDLE, present_pipeline_ = VK_NULL_HANDLE, bound_pipeline_ = VK_NULL_HANDLE;
