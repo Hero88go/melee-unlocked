@@ -412,6 +412,7 @@ class D3D11Backend : public Backend {
   int scale_ = 1;
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   bool skip_present_ = false;
+  bool occluded_ = false;   // Present said DXGI_STATUS_OCCLUDED: minimized or alt-tabbed out of fullscreen
   bool widescreen_sent_ = false;
   bool fod_reflections_sent_ = false;
   int anisotropy_applied_ = 0, ssaa_applied_ = 0;
@@ -897,7 +898,7 @@ void D3D11Backend::apply_fullscreen_mode() {
 // Mirrors the D3D12 backend (and Dolphin's CalculateTargetSize).
 int D3D11Backend::pick_scale() const {
   constexpr int max_scale = 16384 / EFB_WIDTH;
-  const int ssaa = std::clamp(opts_.ssaa, 1, 2);
+  const int ssaa = std::clamp(opts_.ssaa, 1, 4);
   if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale * ssaa, 1, max_scale);
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
   float aspect = output_aspect();
@@ -2307,7 +2308,13 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // presentation loop), where a frame starts its own refresh and syncing costs nothing.
     const bool synced = opts_.vsync || tear_free_;
     const double present_call = Stopwatch::now();
-    swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    // While hidden, only test whether the window can be seen again (see gx_d3d12.cpp).
+    const HRESULT present_hr = occluded_ ? swapchain_->Present(0, DXGI_PRESENT_TEST)
+        : swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    if ((present_hr == DXGI_STATUS_OCCLUDED) != occluded_) {
+      occluded_ = present_hr == DXGI_STATUS_OCCLUDED;
+      host::log(occluded_ ? "d3d11: window hidden, presents paused" : "d3d11: window visible, presents resumed");
+    }
     // A synced Present blocks until the display takes the previous frame: waiting, not drawing.
     // Counted as drawing it inflated the render-time estimate to a whole refresh under synced
     // pacing, and the presentation loop then aimed every frame one refresh too late.

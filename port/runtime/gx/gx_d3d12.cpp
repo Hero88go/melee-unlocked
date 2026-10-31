@@ -441,6 +441,7 @@ class D3D12Backend : public Backend {
   int scale() const { return scale_; }
   void set_skip_present(bool skip) override { skip_present_ = skip; }
   bool skip_present_ = false;
+  bool occluded_ = false;   // Present said DXGI_STATUS_OCCLUDED: minimized or alt-tabbed out of fullscreen
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)psos_.size(); }
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
@@ -1269,7 +1270,7 @@ void D3D12Backend::apply_fullscreen_mode() {
 int D3D12Backend::pick_scale(bool with_ssaa) const {
   constexpr int max_scale = 16384 / EFB_WIDTH;   // D3D12 texture limit
   if (forced_scale_ > 0) return std::clamp(forced_scale_, 1, max_scale);
-  const int ssaa = with_ssaa ? std::clamp(opts_.ssaa, 1, 2) : 1;
+  const int ssaa = with_ssaa ? std::clamp(opts_.ssaa, 1, 4) : 1;
   if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale * ssaa, 1, max_scale);
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
   float aspect = output_aspect();
@@ -1608,7 +1609,7 @@ void D3D12Backend::configure_dlss() {
   float bias_extra = -1.0f;
   if (const char* e = std::getenv("MELEE_DLSS_BIAS_EXTRA")) bias_extra = (float)std::atof(e);
   set_dlss_mip_bias((in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w)) + bias_extra);
-  if (in_place && std::clamp(opts_.ssaa, 1, 2) > 1)
+  if (in_place && opts_.ssaa > 1)
     host::log("dlss: supersampling is not applied under %s (it anti-aliases already)", upscaler_name());
   host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", upscaler_name(),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
@@ -3421,7 +3422,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   // A frame that will be shown waits for its place in the display queue first (see
   // swapchain_waitable_); a backlog frame presents nothing and takes no place.
-  if (!skip_present_) wait_frame_latency();
+  if (!skip_present_ && !occluded_) wait_frame_latency();   // a hidden window gets no presents to signal it
   diag("frame latency wait");
   // Submitted frames the GPU has not finished, sampled before this frame's slot wait: the GPU
   // queue depth the CPU found when it arrived, which is the latency the player feels.
@@ -3668,7 +3669,18 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // game (NVIDIA: V-Sync for it belongs in the driver).
       const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
       const double present_call = Stopwatch::now();
-      swapchain_->Present(synced ? 1 : 0, (!synced && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      // While the window cannot be seen (minimized, or alt-tabbed out of exclusive fullscreen),
+      // only test whether it can again, as DXGI asks. Presenting on regardless fed screen capture
+      // (a Discord stream) frames that flashed an old picture. Not under frame generation, which
+      // paces its own presents.
+      const bool test_only = occluded_ && fg_applied_ <= 0;
+      const HRESULT present_hr = test_only ? swapchain_->Present(0, DXGI_PRESENT_TEST)
+          : swapchain_->Present(synced ? 1 : 0, (!synced && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      const bool now_occluded = present_hr == DXGI_STATUS_OCCLUDED;
+      if (now_occluded != occluded_) {
+        occluded_ = now_occluded;
+        host::log(occluded_ ? "d3d12: window hidden, presents paused" : "d3d12: window visible, presents resumed");
+      }
       present_wait_ += Stopwatch::now() - present_call;   // a synced Present waits for the display (see gx_d3d11.cpp)
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
