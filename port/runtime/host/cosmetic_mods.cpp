@@ -2243,11 +2243,14 @@ std::string selection_key(const AssetRecord& asset) {
 
 // A stage archive's metadata names the arena, but the DAT names the exact disc resource.
 // Stadium's base and four transformations must stay separate, even when a ZIP contains all five.
+// The transformation names follow the game's own table (grpstadium.c datfiles: fire, grass, water,
+// rock). They were Water, Rock and Grass for 2 to 4, so a player who picked "Grass" for Grass's DAT
+// put it on GrPs4, where its meshes match nothing and the whole form was drawn invisible.
 static constexpr struct { const char* token; const char* path; const char* label; } kStageResources[] = {
       {"grps1", "GrPs1.dat", "Pokémon Stadium: Fire"},
-      {"grps2", "GrPs2.dat", "Pokémon Stadium: Water"},
-      {"grps3", "GrPs3.dat", "Pokémon Stadium: Rock"},
-      {"grps4", "GrPs4.dat", "Pokémon Stadium: Grass"},
+      {"grps2", "GrPs2.dat", "Pokémon Stadium: Grass"},
+      {"grps3", "GrPs3.dat", "Pokémon Stadium: Water"},
+      {"grps4", "GrPs4.dat", "Pokémon Stadium: Rock"},
       {"grps", "GrPs.dat", "Pokémon Stadium: Base"},
       {"grop", "GrOp.dat", "Dream Land"},
       {"grnba", "GrNBa.dat", "Battlefield"},
@@ -2298,6 +2301,16 @@ bool stage_dat_target(const std::string& filename, std::string* path, std::strin
   if (match_index == std::size(kStageResources)) return false;
   *path = kStageResources[match_index].path; *display = kStageResources[match_index].label;
   return true;
+}
+
+// A Stadium transformation DAT whose own name says which form it is ("GrPs2.dat", "grps4"): that
+// form's disc file, else empty. Only the four forms: each one's meshes fit its own file alone.
+static std::string stadium_form_file(const std::string& filename) {
+  std::string name = lower(filename.substr(filename.find_last_of("/\\") == std::string::npos ?
+                                           0 : filename.find_last_of("/\\") + 1));
+  if (name.size() > 4 && dat_extension(name)) name.resize(name.size() - 4);
+  if (name.size() != 5 || name.compare(0, 4, "grps") != 0 || name[4] < '1' || name[4] > '4') return {};
+  return std::string("GrPs") + name[4] + ".dat";
 }
 
 // The disc archive an effect DAT replaces, from its root: "effMarioDataTable" is EfMrData.dat and
@@ -4235,7 +4248,11 @@ void configure(const std::string& settings_path) {
 bool make_standalone_stage(const fs::path& source, const std::string& member,
                            std::vector<uint8_t> bytes, VaultResourcePlan* resource,
                            std::string* error, const std::string& target_override = {}) {
-  const std::string filename = !target_override.empty() ? target_override :
+  // A Stadium form's DAT named for its form goes to that form, whichever slot was picked.
+  const std::string named_form = stadium_form_file(member.empty() ? path_filename_utf8(source) : member);
+  const bool form_slot = !target_override.empty() && !stadium_form_file(target_override).empty();
+  const std::string filename = form_slot && !named_form.empty() ? named_form :
+                              !target_override.empty() ? target_override :
                               member.empty() ? path_filename_utf8(source) : member;
   if (!stage_dat_target(filename, &resource->target_path, &resource->slot)) {
     *error = "The stage DAT name does not identify a supported disc resource."; return false;
@@ -5519,6 +5536,16 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
     std::vector<uint8_t> bytes = load_runtime_asset_locked(*asset, &error);
     if (bytes.empty()) { host::log("cosmetics: %s", error.c_str()); continue; }
     std::string wanted = lower(asset->info.target_path);
+    // Stadium forms installed before their slot names were right: a DAT named for one form sitting
+    // in another form's slot is served to the form it names, where its meshes match.
+    if (asset->info.kind == "stage_visual" && !stadium_form_file(wanted).empty()) {
+      const std::string named = stadium_form_file(asset->source_name.empty() ? asset->info.name : asset->source_name);
+      if (!named.empty() && lower(named) != wanted) {
+        host::log("cosmetics: %s is %s's DAT but was installed for %s; served to %s", asset->info.name.c_str(),
+                  named.c_str(), asset->info.target_path.c_str(), named.c_str());
+        wanted = lower(named);
+      }
+    }
     // The English twin of a per-language file. The disc holds PlCaRe.usd and GrPs.usd beside the
     // .dat, and the game loads the .usd when its language is English, so a costume or stage for
     // the .dat slot replaces both: replacing only the .dat changed nothing for English players.
