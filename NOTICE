@@ -40,6 +40,7 @@ Built into the program:
   ProggyForever fonts (MIT): notices in port/third_party/imgui/imgui_draw.cpp
 - libusb (LGPL-2.1-or-later): port/third_party/libusb/COPYING
 - stb_image and stb_image_write (MIT or public domain): port/third_party/stb/LICENSE
+- Vulkan-Headers (Apache-2.0 OR MIT): port/third_party/vulkan-headers/LICENSE.md
 - earcut.hpp (ISC): port/third_party/earcut/LICENSE
 - JSON for Modern C++ (MIT): notice at the top of port/third_party/nlohmann/json.hpp
 - dht (MIT): port/third_party/dht/LICENCE
