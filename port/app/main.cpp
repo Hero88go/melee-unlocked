@@ -32,6 +32,7 @@
 #endif
 #include "audio.h"
 #include "guest_registry.h"
+#include "gx_vulkan.h"
 #include "gx_backend.h"
 #include "gx_core.h"
 #include "render_options.h"
@@ -2042,6 +2043,12 @@ static int melee_main(int argc, char** argv) {
   if (!headless && threaded) {
     backend = gx::create_threaded_backend(gfx, !hidden);
   } else if (!headless) {
+    // Vulkan chosen but not usable here (no 1.3 GPU, or a driver that cannot map memory): start on the
+    // default renderer, which on Linux must be decided before the window is made.
+    if (gfx.api == gx::RenderApi::Vulkan && !gx::vulkan_available()) {
+      host::log("vulkan: not usable on this system; starting on the default renderer");
+      gfx.api = gx::RenderApi::D3D12;
+    }
     host::window_prefer_vulkan(gfx.api == gx::RenderApi::Vulkan);
     void* hwnd = host::window_create(gfx.window_w, gfx.window_h, host::window_title_base().c_str(), !hidden);
     if (gfx.fullscreen && !gfx.exclusive_fullscreen) host::window_set_fullscreen(true);

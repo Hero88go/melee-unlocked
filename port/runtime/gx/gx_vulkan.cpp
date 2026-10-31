@@ -26,6 +26,8 @@
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "gx_retro.h"
+#include "crt_shader.h"
+#include "present_shader.h"
 #include "host.h"
 #include "exi_slippi.h"
 #ifdef GX_PC_SETTINGS
@@ -162,15 +164,19 @@ Dxc* dxc() {
   }();
   return instance;
 }
-std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::string* error) {
+// present: the shared present pass (present_shader.h): b0 at 0, t0..t3 at 1..4, s0 at 5, and the
+// vertex shader's Direct3D clip space flipped for Vulkan.
+std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::string* error, const char* entry = "main", bool present = false) {
   Dxc* d = dxc();
   if (!d) { *error = "no shader compiler"; return {}; }
   DxcBuffer source{hlsl.data(), hlsl.size(), DXC_CP_UTF8};
-  const wchar_t* args[] = {L"-spirv", L"-E", L"main", L"-T", vertex ? L"vs_6_0" : L"ps_6_0", L"-fspv-target-env=vulkan1.3",
-                           L"-fvk-b-shift", L"0", L"0", L"-fvk-t-shift", L"2", L"0", L"-fvk-s-shift", L"3", L"0", L"-O3",
-                           L"-Wno-ignored-attributes"};
+  const std::wstring wentry(entry, entry + std::strlen(entry));
+  std::vector<const wchar_t*> args = {L"-spirv", L"-E", wentry.c_str(), L"-T", vertex ? L"vs_6_0" : L"ps_6_0", L"-fspv-target-env=vulkan1.3",
+                                      L"-fvk-b-shift", L"0", L"0", L"-fvk-t-shift", present ? L"1" : L"2", L"0",
+                                      L"-fvk-s-shift", present ? L"5" : L"3", L"0", L"-O3", L"-Wno-ignored-attributes"};
+  if (present && vertex) args.push_back(L"-fvk-invert-y");
   Microsoft::WRL::ComPtr<IDxcResult> result;
-  if (FAILED(d->compiler->Compile(&source, args, (UINT32)(sizeof args / sizeof *args), nullptr, IID_PPV_ARGS(&result)))) { *error = "compile call failed"; return {}; }
+  if (FAILED(d->compiler->Compile(&source, args.data(), (UINT32)args.size(), nullptr, IID_PPV_ARGS(&result)))) { *error = "compile call failed"; return {}; }
   HRESULT status = E_FAIL; result->GetStatus(&status);
   if (FAILED(status)) {
     Microsoft::WRL::ComPtr<IDxcBlobUtf8> errors;
@@ -186,13 +192,14 @@ std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::st
   return words;
 }
 #else
-std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::string* error) {
+std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::string* error, const char* entry = "main", bool present = false) {
   const auto dir = shader_cache_dir();
   const std::string stem = (dir / ("tmp-" + std::to_string(getpid()))).string();
   const std::string in = stem + ".hlsl", out = stem + ".spv", log = stem + ".log";
   { std::ofstream f(in, std::ios::binary); f << hlsl; }
-  const std::string command = std::string("glslangValidator -D -V -e main -S ") + (vertex ? "vert" : "frag") +
-      " --target-env vulkan1.3 --auto-map-locations --shift-UBO-binding 0 --shift-texture-binding 2 --shift-sampler-binding 3 -o '" +
+  const std::string command = std::string("glslangValidator -D -V -e ") + entry + " -S " + (vertex ? "vert" : "frag") +
+      " --target-env vulkan1.3 --auto-map-locations --shift-UBO-binding 0 --shift-texture-binding " + (present ? "1" : "2") +
+      " --shift-sampler-binding " + (present ? "5" : "3") + (present && vertex ? " --invert-y" : "") + " -o '" +
       out + "' '" + in + "' > '" + log + "' 2>&1";
   const int code = std::system(command.c_str());
   std::vector<uint32_t> words = code == 0 ? read_spirv(out) : std::vector<uint32_t>{};
@@ -203,14 +210,15 @@ std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::st
 #endif
 
 // SPIR-V for one HLSL source, from the disk cache when it was compiled before.
-std::vector<uint32_t> spirv_for(const std::string& hlsl, bool vertex) {
-  const uint64_t hash = hash_bytes(hlsl.data(), hlsl.size()) ^ (vertex ? 0x5653ull : 0x5053ull);
+std::vector<uint32_t> spirv_for(const std::string& hlsl, bool vertex, const char* entry = "main", bool present = false) {
+  uint64_t hash = hash_bytes(hlsl.data(), hlsl.size()) ^ (vertex ? 0x5653ull : 0x5053ull);
+  hash ^= hash_bytes(entry, std::strlen(entry)) * 31 + (present ? 0x7071ull : 0);
   char name[40]; std::snprintf(name, sizeof name, "%s-%016llx.spv", vertex ? "vs" : "ps", (unsigned long long)hash);
   const auto path = shader_cache_dir() / name;
   std::vector<uint32_t> words = read_spirv(path);
   if (!words.empty()) return words;
   std::string error;
-  words = compile_hlsl(hlsl, vertex, &error);
+  words = compile_hlsl(hlsl, vertex, &error, entry, present);
   if (words.empty()) throw std::runtime_error("vulkan: shader compile failed: " + error.substr(0, 600));
   std::ofstream f(path, std::ios::binary);
   f.write(reinterpret_cast<const char*>(words.data()), (std::streamsize)(words.size() * 4));
@@ -352,6 +360,7 @@ class VulkanBackend final : public Backend {
     blit_ps_ = module(spirv_for(kBlitShader, false));
     copy_pipeline_ = blit_pipeline(VK_FORMAT_R8G8B8A8_UNORM);
     present_pipeline_ = blit_pipeline(swap_format_);
+    create_present_pass();
     VkSamplerCreateInfo s{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     s.magFilter = s.minFilter = VK_FILTER_LINEAR; s.addressModeU = s.addressModeV = s.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     s.maxLod = 0;
@@ -382,8 +391,14 @@ class VulkanBackend final : public Backend {
     for (auto& s : samplers_) vkDestroySampler(device_, s.second, nullptr);
     vkDestroySampler(device_, linear_, nullptr); vkDestroySampler(device_, nearest_, nullptr);
     vkDestroyPipeline(device_, copy_pipeline_, nullptr); vkDestroyPipeline(device_, present_pipeline_, nullptr);
+    if (present_plain_) vkDestroyPipeline(device_, present_plain_, nullptr);
+    if (present_crt_) vkDestroyPipeline(device_, present_crt_, nullptr);
+    for (VkShaderModule m : {present_vs_, present_ps_, present_crt_ps_}) if (m) vkDestroyShaderModule(device_, m, nullptr);
+    if (present_layout_) vkDestroyPipelineLayout(device_, present_layout_, nullptr);
+    if (present_set_layout_) vkDestroyDescriptorSetLayout(device_, present_set_layout_, nullptr);
     vkDestroyShaderModule(device_, blit_vs_, nullptr); vkDestroyShaderModule(device_, blit_ps_, nullptr);
     destroy_swapchain();
+    if (capture_buffer_.buffer) { vkDestroyBuffer(device_, capture_buffer_.buffer, nullptr); vkFreeMemory(device_, capture_buffer_.memory, nullptr); }
     for (auto& f : frames_) {
       vkDestroyFence(device_, f.fence, nullptr);
       vkDestroySemaphore(device_, f.acquired, nullptr);
@@ -429,15 +444,21 @@ class VulkanBackend final : public Backend {
     set_main_projection(frame_scene_draw(frame));
     set_css_scene(frame.scene_major == 1 && frame.scene_minor == 0);
     bool presented = false;
-    for (const auto& command : frame.commands) {
-      if (command.kind == FrameCommand::Draw) {
-        draw(frame, frame.draws.at(command.index), overrides ? overrides + command.index : nullptr, vertex_offsets_[command.index]);
-      } else {
-        const auto& c = frame.copies.at(command.index);
-        if (c.to_xfb) { if (!skip_present_ && !presented) { present(c, frame.test_fill); presented = true; } }
-        else copy(c);
-        if (c.clear) clear(c);
+    try {
+      for (const auto& command : frame.commands) {
+        if (command.kind == FrameCommand::Draw) {
+          draw(frame, frame.draws.at(command.index), overrides ? overrides + command.index : nullptr, vertex_offsets_[command.index]);
+        } else {
+          const auto& c = frame.copies.at(command.index);
+          if (c.to_xfb) { if (!skip_present_ && !presented) { present(c, frame.test_fill); presented = true; } }
+          else copy(c);
+          if (c.clear) clear(c);
+        }
       }
+    } catch (const std::runtime_error& e) {
+      // The per-frame buffer ran out (a small one on a driver that could not map the full size):
+      // the rest of this frame is not drawn; what was recorded is still submitted.
+      if (++ring_overflows_ <= 3) host::log("%s; the rest of this frame was skipped", e.what());
     }
     end_frame(presented);
     trim();
@@ -565,19 +586,40 @@ class VulkanBackend final : public Backend {
       VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
       dp.maxSets = 8192 + 64; dp.poolSizeCount = 3; dp.pPoolSizes = sizes;
       check(vkCreateDescriptorPool(device_, &dp, nullptr, &f.pool), "descriptor pool");
-      VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-      bi.size = kRingBytes;
-      bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-      check(vkCreateBuffer(device_, &bi, nullptr, &f.ring.buffer), "ring buffer");
-      VkMemoryRequirements req; vkGetBufferMemoryRequirements(device_, f.ring.buffer, &req);
-      VkMemoryAllocateInfo mi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size,
-                              heap_.type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
-      check(vkAllocateMemory(device_, &mi, nullptr, &f.ring.memory), "ring memory");
-      check(vkBindBufferMemory(device_, f.ring.buffer, f.ring.memory, 0), "ring bind");
-      void* p = nullptr; check(vkMapMemory(device_, f.ring.memory, 0, VK_WHOLE_SIZE, 0, &p), "ring map");
-      f.ring.mapped = (uint8_t*)p; f.ring.size = kRingBytes;
+      f.ring = mapped_buffer(kRingBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
     }
+  }
+
+  // A host-visible buffer the CPU writes through. Some drivers (Mesa's lavapipe under WSL) report a
+  // successful vkMapMemory and hand back MAP_FAILED for a large allocation, so the pointer is checked,
+  // other host-visible memory types are tried, and the per-frame ring may shrink (to 24 MB) before
+  // giving up, which makes the game fall back to another renderer instead of writing through it.
+  Buffer mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool may_shrink) {
+    VkPhysicalDeviceMemoryProperties props; vkGetPhysicalDeviceMemoryProperties(physical_, &props);
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (VkDeviceSize bytes = size; bytes >= (may_shrink ? (24ull << 20) : size); bytes /= 2) {
+      Buffer b; b.size = bytes;
+      VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = bytes; bi.usage = usage;
+      check(vkCreateBuffer(device_, &bi, nullptr, &b.buffer), "buffer");
+      VkMemoryRequirements req; vkGetBufferMemoryRequirements(device_, b.buffer, &req);
+      for (uint32_t t = 0; t < props.memoryTypeCount; ++t) {
+        if (!(req.memoryTypeBits & (1u << t)) || (props.memoryTypes[t].propertyFlags & want) != want) continue;
+        VkMemoryAllocateInfo mi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size, t};
+        if (vkAllocateMemory(device_, &mi, nullptr, &b.memory) != VK_SUCCESS) continue;
+        void* p = nullptr;
+        if (vkBindBufferMemory(device_, b.buffer, b.memory, 0) == VK_SUCCESS &&
+            vkMapMemory(device_, b.memory, 0, req.size, 0, &p) == VK_SUCCESS && p && p != reinterpret_cast<void*>(~uintptr_t(0))) {
+          b.mapped = static_cast<uint8_t*>(p);
+          if (bytes != size) host::log("vulkan: per-frame buffer %llu MB (the driver could not map %llu MB)", (unsigned long long)(bytes >> 20), (unsigned long long)(size >> 20));
+          return b;
+        }
+        vkFreeMemory(device_, b.memory, nullptr); b.memory = VK_NULL_HANDLE;
+      }
+      vkDestroyBuffer(device_, b.buffer, nullptr);
+      if (!may_shrink) break;
+    }
+    throw std::runtime_error("vulkan: the driver could not map a host-visible buffer");
   }
 
   void create_swapchain() {
@@ -1023,15 +1065,10 @@ class VulkanBackend final : public Backend {
       offset = ring_alloc(bytes, 16);
       std::memcpy(f.ring.mapped + offset, rgba, bytes);
     } else {   // a texture pack's large picture: its own staging buffer, freed with this frame
-      VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = bytes; bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-      check(vkCreateBuffer(device_, &bi, nullptr, &source), "staging buffer");
-      VkMemoryRequirements req; vkGetBufferMemoryRequirements(device_, source, &req);
-      VkMemoryAllocateInfo mi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size,
-                              heap_.type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
-      VkDeviceMemory memory; check(vkAllocateMemory(device_, &mi, nullptr, &memory), "staging memory");
-      vkBindBufferMemory(device_, source, memory, 0);
-      void* p = nullptr; vkMapMemory(device_, memory, 0, VK_WHOLE_SIZE, 0, &p); std::memcpy(p, rgba, bytes); vkUnmapMemory(device_, memory);
-      f.dead_buffers.push_back({source, memory});
+      Buffer staging = mapped_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false);
+      std::memcpy(staging.mapped, rgba, bytes);
+      source = staging.buffer;
+      f.dead_buffers.push_back({staging.buffer, staging.memory});
     }
     barrier(f.upload, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy region{};
@@ -1282,6 +1319,7 @@ class VulkanBackend final : public Backend {
     set_true_widescreen(opts_.true_widescreen && !opts_.widescreen, true_widescreen_aspect(opts_, client_w_, client_h_));
     end_efb();
     barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);   // ambient occlusion reads it
     const VkImage target = swap_images_[image_index_];
     raw_barrier(f.cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     const int w = (int)swap_extent_.width, h = (int)swap_extent_.height;
@@ -1301,15 +1339,18 @@ class VulkanBackend final : public Backend {
       VkViewport viewport{vx, vy, float(pw), float(ph), 0, 1};
       VkRect2D scissor{{0, 0}, swap_extent_};
       vkCmdSetViewport(f.cmd, 0, 1, &viewport); vkCmdSetScissor(f.cmd, 0, 1, &scissor);
-      BlitConstants k{};
-      const uint32_t sw = std::max(c.src_w, 1u), sh = std::max(c.src_h, 1u);
-      k.rect[0] = sw / float(EFB_WIDTH); k.rect[1] = sh / float(EFB_HEIGHT);
-      k.rect[2] = c.src_x / float(EFB_WIDTH); k.rect[3] = c.src_y / float(EFB_HEIGHT);
-      k.box[0] = k.rect[0] / float(pw); k.box[1] = k.rect[1] / float(ph);
-      k.kind[0] = 3;
-      k.kind[1] = std::clamp((int)std::ceil(float(sw * scale_) / float(pw)), 1, 8);
-      k.kind[2] = std::clamp((int)std::ceil(float(sh * scale_) / float(ph)), 1, 8);
-      blit(f.cmd, present_pipeline_, efb_color_, linear_, k);
+      if (present_plain_) present_picture(c, w, h);
+      else {
+        BlitConstants k{};
+        const uint32_t sw = std::max(c.src_w, 1u), sh = std::max(c.src_h, 1u);
+        k.rect[0] = sw / float(EFB_WIDTH); k.rect[1] = sh / float(EFB_HEIGHT);
+        k.rect[2] = c.src_x / float(EFB_WIDTH); k.rect[3] = c.src_y / float(EFB_HEIGHT);
+        k.box[0] = k.rect[0] / float(pw); k.box[1] = k.rect[1] / float(ph);
+        k.kind[0] = 3;
+        k.kind[1] = std::clamp((int)std::ceil(float(sw * scale_) / float(pw)), 1, 8);
+        k.kind[2] = std::clamp((int)std::ceil(float(sh * scale_) / float(ph)), 1, 8);
+        blit(f.cmd, present_pipeline_, efb_color_, linear_, k);
+      }
     }
 #ifdef GX_PC_SETTINGS
     if (settings_ui_ready()) {
@@ -1323,6 +1364,87 @@ class VulkanBackend final : public Backend {
     if (capture_pending_) record_capture(target);
     raw_barrier(f.cmd, target, capture_pending_ ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+  }
+
+  // ---- The shared present pass: averaging box, sharpening, colour sliders, ambient occlusion and
+  // the CRT model, the same shader and constants as the Direct3D 12 renderer (present_shader.h). ----
+  void create_present_pass() {
+    try {
+      const std::string plain = kPresentShader;
+      const std::string crt = plain + kPresentCrtTap + kCrtShader + kPresentCrtMain;
+      present_vs_ = module(spirv_for(plain, true, "VS", true));
+      present_ps_ = module(spirv_for(plain, false, "PS", true));
+      present_crt_ps_ = module(spirv_for(crt, false, "PS_CRT", true));
+    } catch (const std::exception& e) {
+      host::log("vulkan: the present shader did not compile (%s); plain present only", e.what());
+      return;
+    }
+    VkDescriptorSetLayoutBinding b[6]{};
+    b[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    for (uint32_t i = 1; i <= 4; ++i) b[i] = {i, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    b[5] = {5, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 6; li.pBindings = b;
+    check(vkCreateDescriptorSetLayout(device_, &li, nullptr, &present_set_layout_), "present layout");
+    VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pl.setLayoutCount = 1; pl.pSetLayouts = &present_set_layout_;
+    check(vkCreatePipelineLayout(device_, &pl, nullptr, &present_layout_), "present pipeline layout");
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState blend{}; blend.colorWriteMask = 0xF;
+    for (int crt = 0; crt < 2; ++crt) {
+      VkPipelineShaderStageCreateInfo st[2]{};
+      st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, present_vs_, "VS", nullptr};
+      st[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, crt ? present_crt_ps_ : present_ps_,
+               crt ? "PS_CRT" : "PS", nullptr};
+      (crt ? present_crt_ : present_plain_) = build_pipeline(st, vi, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE,
+                                                             blend, false, false, VK_COMPARE_OP_ALWAYS, present_layout_, swap_format_, VK_FORMAT_UNDEFINED);
+    }
+  }
+  void present_picture(const EfbCopy& c, int w, int h) {
+    Frame_& f = frames_[slot_];
+    const float src_h_lines = (float)c.src_h * c.y_scale;
+    const float aspect = presented_aspect(opts_, w, h, frame_widenable_);
+    float vw = (float)w, vh = (float)w / aspect;
+    if (vh > h) { vh = (float)h; vw = h * aspect; }
+    const bool crt_on = opts_.crt_filter != 0;
+    const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0, opts_.crt_curve);
+    CrtFit fit{vh, 0.0f, src_h_lines};
+    if (crt_on) fit = crt_fit(vh, src_h_lines);
+    VkViewport vp{(w - vw) * 0.5f, (h - vh) * 0.5f, vw, vh, 0, 1};
+    if (crt_on) { vp.x = std::floor(vp.x); vp.y = std::floor(vp.y); }
+    vkCmdSetViewport(f.cmd, 0, 1, &vp);
+    float k[28] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                   1.0f / std::max((float)width_, 1.0f), 1.0f / std::max((float)height_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
+                   1.0f, 1.0f, 0.0f, 0.0f,
+                   1.0f, 1.0f, 0.0f, 0.0f,
+                   opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao,
+                   crt.scan, crt.mask, crt.curve, std::max(fit.lines, 1.0f),
+                   (float)c.src_w, vh / std::max(fit.lines, 1.0f), crt.halation, fit.shift};
+    k[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
+    k[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
+    const VkDeviceSize align = std::max<VkDeviceSize>(limits_.minUniformBufferOffsetAlignment, 16);
+    const VkDeviceSize at = ring_alloc(sizeof k, align);
+    std::memcpy(f.ring.mapped + at, k, sizeof k);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = f.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &present_set_layout_;
+    VkDescriptorSet set; check(vkAllocateDescriptorSets(device_, &ai, &set), "present descriptors");
+    VkDescriptorBufferInfo ub{f.ring.buffer, 0, sizeof k};
+    VkDescriptorImageInfo img[4] = {{VK_NULL_HANDLE, efb_color_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, efb_color_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, efb_depth_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    VkDescriptorImageInfo smp{linear_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkWriteDescriptorSet wr[6]{};
+    for (auto& x : wr) x.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, x.dstSet = set, x.descriptorCount = 1;
+    wr[0].dstBinding = 0; wr[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; wr[0].pBufferInfo = &ub;
+    for (uint32_t i = 0; i < 4; ++i) { wr[1 + i].dstBinding = 1 + i; wr[1 + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; wr[1 + i].pImageInfo = &img[i]; }
+    wr[5].dstBinding = 5; wr[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; wr[5].pImageInfo = &smp;
+    vkUpdateDescriptorSets(device_, 6, wr, 0, nullptr);
+    vkCmdBindPipeline(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, crt_on ? present_crt_ : present_plain_);
+    const uint32_t offset = (uint32_t)at;
+    vkCmdBindDescriptorSets(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout_, 0, 1, &set, 1, &offset);
+    vkCmdDraw(f.cmd, 3, 1, 0, 0);
   }
 
   // ---- Captures (--capture-frame and friends, for hidden checks) ----
@@ -1347,15 +1469,7 @@ class VulkanBackend final : public Backend {
     const VkDeviceSize bytes = VkDeviceSize(swap_extent_.width) * swap_extent_.height * 4;
     if (capture_buffer_.size < bytes) {
       if (capture_buffer_.buffer) { vkDeviceWaitIdle(device_); vkDestroyBuffer(device_, capture_buffer_.buffer, nullptr); vkFreeMemory(device_, capture_buffer_.memory, nullptr); }
-      VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = bytes; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-      check(vkCreateBuffer(device_, &bi, nullptr, &capture_buffer_.buffer), "capture buffer");
-      VkMemoryRequirements req; vkGetBufferMemoryRequirements(device_, capture_buffer_.buffer, &req);
-      VkMemoryAllocateInfo mi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size,
-                              heap_.type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
-      check(vkAllocateMemory(device_, &mi, nullptr, &capture_buffer_.memory), "capture memory");
-      vkBindBufferMemory(device_, capture_buffer_.buffer, capture_buffer_.memory, 0);
-      void* p = nullptr; vkMapMemory(device_, capture_buffer_.memory, 0, VK_WHOLE_SIZE, 0, &p);
-      capture_buffer_.mapped = (uint8_t*)p; capture_buffer_.size = bytes;
+      capture_buffer_ = mapped_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
     }
     raw_barrier(f.cmd, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkBufferImageCopy region{}; region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; region.imageExtent = {swap_extent_.width, swap_extent_.height, 1};
@@ -1465,6 +1579,10 @@ class VulkanBackend final : public Backend {
   VkShaderModule blit_vs_ = VK_NULL_HANDLE, blit_ps_ = VK_NULL_HANDLE;
   VkPipeline copy_pipeline_ = VK_NULL_HANDLE, present_pipeline_ = VK_NULL_HANDLE, bound_pipeline_ = VK_NULL_HANDLE;
   VkSampler linear_ = VK_NULL_HANDLE, nearest_ = VK_NULL_HANDLE;
+  VkShaderModule present_vs_ = VK_NULL_HANDLE, present_ps_ = VK_NULL_HANDLE, present_crt_ps_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout present_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout present_layout_ = VK_NULL_HANDLE;
+  VkPipeline present_plain_ = VK_NULL_HANDLE, present_crt_ = VK_NULL_HANDLE;
   std::unordered_map<uint64_t, VkShaderModule> modules_;
   std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines_;
   std::unordered_map<uint64_t, Image> textures_, copies_;
@@ -1476,7 +1594,7 @@ class VulkanBackend final : public Backend {
   uint64_t sequence_ = 0, replacement_bytes_ = 0;
   uint32_t presented_ = 0, capture_frame_ = 0;
   int anisotropy_applied_ = 0;
-  int pipeline_failures_ = 0, pool_exhausted_ = 0;
+  int pipeline_failures_ = 0, pool_exhausted_ = 0, ring_overflows_ = 0;
   EffectsFilter effects_filter_{};
   LightweightFilter lightweight_filter_{};
   Surface look_surface_ = Surface::Textured;
@@ -1504,8 +1622,40 @@ bool vulkan_available() {
     auto properties = (PFN_vkGetPhysicalDeviceProperties)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties");
     uint32_t count = 0; enumerate(instance, &count, nullptr);
     std::vector<VkPhysicalDevice> devices(count); enumerate(instance, &count, devices.data());
+    // A Vulkan 1.3 device that can also map memory: some drivers (Mesa's lavapipe under WSL) report
+    // success and return MAP_FAILED, which no renderer can draw with. One device and a 1 MB mapping
+    // are tried, then let go.
+    auto get = [&](const char* name) { return vkGetInstanceProcAddr(instance, name); };
+    auto create_device = (PFN_vkCreateDevice)get("vkCreateDevice");
+    auto device_proc = (PFN_vkGetDeviceProcAddr)get("vkGetDeviceProcAddr");
+    auto memory_props = (PFN_vkGetPhysicalDeviceMemoryProperties)get("vkGetPhysicalDeviceMemoryProperties");
     bool ok = false;
-    for (VkPhysicalDevice d : devices) { VkPhysicalDeviceProperties p; properties(d, &p); ok |= p.apiVersion >= VK_API_VERSION_1_3; }
+    for (VkPhysicalDevice d : devices) {
+      VkPhysicalDeviceProperties p; properties(d, &p);
+      if (p.apiVersion < VK_API_VERSION_1_3) continue;
+      const float priority = 1.0f;
+      VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; q.queueCount = 1; q.pQueuePriorities = &priority;
+      VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &q;
+      VkDevice device = VK_NULL_HANDLE;
+      if (create_device(d, &di, nullptr, &device) != VK_SUCCESS) continue;
+      auto alloc = (PFN_vkAllocateMemory)device_proc(device, "vkAllocateMemory");
+      auto map = (PFN_vkMapMemory)device_proc(device, "vkMapMemory");
+      auto free_memory = (PFN_vkFreeMemory)device_proc(device, "vkFreeMemory");
+      auto destroy_device = (PFN_vkDestroyDevice)device_proc(device, "vkDestroyDevice");
+      VkPhysicalDeviceMemoryProperties mp; memory_props(d, &mp);
+      const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+      for (uint32_t t = 0; t < mp.memoryTypeCount && !ok; ++t) {
+        if ((mp.memoryTypes[t].propertyFlags & want) != want) continue;
+        VkMemoryAllocateInfo mi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, 1u << 20, t};
+        VkDeviceMemory memory = VK_NULL_HANDLE; void* ptr = nullptr;
+        if (alloc(device, &mi, nullptr, &memory) != VK_SUCCESS) continue;
+        ok = map(device, memory, 0, 1u << 20, 0, &ptr) == VK_SUCCESS && ptr && ptr != reinterpret_cast<void*>(~uintptr_t(0));
+        free_memory(device, memory, nullptr);
+      }
+      destroy_device(device, nullptr);
+      if (ok) break;
+      host::log("vulkan: %s cannot map memory; not offered", p.deviceName);
+    }
     destroy(instance, nullptr);
     return ok;
   }();
