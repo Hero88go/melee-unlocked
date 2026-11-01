@@ -91,7 +91,7 @@
 
 // The settings panel's port-code options (pc_settings.cpp); the native game reads them through
 // MuHostApi.game_options.
-namespace gecko { extern bool option_no_screen_shake; extern bool option_pal_stock_icons; extern bool option_widescreen; }
+namespace gecko { extern int option_screen_shake_percent; extern bool option_no_screen_shake; extern bool option_pal_stock_icons; extern bool option_widescreen; }
 
 namespace source_port {
 namespace {
@@ -123,7 +123,8 @@ GameImageReservation g_game_image_reservation;
 
 MuGameApi g_game{};
 #ifdef _WIN32
-std::string g_dll = "melee_game.dll";
+// The compatibility build (melee_source_compat.exe) loads its own SSE2 game library, as on Linux.
+std::string g_dll = std::strcmp(MELEE_CPU_BASELINE_NAME, "AVX2") == 0 ? "melee_game.dll" : "melee_game_compat.dll";
 #elif defined(MELEE_GAME_LIBRARY_NAME)
 std::string g_dll = MELEE_GAME_LIBRARY_NAME;   // the compatibility build loads its own game library
 #else
@@ -1038,6 +1039,7 @@ uint32_t h_display_options() {
          (gx::arcade_display() & gx::kArcadeGrid);
 }
 uint32_t h_shield_color(int32_t slot) { return gx::shield_color(slot); }
+float h_screen_shake_scale() { return gecko::option_screen_shake_percent / 100.0f; }
 uint32_t h_grid_color() { return gx::look_live().arcade_grid_rgb.load(std::memory_order_relaxed) & 0xFFFFFFu; }
 void h_hud_combo(int32_t slot, int32_t link_slot, float percent, int32_t stunned) {
   gx::set_native_hud_combo(slot, link_slot, percent, stunned != 0);
@@ -1154,7 +1156,7 @@ void begin_native_savestates(int slots = slippi::ROLLBACK_MAX_FRAMES) {   // a r
   // restoring its voice tables while the voices play on cuts and restarts sounds on every rollback.
   {
     char dll_path[MAX_PATH] = {};
-    HMODULE module = GetModuleHandleA("melee_game.dll");
+    HMODULE module = GetModuleHandleA(g_dll.c_str());
     if (module && GetModuleFileNameA(module, dll_path, MAX_PATH)) {
       std::string path(dll_path);
       path = path.substr(0, path.size() - 4) + ".snapexcl";
@@ -3010,6 +3012,7 @@ MuHostApi make_host() {
   h.hud_combo = h_hud_combo;
   h.shield_color = h_shield_color;
   h.grid_color = h_grid_color;
+  h.screen_shake_scale = h_screen_shake_scale;
   return h;
 }
 

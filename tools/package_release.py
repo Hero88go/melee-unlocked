@@ -250,6 +250,10 @@ def main():
                     help="optional melee_game.dll paired with --source-exe")
     ap.add_argument("--source-dbg", type=Path, default=None,
                     help="optional melee_game.dbg paired with --source-dll")
+    ap.add_argument("--source-compat-exe", type=Path, default=None,
+                    help="melee_source.exe built with -DMELEE_CPU_BASELINE=SSE2 (processors without AVX2)")
+    ap.add_argument("--source-compat-dll", type=Path, default=None,
+                    help="melee_game.dll built with -DMELEE_CPU_BASELINE=SSE2, paired with --source-compat-exe")
     ap.add_argument("--ghost-ai", type=Path, default=None,
                     help="the pro AI network (ghost_ai.bin); default: beside --source-exe")
     ap.add_argument("--ghost-ai-dir", type=Path, default=None,
@@ -327,6 +331,23 @@ def main():
             if not args.source_dbg.is_file():
                 raise SystemExit(f"missing Source Port debug file: {args.source_dbg}")
             shutil.copy2(args.source_dbg, folder / "melee_game.dbg")
+        # The Source Port for processors without AVX2: its own host and game library under _compat
+        # names, picked by the launcher (the AVX2 host refuses those processors).
+        if args.source_compat_exe:
+            compat_version = subprocess.run([str(args.source_compat_exe), "--version"], capture_output=True,
+                                            text=True, timeout=60).stdout.strip()
+            if compat_version != args.version:
+                raise SystemExit(f"the Source Port compatibility build reports {compat_version!r}, not {args.version!r}")
+            compat_snapexcl = args.source_compat_dll.with_suffix(".snapexcl")
+            if not compat_snapexcl.is_file():
+                raise SystemExit(f"missing {compat_snapexcl.name} next to {args.source_compat_dll}")
+            shutil.copy2(args.source_compat_exe, folder / "melee_source_compat.exe")
+            shutil.copy2(args.source_compat_dll, folder / "melee_game_compat.dll")
+            shutil.copy2(compat_snapexcl, folder / "melee_game_compat.snapexcl")
+            compat_dbg = args.source_compat_dll.with_suffix(".dbg")
+            if compat_dbg.is_file():
+                shutil.copy2(compat_dbg, folder / "melee_game_compat.dbg")
+            print(f"Source Port compatibility build: {args.source_compat_exe}")
         # Fight a pro: the network the practice CPU plays with (port/runtime/hle/ghost_ai.cpp).
         if args.ghost_ai_dir:
             specialists = ("mang0", "zain", "cody", "amsa")
