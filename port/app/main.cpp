@@ -1964,7 +1964,15 @@ static int melee_main(int argc, char** argv) {
   if (settings_window_only) {
     gfx.pc_settings = true;
     gx::load_pc_settings(gfx, o.volume);
-    const int rc = app::run_settings_window(gfx, settings_standby, [&] { gx::load_pc_settings(gfx, o.volume); gfx.pc_settings = true; });
+    // Shown again from standby: the settings file and the skin profile as the game or an earlier panel
+    // left them. The profile was read once at the launcher's start, so a skin set back to standard in the
+    // game showed as still on here, and any skin change in this panel saved those old picks back.
+    const int rc = app::run_settings_window(gfx, settings_standby, [&] {
+      gx::load_pc_settings(gfx, o.volume); gfx.pc_settings = true;
+      host::cosmetics::configure(gfx.settings_path);
+      host::log("settings: reloaded for show, cosmetic profile %s",
+                host::cosmetics::profile_enabled() ? "enabled" : "disabled");
+    });
     // The panel polls every controller so its live readouts work, which starts the adapter and
     // Switch Pro threads, and it can start an update check. Returning straight from here left those
     // threads running into static destruction, where a joinable std::thread ends the process: every
