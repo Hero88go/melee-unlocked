@@ -2043,16 +2043,20 @@ static int melee_main(int argc, char** argv) {
     host::window_title_base() = base;
   }
   std::unique_ptr<gx::Backend> backend;
-  if (!headless && threaded) {
-    backend = gx::create_threaded_backend(gfx, !hidden);
-  } else if (!headless) {
-    // Vulkan chosen but not usable here (no 1.3 GPU, or a driver that cannot map memory): start on the
-    // default renderer, which on Linux must be decided before the window is made.
+  // Vulkan chosen but not usable here (no 1.3 GPU, or a driver that cannot map memory): start on the
+  // default renderer, which on Linux must be decided before the window is made. For both paths: the
+  // threaded renderer (every normal launch) makes its window too, and without this a Linux Vulkan
+  // choice got an OpenGL window whose Vulkan surface could not be created, so the game stopped.
+  if (!headless) {
     if (gfx.api == gx::RenderApi::Vulkan && !gx::vulkan_available()) {
       host::log("vulkan: not usable on this system; starting on the default renderer");
       gfx.api = gx::RenderApi::D3D12;
     }
     host::window_prefer_vulkan(gfx.api == gx::RenderApi::Vulkan);
+  }
+  if (!headless && threaded) {
+    backend = gx::create_threaded_backend(gfx, !hidden);
+  } else if (!headless) {
     void* hwnd = host::window_create(gfx.window_w, gfx.window_h, host::window_title_base().c_str(), !hidden);
     if (gfx.fullscreen && !gfx.exclusive_fullscreen) host::window_set_fullscreen(true);
     backend.reset(gx::create_render_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
