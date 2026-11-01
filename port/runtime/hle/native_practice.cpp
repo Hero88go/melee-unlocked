@@ -556,14 +556,18 @@ void publish_snapshot() {
 // The online session is over (the other player left, the connection dropped, the player left with
 // at least one match played): back into Training with the same character, and once its match runs,
 // "search again?" for the same mode (Direct and Teams: the same code).
-void enter_training_after_session(MatchMode mode, int test_character = -1) {
+void enter_training_after_session(MatchMode mode, int local_index = -1, int test_character = -1) {
   uint8_t character = 0, costume = 0;
   const PracticeConfig css = capture_practice();
   bool picked = slippi::online::local_css_selection(&character, &costume);
   if (!picked && test_character >= 0) { character = (uint8_t)test_character; picked = true; }
-  if (!picked && css.valid && css.players[css.local_slot].character < 26) {
-    character = (uint8_t)css.players[css.local_slot].character;
-    costume = css.players[css.local_slot].costume;
+  // The online match's own slot for this player: both slots of an online match are human, so the
+  // first human one is player 1, and a player 2 came back to Training as player 1's character.
+  // (The character select record is cleared when each match starts, so it is usually gone here.)
+  const int slot = local_index >= 0 && local_index < 4 && css.players[local_index].active ? local_index : css.local_slot;
+  if (!picked && css.valid && css.players[slot].character < 26) {
+    character = (uint8_t)css.players[slot].character;
+    costume = css.players[slot].costume;
     picked = true;
   }
   g_practice = {};
@@ -592,7 +596,8 @@ void enter_training_after_session(MatchMode mode, int test_character = -1) {
   g_enter_seen_select = false;
   g_origin_major = kTrainingMajor;
   g_restore_training = false;
-  host::log("native practice: online session over; into Training%s, then offer a %s search", picked ? "" : " (no character known)",
+  host::log("native practice: online session over; into Training%s (character %u from slot %d), then offer a %s search",
+            picked ? "" : " (no character known)", (unsigned)character, slot,
             g_offer_mode == MatchMode::None ? "no" : match_mode_name(g_offer_mode));
   run_decision(g_lifecycle.return_after_session());
 }
@@ -783,7 +788,7 @@ void tick() {
   {
     static const int test_at = [] { const char* v = std::getenv("MELEE_TEST_AFTER_SESSION"); return v ? std::atoi(v) : -1; }();
     static int ticks = 0;
-    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, [] { const char* c = std::getenv("MELEE_TEST_P1_CHAR"); return c ? std::atoi(c) : 2; }());   // Fox, or MELEE_TEST_P1_CHAR
+    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, -1, [] { const char* c = std::getenv("MELEE_TEST_P1_CHAR"); return c ? std::atoi(c) : 2; }());   // Fox, or MELEE_TEST_P1_CHAR
     // MELEE_TEST_TRAIN_AGAINST=<tick>,<character> (tests only): a ghost's character picked at that tick.
     static int against_at = -1, against = -1;
     static const bool parsed = [] { if (const char* v = std::getenv("MELEE_TEST_TRAIN_AGAINST")) std::sscanf(v, "%d,%d", &against_at, &against); return true; }();
@@ -818,18 +823,18 @@ void tick() {
   // the session is over, so nothing changes during a match or between a pair's games.
   {
     static bool session_seen = false, played = false;
-    static int session_mode_seen = -1;
+    static int session_mode_seen = -1, local_index_seen = -1;
     static std::string session_code;
     const bool session = slippi::online::session_mode() >= 0;
     if (session) {
       session_seen = true;
       session_mode_seen = slippi::online::session_mode();
-      if (slippi::online::is_online_match()) played = true;
+      if (slippi::online::is_online_match()) { played = true; local_index_seen = slippi::online::local_player_index(); }
     } else if (session_seen) {
       session_seen = false;
       if (played && gx::RenderOptions::live_online_back_to_training() && g_lifecycle.phase() == Phase::Idle &&
           is_online_scene() && !slippi::playback::enabled()) {
-        enter_training_after_session((MatchMode)session_mode_seen);
+        enter_training_after_session((MatchMode)session_mode_seen, local_index_seen);
       } else if (played && gx::RenderOptions::live_online_return_training() && g_lifecycle.phase() == Phase::Idle &&
           is_online_scene()) {
         g_origin_major = kTrainingMajor;
