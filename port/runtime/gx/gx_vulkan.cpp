@@ -376,6 +376,7 @@ class VulkanBackend final : public Backend {
     check(vkCreateSampler(device_, &s, nullptr, &nearest_), "sampler");
     create_white();
     g_vulkan_running = true;
+    { std::error_code ec; std::filesystem::remove(shader_cache_dir() / "startup.pending", ec); }
 #ifdef GX_PC_SETTINGS
     if (opts_.pc_settings) create_settings_ui();
 #endif
@@ -534,6 +535,19 @@ class VulkanBackend final : public Backend {
     check(vkCreateDevice(physical_, &info, nullptr, &device_), "device");
     load_device(device_);
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
+    // A start that died while building pipelines (a 0.9.86 Intel Mesa player segfaulted inside
+    // vkCreateGraphicsPipelines, every start) left this marker behind: the cached pipelines, recipes
+    // and SPIR-V are then cleared and built anew, so a bad cache costs one crash, not every start.
+    {
+      std::error_code ec;
+      const auto marker = shader_cache_dir() / "startup.pending";
+      if (std::filesystem::exists(marker, ec)) {
+        host::log("vulkan: the last start did not finish; clearing the Vulkan shader cache");
+        for (const auto& entry : std::filesystem::directory_iterator(shader_cache_dir(), ec))
+          std::filesystem::remove(entry.path(), ec);
+      }
+      std::ofstream(marker, std::ios::binary) << "1";
+    }
     VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     std::ifstream f(shader_cache_dir() / "pipelines.bin", std::ios::binary);
     std::string data((std::istreambuf_iterator<char>(f)), {});
@@ -1050,6 +1064,8 @@ class VulkanBackend final : public Backend {
       // Another MSAA sample count than this session's draws to other images: kept for when it is used.
       if ((r.state >> 19) != uint32_t(samples_)) { recipes_.push_back(r); continue; }
       if (pipelines_.count(key)) continue;
+      // Wireframe needs fillModeNonSolid, which a recipe saved on another GPU may have had.
+      if (((r.state >> 18) & 1) && !wire_supported_) continue;
       const uint64_t vk = key.vs ^ 0xA5A5000000000000ull, pk = key.ps ^ 0x5A5A000000000000ull;
       VkShaderModule vm = VK_NULL_HANDLE, pm = VK_NULL_HANDLE;
       if (auto i = modules_.find(vk); i != modules_.end()) vm = i->second;
