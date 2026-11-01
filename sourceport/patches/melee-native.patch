@@ -126510,7 +126510,7 @@ index 7a5af635b..c99b3a78a 100644
  /* 21ED74 */ void grHomeRun_8021ED74(void);
  /* 21EDD4 */ void grHomeRun_8021EDD4(void);
 diff --git a/src/melee/gr/gricemt.c b/src/melee/gr/gricemt.c
-index efc73d37a..ff471de03 100644
+index efc73d37a..5b2262940 100644
 --- a/src/melee/gr/gricemt.c
 +++ b/src/melee/gr/gricemt.c
 @@ -112,9 +112,9 @@ struct grIceMt_YakumonoParam {
@@ -127066,6 +127066,17 @@ index efc73d37a..ff471de03 100644
          }
      }
  }
+@@ -1346,8 +1348,8 @@ static inline void grIceMt_GetRandomTimer(int* out)
+     s32 b;
+     s32 d;
+ 
+-    a = ((s16*) yakumono_param)[0x36 / 2];
+-    b = ((s16*) yakumono_param)[0x38 / 2];
++    a = BEV(((be_s16*) yakumono_param)[0x36 / 2]);
++    b = BEV(((be_s16*) yakumono_param)[0x38 / 2]);
+     if (a > b) {
+         d = a - b;
+         a = b + (d != 0 ? HSD_Randi(d) : 0);
 @@ -1426,8 +1428,8 @@ int fn_801F9150(Ground_GObj* arg0, int* out)
      s32 a;
  
@@ -127245,7 +127256,17 @@ index efc73d37a..ff471de03 100644
              }
          }
      }
-@@ -1900,13 +1845,15 @@ bool grIceMt_801FA364(struct grIceMt_FA364_State* state, f32* out,
+@@ -1893,20 +1838,24 @@ bool grIceMt_801FA364(struct grIceMt_FA364_State* state, f32* out,
+             state->idx = cb(gobj, &next_delay);
+             state->delay = (s16) next_delay;
+             state->phase = 1;
+-            state->lerp_count = ((s16*) yakumono_param)[0x34 / 2];
++            /* A big-endian word of the stage file: read raw it was byte swapped (60 frames became
++             * 15360), so the climb speed never changed and the mountain did not scroll. */
++            state->lerp_count = BEV(((be_s16*) yakumono_param)[0x34 / 2]);
+         }
+         break;
+     case 1:
          state->lerp_count = state->lerp_count - 1;
          tmp = state->lerp_count;
          if (tmp != 0) {
@@ -137747,7 +137768,7 @@ index 15f5b5d6f..cc4eb2249 100644
  
  void grTZelda_802240FC(Ground_GObj* gobj) {}
 diff --git a/src/melee/gr/grvenom.c b/src/melee/gr/grvenom.c
-index e0baf2753..de901c9f1 100644
+index e0baf2753..0b9ceef64 100644
 --- a/src/melee/gr/grvenom.c
 +++ b/src/melee/gr/grvenom.c
 @@ -45,8 +45,8 @@ struct grVenom_YakumonoParam {
@@ -137937,6 +137958,15 @@ index e0baf2753..de901c9f1 100644
      grVe_803E5348.arwing.arwing_gobj[gp->u.venom.xC8 = grVe_804D6A34] = arg0;
  
      other = grVenom_80203EAC(base[base[gp->u.venom.xC8 + 14] + 170]);
+@@ -1066,7 +1094,7 @@ check_scale_uniform:
+ scale_nonuniform:
+     HSD_JObjSetScaleX(jobj, scale);
+     HSD_JObjSetScaleY(jobj, scale);
+-    HSD_JObjSetScaleZ(jobj, scale * *(f32*) ((u8*) yakumono_param + 0x34));
++    HSD_JObjSetScaleZ(jobj, scale * BEV(*(be_f32*) ((u8*) yakumono_param + 0x34)));
+     goto done_scale;
+ 
+ scale_uniform:
 @@ -1109,6 +1137,10 @@ void grVenom_802052E0(Ground_GObj* gobj, Vec3* pos)
  
      if (gobj != NULL) {
@@ -162425,7 +162455,7 @@ index c564ebfe4..20714ea36 100644
  }
  
 diff --git a/src/melee/it/kinds/itoldkuri.c b/src/melee/it/kinds/itoldkuri.c
-index bc765ea53..ba2cbdbd1 100644
+index bc765ea53..b4e401903 100644
 --- a/src/melee/it/kinds/itoldkuri.c
 +++ b/src/melee/it/kinds/itoldkuri.c
 @@ -4,6 +4,7 @@
@@ -162436,9 +162466,12 @@ index bc765ea53..ba2cbdbd1 100644
  #include <melee/cm/camera.h>
  #include <melee/ft/ftlib.h>
  #include <melee/it/inlines.h>
-@@ -18,11 +19,11 @@
+@@ -17,12 +18,14 @@
+ #include <melee/it/itzako.h>
  #include <sysdolphin/baselib/random.h>
  
++/* x0 points at two words: [0] the damage it takes before it is knocked out (an int), [1] its walk speed
++ * (a float, read as one: as an int its bits made a speed in the billions and it left the stage at once). */
  typedef struct itOldkuriAttributes {
 -    s32* x0;
 +    DISC_PTR(be_s32) x0;
@@ -162450,29 +162483,29 @@ index bc765ea53..ba2cbdbd1 100644
  
  ItemStateTable it_803F8320[] = {
      { -1, itOldkuri_UnkMotion0_Anim, itOldkuri_UnkMotion0_Phys,
-@@ -108,8 +109,8 @@ bool itOldkuri_UnkMotion0_Coll(Item_GObj* gobj)
+@@ -108,8 +111,8 @@ bool itOldkuri_UnkMotion0_Coll(Item_GObj* gobj)
  void it_802D758C(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
 -    itOldkuriAttributes* attr = ip->xC4_article_data->x4_specialAttributes;
 -    ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * ((f32*) attr->x0)[1];
 +    itOldkuriAttributes* attr = DP(ip->xC4_article_data->x4_specialAttributes);
-+    ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(DP(attr->x0)[1]);
++    ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(((be_f32*) DP(attr->x0))[1]);
      ip->x40_vel.x = ip->xDD4_itemVar.oldkuri.xDF4;
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
-@@ -158,8 +159,8 @@ bool itOldkuri_UnkMotion1_Coll(Item_GObj* gobj)
+@@ -158,8 +161,8 @@ bool itOldkuri_UnkMotion1_Coll(Item_GObj* gobj)
  void it_802D775C(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
 -    itOldkuriAttributes* attr = ip->xC4_article_data->x4_specialAttributes;
 -    ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * ((f32*) attr->x0)[1];
 +    itOldkuriAttributes* attr = DP(ip->xC4_article_data->x4_specialAttributes);
-+    ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(DP(attr->x0)[1]);
++    ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(((be_f32*) DP(attr->x0))[1]);
      ip->x40_vel.x = ip->xDD4_itemVar.oldkuri.xDF4;
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
-@@ -178,9 +179,9 @@ bool itOldkuri_UnkMotion2_Anim(Item_GObj* gobj)
+@@ -178,9 +181,9 @@ bool itOldkuri_UnkMotion2_Anim(Item_GObj* gobj)
          } else {
              Item* ip = GET_ITEM(gobj);
              itOldkuriAttributes* attr =
@@ -162480,33 +162513,33 @@ index bc765ea53..ba2cbdbd1 100644
 +                DP(ip->xC4_article_data->x4_specialAttributes);
              ip->xDD4_itemVar.oldkuri.xDF4 =
 -                ip->facing_dir * ((f32*) attr->x0)[1];
-+                ip->facing_dir * BEV(DP(attr->x0)[1]);
++                ip->facing_dir * BEV(((be_f32*) DP(attr->x0))[1]);
              ip->x40_vel.x = ip->xDD4_itemVar.oldkuri.xDF4;
              ip->x40_vel.z = 0.0f;
              ip->x40_vel.y = 0.0f;
-@@ -198,8 +199,8 @@ void itOldkuri_UnkMotion2_Phys(Item_GObj* gobj)
+@@ -198,8 +201,8 @@ void itOldkuri_UnkMotion2_Phys(Item_GObj* gobj)
      PAD_STACK(8);
      if (ip->xDD4_itemVar.oldkuri.xDFC != 0 && it_802750E8(gobj, 2) != 0) {
          Item* ip = GET_ITEM(gobj);
 -        itOldkuriAttributes* attr = ip->xC4_article_data->x4_specialAttributes;
 -        ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * ((f32*) attr->x0)[1];
 +        itOldkuriAttributes* attr = DP(ip->xC4_article_data->x4_specialAttributes);
-+        ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(DP(attr->x0)[1]);
++        ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(((be_f32*) DP(attr->x0))[1]);
          ip->x40_vel.x = ip->xDD4_itemVar.oldkuri.xDF4;
          ip->x40_vel.z = 0.0f;
          ip->x40_vel.y = 0.0f;
-@@ -219,8 +220,8 @@ bool itOldkuri_UnkMotion2_Coll(Item_GObj* gobj)
+@@ -219,8 +222,8 @@ bool itOldkuri_UnkMotion2_Coll(Item_GObj* gobj)
      it_8026D62C(gobj, it_802D7AF0);
      if (it_80276308(gobj) == 8 && ip->xDD4_itemVar.oldkuri.xDFC != 0) {
          Item* ip = GET_ITEM(gobj);
 -        itOldkuriAttributes* attr = ip->xC4_article_data->x4_specialAttributes;
 -        ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * ((f32*) attr->x0)[1];
 +        itOldkuriAttributes* attr = DP(ip->xC4_article_data->x4_specialAttributes);
-+        ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(DP(attr->x0)[1]);
++        ip->xDD4_itemVar.oldkuri.xDF4 = ip->facing_dir * BEV(((be_f32*) DP(attr->x0))[1]);
          ip->x40_vel.x = ip->xDD4_itemVar.oldkuri.xDF4;
          ip->x40_vel.z = 0.0f;
          ip->x40_vel.y = 0.0f;
-@@ -249,7 +250,7 @@ void itOldkuri_UnkMotion3_Phys(Item_GObj* gobj)
+@@ -249,7 +252,7 @@ void itOldkuri_UnkMotion3_Phys(Item_GObj* gobj)
  bool itOldkuri_UnkMotion3_Coll(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -162515,7 +162548,7 @@ index bc765ea53..ba2cbdbd1 100644
      ip->xDD4_itemVar.oldkuri.xDF8 = (s32) attr->xC;
      it_8026E414(gobj, it_802D747C);
      return it_8027C794(gobj);
-@@ -283,7 +284,7 @@ void itOldkuri_UnkMotion4_Phys(Item_GObj* gobj)
+@@ -283,7 +286,7 @@ void itOldkuri_UnkMotion4_Phys(Item_GObj* gobj)
  bool itOldkuri_UnkMotion4_Coll(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -162524,7 +162557,7 @@ index bc765ea53..ba2cbdbd1 100644
      ip->xDD4_itemVar.oldkuri.xDF8 = (s32) attr->xC;
      it_8026E414(gobj, it_802D747C);
      return it_8027C794(gobj);
-@@ -405,10 +406,10 @@ static inline void it_2725_Logic0_DmgReceived_inline(Item_GObj* gobj)
+@@ -405,10 +408,10 @@ static inline void it_2725_Logic0_DmgReceived_inline(Item_GObj* gobj)
  bool it_2725_Logic0_DmgReceived(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -162537,7 +162570,7 @@ index bc765ea53..ba2cbdbd1 100644
          it_8027C9D8(ip);
          it_80274C88(gobj);
          it_802756D0(gobj);
-@@ -471,7 +472,7 @@ bool itOldkuri_UnkMotion7_Coll(Item_GObj* gobj)
+@@ -471,7 +474,7 @@ bool itOldkuri_UnkMotion7_Coll(Item_GObj* gobj)
  void it_802D81FC(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -162546,7 +162579,7 @@ index bc765ea53..ba2cbdbd1 100644
      ip->x40_vel.x *= attr->x8;
      Item_80268E5C(gobj, 8, ITEM_ANIM_UPDATE);
  }
-@@ -524,9 +525,7 @@ bool itOldkuri_UnkMotion10_Coll(Item_GObj* gobj)
+@@ -524,9 +527,7 @@ bool itOldkuri_UnkMotion10_Coll(Item_GObj* gobj)
  void it_802D839C(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
