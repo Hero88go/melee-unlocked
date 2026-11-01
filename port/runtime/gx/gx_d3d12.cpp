@@ -3440,10 +3440,6 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   const bool dxr_scene_diag_frame = dxr_device_ && dxr_list_ && dxr_scene_diag && in_match_ &&
                                     frame_counter_ % 120 == 0;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
-  // A frame that will be shown waits for its place in the display queue first (see
-  // swapchain_waitable_); a backlog frame presents nothing and takes no place.
-  if (!skip_present_ && !occluded_) wait_frame_latency();   // a hidden window gets no presents to signal it
-  diag("frame latency wait");
   // Submitted frames the GPU has not finished, sampled before this frame's slot wait: the GPU
   // queue depth the CPU found when it arrived, which is the latency the player feels.
   const uint64_t fence_completed = fence_->GetCompletedValue();
@@ -3668,6 +3664,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   present_wait_ = 0;
   if (presented) {
     const double wait_start = Stopwatch::now();
+    // A shown frame waits for its place in the display queue (see swapchain_waitable_) here, after
+    // it is recorded and submitted, not before: the CPU records this frame while the GPU still runs
+    // the last one, as Direct3D 11 does with its device latency of 1. Waiting before recording made
+    // every frame take CPU plus GPU time under a heavy GPU load (16x SSAA ran 30% slower than D3D11).
+    // A backlog frame presents nothing and takes no place; a hidden window gets no presents to signal it.
+    if (!occluded_) wait_frame_latency();
+    diag("frame latency wait");
     for (;;) {
       double remaining = present_deadline_ - Stopwatch::now();
       if (remaining <= 0) break;
