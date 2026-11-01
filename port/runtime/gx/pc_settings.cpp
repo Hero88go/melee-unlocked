@@ -4145,7 +4145,24 @@ static std::string lab_colour_text(uint32_t c) {
   return buf;
 }
 
+// Why the last settings write failed, shown in the panel: a folder Windows will not let the game write
+// to (Program Files, Controlled folder access, a read-only or synced folder) used to lose every change
+// silently, and the player only saw the old values come back at the next start.
+std::string g_settings_save_error;
+
+static bool write_settings_file_impl(const SettingsState& state, const RenderOptions& options);
 static bool write_settings_file(const SettingsState& state, const RenderOptions& options) {
+  if (write_settings_file_impl(state, options)) { g_settings_save_error.clear(); return true; }
+  const unsigned long code = GetLastError();
+  const std::string reason = code == ERROR_ACCESS_DENIED ? "Windows denied access" : "error " + std::to_string(code);
+  if (g_settings_save_error.empty())
+    host::log("settings: could not save %s (%s)", options.settings_path.c_str(), reason.c_str());
+  g_settings_save_error = "Settings could not be saved to " + options.settings_path + " (" + reason +
+                          "). Move the game folder somewhere you can write to (not Program Files), or allow "
+                          "the game in Windows Security > Controlled folder access.";
+  return false;
+}
+static bool write_settings_file_impl(const SettingsState& state, const RenderOptions& options) {
   std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
   std::ofstream file(temporary);
   file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
@@ -9819,6 +9836,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::Button("Close")) { state.open = false; g_close_requested.store(true, std::memory_order_relaxed); }
     }
     if (state.saved && ImGui::IsItemHovered()) ImGui::SetTooltip("Settings saved");
+    if (!g_settings_save_error.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.42f, 0.36f, 1.0f));
+      ImGui::TextWrapped("%s", g_settings_save_error.c_str());
+      ImGui::PopStyleColor();
+    }
 
     if (state.confirm != SettingsState::Confirm::None) {
       const bool restart = state.confirm == SettingsState::Confirm::Restart;
