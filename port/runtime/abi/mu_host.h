@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 21
+#define MU_HOST_API_VERSION 22
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -370,6 +370,10 @@ typedef struct MuHostApi {
 
     /* Version 21. The colour of the Arcade look's grid (MU_DISPLAY_OPTION_GRID), 0xRRGGBB. */
     uint32_t (*grid_color)(void);
+
+    /* Version 22. Screen shake strength (VIDEO > Screen shake): the camera's quake offset is scaled
+     * by this, 1 the game's own. Camera only, read live; "Disable screen shake" still zeroes it. */
+    float (*screen_shake_scale)(void);
 } MuHostApi;
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):

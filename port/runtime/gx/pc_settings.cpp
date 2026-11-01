@@ -44,6 +44,8 @@
 #include "lcancel.h"
 #include "../abi/mu_lcancel_flash.h"
 #include "user_gecko.h"
+
+namespace gecko { int option_screen_shake_percent = 100; }
 #include "lag_test_codes.h"
 #include "gecko_data.h"
 #include "hid_pad.h"
@@ -2267,6 +2269,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "palstockicons") gecko::option_pal_stock_icons = value == "1";
       else if (key == "noscreenshake") gecko::option_no_screen_shake = value == "1";
+      else if (key == "screenshake") gecko::option_screen_shake_percent = std::clamp(std::stoi(value), 0, 200);
       else if (key == "geckocode") gecko_on.push_back(value);
       else if (key == "geckochosen") gecko_chosen = value == "1";
       else if (key == "swpro_gc_picture") g_swpro_gc_picture = value == "1";
@@ -4269,6 +4272,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
        << "\npalstockicons " << (gecko::option_pal_stock_icons ? 1 : 0)
        << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
+       << "\nscreenshake " << gecko::option_screen_shake_percent
        << "\nswpro_gc_picture " << (g_swpro_gc_picture ? 1 : 0)
        << family_options_text()
        << "\nrumble " << (host::g_rumble_enabled.load(std::memory_order_relaxed) ? 1 : 0)
@@ -8790,6 +8794,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("The camera no longer shakes on hard hits, explosions and stage effects.\n"
                         "Camera only: fighters and hits are unchanged. Takes effect immediately.%s",
                         te_pair_hover(kTeNoScreenRumble));
+    // Strength in between: the native camera scales its quake offset (camera.c, host API 22).
+    if (!gecko::option_no_screen_shake) {
+      ImGui::BeginDisabled(host::game_image == nullptr);
+      if (ImGui::SliderInt("Screen shake strength", &gecko::option_screen_shake_percent, 0, 200, "%d%%",
+                           ImGuiSliderFlags_AlwaysClamp))
+        changed = true;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("How strongly the camera shakes on hard hits, explosions and stage effects.\n"
+                          "100%% is the game's own. Camera only, yours alone online. Source Port only.");
+    }
 
 
     ImGui::TextUnformatted("Input delay");

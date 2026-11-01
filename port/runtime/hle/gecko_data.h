@@ -20,6 +20,7 @@ extern bool option_pal_stock_icons;            // PAL-sized stock icons (a port 
 // A translation generated before a flag existed (the playback guest can be an older prebuilt one)
 // does not define it; the linker then takes this default instead (see exi_slippi.cpp).
 extern bool option_pal_stock_icons_default;
+extern int option_screen_shake_percent;      // Source Port camera shake strength, 0..200 (pc_settings.cpp)
 extern bool option_no_screen_shake;            // camera shake off (a port code, see recomp/gecko.py)
 extern bool option_no_screen_shake_default;
 // Two switches over lines of Slippi's own code set, kept by the host every frame (host.cpp,

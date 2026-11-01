@@ -48478,7 +48478,7 @@ index 1a8206270..d3ba008c2 100644
  void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
  {
      f32 viewport_x_scale;
-@@ -917,19 +964,52 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
+@@ -917,19 +964,58 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
      f32 input_x;
      f32 input_y;
      f32 depth_ratio;
@@ -48518,6 +48518,12 @@ index 1a8206270..d3ba008c2 100644
 +        if (no_shake) {
 +            game_camera.quake_offset.x = 0.0f;
 +            game_camera.quake_offset.y = 0.0f;
++        } else {
++            /* Shake strength (VIDEO > Screen shake): the offset scaled, 1 when the host has none. */
++            extern float mu_screen_shake_scale(void);
++            const float scale = mu_screen_shake_scale();
++            game_camera.quake_offset.x *= scale;
++            game_camera.quake_offset.y *= scale;
 +        }
 +        mu_trace_native_quake_applied(requested_x, requested_y, game_camera.quake_offset.x,
 +                                      game_camera.quake_offset.y, no_shake);
@@ -48537,7 +48543,7 @@ index 1a8206270..d3ba008c2 100644
          input_x *= cm_803BCCA0.xE8;
          input_y *= cm_803BCCA0.xE8;
      }
-@@ -939,12 +1019,14 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
+@@ -939,12 +1025,14 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
      half_view_height =
          bounds->z_pos * tanf(0.5f * (0.017453292f * state->fov));
      viewport_x_scale =
@@ -48555,7 +48561,7 @@ index 1a8206270..d3ba008c2 100644
      depth_factor_y = Stage_GetCamZoomRate();
      depth_factor_x = Stage_GetCamMaxDepth() - depth_factor_y;
  
-@@ -981,7 +1063,7 @@ void Camera_UpdateQuakes(CameraBounds* bounds)
+@@ -981,7 +1069,7 @@ void Camera_UpdateQuakes(CameraBounds* bounds)
  
      for (i = 0; i < 16; ++i) {
          game_camera.quakes[1][i] = game_camera.quakes[0][i];
@@ -48564,7 +48570,7 @@ index 1a8206270..d3ba008c2 100644
      }
  
      for (i = 0; i < QuakeKind_Count; i++) {
-@@ -1036,6 +1118,19 @@ void Camera_8002A4AC(HSD_GObj* gobj)
+@@ -1036,6 +1124,19 @@ void Camera_8002A4AC(HSD_GObj* gobj)
      HSD_CObj* cobj;
      CameraTransformState* transform = &game_camera.transform;
  
@@ -48584,7 +48590,7 @@ index 1a8206270..d3ba008c2 100644
      cobj = GET_COBJ(gobj);
      switch (game_camera.mode) {
      case CAMERA_STANDARD:
-@@ -1393,7 +1488,7 @@ void Camera_8002B0E0(void)
+@@ -1393,7 +1494,7 @@ void Camera_8002B0E0(void)
  
      if ((gm_IsCurrently1PMode_inline() != 0) && (game_camera.x2C0 > 0.0f)) {
          {
@@ -48593,7 +48599,7 @@ index 1a8206270..d3ba008c2 100644
              var_f1 = HSD_PadCopyStatus[idx].nml_subStickY;
          }
          var_f2 = var_f1;
-@@ -1742,6 +1837,11 @@ void Camera_8002BAA8(f32 zoom_amt)
+@@ -1742,6 +1843,11 @@ void Camera_8002BAA8(f32 zoom_amt)
          ((zoom_amt * ((offset_len * cm_803BCCA0.x9C) + cm_803BCCA0.xA0)) +
           game_camera.pause_eye_distance);
  
@@ -48605,7 +48611,7 @@ index 1a8206270..d3ba008c2 100644
      if (game_camera.pause_eye_distance < game_camera.x2D0.unk28) {
          game_camera.pause_eye_distance = game_camera.x2D0.unk28;
      } else if (game_camera.pause_eye_distance > game_camera.x2D0.unk2C) {
-@@ -2035,11 +2135,11 @@ void Camera_8002C1A8(void)
+@@ -2035,11 +2141,11 @@ void Camera_8002C1A8(void)
  
  static inline float eye_offset_len(Vec3* offset)
  {
@@ -48620,7 +48626,7 @@ index 1a8206270..d3ba008c2 100644
  {
      f64 len;
      Vec3 temp_pos;
-@@ -2132,7 +2232,7 @@ void Camera_8002C5B4(Camera_x2D0* arg0)
+@@ -2132,7 +2238,7 @@ void Camera_8002C5B4(Camera_x2D0* arg0)
      len = eye_offset_len(eye_offset);
  
      xz_dist =
@@ -48629,7 +48635,7 @@ index 1a8206270..d3ba008c2 100644
  
      PSVECCrossProduct(eye_offset, &cam->pause_up, &cross1);
      lbVector_Normalize(&cross1);
-@@ -2182,64 +2282,7 @@ static inline bool get_subject_pos(Vec3* pos, const s8* slot_ptr)
+@@ -2182,64 +2288,7 @@ static inline bool get_subject_pos(Vec3* pos, const s8* slot_ptr)
      return valid;
  }
  
@@ -48695,7 +48701,7 @@ index 1a8206270..d3ba008c2 100644
  {
      return &transform->target_interest;
  }
-@@ -2253,11 +2296,16 @@ static inline void track_subject(CameraTransformState* transform,
+@@ -2253,11 +2302,16 @@ static inline void track_subject(CameraTransformState* transform,
      f32* coeff_ptr;
      f32 coeff;
  
@@ -48713,7 +48719,7 @@ index 1a8206270..d3ba008c2 100644
  
      game_camera.transform.target_position = *copy_src;
      target_pos = &transform->target_position;
-@@ -2273,8 +2321,8 @@ static inline void track_subject(CameraTransformState* transform,
+@@ -2273,8 +2327,8 @@ static inline void track_subject(CameraTransformState* transform,
      eye_diff->z *= coeff;
      lbVector_Add(position_ptr, eye_diff);
  
@@ -48724,7 +48730,7 @@ index 1a8206270..d3ba008c2 100644
      coeff = *coeff_ptr;
      interest_diff->x *= coeff;
      interest_diff->y *= coeff;
-@@ -2372,6 +2420,23 @@ void Camera_8002CB0C(CameraBounds* bounds)
+@@ -2372,6 +2426,23 @@ void Camera_8002CB0C(CameraBounds* bounds)
  
      {
          s8 pauser_slot = camera->x2C5;
@@ -48748,7 +48754,7 @@ index 1a8206270..d3ba008c2 100644
          if (pauser_slot == 5) {
              return;
          }
-@@ -2455,7 +2520,7 @@ void Camera_8002CB0C(CameraBounds* bounds)
+@@ -2455,7 +2526,7 @@ void Camera_8002CB0C(CameraBounds* bounds)
  void Camera_8002CDDC(void* unused)
  {
      s8* slot_ptr;
@@ -48757,7 +48763,7 @@ index 1a8206270..d3ba008c2 100644
      HSD_GObj* gobj;
      CmSubject* subject;
      CameraBounds bounds;
-@@ -2469,8 +2534,16 @@ void Camera_8002CDDC(void* unused)
+@@ -2469,8 +2540,16 @@ void Camera_8002CDDC(void* unused)
      Camera_800293E0();
      Camera_8002958C(&bounds, &game_camera.transform);
      slot_ptr = &game_camera.x2C4;
@@ -48776,7 +48782,7 @@ index 1a8206270..d3ba008c2 100644
      Camera_8002CB0C(&bounds);
      if (*slot_ptr != 10 && *slot_ptr != 11 &&
          (gobj = Player_GetEntity(*slot_ptr)) != NULL &&
-@@ -2479,7 +2552,7 @@ void Camera_8002CDDC(void* unused)
+@@ -2479,7 +2558,7 @@ void Camera_8002CDDC(void* unused)
          Camera_80029124(&subject->bone_pos, 0) == CAM_BOUNDS_INSIDE &&
          ABS(subject->bone_pos.z) < 30.0f)
      {
@@ -48785,7 +48791,7 @@ index 1a8206270..d3ba008c2 100644
          game_camera.transform.target_fov = cm_803BCCA0.x6C;
          delta = game_camera.transform.target_fov - game_camera.transform.fov;
          game_camera.transform.fov += delta * cm_803BCCA0.x70;
-@@ -2496,9 +2569,6 @@ void Camera_8002CDDC(void* unused)
+@@ -2496,9 +2575,6 @@ void Camera_8002CDDC(void* unused)
      update_avg_bounds_width();
  }
  
@@ -48795,7 +48801,7 @@ index 1a8206270..d3ba008c2 100644
  static inline f32 compute_orbit_distance(s32 slot)
  {
      f32 distance;
-@@ -2857,17 +2927,17 @@ s32 Camera_8002DFE4(Vec3* arg0, Vec3* interest,
+@@ -2857,17 +2933,17 @@ s32 Camera_8002DFE4(Vec3* arg0, Vec3* interest,
          var_r31 = 1;
          break;
      case 1:
@@ -48817,7 +48823,7 @@ index 1a8206270..d3ba008c2 100644
          }
          break;
      }
-@@ -2897,18 +2967,18 @@ bool Camera_8002E158(f32* arg0, f32 farg0, f32 farg1)
+@@ -2897,18 +2973,18 @@ bool Camera_8002E158(f32* arg0, f32 farg0, f32 farg1)
          break;
  
      case 1:
@@ -48840,7 +48846,7 @@ index 1a8206270..d3ba008c2 100644
          }
          break;
      }
-@@ -2994,7 +3064,7 @@ void Camera_8002E490(void* unused)
+@@ -2994,7 +3070,7 @@ void Camera_8002E490(void* unused)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48849,7 +48855,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3050,15 +3120,15 @@ void Camera_8002E490(void* unused)
+@@ -3050,15 +3126,15 @@ void Camera_8002E490(void* unused)
      case 0:
          break;
      case 1:
@@ -48871,7 +48877,7 @@ index 1a8206270..d3ba008c2 100644
          }
          break;
      }
-@@ -3075,11 +3145,11 @@ void Camera_8002E6FC(int arg0)
+@@ -3075,11 +3151,11 @@ void Camera_8002E6FC(int arg0)
      }
  
      game_camera.x341_b1_b2 = 1;
@@ -48885,7 +48891,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3116,7 +3186,7 @@ void Camera_8002E818(Vec3* pos)
+@@ -3116,7 +3192,7 @@ void Camera_8002E818(Vec3* pos)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48894,7 +48900,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3153,7 +3223,7 @@ void Camera_8002E948(bool (*cb)(Vec*))
+@@ -3153,7 +3229,7 @@ void Camera_8002E948(bool (*cb)(Vec*))
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48903,7 +48909,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3323,7 +3393,7 @@ void Camera_8002EF14(void)
+@@ -3323,7 +3399,7 @@ void Camera_8002EF14(void)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48912,7 +48918,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3375,7 +3445,7 @@ void Camera_8002EF14(void)
+@@ -3375,7 +3451,7 @@ void Camera_8002EF14(void)
      game_camera.transform.fov = game_camera.transform.target_fov;
  }
  
@@ -48921,7 +48927,7 @@ index 1a8206270..d3ba008c2 100644
  {
      s32 sp24;
      s32 sp20;
-@@ -3388,8 +3458,8 @@ void Camera_8002F0E4(s32 arg0)
+@@ -3388,8 +3464,8 @@ void Camera_8002F0E4(s32 arg0)
      }
  
      game_camera.x341_b5_b6 = 1;
@@ -48932,7 +48938,7 @@ index 1a8206270..d3ba008c2 100644
  
      switch (game_camera.x341_b1_b2) {
      case 0:
-@@ -3481,6 +3551,12 @@ void Camera_8002F3AC(void)
+@@ -3481,6 +3557,12 @@ void Camera_8002F3AC(void)
  
  void Camera_SetModeToStandard(void)
  {
@@ -48945,7 +48951,7 @@ index 1a8206270..d3ba008c2 100644
      game_camera.mode = CAMERA_STANDARD;
  }
  
-@@ -3832,7 +3908,7 @@ void Camera_8002FE38(void)
+@@ -3832,7 +3914,7 @@ void Camera_8002FE38(void)
          game_camera.transform.fov;
  }
  
@@ -48954,7 +48960,7 @@ index 1a8206270..d3ba008c2 100644
  {
      HSD_CObj* cobj;
      CmSubject* box;
-@@ -3844,7 +3920,6 @@ void Camera_8002FEEC(s32 arg0)
+@@ -3844,7 +3926,6 @@ void Camera_8002FEEC(s32 arg0)
      f32 temp_f1;
      f32 temp_f31;
      f32 temp_f1_4;
@@ -48962,7 +48968,7 @@ index 1a8206270..d3ba008c2 100644
  
      if (Player_GetEntity(arg0) != NULL) {
          box = ftLib_80086B74(Player_GetEntity(arg0));
-@@ -3860,7 +3935,7 @@ void Camera_8002FEEC(s32 arg0)
+@@ -3860,7 +3941,7 @@ void Camera_8002FEEC(s32 arg0)
              cm_80453004.follow_int_offset.z = 0.0f;
              cm_80453004.follow_int_offset.y = 0.0f;
              cm_80453004.follow_int_offset.x = 0.0f;
@@ -48971,7 +48977,7 @@ index 1a8206270..d3ba008c2 100644
              HSD_CObjGetInterest(cobj, &eye);
              HSD_CObjGetEyePosition(cobj, &target);
              fov = HSD_CObjGetFov(cobj);
-@@ -3994,7 +4069,7 @@ static inline void render_gxlink_pass(HSD_GObj* gobj, int pass, int gxlink)
+@@ -3994,7 +4075,7 @@ static inline void render_gxlink_pass(HSD_GObj* gobj, int pass, int gxlink)
      HSD_GObj_80390ED0(gobj, gxlink);
  }
  
@@ -48980,7 +48986,7 @@ index 1a8206270..d3ba008c2 100644
  {
      s64 prio8_a;
      s64 prio1_a;
-@@ -4003,6 +4078,12 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4003,6 +4084,12 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
      cobj = gobj->hsd_obj;
      lbRefract_8002247C(cobj);
      Camera_8002A4AC(gobj);
@@ -48993,7 +48999,7 @@ index 1a8206270..d3ba008c2 100644
      lbShadow_8000F38C(game_camera.x399_b7);
      if (HSD_CObjSetCurrent(cobj) != 0) {
          if (!game_camera.x398_b5) {
-@@ -4013,10 +4094,21 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4013,10 +4100,21 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
              HSD_SetEraseColor(0, 0, 0, 0xFF);
          }
          HSD_CObjEraseScreen(cobj, 1, 0, 0);
@@ -49015,7 +49021,7 @@ index 1a8206270..d3ba008c2 100644
          prio8_a = gxlink_prio8();
          prio1_a = gxlink_prio1();
          gobj->gxlink_prios = prio1_a | prio8_a;
-@@ -4154,6 +4246,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
+@@ -4154,6 +4252,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
      return (fwd_z * dir_z) > 0.0L;
  }
  
@@ -49038,7 +49044,7 @@ index 1a8206270..d3ba008c2 100644
  bool Camera_800307D0(f32* left, f32* center, f32* right)
  {
      HSD_CObj* cobj;
-@@ -4172,8 +4280,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
+@@ -4172,8 +4286,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
      f32 edge_z2;
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49053,7 +49059,7 @@ index 1a8206270..d3ba008c2 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4427,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4433,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49091,7 +49097,7 @@ index 1a8206270..d3ba008c2 100644
  
      if ((point.x > 2.1474836e9f) || (point.x < -2.1474836e9f) ||
          (point.y > 2.1474836e9f) || (point.y < -2.1474836e9f))
-@@ -4343,6 +4485,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
+@@ -4343,6 +4491,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
      return Camera_80030BBC(&arg0->bone_pos, arg1);
  }
  
@@ -49117,7 +49123,7 @@ index 1a8206270..d3ba008c2 100644
  /// Camera_IsSubjectOnScreen
  bool Camera_80030CFC(CmSubject* cam_box, f32 tolerance)
  {
-@@ -4381,6 +4542,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
+@@ -4381,6 +4548,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
  
  void Camera_80030DF8(void)
  {
@@ -49134,7 +49140,7 @@ index 1a8206270..d3ba008c2 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4572,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4578,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -49147,7 +49153,7 @@ index 1a8206270..d3ba008c2 100644
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4806,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4812,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };

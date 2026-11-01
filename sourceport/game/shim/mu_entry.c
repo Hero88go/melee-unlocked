@@ -156,6 +156,13 @@ _Static_assert(MU_DISPLAY_GRID == MU_DISPLAY_OPTION_GRID, "display option bits")
 _Static_assert(MU_DISPLAY_ARCADE_CAMERA == MU_DISPLAY_OPTION_ARCADE_CAMERA, "display option bits");
 
 /* The Arcade look grid's colour (0 from a host before version 21: the default). */
+float mu_screen_shake_scale(void)
+{
+    if (!mu_host || mu_host->version < 22 || !mu_host->screen_shake_scale) return 1.0f;
+    const float scale = mu_host->screen_shake_scale();
+    return scale >= 0.0f && scale <= 4.0f ? scale : 1.0f;
+}
+
 unsigned int mu_grid_color(void)
 {
     return mu_host && mu_host->version >= 21 && mu_host->grid_color ? mu_host->grid_color() : 0x3A4458u;
