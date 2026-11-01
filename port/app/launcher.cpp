@@ -429,9 +429,16 @@ bool source_available() { return !source_exe_dir().empty(); }
 std::string game_exe() {
   // The Source Port when it is picked and installed. Picked but gone since (an update that dropped
   // it, or an older version without it) falls back to Static Recomp rather than failing to start.
+  const bool old_cpu = g_cpu_build == CPU_COMPAT || (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
   if (g_engine == ENGINE_SOURCE) {
     const std::string d = source_exe_dir();
-    if (!d.empty()) return d + "\\melee_source.exe";
+    // The Windows Source Port is AVX2 only: on an older processor it refuses to start with an
+    // AVX2 message (an i7 3770K player, 0.9.86). Its compatibility build when one ships, else the
+    // Static Recomp compatibility build below, which does run there.
+    if (!d.empty() && old_cpu && file_exists(d + "\\melee_source_compat.exe"))
+      return d + "\\melee_source_compat.exe";
+    if (!d.empty() && !(old_cpu && file_exists(active_dir() + "\\melee_port_compat.exe")))
+      return d + "\\melee_source.exe";
   }
 #ifdef MELEE_NO_SLIPPI
   // There is no Static Recomp to fall back to here: the Source Port, or nothing to start.
@@ -440,8 +447,7 @@ std::string game_exe() {
   // Automatic only hands over the compatibility build to a processor that cannot run the other one.
   // A machine that can, keeps it. The two explicit choices exist so that a player who knows their
   // machine is not stuck arguing with a detector.
-  const bool want_compat = g_cpu_build == CPU_COMPAT ||
-                           (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
+  const bool want_compat = old_cpu;
   const std::string stem = "melee_port";
   const std::string dir = active_dir();
   if (want_compat && file_exists(dir + "\\" + stem + "_compat.exe"))
