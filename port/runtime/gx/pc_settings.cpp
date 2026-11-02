@@ -2066,6 +2066,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
   options.freeze_fd = false;
+  options.hide_ko_explosions = false;
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
@@ -2190,6 +2191,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       // presented frame and nobody should switch it on by browsing.
       else if (key == "flickerscan") options.flicker_scan = value == "1";
       else if (key == "settingsreminder") options.settings_hint = value != "0";
+      else if (key == "skin_online_notice") options.skin_online_notice = value != "0";
       else if (key == "advancedvideo") g_advanced_open[0] = value == "1";
       else if (key == "advancedoverlays") g_advanced_open[1] = value == "1";
       else if (key == "legacymenu") options.legacy_menu_enabled = value == "1";
@@ -2279,6 +2281,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
       else if (key == "freeze_fd") options.freeze_fd = value == "1";
+      else if (key == "hide_ko_explosions") options.hide_ko_explosions = value == "1";
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
 #ifndef MELEE_NO_SLIPPI
@@ -2507,6 +2510,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_stadium_frozen() = options.stadium_frozen;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
+  host::g_hide_ko_explosions.store(options.hide_ko_explosions, std::memory_order_relaxed);
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
@@ -4224,6 +4228,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
        << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
+       << "\nskin_online_notice " << (options.skin_online_notice ? 1 : 0)
        << "\nadvancedvideo " << (g_advanced_open[0] ? 1 : 0)
        << "\nadvancedoverlays " << (g_advanced_open[1] ? 1 : 0)
        << "\nlegacymenu " << (options.legacy_menu_enabled ? 1 : 0)
@@ -4300,6 +4305,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\ngamelanguage " << host::g_game_language.load()
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
        << "\nfreeze_fd " << (options.freeze_fd ? 1 : 0)
+       << "\nhide_ko_explosions " << (options.hide_ko_explosions ? 1 : 0)
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
 #ifndef MELEE_NO_SLIPPI
@@ -4798,10 +4804,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 have_pad ? pad.stick_x : 0, have_pad ? pad.stick_y : 0, have_pad ? pad.sub_x : 0, have_pad ? pad.sub_y : 0);
     }
   }
-  // Test runs (MELEE_TEST_PHOB): the PhobGCC menu opens on adapter socket 1 with the panel.
+  // Test runs (MELEE_TEST_PHOB): the PhobGCC menu opens on adapter socket 1 with the panel
+  // ("panel": only the Controls tab on that socket, with its Controller test and PhobGCC entries).
   {
     static bool phob_test_opened = false;
-    if (!phob_test_opened && state.open && std::getenv("MELEE_TEST_PHOB")) { phob_test_opened = true; phob_native_request(0); }  }
+    const char* phob_test = std::getenv("MELEE_TEST_PHOB");
+    if (!phob_test_opened && state.open && phob_test && std::strcmp(phob_test, "panel") != 0) { phob_test_opened = true; phob_native_request(0); }  }
   if (!state.open && phob_native_open()) phob_native_close();
   // The PhobGCC menu reads the controller itself: the panel gets none of it.
   if (have_pad && nav_active && state.practice_pad_armed && phob_native_open()) {
@@ -8857,6 +8865,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("How strongly the camera shakes on hard hits, explosions and stage effects.\n"
                           "100%% is the game's own. Camera only, yours alone online. Source Port only.");
     }
+    // The explosion still runs, out of sight (ft_0D31.c, host.cpp apply_ko_explosions): its particles
+    // draw random numbers, so leaving it out would change the match.
+    if (settings_toggle("Hide KO explosions", &options.hide_ko_explosions)) {
+      host::g_hide_ko_explosions.store(options.hide_ko_explosions, std::memory_order_relaxed);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("No burst of colour when a fighter is KO'd off the side, top or bottom.\n"
+                        "The match is exactly the same, so it also works online and in replays.\n"
+                        "Picture only, yours alone. Both engines. Takes effect from the next KO.");
 
 
     ImGui::TextUnformatted("Input delay");
@@ -9521,6 +9539,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             changed |= binding_level_slider(tab_kind, tab_index, i);
           }
         }
+        // Every controller on the adapter, PhobGCC or not: the PhobScope screens on their own.
+        if (tab_kind == host::CaptureDevice::GCAdapter) {
+          ImGui::Spacing();
+          ImGui::PushID("controller_test");
+          draw_controller_test(tab_index);
+          ImGui::PopID();
+        }
         if (tab_kind == host::CaptureDevice::GCAdapter && ImGui::CollapsingHeader("PhobGCC")) {
           ImGui::PushID("phob");
           draw_phob_menu(tab_index);
@@ -9585,6 +9610,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows each online player's name at Melee's player-tag anchor. Local display only.");
     changed |= settings_toggle("Show the \"Settings: F1\" reminder", &options.settings_hint);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1, or Start + D-pad Down + Z on a GameCube controller, opens settings.");
+    changed |= settings_toggle("Show the note when skins are off online", &options.skin_online_notice);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("In an online mode, skins and stage mods that could change more than looks show as the\n"
+                        "standard ones, and a note says so for 15 seconds. Off: no note (Settings > Mods still lists them).");
 #ifndef MELEE_NO_SLIPPI   // no matchmaking panel in the build without that layer
     changed |= settings_toggle("Show the Practice menu hint in Training", &options.matchmaking_hint);
     if (ImGui::IsItemHovered())
@@ -9726,7 +9755,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             ImGui::SetTooltip("Runs natively: while it is on, attack hitboxes show as with VIDEO > Arcade look.\n"
                               "Offline matches and replays only.");
         } else if (built_in)
-          engine_only_reason("Built in: \"%s\" above is the switch that applies here.", built_in);
+          engine_only_reason("Built in: \"%s\" is the switch that applies here.", built_in);
         else if (!runs_here)
           engine_only_reason("Cannot run in this build: this code %s.", c.reason.c_str());
         else if (ImGui::IsItemHovered())
@@ -9761,7 +9790,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             ImGui::SetTooltip("Runs natively: while it is on, attack hitboxes show as with VIDEO > Arcade look.\n"
                               "Offline matches and replays only.");
         } else if (built_in)
-          engine_only_reason("Built into the Source Port: \"%s\" above is the switch that applies here.\n"
+          engine_only_reason("Built into the Source Port: \"%s\" is the switch that applies here.\n"
                              "This one is your setting for the Static Recomp.", built_in);
         else if (!runs_here)
           engine_only_reason("Cannot run on the Source Port: this code %s.\n"
@@ -10074,7 +10103,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (!clean_replay) {
       draw_lcancel_overlays();
       draw_discord_invite_overlay();
-      draw_skin_online_notice();
+      if (options.skin_online_notice) draw_skin_online_notice();
     }
     // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.

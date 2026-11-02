@@ -9,6 +9,9 @@ namespace gx {
 // The Controls tab's entry for adapter socket `port` (0..3): what is set, and the button that opens
 // the menu. Returns true when a setting changed.
 bool draw_phob_menu(int port);
+// The Controls tab's "Controller test" for adapter socket `port`: opens the same menu straight on
+// PhobScope's screens (input viewer, stickmaps, coordinates, scopes, button timing), for any controller.
+void draw_controller_test(int port);
 
 // The full screen menu. While it is open the settings panel stays open underneath (so the game
 // keeps its controllers away) but is not drawn, and the panel gives the controller to the menu.
@@ -25,7 +28,7 @@ struct PhobNativeOut {
   bool changed = false;
 };
 bool phob_native_open();
-void phob_native_request(int port);   // open on this adapter socket
+void phob_native_request(int port, bool scopes_only = false);   // open on this adapter socket
 void phob_native_close();
 PhobNativeOut phob_native_frame(const PhobNativeIn& in);
 

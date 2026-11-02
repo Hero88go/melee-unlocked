@@ -326,6 +326,50 @@ static void test_no_ground_attack_at_platform() {
   CHECK(grabbed);
 }
 
+// Ledgedash: drop, jump at once, and the air dodge only once the fighter is above the stage. It used
+// to come two frames after the jump, below the ledge, into the wall (a player saw the CPU fall).
+static void test_ledgedash() {
+  MuPcConfig c;
+  mu_pc_defaults(&c);
+  c.enabled = 1;
+  std::memset(c.ledge_odds, 0, sizeof c.ledge_odds);
+  c.ledge_odds[MU_PC_LEDGE_DASH] = 100;
+  c.ledge_delay = 0;
+  MuPcState s;
+  mu_pc_reset(&s, 7);
+  MuPcView v = view();
+  v.ledge_y = 0.0f;
+  v.cpu.x = 70.0f;   // hanging on the right ledge: the stage is to the left
+  v.cpu.y = -15.0f;
+  v.cpu.motion = MU_PC_MS_CLIFF_WAIT;
+  v.cpu.can_act = 1;
+  MuPcInput in;
+  bool dropped = false, jumped = false;
+  for (int i = 0; i < 8 && !jumped; ++i) {   // the wait (at most one frame here), the drop, the jump
+    mu_pc_frame(&c, &s, &v, &in);
+    if (in.lx > 0.5f) dropped = true;   // away from the stage
+    if (in.buttons & MU_PC_X) { jumped = true; CHECK(in.lx < 0.0f); }
+    if (dropped) { v.cpu.motion = 0x1D; v.cpu.airborne = 1; v.cpu.can_act = 0; }   // Fall
+  }
+  CHECK(dropped && jumped);
+  // Rising, still below the stage: no dodge, drifting in.
+  v.cpu.vy = 2.5f;
+  const float rising[] = {-12.0f, -6.0f, -1.0f, 1.5f};
+  for (float y : rising) {
+    v.cpu.y = y;
+    mu_pc_frame(&c, &s, &v, &in);
+    CHECK(!(in.buttons & MU_PC_L) && in.lx < 0.0f);
+  }
+  // Above the stage: the dodge in and down.
+  v.cpu.y = 3.0f;
+  mu_pc_frame(&c, &s, &v, &in);
+  CHECK((in.buttons & MU_PC_L) && in.lx < 0.0f && in.ly < 0.0f);
+  // Only once.
+  v.cpu.y = 2.0f;
+  mu_pc_frame(&c, &s, &v, &in);
+  CHECK(!(in.buttons & MU_PC_L));
+}
+
 static void test_rng_seed() {
   CHECK(mu_pc_rng_seed(0) == 1u);
   CHECK(mu_pc_rng_seed(5) == mu_pc_rng_seed(5));
@@ -342,6 +386,7 @@ int main() {
   test_double_jump_and_fast_fall_delay();
   test_aerial_timing();
   test_no_ground_attack_at_platform();
+  test_ledgedash();
   test_rng_seed();
   if (g_failures) {
     std::printf("%d failure(s)\n", g_failures);

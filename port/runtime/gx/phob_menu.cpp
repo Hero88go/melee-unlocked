@@ -49,7 +49,7 @@ enum Screen {
   MAIN, STICK, CALIBRATE, ASTICKCAL, ANOTCHFIX, CSTICKCAL, CNOTCHFIX, FILTER, ASNAPBACK, AWAVE, ASMOOTH,
   CSNAPBACK, CWAVE, GEOM, CARDINALS, RADIUS, SETTINGS, SET_OVER, REMAP, TRIGGER, LTRIGGER, RTRIGGER,
   TOURNEY, RESET, SCOPE, INPUTVIEW, XYSCOPE, TIMESCOPE, PRESSTIME, REACTION, CONTSCOPE, GATE, EXPORT,
-  PHOBCHECK, SETUPS, SCREEN_COUNT
+  PHOBCHECK, SETUPS, COORDVIEW, SCREEN_COUNT
 };
 struct Node { Screen parent; const char* name; const char* about; };
 const Node& node(Screen s) {
@@ -89,6 +89,7 @@ const Node& node(Screen s) {
       {SCOPE, "Export Data", "The last 4096 reports of this socket as CSV beside your settings."},
       {MAIN, "Phob Check", "What this controller sends, checked against Melee: the latest PhobScope results and the notch you hold."},
       {MAIN, "Setups", "Save these settings as a setup, switch between setups, or go back to the defaults. A setup works on a PhobGCC and on a stock controller alike."},
+      {SCOPE, "Coordinate Viewer", "Your stick live over Melee's stickmaps, with the exact coordinate the game gets. Zoom in to read a notch one step at a time."},
   };
   return nodes[s];
 }
@@ -119,6 +120,9 @@ struct MenuState {
   uint32_t next_tick_us = 0;
   int stickmap = 0;
   int view_index = 0;
+  int coord_stick = 0, coord_zoom = 0;   // Coordinate Viewer: 0 left stick, 1 C-stick; zoom 1, 2, 4 or 8 times
+  bool coord_hold = false;
+  host::GCScopeSample coord_held{};
   int time_input = 0, time_measure = 0;
   bool reaction_waiting = false;
   std::chrono::steady_clock::time_point reaction_at;
@@ -132,6 +136,7 @@ struct MenuState {
 };
 MenuState g_menu[4];
 bool g_open = false;
+bool g_scopes_only = false;   // opened as the Controls tab's "Controller test": PhobScope is the top screen
 int g_port = 0;
 double g_changed_at = 0;
 PhobNativeIn g_in;
@@ -390,7 +395,22 @@ std::vector<Row> rows_for(int port, MenuState& m) {
       rows.push_back(action("Hard Reset", m.reset_pending == 1 ? "Press A again" : "", "This resets everything including stick cal. You'll need to perform stick calibration again.",
                             [&m, &s]() { if (m.reset_pending == 1) { hard_reset(s); m.reset_pending = -1; say(m, "Hard reset done."); } else m.reset_pending = 1; }));
       break;
-    case SCOPE: rows = {page(INPUTVIEW), page(XYSCOPE), page(TIMESCOPE), page(PRESSTIME), page(REACTION), page(CONTSCOPE), page(GATE), page(EXPORT)}; break;
+    case SCOPE: rows = {page(INPUTVIEW), page(XYSCOPE), page(COORDVIEW), page(TIMESCOPE), page(PRESSTIME), page(REACTION), page(CONTSCOPE), page(GATE), page(EXPORT)}; break;
+    case COORDVIEW: {
+      static const char* maps[7] = {"None", "Deadzones", "Wait Attacks", "Wait Movement", "Crouch", "Left Ledge", "Right Ledge"};
+      rows.push_back(value("Stickmap", &m.stickmap, 0, 6, "Melee's stick regions behind the dot: deadzones, wait attacks, wait movement, crouch and the ledges.",
+                           [](int v) { return std::string(maps[std::clamp(v, 0, 6)]); }));
+      rows.push_back(value("Stick", &m.coord_stick, 0, 1, "Which stick to show.", [](int v) { return std::string(v ? "C-Stick" : "Left Stick"); }));
+      static const char* zooms[4] = {"Whole Stick", "2x", "4x", "8x"};
+      rows.push_back(value("Zoom", &m.coord_zoom, 0, 3, "A closer view follows the stick. From 4x each square is one step of the stick, the smallest change the game sees.",
+                           [](int v) { return std::string(zooms[std::clamp(v, 0, 3)]); }));
+      static int hold;
+      hold = m.coord_hold ? 1 : 0;
+      Row h = value("Hold", &hold, 0, 1, "Keeps the dot and the numbers where they are, to read a notch at leisure.", [](int v) { return std::string(v ? "On" : "Off"); });
+      h.act = [&m]() { m.coord_hold = hold == 1; };
+      rows.push_back(h);
+      break;
+    }
     case INPUTVIEW: rows = {info("Adapter", std::to_string((int)std::lround(host::gcadapter_poll_rate_hz())) + " Hz", node(INPUTVIEW).about)}; break;
     case XYSCOPE: {
       static const char* maps[7] = {"None", "Deadzones", "Wait Attacks", "Wait Movement", "Crouch", "Left Ledge", "Right Ledge"};
@@ -799,7 +819,7 @@ void draw_card(ImDrawList* dl, int port, MenuState& m, float x0, float y0, float
     case INPUTVIEW: {
       const Card c = card(dl, x0, y0, x1, y1, u, "INPUT VIEWER", a);
       // Top down: the two sticks, each one's numbers, the triggers, the buttons.
-      const float r = std::max(30 * u, std::min(W * 0.2f, (y1 - y0 - 312 * u) * 0.5f));
+      const float r = std::max(30 * u, std::min(W * 0.2f, (y1 - y0 - 340 * u) * 0.5f));
       stick_picture(dl, c.x0 + W * 0.25f, c.y0 + 66 * u + r, r, u, a, s.raw_ax, s.raw_ay, s.ax, s.ay);
       stick_picture(dl, c.x0 + W * 0.75f, c.y0 + 66 * u + r, r, u, a, s.raw_cx, s.raw_cy, s.cx, s.cy);
       const float ty = c.y0 + 84 * u + 2 * r;
@@ -813,6 +833,12 @@ void draw_card(ImDrawList* dl, int port, MenuState& m, float x0, float y0, float
           {PAD_R, "R"}, {PAD_START, "Start"}, {PAD_UP, "Up"}, {PAD_DOWN, "Down"}, {PAD_LEFT, "Left"}, {PAD_RIGHT, "Right"}};
       for (const auto& n : names) if (s.buttons & n.bit) { held += n.n; held += "  "; }
       text(dl, c.x0 + 24 * u, ty + 194 * u, 19 * u, with_alpha(kYellow, a), held.empty() ? std::string("No buttons") : held);
+      // The neutral point, from the controller's first report after it connected: the game's centre.
+      host::phob::HardwareInput hw;
+      if (host::gcadapter_phob_raw(port, hw)) {
+        std::snprintf(b, sizeof b, "Origin  %d, %d   C %d, %d", hw.ax0, hw.ay0, hw.cx0, hw.cy0);
+        text(dl, c.x0 + 24 * u, ty + 222 * u, 16 * u, with_alpha(IM_COL32(200, 185, 150, 255), a), b);
+      }
       return;
     }
     case XYSCOPE: {
@@ -848,6 +874,56 @@ void draw_card(ImDrawList* dl, int port, MenuState& m, float x0, float y0, float
       } else {
         text(dl, c.x0 + 24 * u, py0 + size + 14 * u, 19 * u, with_alpha(kCream, a), m.cap.mode == Mode::StickMap ? "Waiting for motion..." : "Start records.");
       }
+      foot(dl, c, a, note);
+      return;
+    }
+    case COORDVIEW: {
+      const Card c = card(dl, x0, y0, x1, y1, u, "COORDINATES", a);
+      latest(port, v, 256);
+      if (!m.coord_hold && !v.empty()) m.coord_held = v.back();
+      const host::GCScopeSample q = m.coord_held;
+      const bool cs = m.coord_stick == 1;
+      const int sx = cs ? q.cx : q.ax, sy = cs ? q.cy : q.ay;
+      const char* note = m.coord_hold ? "Held. Hold > Off follows the stick again. Stickmaps by venus23gg (Altimor's visualizer)."
+                                       : "Gold: what the game gets, with the last tenth of a second behind it. Stickmaps by venus23gg (Altimor's visualizer).";
+      const float size = std::min(W - 60 * u, foot_top(c, note) - (c.y0 + 52 * u) - 112 * u);
+      const float px0 = c.x0 + (W - size) * 0.5f, py0 = c.y0 + 52 * u;
+      // The stickmap's pixels are the stick's steps: column 127 + x, row 128 - y. The window shows
+      // the whole map, or a part 2, 4 or 8 times closer centred on the stick.
+      const int zoom = 1 << std::clamp(m.coord_zoom, 0, 3);
+      const float span = 255.0f / zoom, k = size / span;
+      const float wx0 = std::clamp(127 + sx + 0.5f - span * 0.5f, 0.0f, 255.0f - span);
+      const float wy0 = std::clamp(128 - sy + 0.5f - span * 0.5f, 0.0f, 255.0f - span);
+      const auto at = [&](float col, float row) { return ImVec2(px0 + (col - wx0) * k, py0 + (row - wy0) * k); };
+      dl->AddRectFilled(ImVec2(px0, py0), ImVec2(px0 + size, py0 + size), with_alpha(IM_COL32(0, 0, 0, 255), a));
+      dl->PushClipRect(ImVec2(px0, py0), ImVec2(px0 + size, py0 + size), true);
+      if (m.stickmap > 0)
+        for (const Run& r : stickmap_runs(m.stickmap - 1)) {
+          if (r.row + 1 < wy0 || r.row > wy0 + span || r.col + r.len < wx0 || r.col > wx0 + span) continue;
+          dl->AddRectFilled(at((float)r.col, (float)r.row), at((float)(r.col + r.len), r.row + 1.0f), with_alpha(IM_COL32(r.grey, r.grey, r.grey, 255), a));
+        }
+      if (zoom >= 4) {   // one square per step
+        const ImU32 grid = with_alpha(IM_COL32(70, 56, 26, 160), a);
+        for (int i = (int)std::ceil(wx0); i <= (int)(wx0 + span); ++i) dl->AddLine(at((float)i, wy0), at((float)i, wy0 + span), grid, 1.0f);
+        for (int i = (int)std::ceil(wy0); i <= (int)(wy0 + span); ++i) dl->AddLine(at(wx0, (float)i), at(wx0 + span, (float)i), grid, 1.0f);
+      }
+      dl->AddCircle(at(127.5f, 128.5f), 80 * k, with_alpha(IM_COL32(120, 100, 52, 255), a), 96, 2.0f * u);   // Melee's rim
+      if (!m.coord_hold && !v.empty()) {
+        const uint32_t newest = v.back().time_us;
+        for (const host::GCScopeSample& t : v) {
+          const uint32_t age = newest - t.time_us;
+          if (age > 100000u) continue;
+          const int tx = cs ? t.cx : t.ax, ty = cs ? t.cy : t.ay;
+          dl->AddCircleFilled(at(127 + tx + 0.5f, 128 - ty + 0.5f), 3.0f * u, with_alpha(IM_COL32(255, 216, 90, (int)(40 + 120 * (1 - age / 100000.0f))), a), 10);
+        }
+      }
+      const ImVec2 dot = at(127 + sx + 0.5f, 128 - sy + 0.5f);
+      if (zoom >= 4) dl->AddRect(at(127.0f + sx, 128.0f - sy), at(128.0f + sx, 129.0f - sy), with_alpha(kYellow, a), 0, 0, 2.5f * u);
+      dl->AddCircleFilled(dot, 8 * u, with_alpha(IM_COL32(0, 0, 0, 255), a), 20);
+      dl->AddCircleFilled(dot, 6 * u, with_alpha(kYellow, a), 20);
+      dl->PopClipRect();
+      dl->AddRect(ImVec2(px0, py0), ImVec2(px0 + size, py0 + size), with_alpha(kGold, a), 0, 0, 2 * u);
+      coord_lines(dl, c.x0 + 24 * u, py0 + size + 12 * u, u, a, cs ? "C-Stick" : "Stick", sx, sy, !cs);
       foot(dl, c, a, note);
       return;
     }
@@ -1053,12 +1129,18 @@ void load_port(int port) {
 }  // namespace
 
 bool phob_native_open() { return g_open; }
-void phob_native_request(int port) {
+void phob_native_request(int port, bool scopes_only) {
   g_open = true;
   g_port = std::clamp(port, 0, 3);
   g_prev = 0xFFFF;
   g_socket_armed = false;
   g_changed_at = ImGui::GetTime();
+  g_scopes_only = scopes_only;
+  if (scopes_only) {   // straight to PhobScope's screens, unless one of them is already open
+    load_port(g_port);
+    MenuState& m = g_menu[g_port];
+    if (m.screen != SCOPE && node(m.screen).parent != SCOPE) m.screen = SCOPE;
+  }
 }
 void phob_native_close() {
   g_open = false;
@@ -1079,6 +1161,7 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
     if (const char* t = std::getenv("MELEE_TEST_PHOB")) {
       const int n = std::atoi(t);
       if (n >= 0 && n < SCREEN_COUNT) m.screen = (Screen)n;
+      if (std::getenv("MELEE_TEST_CONTROLLER_TEST")) g_scopes_only = true;   // as the Controls tab's Controller test opens it
       m.stickmap = 1;
       m.cap.stick_thresh = m.screen == PRESSTIME || m.screen == REACTION ? 23 : 10;
       m.cap.trigger_thresh = m.screen == REACTION ? 49 : 255;
@@ -1093,6 +1176,7 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
         if (arg("input:") >= 0) m.time_input = arg("input:");
         if (arg("measure:") >= 0) m.time_measure = arg("measure:");
         if (arg("map:") >= 0) m.stickmap = arg("map:");
+        if (arg("zoom:") >= 0) m.coord_zoom = std::clamp(arg("zoom:"), 0, 3);
         if (arg("cursor:") >= 0) m.cursor[m.screen] = arg("cursor:");
       }
       g_changed_at = in_frame.time - 1.0;
@@ -1151,7 +1235,8 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
       if (sig != last) { last = sig; host::log("phob test: menu pad %04X armed %d screen %d", nav.buttons, (int)nav.armed, (int)m.screen); }
     }
     const bool measures_stick = m.screen == INPUTVIEW || m.screen == XYSCOPE || m.screen == TIMESCOPE || m.screen == PRESSTIME ||
-                                m.screen == REACTION || m.screen == CONTSCOPE || m.screen == GATE || m.screen == PHOBCHECK;
+                                m.screen == REACTION || m.screen == CONTSCOPE || m.screen == GATE || m.screen == PHOBCHECK ||
+                                m.screen == COORDVIEW;
     Input in = listening ? Input{} : read_input(nav, !measures_stick);
     if (listening) g_prev = 0xFFFF;
     if (m.remap_step >= 0) {
@@ -1189,7 +1274,7 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
       }
     }
     if (in.b) {
-      if (m.screen == MAIN) out.back_to_panel = true;
+      if (m.screen == MAIN || (g_scopes_only && m.screen == SCOPE)) out.back_to_panel = true;
       else { m.screen = node(m.screen).parent; g_changed_at = in_frame.time; m.reset_pending = -1; m.cap.mode = Mode::None; m.have_shown = false; m.reaction_waiting = false; }
     }
 
@@ -1224,10 +1309,11 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
     rows = rows_for(port, m);
     int& cur2 = m.cursor[m.screen];
     cur2 = rows.empty() ? 0 : std::clamp(cur2, 0, (int)rows.size() - 1);
-    pm::gold::title(dl, gx0 + 48 * u, gy0 + 34 * u, u, "PHOBGCC", a);
+    pm::gold::title(dl, gx0 + 48 * u, gy0 + 34 * u, u, g_scopes_only ? "CONTROLLER TEST" : "PHOBGCC", a);
     std::string path;
-    for (Screen sc = m.screen; sc != MAIN; sc = node(sc).parent) path = std::string(node(sc).name) + (path.empty() ? "" : "  >  " + path);
-    if (path.empty()) path = m.s.phob_hardware ? "PhobGCC Controller" : "Stock Controller";
+    for (Screen sc = m.screen; sc != MAIN && !(g_scopes_only && sc == SCOPE); sc = node(sc).parent)
+      path = std::string(node(sc).name) + (path.empty() ? "" : "  >  " + path);
+    if (path.empty()) path = g_scopes_only ? "Socket " + std::to_string(port + 1) : m.s.phob_hardware ? "PhobGCC Controller" : "Stock Controller";
     // A path wider than the screen is drawn smaller, and if still too wide loses its first steps.
     const float path_room = W - 82 * u;
     for (size_t cut; tw(13 * u, path) > path_room && (cut = path.find("  >  ", 4)) != std::string::npos;)
@@ -1236,7 +1322,7 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
     text(dl, gx0 + 52 * u, gy0 + 70 * u + (17 * u - path_px) * 0.5f, path_px, with_alpha(kGoldText, a), path);
     const char* spec = records_with_start(m.screen) ? "D:Move|A:Pick|B:Back|S:Record"
                      : measures_stick ? "D:Move|A:Pick|B:Back|S:Close"
-                     : m.screen == MAIN ? "A:Pick|B:Controls|S:Close" : "A:Pick|B:Back|S:Close";
+                     : m.screen == MAIN || (g_scopes_only && m.screen == SCOPE) ? "A:Pick|B:Controls|S:Close" : "A:Pick|B:Back|S:Close";
     const float hw2 = pm::legend(dl, 0, 0, u, spec, a, false);
     pm::legend(dl, gx1 - hw2 - 40 * u, gy0 + 52 * u, u, spec, a);
 
@@ -1309,6 +1395,14 @@ bool draw_phob_menu(int port) {
   if (ImGui::Button("Open PhobGCC menu", ImVec2(260, 0))) phob_native_request(port);
   ImGui::TextDisabled("From PhobGCC by Phobos132, FrostSSBM, CarVac, NiceMitch and contributors.");
   return false;
+}
+
+void draw_controller_test(int port) {
+  if (ImGui::Button("Controller test", ImVec2(260, 0))) phob_native_request(port, true);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Input viewer, Melee stickmaps and coordinates, stick and trigger scopes with snapback,\n"
+                      "dashback, pivot and powershield odds, button timing and a reaction test.\n"
+                      "Any controller in this adapter socket, PhobGCC or not.");
 }
 
 }  // namespace gx

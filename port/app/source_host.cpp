@@ -1029,6 +1029,7 @@ uint32_t h_display_options() {
          (gx::fod_reflections_active() ? MU_DISPLAY_OPTION_FOD_REFLECTIONS : 0u) |
          (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u) |
          (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u) |
+         (host::g_hide_ko_explosions.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS : 0u) |
          // The Arcade look's hitboxes: never in a network match (the game also checks). Its grid is a
          // picture like the rest of the background, so it stays.
          (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |
@@ -1068,6 +1069,9 @@ constexpr uint32_t kHpTeOptions2 = MU_GAME_OPTION2_TE_NO_SCREEN_RUMBLE | MU_GAME
                                    MU_GAME_OPTION2_TE_COLOR_OVERLAYS;
 bool hp_te_words() { return !mods::status().te_owned && hackpack::loaded(); }
 uint32_t te_words_mask1() { return mods::status().te_owned ? 0x00007FF0u : hp_te_words() ? kHpTeOptions : 0u; }
+// What pc_settings.cpp apply_practice_tools sets in the options word for the Training tools.
+constexpr uint32_t kPracticeLabBits = MU_GAME_OPTION_LAB | MU_GAME_OPTION_LAB_BUBBLES | MU_GAME_OPTION_LAB_BUBBLES_ONLY |
+                                      MU_GAME_OPTION_LAB_OVERLAY | MU_GAME_OPTION_LAB_LOOP;
 uint32_t te_words_mask2() { return mods::status().te_owned ? 0xFFFFFFFFu : hp_te_words() ? kHpTeOptions2 : 0u; }
 uint32_t h_game_options2() {
   if (host::gameplay::vanilla_only()) return 0;
@@ -1111,9 +1115,17 @@ uint32_t h_game_options() {
          (g_slippi_menus ? MU_GAME_OPT_SLIPPI_MENUS : 0u) |
          (!host::gameplay::vanilla_only() && mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
          (host::gameplay::vanilla_only() ? 0u : g_replaying ? g_replay_feature_options
-                   : gx::RenderOptions::live_te_options() & te_words_mask1());
+                   : gx::RenderOptions::live_te_options() & te_words_mask1()) |
+         // The Practice panel's Training tools (D-pad save states and recording, hitboxes, the loop)
+         // are the native lab's bits (shim/mu_lab.c), set from the practice settings by
+         // apply_practice_tools. The mask above passes only 20XX TE's own bits, so since the panel
+         // came in these switches never reached the game. The lab itself acts only in an offline
+         // Training match outside a replay; never sent in a network session or during playback.
+         (host::gameplay::vanilla_only() || g_replaying || slippi::online::session_mode() >= 0 || source_p2p::requested()
+              ? 0u : gx::RenderOptions::live_te_options() & kPracticeLabBits);
   // (Only 20XX TE's own bits, and only with its save, or the Hack Pack's share of them with the pack.
-  // The Training Lab bits above 0x7FF0 are not offered any more: Training Mode CE replaces it.)
+  // The old Training Lab's own rows (dummy DI, reactions, tech) are not offered any more: Training
+  // Mode CE and the practice CPU replace them.)
 }
 // Match conveniences implemented by the host follow the same gates as mu_te2 in the game.
 bool te_host_feature(uint32_t feature) {

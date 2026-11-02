@@ -85,6 +85,9 @@ struct RenderOptions {
   // The "Settings: F1" reminder in the corner. On for a new player, off for anyone who knows the
   // key and does not want it in a recording.
   bool settings_hint = false;   // the corner reminder is off by default; Overlays can turn it on
+  // The note at the top in an online mode when skins or stage mods there show as the standard ones
+  // (ini key skin_online_notice). On by default; a player who knows asked to turn it off.
+  bool skin_online_notice = true;
   bool legacy_menu_enabled = false; // F11 and launcher Settings use the selected legacy presentation
   int legacy_menu_style = 7; // 7: Legacy Old (v0.6.6), 6: Legacy New
   bool settings_menu_sounds = false;
@@ -231,6 +234,10 @@ struct RenderOptions {
   // its first form, with no transformations or white flash. The player's own, online too.
   bool freeze_fd = false;
   static bool& live_freeze_fd() { static bool value = false; return value; }
+  // "Hide KO explosions" (Video tab, ini key hide_ko_explosions, both engines): the blast-zone
+  // explosion runs out of sight, so the match is unchanged (host::g_hide_ko_explosions). The player's
+  // own, online and in replays too.
+  bool hide_ko_explosions = false;
   // "Unlock everything" (Game tab, ini key unlock_all, on unless the file says 0): Slippi's "Unlock
   // All Characters and Stages". Off, the save file decides what is unlocked, offline only: a network
   // session always has everything. Static Recomp: gecko::option_unlock_all (host.cpp); Source Port:

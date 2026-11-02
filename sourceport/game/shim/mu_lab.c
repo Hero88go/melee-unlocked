@@ -77,6 +77,7 @@ static int dummy_tech_side;        /* armed tech: 0 none, else stick side (+2 = 
 static int dummy_tech_pressed;     /* the one shield press for this fall was made */
 
 char* getenv(const char* name);
+int mu_practice_dpad_keys(void);   /* shim/mu_practice_cpu.c: the Practice panel's "D-pad" row */
 
 static int lab_on(void)
 {
@@ -321,7 +322,9 @@ void mu_lab_frame_begin(void)
         lab_session = (unsigned int) gm_GetCurrentSceneIndex() + 1u;
         lab_saved = 0;   /* a new Training session starts without a state */
     }
-    pressed = lab_pressed() | lab_test_presses();
+    /* The keys follow the Practice panel's "D-pad" row (or the Hack Pack's switch): its hitboxes
+     * also turn the lab on, and must not take over the D-pad (Up is a taunt) by themselves. */
+    pressed = (mu_practice_dpad_keys() || mu_hp_training(MU_HP_TRAINING_ON) ? lab_pressed() : 0u) | lab_test_presses();
     if (pressed & (HSD_PAD_DPADDOWN | HSD_PAD_DPADUP | HSD_PAD_DPADLEFT | HSD_PAD_DPADRIGHT)) {
         lab_loop_pending = 0;   /* any lab key ends a loop */
     }

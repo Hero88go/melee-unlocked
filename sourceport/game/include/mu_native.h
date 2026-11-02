@@ -138,6 +138,12 @@ void mu_arcade_grid(void);
  * match camera runs mu_arcade_pack_camera, for the 2D-style build's disc or this setting, offline. */
 #define MU_DISPLAY_ARCADE_CAMERA 0x200u
 int mu_arcade_camera(void);
+/* "Hide KO explosions" (MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS): the blast-zone explosion is spawned at
+ * MU_KO_EXPLOSION_HIDDEN_Y, far below every camera (ft/ft_0D31.c spawnDeadEffect). It runs in full
+ * there, so the random numbers its particles draw stay the same. Online and in replays too. */
+#define MU_DISPLAY_NO_KO_EXPLOSIONS 0x400u
+#define MU_KO_EXPLOSION_HIDDEN_Y (-1.0e7f)
+int mu_ko_explosions_hidden(void);
 /* "Shield colours" (MuHostApi.shield_color): this player's own colour for its shield bubble and KO
  * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
  * Team matches keep the team colours. */

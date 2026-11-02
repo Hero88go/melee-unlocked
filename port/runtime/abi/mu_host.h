@@ -406,6 +406,10 @@ typedef struct MuHostApi {
  * projection, eye straight in front of the action, its tracking and zoom) as with that build's disc.
  * The host sends it only offline; online the renderer's flat projection stands in for it. */
 #define MU_DISPLAY_OPTION_ARCADE_CAMERA 0x200u
+/* "Hide KO explosions": the blast-zone explosion is spawned far below anything a camera shows, so
+ * it still runs in full (its particles draw random numbers, some only as its model is drawn) and
+ * the match is the same; it is only out of sight. Online and in replays too. */
+#define MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS 0x400u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

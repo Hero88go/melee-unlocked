@@ -1052,8 +1052,10 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
     CloseHandle(dump);
   }
   if (g_crash_dialog) {
-    std::string text = std::string(head) + "\n\nMelee Unlocked crashed. The launcher can send this report: it asks once you close this "
-                       "message. If you started the game without the launcher, please send melee_port.log, melee_port_crash.txt and "
+    // A crash on a helper thread leaves the match running behind this message, so it says when the
+    // game closes: a player in an online match pressed OK mid-game expecting to play on.
+    std::string text = std::string(head) + "\n\nMelee Unlocked crashed and closes when you press OK. The launcher can then send this "
+                       "report. If you started the game without the launcher, please send melee_port.log, melee_port_crash.txt and "
                        "melee_port_crash.dmp from the game folder with your bug report (https://github.com/hero88go/melee-unlocked/issues).";
     MessageBoxA(nullptr, text.c_str(), "Melee Unlocked", MB_ICONERROR | MB_OK);
   }
@@ -1152,8 +1154,8 @@ static void die_report(const char* message) {
     CloseHandle(dump);
   }
   if (g_crash_dialog) {
-    std::string text = std::string(head) + "\n\nMelee Unlocked stopped with an error. The launcher can send this report: it asks once you "
-                       "close this message. If you started the game without the launcher, please send melee_port.log, "
+    std::string text = std::string(head) + "\n\nMelee Unlocked stopped with an error and closes when you press OK. The launcher can then "
+                       "send this report. If you started the game without the launcher, please send melee_port.log, "
                        "melee_port_crash.txt and melee_port_crash.dmp from the game folder with your bug report "
                        "(https://github.com/hero88go/melee-unlocked/issues).";
     MessageBoxA(nullptr, text.c_str(), "Melee Unlocked", MB_ICONERROR | MB_OK);

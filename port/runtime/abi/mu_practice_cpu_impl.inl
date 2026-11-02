@@ -465,10 +465,24 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
             o->lx = in;
             return k < 30;
         case MU_PC_LEDGE_DASH:
+            /* Drop, jump at once, then air dodge in and down once the fighter has risen above the
+             * stage, so the dodge lands on it. The dodge used to come two frames after the jump,
+             * still below the ledge for most fighters: it went into the wall and the CPU fell.
+             * fall_t marks the dodge as made (this plan never fast falls). */
             if (k < 2) { o->lx = -in; return 1; }
             if (k == 2) { o->buttons |= MU_PC_X; o->lx = in; return 1; }
-            if (k == 4) { pc_air_dodge(o, 0.95f * in, -0.3f); return 1; }
-            return k < 30 && f->airborne;
+            if (!s->fall_t) {
+                if (f->airborne && f->y > v->ledge_y + 2.0f) {
+                    pc_air_dodge(o, 0.95f * in, -0.3f);
+                    s->fall_t = 1;
+                    return 1;
+                }
+                o->lx = in;
+                /* Still rising, or not yet far below: a jump that never clears the stage ends the
+                 * plan and the recovery takes over. */
+                return k < 40 && f->airborne && (f->vy > 0.0f || f->y > v->ledge_y - 20.0f);
+            }
+            return k < 60 && f->airborne;
         default: o->lx = in; return k < 2;
         }
     }

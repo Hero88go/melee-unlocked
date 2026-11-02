@@ -205,6 +205,12 @@ static void pc_rng(void)
 }
 static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out);
 
+/* The Practice panel's "D-pad" row (Tools): the lab's D-pad keys are on (shim/mu_lab.c). */
+int mu_practice_dpad_keys(void)
+{
+    return (pc_settings()->tools & MU_PC_TOOL_DPAD) != 0;
+}
+
 /* Nonzero when the practice CPU set this fighter's controller for the frame. */
 int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
 {

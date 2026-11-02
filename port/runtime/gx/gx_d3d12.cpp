@@ -661,6 +661,10 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12PipelineLibrary> pipeline_library_;
   std::vector<uint8_t> pipeline_library_data_;
   bool pipeline_library_dirty_ = false;
+  // Windows' pipeline cache faulted under a library call (build_pso): the library is not used again
+  // this session, and at shutdown its file is deleted rather than saved. Under pipeline_library_mutex_.
+  bool pipeline_library_faulted_ = false;
+  void pipeline_library_fault(const char* call);
   void open_pipeline_library();
   void save_pipeline_library();
   bool load_shader_blob(const std::string& path, ComPtr<ID3DBlob>& blob);
@@ -1734,6 +1738,35 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
   pd.SampleDesc.Count = std::max(1u, key.mvec >> 4);   // MSAA sample count rides in mvec's high bits (0 when off)
 }
 
+// The calls into Windows' pipeline code, each under SEH. One player's game stopped in a long online
+// session on an access violation inside D3DSCache.dll (Windows' shader cache) under a pipeline worker's
+// call; only that thread stopped, so the crash dialog came up while the match went on. A fault now
+// costs the pipeline library (build_pso) or that one pipeline, not the game. No C++ objects live in
+// these functions, as SEH requires.
+static int windows_fault_filter(unsigned long code) {
+  return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+}
+static bool guarded_load_pipeline(ID3D12PipelineLibrary* library, const wchar_t* name, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd,
+                                  ID3D12PipelineState** out, HRESULT* hr) {
+  __try { *hr = library->LoadGraphicsPipeline(name, pd, IID_PPV_ARGS(out)); return true; }
+  __except (windows_fault_filter(GetExceptionCode())) { *hr = E_FAIL; return false; }
+}
+static bool guarded_store_pipeline(ID3D12PipelineLibrary* library, const wchar_t* name, ID3D12PipelineState* pso, HRESULT* hr) {
+  __try { *hr = library->StorePipeline(name, pso); return true; }
+  __except (windows_fault_filter(GetExceptionCode())) { *hr = E_FAIL; return false; }
+}
+static bool guarded_create_pipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd, ID3D12PipelineState** out, HRESULT* hr) {
+  __try { *hr = device->CreateGraphicsPipelineState(pd, IID_PPV_ARGS(out)); return true; }
+  __except (windows_fault_filter(GetExceptionCode())) { *hr = E_FAIL; return false; }
+}
+
+void D3D12Backend::pipeline_library_fault(const char* call) {
+  if (!pipeline_library_faulted_)
+    host::log("d3d12: Windows' pipeline cache faulted in %s; pipelines are built without the saved library for the rest "
+              "of this session, and the next start builds a new one", call);
+  pipeline_library_faulted_ = true;
+}
+
 ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSUid& vsu, const PSUid& psu, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo,
                                                     ComPtr<ID3DBlob>& vs, ComPtr<ID3DBlob>& ps) {
   char vs_name[64], ps_name[64];
@@ -1777,26 +1810,47 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
   wchar_t pso_name[96];
   swprintf_s(pso_name, L"%016llX-%016llX-%X-%X-%X-%X-%X-%X", (unsigned long long)key.vs, (unsigned long long)key.ps, key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec);
   std::lock_guard<std::mutex> lk(pipeline_library_mutex_);
-  if (!pipeline_library_ || FAILED(pipeline_library_->LoadGraphicsPipeline(pso_name, &pd, IID_PPV_ARGS(&pso)))) {
-    HRESULT hr = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
-    if (FAILED(hr)) {
-      // A shader file in the cache that was cut short or damaged is refused here. Both shaders are
-      // built again from source, which also replaces the files. If the pipeline is still refused
-      // the draw keeps the generic pipeline: one surface shaded roughly instead of a stopped game.
-      if (!compile_vs() || !compile_ps()) return nullptr;
-      pd = D3D12_GRAPHICS_PIPELINE_STATE_DESC{};
-      describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
-      const HRESULT again = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
-      if (FAILED(again)) {
-        host::log("d3d12: pipeline %ls refused (%08X, then %08X with rebuilt shaders); its draws use the generic pipeline",
-                  pso_name, (unsigned)hr, (unsigned)again);
-        return nullptr;
-      }
-      static std::atomic<int> told{0};   // a whole damaged cache would otherwise fill the log
-      if (told.fetch_add(1) < 8) host::log("d3d12: pipeline %ls refused (%08X); built again from source and accepted", pso_name, (unsigned)hr);
-    }
-    if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
+  ID3D12PipelineLibrary* library = pipeline_library_faulted_ ? nullptr : pipeline_library_.Get();
+  // MELEE_TEST_PIPELINE_FAULT=1 (tests only): the first library call faults, as Windows' cache did.
+  static bool test_fault = std::getenv("MELEE_TEST_PIPELINE_FAULT") != nullptr;
+  if (library && test_fault) { test_fault = false; library = reinterpret_cast<ID3D12PipelineLibrary*>(uintptr_t(16)); }
+  // A fault leaves whatever the call had written to its output unknown: that pointer is never used
+  // (nor released), so each call writes into a fresh one.
+  ID3D12PipelineState* raw = nullptr;
+  HRESULT hr = E_FAIL;
+  if (library && !guarded_load_pipeline(library, pso_name, &pd, &raw, &hr)) { pipeline_library_fault("LoadGraphicsPipeline"); library = nullptr; raw = nullptr; }
+  if (library && SUCCEEDED(hr) && raw) { pso.Attach(raw); return pso; }
+  raw = nullptr;
+  if (!guarded_create_pipeline(device_.Get(), &pd, &raw, &hr)) {
+    host::log("d3d12: Windows faulted creating pipeline %ls; its draws use the generic pipeline", pso_name);
+    return nullptr;
   }
+  if (SUCCEEDED(hr) && raw) pso.Attach(raw);
+  if (FAILED(hr) || !pso) {
+    // A shader file in the cache that was cut short or damaged is refused here. Both shaders are
+    // built again from source, which also replaces the files. If the pipeline is still refused
+    // the draw keeps the generic pipeline: one surface shaded roughly instead of a stopped game.
+    if (!compile_vs() || !compile_ps()) return nullptr;
+    pd = D3D12_GRAPHICS_PIPELINE_STATE_DESC{};
+    describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
+    HRESULT again = E_FAIL;
+    raw = nullptr;
+    if (!guarded_create_pipeline(device_.Get(), &pd, &raw, &again)) {
+      host::log("d3d12: Windows faulted creating pipeline %ls; its draws use the generic pipeline", pso_name);
+      return nullptr;
+    }
+    if (FAILED(again) || !raw) {
+      host::log("d3d12: pipeline %ls refused (%08X, then %08X with rebuilt shaders); its draws use the generic pipeline",
+                pso_name, (unsigned)hr, (unsigned)again);
+      return nullptr;
+    }
+    pso.Attach(raw);
+    static std::atomic<int> told{0};   // a whole damaged cache would otherwise fill the log
+    if (told.fetch_add(1) < 8) host::log("d3d12: pipeline %ls refused (%08X); built again from source and accepted", pso_name, (unsigned)hr);
+  }
+  HRESULT stored = E_FAIL;
+  if (library && !guarded_store_pipeline(library, pso_name, pso.Get(), &stored)) pipeline_library_fault("StorePipeline");
+  else if (library && SUCCEEDED(stored)) pipeline_library_dirty_ = true;
   return pso;
 }
 
@@ -1924,7 +1978,12 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
   generic.cull = 0;     // no culling
   describe_pipeline(pd, generic, topo, root_.Get(), vsb.Get(), psb.Get());
   ComPtr<ID3D12PipelineState> pso;
-  if (FAILED(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)))) { host::log("d3d12: fallback pipeline creation failed"); fallback_psos_[fk] = nullptr; return nullptr; }
+  ID3D12PipelineState* raw = nullptr;
+  HRESULT hr = E_FAIL;
+  if (!guarded_create_pipeline(device_.Get(), &pd, &raw, &hr) || FAILED(hr) || !raw) {
+    host::log("d3d12: fallback pipeline creation failed"); fallback_psos_[fk] = nullptr; return nullptr;
+  }
+  pso.Attach(raw);
   fallback_psos_[fk] = pso;
   return pso.Get();
 }
@@ -3976,6 +4035,10 @@ void D3D12Backend::open_pipeline_library() {
 }
 
 void D3D12Backend::save_pipeline_library() {
+  if (pipeline_library_faulted_) {   // its file may be what Windows tripped on: the next start builds a new one
+    DeleteFileA((opts_.shader_cache + "/pipelines.bin").c_str());
+    return;
+  }
   if (!pipeline_library_ || !pipeline_library_dirty_) return;
   size_t size = pipeline_library_->GetSerializedSize();
   std::vector<uint8_t> data(size);

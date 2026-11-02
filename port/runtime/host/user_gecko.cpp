@@ -693,6 +693,12 @@ const char* native_equivalent(const Code& c) {
       {0xC21CBB90u, 0x00000005u, "Lagless FoD"},
       // The always-display hitbox code (its first line): Looks > Arcade look's hitbox switches.
       {0x040805FCu, 0x60000000u, kArcadeHitboxCodeLabel},
+      // "Disable Kill Explosions GFX": a nop over each blast-zone death's efSync_Spawn, whichever
+      // comes first. The switch keeps the explosion running out of sight instead (ft_0D31.c).
+      {0x040D3880u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
+      {0x040D3B50u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
+      {0x040D3DC8u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
+      {0x040D4040u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
   };
   for (const Known& k : known)
     if (!c.lines.empty() && c.lines[0].first == k.w && c.lines[0].second == k.v) return k.label;

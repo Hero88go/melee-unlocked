@@ -35,6 +35,9 @@ MuPcConfig g_config = [] {
   if (const char* v = std::getenv("MELEE_TEST_PRACTICE_GHOST")) {
     if (practice_cpu::ghost(std::atoi(v), c)) c.enabled = 1;
   }
+  // MELEE_TEST_PRACTICE_TOOLS=<MU_PC_TOOL_* bits, hex> (tests only): the Training tools, as the
+  // Practice page's Tools rows set them.
+  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_TOOLS")) c.tools = (uint8_t)std::strtoul(v, nullptr, 16);
   return c;
 }();
 std::atomic<uint32_t> g_generation{1};

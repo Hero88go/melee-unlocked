@@ -554,6 +554,13 @@ void test_built_in() {
   CHECK(label("mine", {{0xC20C0148u, 0x0000000Cu}}) == "Flash Red on Failed L-Cancel");
   CHECK(label("mine", {{0xC21CBB90u, 0x00000005u}}) == "Lagless FoD");
   CHECK(label("Optional: Disable Screen Shake", {{0x04030E44u, 0x60000000u}}).empty());
+  // "Disable Kill Explosions GFX" as it is shared (a nop over each blast-zone death's spawn): the
+  // Hide KO explosions switch, whichever of its four lines comes first.
+  CHECK(label("$Disable Kill Explosions GFX", {{0x040D4040u, 0x60000000u}, {0x040D3B50u, 0x60000000u},
+                                               {0x040D3DC8u, 0x60000000u}, {0x040D3880u, 0x60000000u}}) ==
+        "Hide KO explosions (GAME, HUD)");
+  CHECK(label("mine", {{0x040D3880u, 0x60000000u}}) == "Hide KO explosions (GAME, HUD)");
+  CHECK(label("mine", {{0x040D3880u, 0x38600000u}}).empty());
 
   // Any other code: every patch has to be one the table carries, word for word.
   const Lines hook = {{0xC2100010u, 2u}, {0x38600001u, 0x38800002u}, {0x60000000u, 0u}};

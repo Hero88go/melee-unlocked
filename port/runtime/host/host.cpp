@@ -1382,6 +1382,7 @@ void install_console_clock() {
 std::atomic<int> g_game_language{0};
 std::atomic<bool> g_cpu_20xx{false};   // "20XX CPUs", see hackpack_ai.cpp
 std::atomic<bool> g_freeze_fd{false};   // "Freeze Final Destination", see apply_freeze_final_destination
+std::atomic<bool> g_hide_ko_explosions{false};   // "Hide KO explosions", see apply_ko_explosions
 int game_language_override() {
   const int choice = g_game_language.load(std::memory_order_relaxed);
   return choice == 1 ? 0 : choice == 2 ? 1 : -1;
@@ -1761,6 +1762,55 @@ void apply_final_destination_guard() {
   }
   log("mods: Final Destination skin: a background model without its animation no longer stops the game%s%s",
       test ? " (test: no animation found)" : "", guard ? "" : " (test: guard off)");
+}
+// "Hide KO explosions" on the Static Recomp. While it is on, the four blast-zone deaths run from RAM,
+// so their call to efSync_Spawn goes through the dispatch table, where spawn_ko_explosion moves the
+// position it passes far below every camera for that call alone (as the native game does in
+// ft_0D31.c). The explosion still runs in full there: its particles draw random numbers and some of
+// them spawn only as its model is drawn, so leaving it out would change the rest of the match.
+namespace {
+constexpr uint32_t kEfSyncSpawn = 0x8005FDDCu;
+constexpr uint32_t kKoDeaths[4] = {0x800D3680u, 0x800D3950u, 0x800D3BC8u, 0x800D3E40u};   // left, right, down, up
+constexpr uint32_t kKoSpawnReturns[4] = {0x800D3884u, 0x800D3B54u, 0x800D3DCCu, 0x800D4044u};   // after each one's bl efSync_Spawn
+constexpr float kKoHiddenY = -1.0e7f;   // MU_KO_EXPLOSION_HIDDEN_Y
+ppc::Fn g_ef_sync_spawn = nullptr;
+void spawn_ko_explosion(ppc::Context& c, uint8_t* m) {
+  const uint32_t pos = c.r[5];   // efSync_Spawn(0x42B or 0x42C, gobj, &pos, &angle, &scale, rgb1, rgb2)
+  const bool ko = (c.r[3] == 0x42Bu || c.r[3] == 0x42Cu) && g_hide_ko_explosions.load(std::memory_order_relaxed) &&
+                  std::find(std::begin(kKoSpawnReturns), std::end(kKoSpawnReturns), c.lr) != std::end(kKoSpawnReturns) &&
+                  try_ptr(pos, 12);
+  if (!ko) { g_ef_sync_spawn(c, m); return; }
+  const uint32_t y = rd32(pos + 4);
+  uint32_t hidden = 0;
+  std::memcpy(&hidden, &kKoHiddenY, 4);
+  wr32(pos + 4, hidden);
+  g_ef_sync_spawn(c, m);
+  wr32(pos + 4, y);   // the death goes on with its own position
+}
+}  // namespace
+void apply_ko_explosions() {
+  static bool live = false, ours[4] = {};
+  if (!ram) return;
+  const bool want = g_hide_ko_explosions.load(std::memory_order_relaxed);
+  if (want == live) return;
+  if (want) {
+    if (!g_ef_sync_spawn) {
+      const ppc::Fn previous = ppc::set_hook(kEfSyncSpawn, spawn_ko_explosion);
+      if (!previous) return;   // the dispatch table is not ready yet: next frame
+      g_ef_sync_spawn = previous;
+    }
+    int from_ram = 0;
+    for (int i = 0; i < 4; ++i) {
+      ours[i] = !ppc::runs_from_ram(kKoDeaths[i]) && ppc::redirect_to_interpreter(kKoDeaths[i]);
+      from_ram += ppc::runs_from_ram(kKoDeaths[i]) ? 1 : 0;
+    }
+    log("ko: blast-zone explosions out of sight (%d of 4 deaths run from RAM)", from_ram);
+  } else {
+    for (int i = 0; i < 4; ++i)
+      if (ours[i]) { ppc::undo_redirect(kKoDeaths[i]); ours[i] = false; }
+    log("ko: blast-zone explosions shown");
+  }
+  live = want;
 }
 // A mod disc can ask for a file it does not ship (ACE's results screen asks for /audio/ff_step1.hps
 // for one of its fighters). The game then opens entry -1, DVDFastOpen refuses and leaves the file

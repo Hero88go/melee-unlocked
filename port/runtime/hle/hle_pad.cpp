@@ -394,6 +394,7 @@ HLE(PADRead) {
   host::install_cobj_guard();
   host::apply_freeze_final_destination();
   host::apply_final_destination_guard();
+  host::apply_ko_explosions();
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

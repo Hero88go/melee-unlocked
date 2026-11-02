@@ -229,6 +229,7 @@ void install_cobj_guard();        // Static Recomp: an unknown camera projection
 void install_sub_color_guard();   // Static Recomp: a tint index past 4 no longer stops the game (fighter.c:828)
 void apply_freeze_final_destination();   // Static Recomp, once per game frame: "Freeze Final Destination" on or off
 void apply_final_destination_guard();   // Static Recomp, once per game frame: a Final Destination skin without its background animation does not stop the game
+void apply_ko_explosions();   // Static Recomp, once per game frame: "Hide KO explosions" on or off
 uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
 // Retrace pacing multiplier (Slippi Online nudges it by up to 1% to keep peers in step).
@@ -342,6 +343,9 @@ extern std::atomic<bool> g_cpu_20xx;
 // "Freeze Final Destination" (Game tab, both engines): Final Destination's background stays on its
 // first form. On the Static Recomp apply_freeze_final_destination() reads this once per frame.
 extern std::atomic<bool> g_freeze_fd;
+// "Hide KO explosions" (Video tab, both engines): the blast-zone explosion is spawned far out of
+// sight. Source Port: MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS; Static Recomp: apply_ko_explosions().
+extern std::atomic<bool> g_hide_ko_explosions;
 void input_rumble(int game_port, bool on);
 // Immediately clear any motors that were active when the Controls switch is turned off.
 void input_stop_all_rumble();
