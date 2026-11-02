@@ -152,8 +152,8 @@ int main() {
   CHECK(user.dir() == local.string());
   CHECK(user.GetUserChatMessages().size() == 16);
 
-  // A cached supported version must not authorize a match after the server updates, or while
-  // its fresh reply is unavailable/malformed. Use the production check with an offline transport.
+  // A fresh reply decides. When the server cannot be read (unreachable, an error status or a malformed
+  // reply, three tries), the account's last known version decides; with none known, it blocks.
   std::string compatibility_error;
   user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
   version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
@@ -167,13 +167,22 @@ int main() {
                            "{\"latestVersion\":\"3.6.4-beta\"}", "{\"latestVersion\":\"3.6.4.0.1\"}"}) {
     user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
     version_reply = reply;
+    CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version) && compatibility_error.empty());
+    user.OverwriteLatestVersion("99.0.0");
+    CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version) &&
+          compatibility_error.find("Update Melee Unlocked") != std::string::npos);
+    user.OverwriteLatestVersion("");
     CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version) && !compatibility_error.empty());
   }
+  user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
   version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
   version_http_status = 503;
-  CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
   version_http_status = 200; version_transport_ok = false;
+  CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  user.OverwriteLatestVersion("");
   CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
   version_transport_ok = true;
   CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
   // Rematches on the same peer connection also need a new check. Polling while the request is

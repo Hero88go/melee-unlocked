@@ -248,13 +248,38 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
   const UserInfo me = GetUserInfo();
   if (me.uid.empty()) { *error = "Sign in to Slippi before playing online."; return false; }
   try {
-    std::string response; int status = 0;
-    if (!(fetch ? fetch : report::http_get)("https://users-rest-dot-slippi.uc.r.appspot.com/user/" + me.uid, &response, &status) || status != 200)
-      return false;
-    const json reply = json::parse(response, nullptr, false);
-    if (!reply.is_object()) return false;
-    const std::string latest = str_or(reply, "latestVersion", "");
-    if (!release_version_valid(latest)) return false;
+    // Three tries, then the version the account last reported (user.json, which the Slippi
+    // Launcher keeps current, or the profile refresh). One failed request used to block online
+    // play outright for a player whose network or Windows refused this request. No known
+    // version at all still blocks.
+    std::string latest;
+    int status = 0;
+    for (int attempt = 0; attempt < 3 && latest.empty(); ++attempt) {
+      if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(700));
+      std::string response;
+      status = 0;
+      if (!(fetch ? fetch : report::http_get)("https://users-rest-dot-slippi.uc.r.appspot.com/user/" + me.uid, &response, &status) || status != 200)
+        continue;
+      const json reply = json::parse(response, nullptr, false);
+      if (!reply.is_object()) continue;
+      const std::string v = str_or(reply, "latestVersion", "");
+      if (release_version_valid(v)) latest = v;
+    }
+    if (latest.empty()) {
+      const std::string known = me.latest_version;
+      if (!release_version_valid(known)) {
+        host::log("slippi: the version check did not answer (HTTP %d) and the account has no known version", status);
+        return false;
+      }
+      host::log("slippi: the version check did not answer (HTTP %d); going by the account's last known version %s", status,
+                known.c_str());
+      if (version_newer(known, SLIPPI_SEMVER)) {
+        *error = "Slippi " + known + " is out. Update Melee Unlocked";
+        return false;
+      }
+      error->clear();
+      return true;
+    }
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (info_.uid != me.uid) return false;  // the player signed out or changed accounts
