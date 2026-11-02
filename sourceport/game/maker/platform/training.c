@@ -76,8 +76,10 @@ void BamTraining_OptionToggle(unsigned i)
 static u8 session, mapped, port, ckind, frozen, panel, release_wait, restart, hint_frames;
 static BamLoadout saved[BAM_PLAYER_SLOTS];
 
-int Bam_DrawHitboxes(void) { return !session || opt[BAM_OPT_HITBOXES]; }
-int Bam_DrawHurtboxes(void) { return !session || opt[BAM_OPT_HURTBOXES]; }
+/* The filter applies only to bubbles this menu turned on: with its own switches off, bubbles shown by
+ * anything else (the Practice panel's hitboxes, 20XX TE "Collision bubbles") draw as they are. */
+int Bam_DrawHitboxes(void) { return !session || !bubbles_applied || opt[BAM_OPT_HITBOXES]; }
+int Bam_DrawHurtboxes(void) { return !session || !bubbles_applied || opt[BAM_OPT_HURTBOXES]; }
 int Bam_TrainingFrozen(void) { return session && gm_GetDbPauseFlag(FREEZE) && !(BAM_FRAME_STEP & 1); }
 
 /* Platform fix in gm_801B1F70 (the training match's setup, players filled). */
