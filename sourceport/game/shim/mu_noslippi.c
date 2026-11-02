@@ -125,7 +125,8 @@ void mu_replay_frame_begin(void) {}
 int mu_replay_terminated(void) { return 0; }
 int mu_replay_stock_steal(int pad_port) { (void) pad_port; return 0; }
 void mu_replay_input(Fighter* fp) { (void) fp; }
-void mu_replay_post_frame(Fighter* fp) { (void) fp; }
+void mu_ghost_post_frame(Fighter* fp);
+void mu_replay_post_frame(Fighter* fp) { mu_ghost_post_frame(fp); }
 int mu_replay_ps_frozen(void) { return mu_stadium_frozen_option(); }   /* no playback: the offline option */
 void mu_replay_online_start(StartMeleeData* data, const unsigned char* msrb) { (void) data; (void) msrb; }
 void mu_replay_flush_frame(void) {}

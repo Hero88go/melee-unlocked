@@ -599,11 +599,14 @@ void mu_replay_fighter_flags(const Fighter* fp, unsigned char out[5])
               FLAG(fp->x221F_b6, 6) | FLAG(fp->x221F_b7, 7);
 }
 
+void mu_ghost_post_frame(Fighter* fp);   /* mu_practice_cpu.c: the pro AI's end-of-frame view */
+
 void mu_replay_post_frame(Fighter* fp)
 {
     u8 b[0x55];
     u32 misc;
 
+    mu_ghost_post_frame(fp);
     if (mu_replay_on() && !fp->is_sleeping) {
         dump_fighter(fp);
     }

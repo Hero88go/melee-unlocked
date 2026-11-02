@@ -346,6 +346,46 @@ static int ghost_items(MuGhostItem* out)
     return n;
 }
 
+/* What a replay records of each fighter at the end of its frame (mu_replay_post_frame), the last two
+ * frames. Fighters update one after another, so when the second reads the first mid-frame the first has
+ * already moved this frame; Phillip's policies saw every fighter as of the end of the previous frame
+ * (libmelee's game state), so they get these snapshots instead. [port][follower][newest, older] */
+static struct {
+    MuGhostFighter f;
+    unsigned int frame;
+    int valid;
+} ghost_post[6][2][2];
+
+void mu_ghost_post_frame(Fighter* fp)
+{
+    const int port = fp->player_idx;
+    const int sub = fp->is_sub_fighter ? 1 : 0;
+    if (port < 0 || port >= 6 || fp->is_sleeping) return;
+    ghost_post[port][sub][1] = ghost_post[port][sub][0];
+    ghost_read(fp, &ghost_post[port][sub][0].f);
+    ghost_post[port][sub][0].frame = (unsigned int) gm_GetFrameCount();
+    ghost_post[port][sub][0].valid = 1;
+}
+
+/* The fighter as of the end of the previous frame, or (first frame, a fighter just created) as it is now. */
+static void ghost_read_previous(const Fighter* fp, MuGhostFighter* g, unsigned int now)
+{
+    const int port = fp->player_idx;
+    const int sub = fp->is_sub_fighter ? 1 : 0;
+    int k;
+    if (port >= 0 && port < 6) {
+        for (k = 0; k < 2; k++) {
+            if (ghost_post[port][sub][k].valid && ghost_post[port][sub][k].frame + 1 == now &&
+                ghost_post[port][sub][k].f.kind == (unsigned char) fp->kind)
+            {
+                *g = ghost_post[port][sub][k].f;
+                return;
+            }
+        }
+    }
+    ghost_read(fp, g);
+}
+
 /* What each pro AI fighter really held last frame (pc_drive, after the safety net). */
 static MuGhostAct ghost_applied[4];
 
@@ -397,8 +437,23 @@ static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInpu
     obs.stage = (short) ghost_stage();
     obs.frame = (unsigned int) gm_GetFrameCount();
     obs.applied = ghost_applied[slot];
-    ghost_read(fp, &obs.self);
-    ghost_read(opp, &obs.opp);
+    ghost_read_previous(fp, &obs.self, obs.frame);
+    ghost_read_previous(opp, &obs.opp, obs.frame);
+    if (getenv("MELEE_GHOST_LOG") != NULL) {
+        /* How often the live opponent differs from its end-of-frame state (it should, it moved first). */
+        static unsigned int seen, differ, self_differ, self_hit;
+        MuGhostFighter live;
+        /* Only what Phillip reads: position, facing, percent, shield, air, jumps, action, hurtbox. */
+#define GHOST_SAME(a, b) ((a).num[0] == (b).num[0] && (a).num[1] == (b).num[1] && (a).num[2] == (b).num[2] && \
+                          (a).num[3] == (b).num[3] && (a).num[4] == (b).num[4] && (a).num[8] == (b).num[8] && \
+                          (a).num[9] == (b).num[9] && (a).motion == (b).motion && (a).hurtbox == (b).hurtbox)
+        ghost_read(opp, &live);
+        seen++;
+        if (!GHOST_SAME(live, obs.opp)) differ++;
+        ghost_read(fp, &live);
+        if (!GHOST_SAME(live, obs.self)) { self_differ++; if (live.num[3] != obs.self.num[3]) self_hit++; }
+        if (seen % 600 == 0) OSReport("[ghost] P%d snapshot: opponent live differs %u of %u frames, self %u (percent %u)\n", slot + 1, differ, seen, self_differ, self_hit);
+    }
     obs.match_frame = mu_replay_match_frame();
     if (stage_info.grkind == Gr_Kind_Izumi) mu_replay_fountain_heights(&obs.fod_left, &obs.fod_right);
     {
@@ -406,8 +461,8 @@ static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInpu
         const Fighter* n2 = ghost_nana(opp);
         obs.self_nana = n1 != NULL;
         obs.opp_nana = n2 != NULL;
-        if (n1 != NULL) ghost_read(n1, &obs.self_nana_f);
-        if (n2 != NULL) ghost_read(n2, &obs.opp_nana_f);
+        if (n1 != NULL) ghost_read_previous(n1, &obs.self_nana_f, obs.frame);
+        if (n2 != NULL) ghost_read_previous(n2, &obs.opp_nana_f, obs.frame);
     }
     obs.item_count = (unsigned char) ghost_items(obs.items);
     if (mu_online_abi_command(CMD_GHOST_AI, (const unsigned char*) &obs, sizeof obs, response, sizeof response, &got) != 0 ||
