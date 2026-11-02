@@ -76,8 +76,9 @@ def load_upstream(folder: Path):
 
 
 class _Any:
-    def __getitem__(self, item):
-        return tp.Any
+    def __getitem__(self, item): return self
+    def __or__(self, other): return self
+    def __ror__(self, other): return self
 
 
 def observations(n: int, rng: np.random.Generator, self_kind: int, opp_kind: int, stage: int, opp_nana: bool):
