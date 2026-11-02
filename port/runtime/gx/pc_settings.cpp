@@ -5970,8 +5970,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (int port = 0; port < 4; ++port) shield_row(ports[port], &options.shield_color[port], port);
       ImGui::Separator();
       shield_row("Online (you)", &options.shield_color_online, 0);
-      settings_hint("Your shield and KO blast colours. Online, \"Online (you)\" is yours: players on Melee Unlocked see it,"
-                    " players on Slippi Dolphin see your port colour. Team matches keep team colours.");
+      settings_hint("Your shield and KO blast colours. Online, \"Online (you)\" is yours (left empty, your P1 colour): players"
+                    " on Melee Unlocked see it, players on Slippi Dolphin see your port colour. Team matches keep team colours.");
       ImGui::Unindent(8.0f);
     }
     // ---- Get mod looks ----
@@ -8975,7 +8975,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("When the other player leaves or the connection drops after a match, you land in a Training\n"
-                          "match with the same character. D-pad Up searches again (same mode, same Direct code), Down dismisses.");
+                          "match with the same character. D-pad Up searches again (same mode, same Direct code), Down dismisses.\n"
+                          "Direct and Teams only: after an Unranked game you stay on Unranked's character select.");
       if (!options.online_back_to_training && settings_toggle("After an online session ends, go back to Training mode", &options.online_return_training)) {
         RenderOptions::live_online_return_training() = options.online_return_training;
         changed = true;

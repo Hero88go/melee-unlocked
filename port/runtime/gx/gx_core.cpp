@@ -976,7 +976,12 @@ void set_shield_colors(const uint32_t ports[4], uint32_t online) {
   for (int i = 0; i < 4; ++i) g_shield_colors[i].store(ports[i] & 0x1FFFFFFu, std::memory_order_relaxed);
   g_shield_colors[4].store(online & 0x1FFFFFFu, std::memory_order_relaxed);
 }
-uint32_t shield_color_online() { return g_shield_colors[4].load(std::memory_order_relaxed); }
+// Online, "Online (you)" is the player's colour; left empty, the P1 colour (the port a player uses in
+// Training) is theirs online too. A player who set only that one saw the plain red shield online.
+uint32_t shield_color_online() {
+  const uint32_t online = g_shield_colors[4].load(std::memory_order_relaxed);
+  return (online & 0x1000000u) ? online : g_shield_colors[0].load(std::memory_order_relaxed);
+}
 uint32_t shield_color(int slot) {
   if (slot < 0 || slot >= 4) return 0;
   if (slippi::online::is_online_match()) {
