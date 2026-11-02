@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_core.h"
 #include "gx_retro.h"
+#include "render_options.h"   // clean_replay_active() reads its live switch, Linux too
 #ifdef _WIN32
 #include "pc_settings_shared.h"
 #else
