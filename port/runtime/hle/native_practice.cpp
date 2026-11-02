@@ -835,7 +835,10 @@ void tick() {
       if (slippi::online::is_online_match()) { played = true; local_index_seen = slippi::online::local_player_index(); }
     } else if (session_seen) {
       session_seen = false;
-      if (played && gx::RenderOptions::live_online_back_to_training() && g_lifecycle.phase() == Phase::Idle &&
+      // Unranked ends its session after every game, so there it would leave the online screens after
+      // each one (two reports); the player stays on Unranked's character select, as on Slippi.
+      const bool unranked = session_mode_seen == (int)MatchMode::Unranked;
+      if (played && !unranked && gx::RenderOptions::live_online_back_to_training() && g_lifecycle.phase() == Phase::Idle &&
           is_online_scene() && !slippi::playback::enabled()) {
         enter_training_after_session((MatchMode)session_mode_seen, local_index_seen);
       } else if (played && gx::RenderOptions::live_online_return_training() && g_lifecycle.phase() == Phase::Idle &&
