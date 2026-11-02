@@ -326,6 +326,7 @@ struct Image {
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
   uint32_t width = 0, height = 0, levels = 1;
   uint64_t used = 0, bytes = 0;
+  uint64_t charged = 0;   // a pack replacement's share of the replacement budget, given back when it goes
 };
 
 struct Buffer {
@@ -357,6 +358,15 @@ class VulkanBackend final : public Backend {
     create_instance();
     create_device();
     heap_.init(device_, physical_);
+    {
+      // Pack replacements get a quarter of the graphics card's own memory (at least 256 MB, at most
+      // 2 GB), as on Direct3D 12, instead of a fixed 512 MB.
+      VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(physical_, &mp);
+      VkDeviceSize local = 0;
+      for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
+        if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) local = std::max(local, mp.memoryHeaps[i].size);
+      replacement_budget_ = std::clamp<uint64_t>(local / 4, 256ull << 20, 2048ull << 20);
+    }
     create_layouts();
     create_frames();
     create_swapchain();
@@ -820,6 +830,7 @@ class VulkanBackend final : public Backend {
     vkResetDescriptorPool(device_, f.pool, 0);
     f.ring.used = 0; f.uploads = false;
     ++sequence_;
+    swap_in_ready_replacements();
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(f.upload, &begin), "begin upload");
@@ -949,7 +960,29 @@ class VulkanBackend final : public Backend {
   void drop_textures() {
     for (auto& t : textures_) retire(t.second);
     textures_.clear();
+    pending_hd_.clear();
     replacement_bytes_ = 0;
+  }
+
+  // A pack replacement that finished decoding in the background: the original drawn meanwhile goes,
+  // so the next use builds the texture from the replacement (load() then returns it at once). The
+  // retired image lives until this slot comes round again, past every frame that may still read it.
+  void swap_in_ready_replacements() {
+    if (pending_hd_.empty() || (sequence_ & 1)) return;
+    // A few a frame: the background decoder finishes them in batches, and swapping a whole batch in
+    // at once uploaded every one of its pictures in the same frame (a 0.3 s hitch in the middle of a
+    // match with a large pack).
+    int swapped = 0;
+    for (auto it = pending_hd_.begin(); it != pending_hd_.end() && swapped < 6;) {
+      auto tex = textures_.find(it->first);
+      if (tex == textures_.end()) { it = pending_hd_.erase(it); continue; }
+      if (!texpack::ready(it->second)) { ++it; continue; }
+      ++swapped;
+      replacement_bytes_ -= std::min(replacement_bytes_, tex->second.charged);
+      retire(tex->second);
+      textures_.erase(tex);
+      it = pending_hd_.erase(it);
+    }
   }
 
   // ---- Shaders and pipelines ----
@@ -1173,9 +1206,13 @@ class VulkanBackend final : public Backend {
 #ifdef GX_PC_SETTINGS
     if (texpack::enabled() || texpack::cosmetics_enabled()) {
       const std::string name = texpack::base_name(t, *t.data);
-      if (texpack::has(name)) {
-        constexpr uint64_t budget = 512ull << 20;
-        auto r = texpack::load(name, replacement_bytes_ < budget ? budget - replacement_bytes_ : 0);
+      if (texpack::has(name) && !texpack::ready(name)) {
+        // Not decoded yet: the original now, the replacement from the background (as on Direct3D 12).
+        // Decoding the PNG here held the frame, a stutter at every new stage, effect and menu.
+        texpack::request(name);
+        pending_hd_[key] = name;
+      } else if (texpack::has(name)) {
+        auto r = texpack::load(name, replacement_bytes_ < replacement_budget_ ? replacement_budget_ - replacement_bytes_ : 0);
         texpack::note_lookup(r != nullptr);
         if (r) {
           const uint32_t levels = std::max(1u, std::min(r->levels, 16u));
@@ -1184,6 +1221,7 @@ class VulkanBackend final : public Backend {
             upload_level(img, level, r->level_width[level], r->level_height[level], r->pixels.data() + r->level_offset[level]);
           finish_upload(img);
           img.used = sequence_;
+          img.charged = img.bytes;
           replacement_bytes_ += img.bytes;
           return &textures_.emplace(key, img).first->second;
         }
@@ -1572,7 +1610,12 @@ class VulkanBackend final : public Backend {
   void trim() {
     if (sequence_ % 600) return;
     for (auto it = textures_.begin(); it != textures_.end();) {
-      if (sequence_ - it->second.used > 1800) { retire(it->second); it = textures_.erase(it); } else ++it;
+      if (sequence_ - it->second.used > 1800) {
+        // Its share of the replacement budget comes back. It used to stay charged, so after enough
+        // stages and menus the budget read as spent and every pack texture fell back to the original.
+        replacement_bytes_ -= std::min(replacement_bytes_, it->second.charged);
+        retire(it->second); it = textures_.erase(it);
+      } else ++it;
     }
     for (auto it = copies_.begin(); it != copies_.end();) {
       if (sequence_ - it->second.used > 1800) { retire(it->second); it = copies_.erase(it); } else ++it;
@@ -1666,7 +1709,8 @@ class VulkanBackend final : public Backend {
   std::vector<uint32_t> index_scratch_;
   std::vector<size_t> vertex_offsets_;
   VkDeviceSize vertex_base_ = 0;
-  uint64_t sequence_ = 0, replacement_bytes_ = 0;
+  uint64_t sequence_ = 0, replacement_bytes_ = 0, replacement_budget_ = 512ull << 20;
+  std::unordered_map<uint64_t, std::string> pending_hd_;   // textures drawn as the original while their replacement decodes
   uint32_t presented_ = 0, capture_frame_ = 0;
   int anisotropy_applied_ = 0;
   int pipeline_failures_ = 0, pool_exhausted_ = 0, ring_overflows_ = 0;
