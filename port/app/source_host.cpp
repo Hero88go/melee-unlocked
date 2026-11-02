@@ -1984,7 +1984,7 @@ void h_pad_read(MuPadStatus out[4]) {
   if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
   // A pasted always-display hitbox code turns on the Arcade look switches its lines stand for.
   gx::set_arcade_display(gx::ArcadeSource::Codes, user_gecko::arcade_bits_of_codes());
-  // Hidden test hook: MELEE_TEST_INSTALL_LOOK=<0 Diet, 1 Animelee> starts that one-click install once.
+  // Hidden test hook: MELEE_TEST_INSTALL_LOOK=<0 Diet, 1 Animelee, 2 Animelee x DBZ> starts that one-click install once.
   {
     static const int test_install = [] { const char* v = std::getenv("MELEE_TEST_INSTALL_LOOK"); return v && *v ? std::atoi(v) : -1; }();
     static int frames = 0;

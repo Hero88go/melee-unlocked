@@ -182,9 +182,9 @@ std::vector<LookPackStatus> look_packs();
 bool build_look_packs(const std::string& patcher_folder, const std::string& retail_disc, const std::string& xdelta_tool,
                       std::string* message);
 // One click (Settings > Looks > Get mod looks): 0 Diet Melee (Classic, 64 and Crystal), 1 Animelee
-// Complete Edition. The authors' own download, checked against its published SHA-256, built from the
-// player's clean disc with the shipped xdelta3; Animelee lands in <Mods>/Discs. Windows only. A worker
-// thread does it; the panel polls official_look_state.
+// Complete Edition, 2 Animelee x DBZ (its Dragon Ball Z edition). The authors' own download, checked
+// against its published SHA-256, built from the player's clean disc with the shipped xdelta3; each
+// Animelee lands in <Mods>/Discs. Windows only. A worker thread does it; the panel polls official_look_state.
 struct OfficialLookState {
   bool installed = false, busy = false, any_busy = false;
   float progress = 0;     // the download, 0 to 1

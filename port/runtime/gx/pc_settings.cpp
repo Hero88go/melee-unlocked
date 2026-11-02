@@ -5963,34 +5963,52 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     // ---- Get mod looks ----
     // One click each: the authors' own download, checked against its published file and built from the
-    // player's own disc (host::cosmetics::install_official_look). Open until both are installed; once
-    // Animelee is built the Mods folder is scanned again and it is switched on.
+    // player's own disc (host::cosmetics::install_official_look). Open until all three are installed; once
+    // an Animelee is built the Mods folder is scanned again and it is switched on.
     {
       namespace mods = source_port::mods;
       const std::string mods_dir = mods::mods_folder().u8string();
-      const auto diet = host::cosmetics::official_look_state(0, mods_dir);
-      const auto anim = host::cosmetics::official_look_state(1, mods_dir);
-      static bool was_busy[2] = {false, false};
-      static bool enable_animelee = false, animelee_new = false;   // installed in this session: not running yet
-      if (was_busy[1] && !anim.busy && anim.installed) { mods::rescan_async(); enable_animelee = animelee_new = true; }
-      was_busy[0] = diet.busy; was_busy[1] = anim.busy;
+      {
+        // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=modlooks): bring the cards into view once.
+        static int scroll_frames = 0;
+        if (scroll_frames < 30) {
+          const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+          if (target && std::strcmp(target, "modlooks") == 0) ImGui::SetScrollHereY(0.1f);
+          ++scroll_frames;
+        }
+      }
+      const host::cosmetics::OfficialLookState looks[3] = {host::cosmetics::official_look_state(0, mods_dir),
+                                                           host::cosmetics::official_look_state(1, mods_dir),
+                                                           host::cosmetics::official_look_state(2, mods_dir)};
+      static bool was_busy[3] = {false, false, false};
+      static int enable_animelee = 0;                             // 1 or 2: just built, switched on after the rescan
+      static bool animelee_new[3] = {false, false, false};       // installed in this session: not running yet
+      for (int which = 1; which < 3; ++which)
+        if (was_busy[which] && !looks[which].busy && looks[which].installed) { mods::rescan_async(); enable_animelee = which; animelee_new[which] = true; }
+      for (int which = 0; which < 3; ++which) was_busy[which] = looks[which].busy;
       if (enable_animelee) {
         const auto view = mods::panel_view();
         if (!view.scanning) {
-          for (const auto& d : view.result.items)
-            if (d.can_enable && !d.enabled && d.path.filename() == std::filesystem::u8path(anim.disc).filename()) mods::choose(d.key, true);
-          enable_animelee = false;
+          // The two Animelees replace the same files: the one just installed goes on, the other off.
+          const auto on = std::filesystem::u8path(looks[enable_animelee].disc).filename();
+          const auto off = std::filesystem::u8path(looks[3 - enable_animelee].disc).filename();
+          for (const auto& d : view.result.items) {
+            if (d.can_enable && !d.enabled && d.path.filename() == on) mods::choose(d.key, true);
+            if (d.enabled && d.path.filename() == off) mods::choose(d.key, false);
+          }
+          enable_animelee = 0;
         }
       }
-      if (ImGui::CollapsingHeader("Get mod looks##official", diet.installed && anim.installed ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (ImGui::CollapsingHeader("Get mod looks##official", looks[0].installed && looks[1].installed && looks[2].installed ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent(8.0f);
         struct Card { const char* name; const char* credit; const char* page; const char* size; };
-        static const Card cards[2] = {
+        static const Card cards[3] = {
             {"Diet Melee (Classic, 64 and Crystal)", "By the Diet Melee team", "https://diet.melee.tv", "about 200 MB"},
             {"Animelee (Complete Edition)", "By the Animelee team", "https://www.animelee.xyz", "about 30 MB"},
+            {"Animelee x DBZ (Dragon Ball Z edition)", "By the Animelee team", "https://www.animelee.xyz", "about 30 MB"},
         };
-        for (int which = 0; which < 2; ++which) {
-          const auto& s = which == 0 ? diet : anim;
+        for (int which = 0; which < 3; ++which) {
+          const auto& s = looks[which];
           const Card& card = cards[which];
           ImGui::PushID(which);
           ImGui::TextUnformatted(card.name);
@@ -6003,9 +6021,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             ImGui::TextColored(ImVec4(.37f, .84f, .53f, 1), "Installed");
             // The Static Recomp plays a disc mod from the launcher's Mods page, not from the MODS tab.
             settings_hint("%s", which == 0 ? "Pick Look > Diet Classic, Diet 64 or Crystal under Low-Detail Modes, then restart."
-                                : options.native_source ? "On in Game mods (MODS tab). Restart to play with it."
+                                : options.native_source ? "On in Game mods (MODS tab), one Animelee at a time. Restart to play with it."
                                                         : "Play it from the launcher's Mods page.");
-            if (which == 1 && animelee_new && options.native_source) restart_now_button("official_animelee");
+            if (which >= 1 && animelee_new[which] && options.native_source)
+              restart_now_button(which == 1 ? "official_animelee" : "official_animelee_dbz");
           } else {
             ImGui::BeginDisabled(s.any_busy);
             if (ImGui::Button("Install")) {
@@ -6030,7 +6049,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (ImGui::SmallButton("Authors' page")) ShellExecuteA(nullptr, "open", card.page, nullptr, nullptr, SW_SHOWNORMAL);
 #endif
           ImGui::PopID();
-          if (which == 0) ImGui::Separator();
+          if (which < 2) ImGui::Separator();
         }
         ImGui::Unindent(8.0f);
       }
@@ -7251,8 +7270,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Less buffering reduces delay; too little can cause gaps. This controls the software buffer. Windows and the audio device add their own delay.");
     }
     if (kShowFasterSoundEffects) {
-      // Faster sound effects: Source Port only (the Static Recomp's sound code is the console's).
-      ImGui::BeginDisabled(host::game_image == nullptr);
+      // Faster sound effects: Source Port only (the Static Recomp's sound code is the console's). The
+      // launcher's settings window has no game behind it, so it stays settable there.
+      ImGui::BeginDisabled(!g_settings_standalone && host::game_image == nullptr);
       if (settings_toggle("Faster sound effects", &gx::RenderOptions::live_audio_early_keyon())) changed = true;
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -8801,6 +8821,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("The P1, P2, P3 and P4 markers over the fighters stay up for the whole match.\n"
                           "Display only, so it is yours alone online. Takes effect immediately.");
     }
+    {
+      // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=screenshake): bring the shake settings into view once.
+      static int scroll_frames = 0;
+      if (scroll_frames < 30) {
+        const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+        if (target && std::strcmp(target, "screenshake") == 0) ImGui::SetScrollHereY(0.3f);
+        ++scroll_frames;
+      }
+    }
     // Also a port code: zeroes the camera's shake offset before the game applies it. With 20XX TE on
     // it is the same setting as TE's "Disable screen rumble" (te_pairs_linked).
     if (settings_toggle("Disable screen shake", &gecko::option_no_screen_shake)) {
@@ -8811,9 +8840,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("The camera no longer shakes on hard hits, explosions and stage effects.\n"
                         "Camera only: fighters and hits are unchanged. Takes effect immediately.%s",
                         te_pair_hover(kTeNoScreenRumble));
-    // Strength in between: the native camera scales its quake offset (camera.c, host API 22).
+    // Strength in between: the native camera scales its quake offset (camera.c, host API 22). Greyed
+    // only over a running Static Recomp: the launcher's settings window has no game behind it, and a
+    // Source Port player sets it there too (it was greyed for everyone in that window).
     if (!gecko::option_no_screen_shake) {
-      ImGui::BeginDisabled(host::game_image == nullptr);
+      ImGui::BeginDisabled(!g_settings_standalone && host::game_image == nullptr);
       if (ImGui::SliderInt("Screen shake strength", &gecko::option_screen_shake_percent, 0, 200, "%d%%",
                            ImGuiSliderFlags_AlwaysClamp))
         changed = true;

@@ -6844,18 +6844,28 @@ bool build_look_packs(const std::string& patcher_folder, const std::string& reta
 namespace {
 struct OfficialFile { const char* page; const char* file; uint64_t size; const char* sha; };
 // Diet Melee's patcher (linked from diet.melee.tv/download): its Linux archive holds the same three
-// patches as the Windows one, in one file. Animelee Complete Edition, patch 1.0 (animelee.xyz).
+// patches as the Windows one, in one file. Animelee (animelee.xyz, its pack downloads): Complete
+// Edition patch 1.0, and its Dragon Ball Z edition 1.0, built on it. Each Animelee is one xdelta for
+// the clean 1.02 disc, applied as the authors' own patcher applies it.
 const OfficialFile kDietArchive = {"https://www.mediafire.com/file/v6v5yuqd9le7jav/DietMeleeLinuxPatcher.tar.gz/file",
                                    "DietMeleeLinuxPatcher.tar.gz", 196228815, "3f27e034447aa9cdf93b401d78dc5c8f802cb504d416370e55dfb600b2af0a31"};
-const OfficialFile kAnimeleeArchive = {"https://www.mediafire.com/file/2ztqob93nrug8yg/ANIMELEE_-_COMPLETE_EDITION_-_PATCH_1.0.zip/file",
-                                       "Animelee CE 1.0.zip", 31549722, "8ed24c56cbcb46a7030fd56560563b85836cd7f44fc547de23fa5aa7a1621a3c"};
-const LookDiff kAnimeleePatch = {"ANIMELEE - COMPLETE EDITION.xdelta", 13882404, "4a3fde4a2119ce57e7894de99fce640063052f051c2395168c492fcc606d5b76"};
-const LookPin kAnimeleeDisc = {"Animelee", "Animelee CE 1.0.iso", 1434723876, "77607e4624f6576f2da35584e71116809db44863ecd768c9d94c0e742da1a94d"};
+const OfficialFile kAnimeleeArchives[2] = {
+    {"https://www.mediafire.com/file/2ztqob93nrug8yg/ANIMELEE_-_COMPLETE_EDITION_-_PATCH_1.0.zip/file",
+     "Animelee CE 1.0.zip", 31549722, "8ed24c56cbcb46a7030fd56560563b85836cd7f44fc547de23fa5aa7a1621a3c"},
+    {"https://www.mediafire.com/file/pr8in3kum9kkvg4/ANIMELEE_-_CE_-_DRAGON_BALL_Z_v1.0.zip/file",
+     "Animelee DBZ 1.0.zip", 31109499, "8c5d7c091b3ba261dbd6cc9ebc46f8a6ce3d9ed4add25c3f5b35d9f26765b41c"}};
+const LookDiff kAnimeleePatches[2] = {
+    {"ANIMELEE - COMPLETE EDITION.xdelta", 13882404, "4a3fde4a2119ce57e7894de99fce640063052f051c2395168c492fcc606d5b76"},
+    {"ANIMELEE - CE - DRAGON BALL Z.xdelta", 13432818, "18a63bd7d46eb516ffd7415b26e46abc31df6ad0e8dbf2c07d6c979a76a54d78"}};
+const LookPin kAnimeleeDiscs[2] = {
+    {"Animelee", "Animelee CE 1.0.iso", 1434723876, "77607e4624f6576f2da35584e71116809db44863ecd768c9d94c0e742da1a94d"},
+    {"Animelee x DBZ", "Animelee DBZ 1.0.iso", 1437484160, "ecc4750c121c948bb7bff7818dcc037e12b20f39e42ffc76496d72ea8b648bc3"}};
+const char* official_name(int which) { return which == 0 ? "Diet Melee" : which == 1 ? "Animelee" : "Animelee x DBZ"; }
 
 std::mutex g_official_mutex;
 int g_official_busy = -1;                // the look being installed, -1 none
 float g_official_progress = 0;           // its download, 0 to 1
-std::string g_official_message[2];
+std::string g_official_message[3];
 
 void official_status(int which, const std::string& text, float progress = -1) {
   std::lock_guard<std::mutex> lock(g_official_mutex);
@@ -6868,8 +6878,9 @@ void official_progress(float progress) {
   g_official_progress = progress;
 }
 
-fs::path official_disc(const std::string& mods_folder) {
-  return fs::u8path(mods_folder) / L"Discs" / fs::u8path(kAnimeleeDisc.disc);
+// variant 0 Animelee CE, 1 Animelee x DBZ.
+fs::path official_disc(const std::string& mods_folder, int variant) {
+  return fs::u8path(mods_folder) / L"Discs" / fs::u8path(kAnimeleeDiscs[variant].disc);
 }
 
 #ifdef _WIN32
@@ -6956,7 +6967,7 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
   fs::remove_all(work, ec);
   fs::create_directories(work / L"files", ec);
   if (const std::string problem = retail_disc_problem(retail); !problem.empty()) { *message = problem; return false; }
-  const OfficialFile& f = which == 0 ? kDietArchive : kAnimeleeArchive;
+  const OfficialFile& f = which == 0 ? kDietArchive : kAnimeleeArchives[which - 1];
   const fs::path archive = work / fs::u8path(f.file);
   official_status(which, "Downloading from the authors' page...", 0);
   bool ok = fetch_official(f, archive, message);
@@ -6966,13 +6977,16 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
     ok = build_look_packs((work / L"files").u8string(), retail.u8string(), xdelta.u8string(), message);
     if (ok) *message = "Installed. Choose Look > Diet Classic, Diet 64 or Crystal, then restart.";
   } else if (ok) {
-    official_status(which, "Building Animelee from your disc...");
-    const fs::path patch = find_named(work / L"files", kAnimeleePatch.file);
-    const fs::path out = official_disc(mods_folder), part = out.wstring() + L".part";
+    const int variant = which - 1;
+    official_status(which, std::string("Building ") + official_name(which) + " from your disc...");
+    const fs::path patch = find_named(work / L"files", kAnimeleePatches[variant].file);
+    const fs::path out = official_disc(mods_folder, variant), part = out.wstring() + L".part";
     fs::create_directories(out.parent_path(), ec);
-    if (patch.empty() || !file_matches(patch, kAnimeleePatch.size, kAnimeleePatch.sha)) { *message = "The Animelee patch inside the download is missing or different."; ok = false; }
+    if (patch.empty() || !file_matches(patch, kAnimeleePatches[variant].size, kAnimeleePatches[variant].sha)) {
+      *message = std::string("The ") + official_name(which) + " patch inside the download is missing or different."; ok = false;
+    }
     else if (!run_xdelta(xdelta, retail, patch, part, message)) ok = false;
-    else if (!file_matches(part, kAnimeleeDisc.size, kAnimeleeDisc.sha)) { fs::remove(part, ec); *message = "The built disc did not come out as expected."; ok = false; }
+    else if (!file_matches(part, kAnimeleeDiscs[variant].size, kAnimeleeDiscs[variant].sha)) { fs::remove(part, ec); *message = "The built disc did not come out as expected."; ok = false; }
     else {
       fs::rename(part, out, ec);
       ok = !ec;
@@ -6987,13 +7001,14 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
 
 OfficialLookState official_look_state(int which, const std::string& mods_folder) {
   OfficialLookState s;
+  if (which < 0 || which > 2) return s;
   if (which == 0) {
     s.installed = true;
     for (const auto& pack : look_packs()) s.installed &= pack.built;
-  } else {
+  } else if (which <= 2) {
     std::error_code ec;
-    const fs::path disc = official_disc(mods_folder);
-    s.installed = fs::is_regular_file(disc, ec) && fs::file_size(disc, ec) == kAnimeleeDisc.size;
+    const fs::path disc = official_disc(mods_folder, which - 1);
+    s.installed = fs::is_regular_file(disc, ec) && fs::file_size(disc, ec) == kAnimeleeDiscs[which - 1].size;
     s.disc = disc.u8string();
   }
   std::lock_guard<std::mutex> lock(g_official_mutex);
@@ -7005,7 +7020,7 @@ OfficialLookState official_look_state(int which, const std::string& mods_folder)
 }
 
 void install_official_look(int which, const std::string& retail_disc, const std::string& xdelta_tool, const std::string& mods_folder) {
-  if (which < 0 || which > 1) return;
+  if (which < 0 || which > 2) return;
   {
     std::lock_guard<std::mutex> lock(g_official_mutex);
     if (g_official_busy >= 0) return;
@@ -7019,7 +7034,7 @@ void install_official_look(int which, const std::string& retail_disc, const std:
   std::thread([which, retail_disc, xdelta_tool, mods_folder] {
     std::string message;
     const bool ok = install_official(which, fs::u8path(retail_disc), fs::u8path(xdelta_tool), mods_folder, &message);
-    host::log("looks: %s install %s: %s", which == 0 ? "Diet Melee" : "Animelee", ok ? "done" : "failed", message.c_str());
+    host::log("looks: %s install %s: %s", official_name(which), ok ? "done" : "failed", message.c_str());
     official_status(which, message, ok ? 1.0f : -1.0f);
     std::lock_guard<std::mutex> lock(g_official_mutex);
     g_official_busy = -1;
