@@ -2252,6 +2252,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "lowspec_look") lowspec_look = value == "1";
       else if (key == "lightweight") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kLightweightLevels) options.lightweight = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
+      else if (key == "clean_replays") options.clean_replays = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
       else if (key == "labskipscene") options.lab_skip_scene = value != "0";
       // Settings saved before the overlay could show several ports name a single port number.
@@ -2502,6 +2503,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
   RenderOptions::live_online_frame_protection().store(options.online_frame_protection, std::memory_order_relaxed);
+  RenderOptions::live_clean_replays().store(options.clean_replays, std::memory_order_relaxed);
   RenderOptions::live_stadium_frozen() = options.stadium_frozen;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
@@ -4244,6 +4246,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nplayernicknames " << (options.show_player_nicknames ? 1 : 0)
        << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0) << "\npracticestyle " << options.practice_style << "\npracticeopens " << options.practice_opens
        << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
+       << "\nclean_replays " << (options.clean_replays ? 1 : 0)
        << "\nlabview " << options.lab_view << "\nlabskipscene " << options.lab_skip_scene
        << "\ninputoverlayhideborder " << options.input_overlay_hide_border
        << "\ninputoverlayvalues " << options.input_overlay_values
@@ -4980,7 +4983,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       options.cpu_tech = field(0, 7, 5);
       options.cpu_getup = field(3, 7, 5);
       options.cpu_di = field(6, 3, 3);
-      options.cpu_sdi = field(8, 7, 6);
+      options.cpu_sdi = RenderOptions::cpu_sdi_game_mode(field(8, 7, 6));   // the game's mode back to the row
       options.cpu_no_taunt = (word & 0x800u) != 0;
       options.cpu_lcancel = (word & 0x1000u) != 0;
       options.cpu_no_rapid_jab = (word & 0x2000u) != 0;
@@ -5051,13 +5054,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // 20XX TE's Input display is the same switch as the Controller overlay (te_pairs_linked), and the
   // overlay already shows the controllers: with it on, TE's own display is not drawn as well.
   const bool te_input_row = training_overlay::input_display() && !options.input_overlay;
-  training_overlay::draw(options.native_source &&
+  const bool clean_replay = gx::clean_replay_active();   // "Clean replays": nothing of ours over a replay
+  training_overlay::draw(!clean_replay && options.native_source &&
                              ((RenderOptions::live_te_options() & 0x48000u) == 0x48000u || te_input_row) &&
                              !state.fill_window,
                          ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
-  net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  if (!clean_replay) net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   replay_bar::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y, state.open || state.menu_open || state.practice_open || state.fill_window);
-  screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  if (!clean_replay) screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && !phob_native_open() && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -9569,6 +9573,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
       }
       if (state.active_tab == 4) {
+    if (settings_toggle("Clean replays", &options.clean_replays)) {
+      RenderOptions::live_clean_replays().store(options.clean_replays, std::memory_order_relaxed);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("While a replay plays, nothing is drawn over the game: no controller or input display,\n"
+                        "frame rate, graphs, notices, hitboxes or combo counter, and the replay bar starts hidden\n"
+                        "(H shows it; every key still works). For tournament VODs and clips.");
     changed |= settings_toggle("Show player nicknames above fighters", &options.show_player_nicknames);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows each online player's name at Melee's player-tag anchor. Local display only.");
     changed |= settings_toggle("Show the \"Settings: F1\" reminder", &options.settings_hint);
@@ -9990,7 +10002,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   const bool practice_was_open = state.practice_open;
   if (!state.fill_window && !state.open && !state.menu_open)
     draw_native_practice(state, options, practice, pad, have_pad);
-  if (!state.fill_window && !state.open && !state.menu_open && replay_control::active())
+  if (!state.fill_window && !state.open && !state.menu_open && replay_control::active() && !gx::clean_replay_active())
     draw_replay_practice(options, pad, have_pad);
   if (practice_was_open && !state.practice_open) state.practice_release_capture = true;
   // Practice menu changes (the CPU, your setups, skipped codes, the hint count) are saved as they happen.
@@ -10021,7 +10033,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // Hidden on request; F1 still opens the panel. This must not return early: ImGui::Render() is
     // at the end of this function, and skipping it left draw() handing the renderer draw data that
     // was never built for this frame, which crashed on the next F1.
-    if (options.settings_hint) {
+    if (options.settings_hint && !gx::clean_replay_active()) {
       const OverlayBounds bounds = overlay_bounds();
       ImGui::SetNextWindowPos(ImVec2(bounds.right - 12, bounds.top + 12), ImGuiCond_Always, ImVec2(1, 0));
       ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
@@ -10034,7 +10046,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // Test hook for screenshots: MELEE_TEST_OVERLAY=1 shows the controller overlay with its values.
   static const bool test_overlay = std::getenv("MELEE_TEST_OVERLAY") != nullptr;
   if (test_overlay) { options.input_overlay = true; options.input_overlay_values = true; if (const char* k = std::getenv("MELEE_TEST_KNOB")) options.input_overlay_stick = std::atoi(k); }
-  if (options.input_overlay) {
+  if (options.input_overlay && !gx::clean_replay_active()) {
     const int mask = options.input_overlay_ports ? options.input_overlay_ports : 1;
     const bool lone = (mask & (mask - 1)) == 0;   // exactly one port selected
     int row = 0;
@@ -10058,9 +10070,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // violation on the next present. 0.3.2 shipped exactly that as an early return here and crashed
   // the launcher's settings window. The warning was already in this file, twenty lines up.
   if (!state.fill_window) {
-    draw_lcancel_overlays();
-    draw_discord_invite_overlay();
-    draw_skin_online_notice();
+    const bool clean_replay = gx::clean_replay_active();
+    if (!clean_replay) {
+      draw_lcancel_overlays();
+      draw_discord_invite_overlay();
+      draw_skin_online_notice();
+    }
     // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
     // Reflex flash indicator: a white square on the frame A goes down on port 1, and the matching
@@ -10095,7 +10110,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     const bool latency_line = options.reflex_stats && streamline::reflex_latency_ms() > 0.0f;
     float vram_used = 0, vram_total = 0;
     const bool vram_line = options.show_vram && vram_usage(&vram_used, &vram_total);
-    if (options.show_fps || ping_line || latency_line || vram_line) {
+    if ((options.show_fps || ping_line || latency_line || vram_line) && !clean_replay) {
       char lines[4][40];
       int n = 0;
       if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
@@ -10117,7 +10132,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         fg->AddText(p, IM_COL32(0, 255, 255, 255), lines[i]);
       }
     }
-    if (options.performance_overlay) {
+    if (options.performance_overlay && !clean_replay) {
       // Draggable, and resizable by its bottom-right corner (drag it smaller if it is in the way);
       // NoTitleBar keeps it out of the way otherwise. Opens under the FPS and ping lines.
       const OverlayBounds bounds = overlay_bounds();

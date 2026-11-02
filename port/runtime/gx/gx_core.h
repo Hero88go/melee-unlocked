@@ -306,7 +306,11 @@ template <class Options> uint32_t arcade_settings_bits(const Options& o) {
          (o.arcade_combo_counter ? kArcadeComboCounter : 0u) | (o.arcade_backdrop == 2 ? kArcadeGrid : 0u);
 }
 void set_arcade_display(ArcadeSource source, uint32_t bits);
+// Without the hitboxes and the combo counter while clean_replay_active(): the look's own picture
+// (its grid, its 2D camera) stays.
 uint32_t arcade_display();
+// "Clean replays" (Overlays) is on and a replay is playing: nothing of ours is drawn over the game.
+bool clean_replay_active();
 // The native game's players (MuHostApi.hud_player), each drawn frame: the Static Recomp reads the
 // same HUD objects from guest RAM (capture_match_hud). Simulation thread.
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,

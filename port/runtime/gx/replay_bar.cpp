@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "replay_bar.h"
 #include "replay_control.h"
+#include "render_options.h"
 #include "host.h"
 #include <imgui.h>
 #include <windows.h>
@@ -58,13 +59,15 @@ void draw(float width, float height, bool menu_open) {
     if (front && GetWindowThreadProcessId(front, &pid) && pid == GetCurrentProcessId())
       h_down = (GetAsyncKeyState('H') & 0x8000) != 0;
   }
+  // "Clean replays" (Overlays) starts it hidden: H then shows it, and H again hides it.
+  const bool clean = gx::RenderOptions::live_clean_replays().load(std::memory_order_relaxed);
   if (h_down && !h_was_down) {
     hidden = !hidden;
-    hidden_note = hidden ? now : 0.0;
-    if (!hidden) mouse_time = now;   // show it at once
+    hidden_note = hidden != clean ? now : 0.0;
+    if (hidden == clean) mouse_time = now;   // show it at once
   }
   h_was_down = h_down || menu_open;
-  if (hidden) {
+  if (hidden != clean) {
     g_cursor.store(false, std::memory_order_relaxed);
     if (hidden_note > 0.0 && now - hidden_note < 2.0) {
       // Said once, briefly, so the key that brings it back is not a secret.

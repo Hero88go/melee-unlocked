@@ -992,7 +992,12 @@ void set_arcade_display(ArcadeSource source, uint32_t bits) {
 uint32_t arcade_display() {
   uint32_t bits = 0;
   for (const auto& source : g_arcade_display) bits |= source.load(std::memory_order_relaxed);
+  if (clean_replay_active()) bits &= ~(kArcadeHitboxes | kArcadeProjectileHitboxes | kArcadeHitboxesBehind | kArcadeComboCounter);
   return bits;
+}
+
+bool clean_replay_active() {
+  return RenderOptions::live_clean_replays().load(std::memory_order_relaxed) && replay_control::active();
 }
 
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
