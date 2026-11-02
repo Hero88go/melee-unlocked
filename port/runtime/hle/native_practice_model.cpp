@@ -104,6 +104,31 @@ void Lifecycle::reset() {
   error_.clear();
 }
 
+// A Teams lobby code is whatever the players agree on (Slippi's Teams screen takes any letters
+// and numbers); it is not a player's connect code, so no NAME#123 shape is asked for.
+bool normalize_teams_code(const std::string& input, std::string* normalized, std::string* error) {
+  std::string out;
+  for (unsigned char ch : input) {
+    if (std::isspace(ch)) continue;
+    if (ch >= 'a' && ch <= 'z') ch = (unsigned char)std::toupper(ch);
+    if (!(std::isalnum(ch) || ch == '#')) {
+      if (error) *error = "Use letters and numbers";
+      return false;
+    }
+    out.push_back((char)ch);
+  }
+  if (out.empty()) {
+    if (error) *error = "Enter the Teams code";
+    return false;
+  }
+  if (out.size() > 18) {
+    if (error) *error = "Teams codes can be at most 18 characters";
+    return false;
+  }
+  if (normalized) *normalized = out;
+  return true;
+}
+
 bool normalize_direct_code(const std::string& input, std::string* normalized, std::string* error) {
   std::string out;
   out.reserve(input.size());

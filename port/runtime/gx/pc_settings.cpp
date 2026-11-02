@@ -3941,7 +3941,8 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     if (r.start_direct || r.start_teams) {
       std::string code, error;
       if (!practice.can_start) practice_menu::show_error("Search from Training or an event match.");
-      else if (slippi::native_practice::normalize_direct_code(r.direct_code, &code, &error)) {
+      else if (r.start_teams ? slippi::native_practice::normalize_teams_code(r.direct_code, &code, &error)
+                             : slippi::native_practice::normalize_direct_code(r.direct_code, &code, &error)) {
         if (r.start_teams) slippi::native_practice::submit_start_teams(code);
         else slippi::native_practice::submit_start_direct(code);
         close_menu();

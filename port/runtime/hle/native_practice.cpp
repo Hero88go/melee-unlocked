@@ -466,7 +466,7 @@ void process_command(Command command) {
     case CommandKind::StartTeams: {
       if (g_lifecycle.phase() != Phase::Idle) return;
       std::string code, error;
-      if (!normalize_direct_code(command.text, &code, &error)) { fail(error, false); return; }
+      if (!normalize_teams_code(command.text, &code, &error)) { fail(error, false); return; }
       start_search(MatchMode::Teams, code);
       break;
     }
@@ -586,7 +586,9 @@ void enter_training_after_session(MatchMode mode, int local_index = -1, int test
   g_offer_code.clear();
   if (g_offer_mode == MatchMode::Direct || g_offer_mode == MatchMode::Teams) {
     std::string error;
-    if (!normalize_direct_code(slippi::online::direct_code_for_practice(), &g_offer_code, &error)) g_offer_mode = MatchMode::None;
+    const std::string last = slippi::online::direct_code_for_practice();
+    if (!(g_offer_mode == MatchMode::Teams ? normalize_teams_code(last, &g_offer_code, &error)
+                                           : normalize_direct_code(last, &g_offer_code, &error))) g_offer_mode = MatchMode::None;
   }
   g_offer_reason.clear();
   g_offer_shown = false;
@@ -720,7 +722,8 @@ void tick() {
     std::string lr_code;
     if (lr_ticks == 20 && (lr_mode == MatchMode::Direct || lr_mode == MatchMode::Teams)) {
       std::string error;
-      if (!normalize_direct_code(slippi::online::direct_code_for_practice(), &lr_code, &error)) {
+      const std::string last = slippi::online::direct_code_for_practice();
+      if (!(lr_mode == MatchMode::Teams ? normalize_teams_code(last, &lr_code, &error) : normalize_direct_code(last, &lr_code, &error))) {
         host::log("native practice: L+R on the Direct character select with no code to search for");
         lr_ticks = 21;
       }
@@ -934,7 +937,30 @@ void apply_pads(host::PadState* pads) {
     const uint8_t major = current_major(), minor = current_minor();
     ++g_enter_ticks;
     if (major == kTrainingMajor && minor < 2) g_enter_seen_select = true;
-    if (major == kTrainingMajor && minor >= 2 && g_enter_seen_select) {
+    // The player's own input on Training's menus hands them back at once: the automatic picks below
+    // hold every controller neutral, and when they did not take, nothing answered for 15 seconds.
+    // Only a change from what was held when the menus came up counts (an A still held is no press).
+    static uint16_t held_at_entry[4];
+    static bool entry_seen = false;
+    bool touched = false;
+    if (major == kTrainingMajor && minor < 2) {
+      for (int i = 0; i < 4; ++i) {
+        const host::PadState& p = pads[i];
+        if (p.err != 0) continue;
+        if (!entry_seen) held_at_entry[i] = p.button;
+        const uint16_t fresh = (uint16_t)(p.button & ~held_at_entry[i]);
+        held_at_entry[i] &= p.button;   // a released button counts again when pressed
+        if (entry_seen && (fresh || std::abs((int)p.stick_x) > 60 || std::abs((int)p.stick_y) > 60)) touched = true;
+      }
+      entry_seen = true;
+    } else {
+      entry_seen = false;
+    }
+    if (touched && g_enter_ticks > 20) {
+      g_enter_training = false;
+      entry_seen = false;
+      host::log("native practice: the player took over Training's menus (scene %02X:%02X)", major, minor);
+    } else if (major == kTrainingMajor && minor >= 2 && g_enter_seen_select) {
       g_enter_training = false;
     } else if (g_enter_ticks > 60 * 15 || slippi::online::is_online_match() ||
                (major != kTrainingMajor && major != kOnlineMajor && g_enter_ticks > 180)) {

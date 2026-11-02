@@ -317,6 +317,7 @@ inline void shutdown() {}
 inline bool cosmetic_profile_locked() { return false; }
 inline const char* match_mode_name(MatchMode) { return ""; }
 inline bool normalize_direct_code(const std::string&, std::string*, std::string*) { return false; }
+inline bool normalize_teams_code(const std::string&, std::string*, std::string*) { return false; }
 inline std::string format_search_duration(uint32_t) { return {}; }
 inline bool phase_forces_input_capture(Phase) { return false; }
 inline bool phase_shows_return_overlay(Phase, bool) { return false; }
