@@ -19,6 +19,9 @@ void set_disc_reader(DiscReader reader);
 using MusicPackReader = bool (*)(uint32_t offset, std::filesystem::path* file);
 void set_music_pack_reader(MusicPackReader reader);
 bool resolve_music_pack_path(const std::string& disc_path, std::filesystem::path* file);
+// The stage's main and alternate songs (the game's song ids), as it picks its music: an alternate
+// song with no music pack of its own then plays from the main song's.
+void note_stage_songs(int main_song, int alternate_song);
 void open_music_packs_folder();
 void set_music_packs_enabled(bool enabled);
 bool music_packs_enabled();

@@ -130684,7 +130684,7 @@ index e5ff149f4..6d9ac4ad2 100644
  
  bool grOnett_801E5768(Vec3* a, int b, HSD_JObj* jobj)
 diff --git a/src/melee/gr/ground.c b/src/melee/gr/ground.c
-index ad559ea8f..d5c09a361 100644
+index ad559ea8f..bc97a04c0 100644
 --- a/src/melee/gr/ground.c
 +++ b/src/melee/gr/ground.c
 @@ -4,6 +4,10 @@
@@ -131247,7 +131247,7 @@ index ad559ea8f..d5c09a361 100644
                      {
                          arg1 |= 2;
                      } else {
-@@ -1468,6 +1627,11 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
+@@ -1468,6 +1627,26 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
                      stage_info.unk8C.b0 = false;
                  }
              }
@@ -131255,11 +131255,26 @@ index ad559ea8f..d5c09a361 100644
 +            OSReport("[bgm] stage %d flags %x rule %d chance %d main %d alt %d -> %d\n", (int) stkind,
 +                     (unsigned) arg1, (int) phi_r30->x14, (int) phi_r30->x16, (int) phi_r30->x4,
 +                     (int) phi_r30->x8, (int) bgm);
++            /* The stage's main and alternate songs, so a music pack made for the stage covers its
++             * alternate song too (the host's jukebox; display only). */
++            {
++                int mu_online_abi_command(unsigned int command, const unsigned char* payload, unsigned int size,
++                                          unsigned char* response, unsigned int capacity, unsigned int* response_size);
++                static unsigned char response[4096];
++                const int songs[4] = { (int) phi_r30->x4, (int) phi_r30->x8, (int) phi_r30->xC, (int) phi_r30->x10 };
++                unsigned char payload[16];
++                unsigned int got = 0;
++                int k;
++                for (k = 0; k < 16; k++) {
++                    payload[k] = (unsigned char) ((unsigned int) songs[k / 4] >> (24 - 8 * (k % 4)));
++                }
++                mu_online_abi_command(0xEB, payload, sizeof payload, response, sizeof response, &got);
++            }
 +#endif
              break;
          }
      }
-@@ -1493,7 +1657,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
+@@ -1493,7 +1672,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
      OSReport("             check StageParam.csv or StageItem.csv, stdata.c\n");
      {
          ssize_t i;
@@ -131268,7 +131283,7 @@ index ad559ea8f..d5c09a361 100644
          for (i = 0; i < count; i++, p++) {
              OSReport(" stageid=%d\n", p->stkind);
          }
-@@ -1504,7 +1668,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
+@@ -1504,7 +1683,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
  
  void Ground_801C28CC(s32* arg0, StKind stkind)
  {
@@ -131277,7 +131292,7 @@ index ad559ea8f..d5c09a361 100644
      ssize_t count = stage_info.param->stage_param_count;
      ssize_t i;
  
-@@ -1512,14 +1676,33 @@ void Ground_801C28CC(s32* arg0, StKind stkind)
+@@ -1512,14 +1691,33 @@ void Ground_801C28CC(s32* arg0, StKind stkind)
          if (param->stkind == stkind) {
              s32 j;
              for (j = 0; 35 > j; j++) {
@@ -131311,7 +131326,7 @@ index ad559ea8f..d5c09a361 100644
      panicMissingStageParam(stkind, count);
  }
  
-@@ -1530,7 +1713,7 @@ s32* Ground_801C2AD8(void)
+@@ -1530,7 +1728,7 @@ s32* Ground_801C2AD8(void)
  
  float Ground_801C2AE8(StKind stkind)
  {
@@ -131320,7 +131335,7 @@ index ad559ea8f..d5c09a361 100644
      int i;
      for (i = 0; i < stage_info.param->stage_param_count; i++) {
          if (phi_r5->stkind == stkind) {
-@@ -1538,6 +1721,15 @@ float Ground_801C2AE8(StKind stkind)
+@@ -1538,6 +1736,15 @@ float Ground_801C2AE8(StKind stkind)
          }
          phi_r5 += 1;
      }
@@ -131336,7 +131351,7 @@ index ad559ea8f..d5c09a361 100644
      OSReport("%s:%d: not found stage param in DAT\n", __FILE__, 0x927);
      while (1) {
      }
-@@ -1639,7 +1831,7 @@ bool Ground_801C2D24(enum_t arg0, Vec3* arg1)
+@@ -1639,7 +1846,7 @@ bool Ground_801C2D24(enum_t arg0, Vec3* arg1)
      return false;
  }
  
@@ -131345,7 +131360,7 @@ index ad559ea8f..d5c09a361 100644
  {
      u8 _[4];
      bool result = false;
-@@ -1648,8 +1840,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
+@@ -1648,8 +1855,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
      int i;
      int max;
      if (temp_r3 != NULL) {
@@ -131356,7 +131371,7 @@ index ad559ea8f..d5c09a361 100644
          for (i = 0; i < max; i++, cur++) {
              mpLib_800552B0(cur->x, jobj, cur->z);
              mpLib_80055E9C(cur->x);
-@@ -1657,8 +1849,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
+@@ -1657,8 +1864,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
              result = true;
          }
      }
@@ -131367,7 +131382,7 @@ index ad559ea8f..d5c09a361 100644
      for (i = 0; i < max; i++, cur++) {
          if (cur->y == arg1) {
              mpLib_800552B0(cur->x, jobj, cur->z);
-@@ -1673,7 +1865,7 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
+@@ -1673,7 +1880,7 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
  
  static s16 Ground_804D6954;
  
@@ -131376,7 +131391,7 @@ index ad559ea8f..d5c09a361 100644
  {
      StageData* stagedata;
      UnkArchiveStruct* archive;
-@@ -1696,7 +1888,7 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
+@@ -1696,7 +1903,7 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
  
          temp_r3 = mpGetGroundCollJoint();
          Ground_804D6954++;
@@ -131385,7 +131400,7 @@ index ad559ea8f..d5c09a361 100644
          count = stagedata->joint_count;
          vec = stagedata->joints;
  
-@@ -1712,8 +1904,8 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
+@@ -1712,8 +1919,8 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
          if (archive != NULL) {
              int temp_r30;
  
@@ -131396,7 +131411,7 @@ index ad559ea8f..d5c09a361 100644
              count = dat->unk24;
  
              for (i = 0; i < count; i++, vec++) {
-@@ -1742,8 +1934,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
+@@ -1742,8 +1949,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
          /// @todo @c cur cannot be swapped below @c max, hinting at a missing
          /// @c inline function.
          GrJoint* cur;
@@ -131407,7 +131422,7 @@ index ad559ea8f..d5c09a361 100644
          {
              int i;
              for (i = 0; i < max; i++, cur++) {
-@@ -1755,8 +1947,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
+@@ -1755,8 +1962,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
              {
                  UnkArchiveStruct* tmp = grDatFiles_801C6330(gobj_id);
                  if (tmp != NULL) {
@@ -131418,7 +131433,7 @@ index ad559ea8f..d5c09a361 100644
                      for (i = 0; i < max; i++, cur++) {
                          arg1(cur->x);
                          result = true;
-@@ -1802,8 +1994,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
+@@ -1802,8 +2009,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
      int i;
      mpGetGroundCollJoint();
      /// @todo Might be an @c inline starting here.
@@ -131429,7 +131444,7 @@ index ad559ea8f..d5c09a361 100644
      result = -1;
      for (i = 0; i < max; cur++, i++) {
          if (cur->y == arg0 && cur->z == arg1) {
-@@ -1814,8 +2006,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
+@@ -1814,8 +2021,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
          UnkArchiveStruct* tmp;
          tmp = grDatFiles_801C6330(arg0);
          if (tmp != NULL) {
@@ -131440,7 +131455,7 @@ index ad559ea8f..d5c09a361 100644
              for (i = 0; i < max; cur++, i++) {
                  if (cur->z == arg1) {
                      result = cur->x;
-@@ -1837,8 +2029,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
+@@ -1837,8 +2044,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
      int i;
      mpGetGroundCollJoint();
      /// @todo Might be an @c inline starting here.
@@ -131451,7 +131466,7 @@ index ad559ea8f..d5c09a361 100644
      result = -1;
      for (i = 0; i < max; cur++, i++) {
          if (cur->y == arg0 && cur->x == arg1) {
-@@ -1849,8 +2041,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
+@@ -1849,8 +2056,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
          UnkArchiveStruct* tmp;
          tmp = grDatFiles_801C6330(arg0);
          if (tmp != NULL) {
@@ -131462,7 +131477,7 @@ index ad559ea8f..d5c09a361 100644
              for (i = 0; i < max; cur++, i++) {
                  if (cur->x == arg1) {
                      result = cur->z;
-@@ -1906,12 +2098,12 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1906,12 +2113,12 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
      int entry_count;
      int i;
      struct {
@@ -131479,7 +131494,7 @@ index ad559ea8f..d5c09a361 100644
      int prev_index;
      int target;
      int j;
-@@ -1933,10 +2125,10 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1933,10 +2140,10 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
          return;
      }
      i = 0;
@@ -131492,7 +131507,7 @@ index ad559ea8f..d5c09a361 100644
                  break;
              }
          } else {
-@@ -1946,9 +2138,9 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1946,9 +2153,9 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
          i++;
      }
      count = entry->pair_count;
@@ -131504,7 +131519,7 @@ index ad559ea8f..d5c09a361 100644
          if (prev_index > target || prev_index == -1) {
              jobj = root;
              i = 0;
-@@ -1981,7 +2173,7 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1981,7 +2188,7 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
              i++;
          }
          prev_index = i;
@@ -131513,7 +131528,7 @@ index ad559ea8f..d5c09a361 100644
          pair += 2;
      }
  }
-@@ -1993,9 +2185,9 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
+@@ -1993,9 +2200,9 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
      UnkArchiveStruct* archive;
      int entry_count;
      struct {
@@ -131525,7 +131540,7 @@ index ad559ea8f..d5c09a361 100644
      int i;
      u32 unused[4];
  
-@@ -2012,21 +2204,19 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
+@@ -2012,21 +2219,19 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
          return;
      }
      i = 0;
@@ -131557,7 +131572,7 @@ index ad559ea8f..d5c09a361 100644
      for (i = 0; i < 0x57 * 3; i++) {
          jobj = stage_info.x280[i];
          (void) jobj;
-@@ -2511,11 +2701,11 @@ bool Ground_801C43C4(void* arg0)
+@@ -2511,11 +2716,11 @@ bool Ground_801C43C4(void* arg0)
      struct GroundShadowEntry* phi_r4;
      int i;
      tmp = grDatFiles_GetArchive()->unk4;
@@ -131571,7 +131586,7 @@ index ad559ea8f..d5c09a361 100644
                  if (phi_r4->flag) {
                      return true;
                  } else {
-@@ -2582,7 +2772,7 @@ static void Ground_801C461C(HSD_GObj* gobj)
+@@ -2582,7 +2787,7 @@ static void Ground_801C461C(HSD_GObj* gobj)
      Ground_801C445C(gobj->hsd_obj);
  }
  
@@ -131580,7 +131595,7 @@ index ad559ea8f..d5c09a361 100644
  {
      HSD_LObj_803668EC(gobj->hsd_obj);
      HSD_LObjSetupInit(HSD_CObjGetCurrent());
-@@ -2595,12 +2785,12 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
+@@ -2595,12 +2800,12 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
      NULL,
  };
  
@@ -131597,7 +131612,7 @@ index ad559ea8f..d5c09a361 100644
  
  /* 3E0680 */ static HSD_LightDesc Ground_803E0680 = {
      NULL,
-@@ -2608,9 +2798,9 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
+@@ -2608,9 +2813,9 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
      (1 << 0) | (1 << 2) | (1 << 3),
      0,
      { 0xFF, 0xFF, 0xFF, 0xFF },
@@ -131609,7 +131624,7 @@ index ad559ea8f..d5c09a361 100644
  };
  
  /* 3E069C */ static HSD_LightAnim Ground_803E069C[] = { 0 };
-@@ -2619,27 +2809,27 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
+@@ -2619,27 +2824,27 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
  };
  
  /* 4D450C */ static LightList Ground_804D450C = {
@@ -131649,7 +131664,7 @@ index ad559ea8f..d5c09a361 100644
          void* callback;
      } r28_carrier;
      Vec3 sp10; /* compiler-managed */
-@@ -2647,25 +2837,25 @@ void Ground_801C466C(void)
+@@ -2647,25 +2852,25 @@ void Ground_801C466C(void)
      int count;
      HSD_GObj* temp_r3;
      HSD_LObj* temp_r3_2;
@@ -131680,7 +131695,7 @@ index ad559ea8f..d5c09a361 100644
              goto light_selected;
          }
          callbacks++;
-@@ -2720,10 +2910,10 @@ light_selected:
+@@ -2720,10 +2925,10 @@ light_selected:
                      AOBJ_ARG_AF, 1.0);
      var_r27_2 = r28_carrier.lights;
      var_r26_2 = temp_r3_2;
@@ -131693,7 +131708,7 @@ index ad559ea8f..d5c09a361 100644
                  if (var_r26_2->aobj != NULL) {
                      HSD_AObjSetFlags(var_r26_2->aobj, AOBJ_LOOP);
                  }
-@@ -2763,7 +2953,7 @@ HSD_GObj* Ground_801C498C(void)
+@@ -2763,7 +2968,7 @@ HSD_GObj* Ground_801C498C(void)
      return gobj;
  }
  
@@ -131702,7 +131717,7 @@ index ad559ea8f..d5c09a361 100644
  {
      UnkArchiveStruct* archive = grDatFiles_GetArchive();
      if (stage_info.map_plit != NULL) {
-@@ -2822,7 +3012,7 @@ void Ground_801C4A08(HSD_GObj* gobj)
+@@ -2822,7 +3027,7 @@ void Ground_801C4A08(HSD_GObj* gobj)
          archive = grDatFiles_801C6330(gp->map_id);
          if (archive != NULL) {
              Ground_801C36F4(gp->map_id, jobj,
@@ -131711,7 +131726,7 @@ index ad559ea8f..d5c09a361 100644
          }
      }
      HSD_GObjFree(gobj);
-@@ -3041,7 +3231,7 @@ void Ground_801C4FAC(HSD_CObj* cobj)
+@@ -3041,7 +3246,7 @@ void Ground_801C4FAC(HSD_CObj* cobj)
                  dz = sp2C.z;
                  dz -= sp20.z;
                  dx2 = dx * dx;
@@ -131720,7 +131735,7 @@ index ad559ea8f..d5c09a361 100644
                  dz2 = dz * dz;
                  phi_f30 = sqrtf_store(dx2 + dy2 + dz2, &sqrt_tmp[0]);
                  if (phi_f30 < 10) {
-@@ -3227,30 +3417,24 @@ s32 Ground_801C5840(void)
+@@ -3227,30 +3432,24 @@ s32 Ground_801C5840(void)
      return stage_info.x6E4[i];
  }
  
@@ -131760,7 +131775,7 @@ index ad559ea8f..d5c09a361 100644
  
  Item_GObj* Ground_801C58E0(s32 arg0, s32 arg1)
  {
-@@ -3263,23 +3447,13 @@ Item_GObj* Ground_801C58E0(s32 arg0, s32 arg1)
+@@ -3263,23 +3462,13 @@ Item_GObj* Ground_801C58E0(s32 arg0, s32 arg1)
      return result;
  }
  
@@ -131786,7 +131801,7 @@ index ad559ea8f..d5c09a361 100644
      int i, j, out_idx;
      UnkArchiveStruct* archive;
      const size_t vals_count = 32;
-@@ -3290,11 +3464,11 @@ int Ground_801C5940(void)
+@@ -3290,11 +3479,11 @@ int Ground_801C5940(void)
      if (archive->unk4->unk4 == 0) {
          return -1;
      }
@@ -131800,7 +131815,7 @@ index ad559ea8f..d5c09a361 100644
              if (val >= 220 && val < 252 && (unsigned) out_idx < vals_count) {
                  vals[out_idx] = val;
                  out_idx++;
-@@ -3341,6 +3515,13 @@ bool Ground_801C5ABC(void)
+@@ -3341,6 +3530,13 @@ bool Ground_801C5ABC(void)
  
  u32 Ground_801C5AD0(s32 i)
  {
@@ -131814,7 +131829,7 @@ index ad559ea8f..d5c09a361 100644
      return stage_datas[i]->flags2;
  }
  
-@@ -3360,3 +3541,19 @@ void Ground_801C5AEC(Vec3* v, Vec3* arg1, Vec3* arg2, Vec3* arg3)
+@@ -3360,3 +3556,19 @@ void Ground_801C5AEC(Vec3* v, Vec3* arg1, Vec3* arg2, Vec3* arg3)
  
  /// @todo Is this used by base pointer anywhere? Not stripped by mwcc.
  static int unused_ints[] = { 1, 1, 0, 0, 0, 180, 0, 0, 0 };

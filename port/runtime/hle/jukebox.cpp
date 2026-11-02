@@ -323,6 +323,26 @@ std::shared_ptr<Song> decode_custom_hps(const std::filesystem::path& path) {
   if (!in.read((char*)file.data(), (std::streamsize)file.size())) return nullptr;
   return decode_hps(file);
 }
+// The game's song files by id (lbaudio_ax.c hps_files), for the stage songs the game reports.
+const char* const kSongFiles[] = {
+    "1p_qk", "akaneia", "baloon", "bigblue", "castle", "continue", "corneria", "docmari", "ending", "famidemo",
+    "ff_1p01", "ff_1p02", "ff_bad", "ff_dk", "ff_emb", "ff_flat", "ff_fox", "ff_fzero", "ff_good", "ff_ice",
+    "ff_kirby", "ff_link", "ff_mario", "ff_nes", "ff_poke", "ff_samus", "ff_step1", "ff_step2", "ff_step3", "ff_yoshi",
+    "flatzone", "fourside", "gameover", "garden", "greatbay", "greens", "howto", "howto_s", "hyaku", "hyaku2",
+    "icemt", "inis1_01", "inis1_02", "inis2_01", "inis2_02", "intro_es", "intro_nm", "item_h", "item_s", "izumi",
+    "kongo", "kraid", "menu01", "menu02", "menu3", "mrider", "mutecity", "old_dk", "old_kb", "old_ys",
+    "onetto", "onetto2", "opening", "pokesta", "pstadium", "pura", "rcruise", "s_info1", "s_info2", "s_info3",
+    "s_new1", "s_new2", "s_newcom", "s_select", "saria", "shrine", "siren", "smari3", "sp_end", "sp_giga",
+    "sp_metal", "sp_zako", "swm_15min", "target", "venom", "vl_battle", "vl_castle", "vl_corneria", "vl_cosmos", "vl_figure1",
+    "vl_figure2", "vl_fzero", "vl_last_v2", "vs_hyou1", "vs_hyou2", "yorster", "ystory", "zebes", "testnz",
+};
+// A stage's alternate song -> its main song (lowercase stems), learned as each stage picks its music.
+std::mutex g_alternates_mutex;
+std::vector<std::pair<std::string, std::string>> g_alternates;
+std::string lower(std::string v) {
+  std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+  return v;
+}
 }  // namespace
 
 bool resolve_music_pack_path(const std::string& disc_path, std::filesystem::path* out) {
@@ -384,7 +404,16 @@ bool resolve_music_pack_path(const std::string& disc_path, std::filesystem::path
         _stricmp(ext.c_str(), ".flac") == 0 || _stricmp(ext.c_str(), ".ogg") == 0)
       tracks.push_back(it->path());
   }
-  if (tracks.empty()) return false;
+  if (tracks.empty()) {
+    // A stage's alternate song with no music of its own plays from its main song's music, so a
+    // folder made for a stage covers the whole stage.
+    std::string main;
+    { const std::string stem = lower(disc.stem().u8string());
+      std::lock_guard<std::mutex> lock(g_alternates_mutex);
+      for (const auto& a : g_alternates) if (a.first == stem) { main = a.second; break; } }
+    if (main.empty()) return false;
+    return resolve_music_pack_path((disc.parent_path() / std::filesystem::u8path(main + ".hps")).generic_u8string(), out);
+  }
   std::sort(tracks.begin(), tracks.end());
   static std::atomic<uint32_t> seed{(uint32_t)GetTickCount() ^ 0x9E3779B9u};
   uint32_t value = seed.fetch_add(0x9E3779B9u, std::memory_order_relaxed);
@@ -439,6 +468,15 @@ void start_song(uint32_t disc_offset, uint32_t size) {
   }); }).detach();
 }
 
+void note_stage_songs(int main_song, int alternate_song) {
+  constexpr int count = (int)(sizeof kSongFiles / sizeof kSongFiles[0]);
+  if (main_song < 0 || main_song >= count || alternate_song < 0 || alternate_song >= count || main_song == alternate_song) return;
+  const std::string alt = kSongFiles[alternate_song], main = kSongFiles[main_song];
+  std::lock_guard<std::mutex> lock(g_alternates_mutex);
+  for (auto& a : g_alternates) if (a.first == alt) { a.second = main; return; }
+  g_alternates.emplace_back(alt, main);
+  host::log("jukebox: %s plays from %s's music pack when it has none of its own", alt.c_str(), main.c_str());
+}
 void set_disc_reader(DiscReader reader) { g_reader.store(reader); }
 void set_music_pack_reader(MusicPackReader reader) { g_music_pack_reader.store(reader); }
 void set_music_packs_enabled(bool enabled) { g_music_packs_enabled.store(enabled, std::memory_order_relaxed); }

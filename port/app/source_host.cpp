@@ -1375,6 +1375,7 @@ constexpr uint8_t CMD_PRACTICE_CPU = 0xF6;   // the practice CPU's settings (por
 constexpr uint8_t CMD_FRAME_EVENT = 0xE8;   // replay frame data for the coach (shim/mu_framedata.c, host/replay_coach.h)
 constexpr uint8_t CMD_REPLAY_DEFENSE = 0xE9;   // a takeover's opponents once the game leaves the replay (shim/mu_replay_defend.c)
 constexpr uint8_t CMD_GHOST_AI = 0xEA;         // a pro AI's controller for this frame (hle/ghost_ai.h)
+constexpr uint8_t CMD_STAGE_SONGS = 0xEB;      // a stage's main and alternate songs (gr/ground.c, hle/jukebox.h)
 void apply_content_mode(int mode);
 constexpr int32_t kLabFrame = -1000000;
 // The replay viewer's controls (shim/mu_replay.c mu_replay_frame_begin, host/replay_control.h):
@@ -1655,6 +1656,11 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
                         r.detail.c_str(), replay_coach::advice(e).c_str(), e.move);
             }
           }
+          return true;
+        }
+        if (c == CMD_STAGE_SONGS && n == 16) {
+          slippi::jukebox::note_stage_songs((int32_t)read_be32(p), (int32_t)read_be32(p + 4));
+          slippi::jukebox::note_stage_songs((int32_t)read_be32(p + 8), (int32_t)read_be32(p + 12));
           return true;
         }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }

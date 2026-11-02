@@ -129,6 +129,19 @@ int main() {
     ec.clear();
     std::filesystem::remove_all(own, ec);
     ec.clear();
+    // A stage's alternate song with no music of its own plays from its main song's folder, once the
+    // game has reported the pair (ids 49 izumi and 58 old_kb in the game's song list).
+    const auto stage = audio_root / L"izumi";
+    if (!std::filesystem::exists(stage, ec) && !std::filesystem::exists(audio_root / L"old_kb", ec)) {
+      ec.clear();
+      std::filesystem::create_directory(stage, ec);
+      ec.clear();
+      shared_ok = shared_ok && make_wave(stage / L"c.wav") && !slippi::jukebox::resolve_music_pack_path("/audio/old_kb.hps", &picked);
+      slippi::jukebox::note_stage_songs(49, 58);
+      shared_ok = shared_ok && slippi::jukebox::resolve_music_pack_path("/audio/old_kb.hps", &picked) && picked == stage / L"c.wav";
+      std::filesystem::remove_all(stage, ec);
+    }
+    ec.clear();
   }
   std::filesystem::remove(custom_path, ec);
   ec.clear();

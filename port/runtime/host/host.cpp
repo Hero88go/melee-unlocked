@@ -1663,6 +1663,22 @@ void install_sub_color_guard() {
   static bool done = false;
   if (done || !ram) return;
   done = true;
+  // The stage's music pick (Ground_801C24F8(stkind, flags, &song)) reports the stage's main and
+  // alternate songs to the jukebox, so a music pack made for the stage covers its alternate song
+  // too, as on the Source Port (gr/ground.c). Read only: the pick itself is left alone.
+  ppc::add_entry_hook(0x801C24F8u, [](ppc::Context& c) {
+    const uint32_t param = rd32(0x8049E6C8u + 0x6B0u);   // stage_info.param
+    if (!try_ptr(param, 0xB8)) return;
+    const uint32_t rows = rd32(param + 0xB0), count = rd32(param + 0xB4);
+    if (count > 64 || !try_ptr(rows, count * 0x64u)) return;
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t row = rows + i * 0x64u;
+      if (rd32(row) != c.r[3]) continue;
+      slippi::jukebox::note_stage_songs((int32_t)rd32(row + 4), (int32_t)rd32(row + 8));
+      slippi::jukebox::note_stage_songs((int32_t)rd32(row + 0xC), (int32_t)rd32(row + 0x10));
+      return;
+    }
+  });
   ppc::add_entry_hook(0x80068914u, [](ppc::Context& c) {   // Fighter_UnkInitLoad_80068914(gobj, plAllocInfo*)
     if (!try_ptr(c.r[4], 8)) return;
     const uint32_t slot = rd8(c.r[4] + 4);
