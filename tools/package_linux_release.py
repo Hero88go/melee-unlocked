@@ -13,6 +13,7 @@ Run inside Linux (WSL is fine) after tools/build_linux.py:
 """
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -156,6 +157,10 @@ def main():
     parser.add_argument('--out', type=Path, default=ROOT / 'release')
     parser.add_argument('--ghost-ai-dir', type=Path, default=None,
                         help='ghost_ai_<pro>.bin for each released pro plus ghost_ai_models.json (Fight a pro)')
+    parser.add_argument('--pro-ai-dir', type=Path,
+                        default=ROOT / 'release/ProAI' if (ROOT / 'release/ProAI/catalog.json').is_file() else None,
+                        help='Fight a pro: a ProAI folder from tools/ghost_ai/phillip_catalog.py; '
+                             'libonnxruntime.so comes from port/third_party/onnxruntime/bin (tools/fetch_onnxruntime.py)')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('run this inside Linux (WSL is fine)')
@@ -224,6 +229,28 @@ def main():
     # lib/: the bundled libraries and their license files.
     lib = folder / 'lib'
     lib.mkdir()
+    # Fight a pro with Phillip's policies: ProAI/ beside the game and onnxruntime in lib/ (dlopen).
+    if args.pro_ai_dir:
+        catalog = json.loads((args.pro_ai_dir / 'catalog.json').read_text())
+        if catalog.get('version') != 1 or not catalog.get('models'):
+            raise SystemExit(f'{args.pro_ai_dir}/catalog.json: no policies')
+        (folder / 'ProAI').mkdir()
+        for model in catalog['models']:
+            source = args.pro_ai_dir / model['file']
+            if not source.is_file():
+                if model['kind'] == 'imitation':
+                    raise SystemExit(f'missing Fight a pro policy: {source}')
+                continue
+            if hashlib.sha256(source.read_bytes()).hexdigest() != model['sha256']:
+                raise SystemExit(f'Fight a pro policy changed: {source}')
+            shutil.copy2(source, folder / 'ProAI' / source.name)
+        shutil.copy2(args.pro_ai_dir / 'catalog.json', folder / 'ProAI' / 'catalog.json')
+        ort = ROOT / 'port/third_party/onnxruntime/bin/libonnxruntime.so'
+        if not ort.is_file():
+            raise SystemExit(f'missing {ort} (py -3.12 tools/fetch_onnxruntime.py --linux)')
+        shutil.copy2(ort, lib / 'libonnxruntime.so')
+        os.chmod(lib / 'libonnxruntime.so', 0o755)
+        print(f"Fight a pro: {len(catalog['models'])} Phillip policies")
     # bin/: the shader tools the OpenGL renderer runs (renderer_gl.cpp looks in bin/ first). Without
     # them the game stopped on its first frame ("Cannot run spirv-cross") on systems lacking them.
     tools_dir = folder / 'bin'
@@ -339,6 +366,9 @@ def main():
                      (ROOT / 'docs/licenses/dsp-coefficients.txt', 'dsp-coefficients.txt'),
                      (ROOT / 'docs/licenses/hps_decode-MIT.txt', 'hps_decode.txt'),
                      (ROOT / 'docs/licenses/slippilab-MIT.txt', 'slippilab.txt'),
+                     (ROOT / 'docs/licenses/slippi-ai-MIT.txt', 'phillip-slippi-ai-MIT.txt'),
+                     (ROOT / 'port/third_party/onnxruntime/LICENSE', 'onnxruntime.txt'),
+                     (ROOT / 'port/third_party/onnxruntime/ThirdPartyNotices.txt', 'onnxruntime-third-party.txt'),
                      (ROOT / 'port/runtime/gx/ui_sources/gd_melee/assets/kit/SourceSans3-OFL.md', 'source-sans-3-OFL.md'),
                      (ROOT / 'docs/third-party-ui-attribution.md', 'ui-attribution.md'),
                      (ROOT / 'docs/third-party-training-mode-ce.txt', 'training-mode-ce.txt')):

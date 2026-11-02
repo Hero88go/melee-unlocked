@@ -15,6 +15,7 @@
 #include "practice_cpu.h"
 #include "practice_ghosts.h"
 #include "ghost_ai.h"
+#include "phillip_ai.h"
 #include "native_practice.h"
 #include "slippi_online.h"
 
@@ -466,9 +467,17 @@ std::vector<Row> rows_for(Page p) {
                                                                     : "Find a match while you train."));
       const practice_cpu::Status st = practice_cpu::status();
       std::string cpu = !c.enabled ? "Off" : (st.driving ? plan_text(st.plan) : "On");
-      // Fight a pro is not ready to ship: a row that says it is coming instead of the page.
-      rows.push_back(action_row("Fight a pro", kActNone, "Coming soon",
-                                "Play AIs that learned from top players' own games. Coming in a later update.", false));
+      {
+        // Fight a pro: Phillip's trained AIs (ProAI folder, Source Port). Without them the row says so.
+        const bool neural = neural_ghosts();
+        bool any = false;
+        for (int i = 0; neural && i < kGhostCount; ++i) any |= ghost_offered(i, neural);
+        if (any)
+          rows.push_back(page_row("Fight a pro", Page::Ghosts, active_pro(c), "Play Phillip's AI as a top player."));
+        else
+          rows.push_back(action_row("Fight a pro", kActNone, "Not available",
+                                    "Phillip's AI as a top player: Source Port, on a processor with AVX.", false));
+      }
       rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Practice CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),
                               "What it does when you attack near it."));
@@ -645,7 +654,10 @@ std::vector<Row> rows_for(Page p) {
           rows.push_back(action_row(gh.name, kActGhost + i, "Locked", about, false));
           continue;
         }
-        if (neural)
+        if (neural && phillip_ai::available((unsigned)i))
+          std::snprintf(about, sizeof about, "Phillip's AI playing %s as %s, from %s's games and self-play. "
+                        "Training starts again with the CPU as %s.", gh.character, gh.name, gh.name, gh.character);
+        else if (neural)
           std::snprintf(about, sizeof about, "Plays %s the way %s does, learned from %s's own games. "
                         "Training starts again with the CPU as %s.", gh.character, gh.name, gh.name, gh.character);
         else

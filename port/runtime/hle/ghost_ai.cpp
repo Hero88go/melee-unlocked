@@ -4,6 +4,7 @@
 #include "ghost_ai.h"
 
 #include "host.h"
+#include "phillip_ai.h"
 
 #include <windows.h>
 
@@ -226,7 +227,20 @@ void enable() {
   g_enabled = true;
 }
 
+namespace {
+// Phillip's policies too only once the Source Port has turned the pro AI on (it alone drives them).
+bool phillip_available(unsigned pro) {
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_enabled) return false;
+  }
+  return phillip_ai::available(pro);
+}
+}  // namespace
+
 bool available() {
+  for (unsigned pro = 0; pro < kSpecialists; ++pro)
+    if (phillip_available(pro)) return true;
   std::lock_guard<std::mutex> lk(g_mutex);
   if (ready()) return true;
   uint32_t row;
@@ -236,12 +250,14 @@ bool available() {
 }
 
 bool available(unsigned pro) {
+  if (phillip_available(pro)) return true;
   std::lock_guard<std::mutex> lk(g_mutex);
   uint32_t row;
   return selected_model(pro, 1, row) != nullptr;
 }
 
 bool specialist_available(unsigned pro) {
+  if (!std::getenv("MELEE_GHOST_AI_FILE") && phillip_available(pro)) return true;
   std::lock_guard<std::mutex> lk(g_mutex);
   uint32_t row;
   if (!selected_model(pro, 1, row)) return false;
@@ -252,14 +268,39 @@ bool specialist_available(unsigned pro) {
 }
 
 bool act(const MuGhostObs& o, MuGhostAct& out) {
-  std::lock_guard<std::mutex> lk(g_mutex);
   if (o.version != MU_GHOST_VERSION || o.slot >= 4) return false;
+  for (const MuGhostFighter* f : {&o.self, &o.opp})
+    for (float v : f->num) if (!std::isfinite(v)) return false;
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    // Each KO (the dead motions are the first eleven), with the percent it came at: a KO near 0% is
+    // usually a self-destruct. A dead fighter may not be asked for input, so both sides report, once
+    // per port (1v1: the opponent is the other of P1 and P2). Tests read these lines to score matches.
+    const auto note = [&](int port, const MuGhostFighter& f, const MuGhostFighter& other) {
+      const bool dead = f.motion <= 10;
+      if (dead && !g_ko[port].dead)
+        host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%) last at %.0f,%.0f motion %u", port + 1,
+                  g_ko[port].percent, o.frame, other.num[3], g_ko[port].x, g_ko[port].y, g_ko[port].motion);
+      g_ko[port].dead = dead;
+      if (!dead) { g_ko[port].percent = f.num[3]; g_ko[port].x = f.num[0]; g_ko[port].y = f.num[1]; g_ko[port].motion = f.motion; }
+    };
+    note(o.slot, o.self, o.opp);
+    note(o.slot == 0 ? 1 : 0, o.opp, o.self);
+  }
+  // Phillip's published policy for this pro, character and matchup when one is installed (ProAI);
+  // explicit test files (MELEE_GHOST_AI_FILE) keep our own networks.
+  bool on;
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    on = g_enabled;
+  }
+  if (on && !std::getenv("MELEE_GHOST_AI_FILE") && !(o.slot == 0 && std::getenv("MELEE_GHOST_AI_FILE_P1")) && phillip_ai::act(o, out))
+    return true;
+  std::lock_guard<std::mutex> lk(g_mutex);
   uint32_t model_pro = 0;
   const Model* selected = selected_model(o.pro, o.slot, model_pro);
   if (!selected) return false;
   const Model& m = *selected;
-  for (const MuGhostFighter* f : {&o.self, &o.opp})
-    for (float v : f->num) if (!std::isfinite(v)) return false;
   Slot& s = g_slots[o.slot];
   // Asked twice in one frame (a fighter's input can be read more than once): the same answer, and the
   // network does not step again. Stepping again looked like a gap and wiped its memory every frame.
@@ -282,19 +323,6 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   s.live = true;
   s.pro = o.pro;
   s.last_frame = o.frame;
-  // Each KO (the dead motions are the first eleven), with the percent it came at: a KO near 0% is
-  // usually a self-destruct. A dead fighter may not be asked for input, so both sides report, once
-  // per port (1v1: the opponent is the other of P1 and P2). Tests read these lines to score matches.
-  const auto note = [&](int port, const MuGhostFighter& f, const MuGhostFighter& other) {
-    const bool dead = f.motion <= 10;
-    if (dead && !g_ko[port].dead)
-      host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%) last at %.0f,%.0f motion %u", port + 1,
-                g_ko[port].percent, o.frame, other.num[3], g_ko[port].x, g_ko[port].y, g_ko[port].motion);
-    g_ko[port].dead = dead;
-    if (!dead) { g_ko[port].percent = f.num[3]; g_ko[port].x = f.num[0]; g_ko[port].y = f.num[1]; g_ko[port].motion = f.motion; }
-  };
-  note(o.slot, o.self, o.opp);
-  note(o.slot == 0 ? 1 : 0, o.opp, o.self);
 
   // Last frame as the game really applied it (the safety net or a dropped air dodge may differ from
   // what the network asked for): its memory is of what it held, as in the pros' replays.

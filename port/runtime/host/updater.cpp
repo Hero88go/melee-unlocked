@@ -842,6 +842,29 @@ void download_and_install() {
   });
 }
 
+// ---------------- one verified file ----------------
+bool fetch_verified(const std::string& url, const std::string& sha256, const std::string& dest_utf8, std::string* why) {
+  namespace fs = std::filesystem;
+  std::string body;
+  int status = 0;
+  const auto fail = [&](const std::string& m) { if (why) *why = m; return false; };
+  if (!http_get(url, &body, &status) || status != 200)
+    return fail(status ? "HTTP " + std::to_string(status) : std::string("no connection"));
+  if (sha256.size() != 64 || sha256_hex(body) != sha256) return fail("the file does not match its published SHA-256");
+  const fs::path dest = fs::u8path(dest_utf8);
+  const fs::path part = fs::u8path(dest_utf8 + ".part");
+  std::error_code ec;
+  fs::create_directories(dest.parent_path(), ec);
+  {
+    std::ofstream f(part, std::ios::binary);
+    f.write(body.data(), (std::streamsize)body.size());
+    if (!f) { f.close(); fs::remove(part, ec); return fail("cannot write " + part.u8string()); }
+  }
+  fs::rename(part, dest, ec);
+  if (ec) { fs::remove(part, ec); return fail("cannot put the file in place"); }
+  return true;
+}
+
 // ---------------- DLSS 5 model ----------------
 namespace {
 // NVIDIA's DLSS 5 model (RTX Remix 1.6.1's package, version 310.9.16), carried by the 0.9.57 release

@@ -77,6 +77,12 @@ Code ported or adapted from other projects:
 - slippi-js (LGPL-3.0-or-later): the landing lag table in the launcher
 - hps_decode (MIT): docs/licenses/hps_decode-MIT.txt
 - Slippi Lab (MIT): docs/licenses/slippilab-MIT.txt
+- Phillip / slippi-ai by Vlad Firoiu (MIT, https://github.com/vladfi1/slippi-ai): the observation
+  and controller contract of its published policies, in port/runtime/hle/phillip_ai.cpp;
+  docs/licenses/slippi-ai-MIT.txt
+- onnxruntime C API headers (MIT): port/third_party/onnxruntime/LICENSE
+- libmelee (LGPL-3.0, https://github.com/altf4/libmelee): Randall's path on Yoshi's Story, generated into
+  port/runtime/hle/phillip_randall.h
 - GD's Melee (GPL-2.0-or-later): settings motion and art, docs/third-party-ui-attribution.md
 - Twemoji graphics (CC BY 4.0): docs/third-party-ui-attribution.md
 - Source Sans 3 (SIL Open Font License 1.1):
@@ -92,6 +98,10 @@ Shipped beside the program under their own terms, not covered by the GPL:
   SDKs License); third-party notices: docs/licenses/nvidia-dlss-third-party.txt
 - NVIDIA Reflex (sl.reflex.dll, sl.pcl.dll): port/third_party/streamline/reflex.license.txt
 - Intel XeSS (libxess.dll, Intel Simplified Software License): port/third_party/xess/LICENSE.txt
+- onnxruntime (onnxruntime.dll, MIT): port/third_party/onnxruntime/LICENSE; third-party notices:
+  port/third_party/onnxruntime/ThirdPartyNotices.txt
+- Phillip's trained policies (ProAI\*.onnx, MIT, from huggingface.co/vladfi/phillip-models):
+  docs/licenses/slippi-ai-MIT.txt
 - Microsoft Visual C++ runtime DLLs (Microsoft Visual Studio distributable code)
 
 Super Smash Bros. Melee is the property of Nintendo and HAL Laboratory. Melee Unlocked is not

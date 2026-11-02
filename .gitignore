@@ -63,3 +63,6 @@ build-*/
 /port/third_party/ngx/lib/
 /port/third_party/mod_tools/7zr.exe
 /port/third_party/mod_tools/xdelta3.exe
+
+# onnxruntime runtime libraries (tools/fetch_onnxruntime.py); headers and license are vendored
+/port/third_party/onnxruntime/bin/

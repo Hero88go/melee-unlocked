@@ -75,6 +75,7 @@ if(MELEE_NO_SLIPPI)
     set_source_files_properties(${MELEE_ASIO_SOURCES} PROPERTIES COMPILE_OPTIONS "/UUNICODE;/U_UNICODE;/W0")
     target_link_libraries(runtime_ns PUBLIC advapi32)
   endif()
+  target_include_directories(runtime_ns PRIVATE third_party/onnxruntime/include)
   target_include_directories(runtime_ns PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx runtime/mu_net
     "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
   target_compile_features(runtime_ns PUBLIC cxx_std_17)
@@ -159,6 +160,10 @@ if(MELEE_NO_SLIPPI)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll")
       add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_source>/libxess.dll")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/bin/onnxruntime.dll")
+      add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/bin/onnxruntime.dll" "$<TARGET_FILE_DIR:melee_source>/onnxruntime.dll")
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librashader/bin/librashader.dll")
       add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -368,7 +373,7 @@ add_executable(port_practice_cpu_model_test tests/practice_cpu_model_test.cpp)
 target_compile_features(port_practice_cpu_model_test PRIVATE cxx_std_17)
 add_test(NAME port_practice_cpu_model COMMAND port_practice_cpu_model_test)
 add_executable(port_ghost_ai_test tests/ghost_ai_test.cpp)
-target_include_directories(port_ghost_ai_test PRIVATE runtime/host runtime/hle runtime/ppc)
+target_include_directories(port_ghost_ai_test PRIVATE runtime/host runtime/hle runtime/ppc third_party third_party/onnxruntime/include)
 target_compile_features(port_ghost_ai_test PRIVATE cxx_std_17)
 target_compile_options(port_ghost_ai_test PRIVATE /EHsc)
 target_compile_definitions(port_ghost_ai_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -689,6 +694,8 @@ set(MELEE_PLAYBACK_GCT_SIZE "0" CACHE STRING "Size in bytes of that replay code 
 target_compile_definitions(runtime PRIVATE
   MELEE_PLAYBACK_GCT_BASE=${MELEE_PLAYBACK_GCT_BASE}u MELEE_PLAYBACK_GCT_SIZE=${MELEE_PLAYBACK_GCT_SIZE}u)
 target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
+# onnxruntime (MIT) C API for Phillip's policies (Fight a pro); the DLL is loaded at run time from beside the game.
+target_include_directories(runtime PRIVATE third_party/onnxruntime/include)
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
@@ -1089,6 +1096,11 @@ if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_port>/libxess.dll")
   add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_source>/libxess.dll")
+  # onnxruntime for Fight a pro (loaded at run time; missing file = no pro AIs). tools/fetch_onnxruntime.py
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/bin/onnxruntime.dll")
+    add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/bin/onnxruntime.dll" "$<TARGET_FILE_DIR:melee_source>/onnxruntime.dll")
+  endif()
   # librashader (player-chosen shader presets; loaded at run time; missing file = the setting is off)
   add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librashader/bin/librashader.dll" "$<TARGET_FILE_DIR:melee_port>/librashader.dll")

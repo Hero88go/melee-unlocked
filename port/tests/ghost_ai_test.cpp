@@ -1,5 +1,6 @@
 // Model-file integrity and recurrent memory boundaries for offline pro practice.
 #include "../runtime/hle/ghost_ai.cpp"
+#include "../runtime/hle/phillip_ai.cpp"
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -7,6 +8,12 @@
 namespace host {
 void log(const char*, ...) {}
 double now_seconds() { return 0; }
+namespace updater {
+bool fetch_verified(const std::string&, const std::string&, const std::string&, std::string* why) {
+  if (why) *why = "no network in tests";
+  return false;
+}
+}  // namespace updater
 }
 
 static int failures = 0;
@@ -14,6 +21,32 @@ static int failures = 0;
 
 int main(int argc, char** argv) {
   using namespace ghost_ai;
+  // Phillip's policies (ProAI beside the game) must not answer for the injected test models.
+  // Parity with slippi-ai's Python (tools/ghost_ai/phillip_parity.py): step one Phillip policy over
+  // recorded observations and write the controllers it chose.
+  if (argc == 6 && std::string(argv[1]) == "--phillip") {
+    _putenv_s("MELEE_PRO_AI_DIR", argv[2]);
+    using namespace phillip_ai;
+    if (!runtime_ready()) return 2;
+    const Policy* pol = load_policy(argv[3]);
+    if (!pol) return 3;
+    std::ifstream in(argv[4], std::ios::binary);
+    std::ofstream out(argv[5], std::ios::binary);
+    Buffers b;
+    start(*pol, b);
+    std::mt19937 rng(1);
+    MuGhostObs obs{};
+    Memory mem;
+    for (int i = 0; in.read(reinterpret_cast<char*>(&obs), sizeof obs); ++i) {
+      observe(*pol, b, obs, obs.pad, i == 0, rng, mem);   // pad carries the name code here
+      if (!run(*pol, b)) return 4;
+      const MuGhostAct a = decode(*pol, b);
+      const float row[6] = {a.lx, a.ly, a.cx, a.cy, a.l, (float)a.buttons};
+      out.write(reinterpret_cast<const char*>(row), sizeof row);
+    }
+    return 0;
+  }
+  _putenv("MELEE_PRO_AI_DIR=__no_pro_ai__");
   // This test injects its own model; installed specialist files must not change its evidence.
   std::fill(std::begin(g_specialist_status), std::end(g_specialist_status), -1);
   if (argc == 2) {

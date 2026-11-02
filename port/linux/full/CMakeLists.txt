@@ -98,7 +98,7 @@ target_compile_definitions(full_runtime PUBLIC MELEE_LINUX GX_PC_SETTINGS
   GX_SHADER_CACHE_VERSION="linux-gl-1")
 target_include_directories(full_runtime PUBLIC "${COMPAT}" "${PORT}/runtime/ppc" "${PORT}/runtime/host" "${PORT}/runtime/hle"
   "${PORT}/runtime/gx" "${PORT}/runtime/mu_net" "${PORT}/runtime/abi" "${MELEE_PORT_GEN}" "${PROJECT_SOURCE_DIR}/native"
-  "${PORT}/third_party" "${CMAKE_CURRENT_SOURCE_DIR}/.." ${LIBUSB_INCLUDE_DIRS})
+  "${PORT}/third_party" "${PORT}/third_party/onnxruntime/include" "${CMAKE_CURRENT_SOURCE_DIR}/.." ${LIBUSB_INCLUDE_DIRS})
 target_compile_features(full_runtime PUBLIC cxx_std_17)
 target_compile_options(full_runtime PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
 target_link_libraries(full_runtime PUBLIC full_native_animation full_enet full_imgui PkgConfig::LIBUSB SDL2::SDL2 OpenGL::GL

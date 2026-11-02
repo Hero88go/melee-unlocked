@@ -37,6 +37,11 @@ std::string install_script(const std::string& batch_dir, unsigned long self, con
 // Game processes from this installation that must close before replacement.
 std::vector<unsigned long> install_processes(const std::string& install_root_utf8);
 
+// Downloads one file (redirects followed, never HTTPS to HTTP), refuses it unless its SHA-256 is
+// `sha256` (lowercase hex), and only then puts it at `dest` (written beside it first). Blocking: call
+// it from a worker thread. Fight a pro fetches Phillip's matchup policies with it.
+bool fetch_verified(const std::string& url, const std::string& sha256, const std::string& dest_utf8, std::string* why);
+
 // DLSS 5: NVIDIA's model is its own download (it would more than double every update). One click
 // fetches it from the release, checks NVIDIA's file against its known SHA-256 and puts it beside the
 // game as nvngx_dlssnr.dll, where updates leave it alone. Background thread; the game picks it up

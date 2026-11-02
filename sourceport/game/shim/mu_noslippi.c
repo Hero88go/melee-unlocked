@@ -133,6 +133,9 @@ void mu_replay_lcancel_reset(Fighter* fp) { (void) fp; }
 void mu_replay_lcancel_landing(Fighter* fp) { (void) fp; }
 void mu_replay_record_whispy(int direction) { (void) direction; }
 void mu_replay_record_fountain(const HSD_JObj* platform, float height) { (void) platform; (void) height; }
+/* The pro AI's match frame and Fountain heights: none without the replay layer (shim/mu_replay.c). */
+int mu_replay_match_frame(void) { return 0; }
+void mu_replay_fountain_heights(float* left, float* right) { *left = *right = 0.0f; }
 void mu_replay_record_stadium(int state, int kind) { (void) state; (void) kind; }
 int mu_replay_abi_active(void) { return 0; }
 /* mu_exclusions.c lists this provider; there is no replay data cache to leave out here. */

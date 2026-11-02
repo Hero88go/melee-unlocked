@@ -343,8 +343,26 @@ void mu_replay_start_melee(StartMeleeData* data)
 }
 
 /* ---- IncrementFrameIndex (8016d294) and FetchGameFrame (8016d298), fn_8016CFE0 ---- */
+/* The Slippi frame number and the Fountain of Dreams platform heights, kept whether or not a replay
+ * records: the pro AI (mu_practice_cpu.c) hands them to Phillip's policies, which saw them in replays. */
+static int match_frame = FIRST_FRAME;
+static float fountain_height[2] = {28.0f, 20.0f};   /* right, left: their heights when a match starts */
+int mu_replay_match_frame(void) { return match_frame; }
+void mu_replay_fountain_heights(float* left, float* right)
+{
+    *left = fountain_height[1];
+    *right = fountain_height[0];
+}
+
 void mu_replay_scene_think(int match_result)
 {
+    if (gm_801A4BA8() == 0) {
+        match_frame = FIRST_FRAME;
+        fountain_height[0] = 28.0f;
+        fountain_height[1] = 20.0f;
+    } else {
+        match_frame++;
+    }
     if (!mu_replay_on() && !recording_active) {
         return;
     }
@@ -1000,8 +1018,9 @@ void mu_replay_record_fountain(const HSD_JObj* platform, float height)
 {
     u8 b[10];
     u32 x;
-    if (!recording_active || frame_index == FIRST_FRAME - 1) return;
     memcpy(&x, &platform->translate.x, 4);
+    fountain_height[x >> 31] = height;   /* 0 right, 1 left (the sign of the platform's x) */
+    if (!recording_active || frame_index == FIRST_FRAME - 1) return;
     put32(b, 1, (u32) frame_index);
     b[5] = (u8) (x >> 31);
     putf(b, 6, height);

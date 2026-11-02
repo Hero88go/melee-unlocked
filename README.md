@@ -109,7 +109,7 @@ are included with Melee Unlocked.
   filter, trigger modes), with PhobScope and Phob Check: PC settings > Controls > adapter socket > PhobGCC > Open PhobGCC menu.
   Setups saves your settings under a name to load, overwrite, delete or share, on a PhobGCC and a stock
   controller alike, and Reset to Default puts every setting back (your stick calibration stays).
-- Practice menu in Training (Start + D-pad Up + Z): your own CPU, frame advance,
+- Practice menu in Training (Start + D-pad Up + Z): your own CPU, Fight a pro, frame advance,
   save states, and searching for a match while you train. See [Practice](#practice).
 - Optional launcher with self-update
 
@@ -267,7 +267,11 @@ In Training, press **Start + D-pad Up + Z** to open the Practice menu (keyboard:
 few times you enter Training a banner shows those buttons. Everything works with the controller alone,
 and none of it runs online.
 
-- **Fight a pro**: coming in a later update.
+- **Fight a pro**: play Phillip's AI as Zain's Marth, Cody Schwab's Fox or aMSa's Yoshi. Pick one and
+  the CPU becomes that player's character. Phillip (slippi-ai, MIT) learned from players' games and then
+  from playing itself; it reacts 18 to 21 frames late, like a person. The first time you play a matchup,
+  the game downloads Phillip's AI for it, and a fast PC gets Phillip's newest, strongest ones. Source
+  Port, offline only.
 - **CPU**: decide how the Training CPU moves, attacks, shields, DIs, techs, gets up and uses the ledge.
   Movement includes wavelands, shield drops (on platforms), dash jumps, running past you and turning
   around; Throws picks its throw once it grabs you; Jumps sets its drift, double jumps, fast fall

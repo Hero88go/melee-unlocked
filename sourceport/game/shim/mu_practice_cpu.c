@@ -19,6 +19,8 @@
 #include <melee/gr/types.h>
 #include <melee/mp/mplib.h>
 #include <melee/mp/types.h>
+#include <melee/it/forward.h>
+#include <melee/it/types.h>
 #include <melee/pl/player.h>
 #include <sysdolphin/baselib/gobj.h>
 #include <sysdolphin/baselib/random.h>
@@ -310,6 +312,38 @@ static void ghost_read(const Fighter* fp, MuGhostFighter* g)
     g->motion = (unsigned short) fp->motion_id;
     g->kind = (unsigned char) fp->kind;
     mu_replay_fighter_flags(fp, g->flags);
+    /* The replay's hurtbox state (mu_replay.c post-frame byte 0x34): Phillip sees it as invulnerable. */
+    g->hurtbox = (unsigned char) (fp->x1988 != 0 ? fp->x1988 : fp->x198C);
+}
+
+int mu_replay_match_frame(void);
+void mu_replay_fountain_heights(float* left, float* right);
+
+/* A fighter's Nana (Ice Climbers), or NULL. */
+static const Fighter* ghost_nana(const Fighter* fp)
+{
+    HSD_GObj* g = Player_GetEntityAtIndex(fp->player_idx, 1);
+    const Fighter* nana = g != NULL ? g->user_data : NULL;
+    return nana != NULL && nana->kind == Ft_Kind_Nana ? nana : NULL;
+}
+
+/* The first 15 items of the item list, as the replay's item updates record them. */
+static int ghost_items(MuGhostItem* out)
+{
+    HSD_GObj* it;
+    int n = 0;
+    for (it = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_ITEM]; it != NULL && n < MU_GHOST_ITEMS; it = it->next) {
+        const Item* ip = it->user_data;
+        if (ip == NULL) continue;
+        out[n].kind = (unsigned short) ip->kind;
+        out[n].state = (unsigned char) ip->msid;
+        out[n].exists = 1;
+        out[n].spawn = (unsigned int) ip->x1C;
+        out[n].x = ip->pos.x;
+        out[n].y = ip->pos.y;
+        n++;
+    }
+    return n;
 }
 
 /* What each pro AI fighter really held last frame (pc_drive, after the safety net). */
@@ -365,20 +399,36 @@ static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInpu
     obs.applied = ghost_applied[slot];
     ghost_read(fp, &obs.self);
     ghost_read(opp, &obs.opp);
+    obs.match_frame = mu_replay_match_frame();
+    if (stage_info.grkind == Gr_Kind_Izumi) mu_replay_fountain_heights(&obs.fod_left, &obs.fod_right);
+    {
+        const Fighter* n1 = ghost_nana(fp);
+        const Fighter* n2 = ghost_nana(opp);
+        obs.self_nana = n1 != NULL;
+        obs.opp_nana = n2 != NULL;
+        if (n1 != NULL) ghost_read(n1, &obs.self_nana_f);
+        if (n2 != NULL) ghost_read(n2, &obs.opp_nana_f);
+    }
+    obs.item_count = (unsigned char) ghost_items(obs.items);
     if (mu_online_abi_command(CMD_GHOST_AI, (const unsigned char*) &obs, sizeof obs, response, sizeof response, &got) != 0 ||
         got != sizeof act)
     {
         return 0;
     }
     __builtin_memcpy(&act, response, sizeof act);
-    out->lx = act.lx;
-    out->ly = act.ly;
-    out->cx = act.cx;
-    out->cy = act.cy;
-    out->l = act.l;
-    out->r = act.r;
-    out->buttons = act.buttons;
-    return 1;
+    {
+        /* A policy that plays its own recovery (Phillip) says so: the safety net stays off for it. */
+        const int own = (act.buttons & MU_GHOST_ACT_OWN_RECOVERY) != 0;
+        act.buttons &= ~MU_GHOST_ACT_OWN_RECOVERY;
+        out->lx = act.lx;
+        out->ly = act.ly;
+        out->cx = act.cx;
+        out->cy = act.cy;
+        out->l = act.l;
+        out->r = act.r;
+        out->buttons = act.buttons;
+        return own ? 2 : 1;
+    }
 }
 
 static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out, int report)
@@ -398,16 +448,17 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
         pc_state_owner[slot] = fp->gobj;
         mu_pc_reset(&pc_state[slot], 0x9E3779B9u ^ ((mu_pc_u32) slot * 2654435761u));
     }
-    if (ghost_drive(fp, opp, c, out)) {
+    if ((driven = ghost_drive(fp, opp, c, out)) != 0) {
         /* The safety net: off the stage, falling at or below the ledge and free to act, the practice CPU's own recovery
          * brings the pro AI back (its network still ran, so its memory of the match goes on).
          * MELEE_GHOST_NO_NET (tests) leaves it to the network alone. */
         static int no_net = -1;
         const float ax = v.cpu.x < 0.0f ? -v.cpu.x : v.cpu.x;
         if (no_net < 0) no_net = getenv("MELEE_GHOST_NO_NET") != NULL;
+        const int off_net = no_net || driven == 2;
         /* Off the stage near or below the ledge, no air dodge: it spends every jump and leaves the
          * fighter helpless, and the network's ledge air dodges missed the stage. */
-        if (!no_net && v.cpu.airborne && ax > v.ledge_x - 2.0f && v.cpu.y < v.ledge_y + 20.0f) {
+        if (!off_net && v.cpu.airborne && ax > v.ledge_x - 2.0f && v.cpu.y < v.ledge_y + 20.0f) {
             if ((out->buttons & (MU_PC_L | MU_PC_R | MU_PC_Z)) && getenv("MELEE_GHOST_LOG") != NULL) {
                 OSReport("[ghost] P%d air dodge dropped at %.0f,%.0f buttons %x\n", slot + 1, v.cpu.x, v.cpu.y, out->buttons);
             }
@@ -429,7 +480,7 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
         /* Once the net has taken over it keeps the fighter until it is back above the ledge, on it, landed or hit:
          * handing back on the way up let the network's up special stop Yoshi's recovery jump. */
         static int net_hold[6];
-        const int free_air = !no_net && !ledge && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag;
+        const int free_air = !off_net && !ledge && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag;
         if (!free_air || v.cpu.y > v.ledge_y + 5.0f) net_hold[slot] = 0;
         if (free_air && (net_hold[slot] ||
             (ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||

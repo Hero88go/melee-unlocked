@@ -12,6 +12,7 @@ the user supplies their own Melee NTSC 1.02 ISO. Usage:
 """
 import argparse
 import hashlib
+import json
 import re
 import shutil
 import struct
@@ -258,6 +259,10 @@ def main():
                     help="the pro AI network (ghost_ai.bin); default: beside --source-exe")
     ap.add_argument("--ghost-ai-dir", type=Path, default=None,
                     help="directory containing the released player-specific models ghost_ai_{mang0,zain,cody,amsa}.bin")
+    ap.add_argument("--pro-ai-dir", type=Path,
+                    default=ROOT / "release/ProAI" if (ROOT / "release/ProAI/catalog.json").is_file() else None,
+                    help="Fight a pro: a ProAI folder from tools/ghost_ai/phillip_catalog.py (catalog.json + "
+                         "Phillip's .onnx policies); onnxruntime.dll comes from beside --source-exe")
     ap.add_argument("--no-ghost-ai", action="store_true",
                     help="ship no pro AI files (Fight a pro not in this release)")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
@@ -348,8 +353,34 @@ def main():
             if compat_dbg.is_file():
                 shutil.copy2(compat_dbg, folder / "melee_game_compat.dbg")
             print(f"Source Port compatibility build: {args.source_compat_exe}")
-        # Fight a pro: the network the practice CPU plays with (port/runtime/hle/ghost_ai.cpp).
-        if args.ghost_ai_dir:
+        # Fight a pro: Phillip's published policies (port/runtime/hle/phillip_ai.cpp) or, before 1.0,
+        # the networks trained here (port/runtime/hle/ghost_ai.cpp).
+        if args.pro_ai_dir:
+            catalog_path = args.pro_ai_dir / "catalog.json"
+            if not catalog_path.is_file():
+                raise SystemExit(f"missing Fight a pro catalog: {catalog_path}")
+            catalog = json.loads(catalog_path.read_text())
+            if catalog.get("version") != 1 or not catalog.get("models"):
+                raise SystemExit(f"{catalog_path}: no policies")
+            out_dir = folder / "ProAI"
+            out_dir.mkdir()
+            # Each pro's imitation policy ships; matchup policies download in game on first use.
+            for model in catalog["models"]:
+                source = args.pro_ai_dir / model["file"]
+                if not source.is_file():
+                    if model["kind"] == "imitation":
+                        raise SystemExit(f"missing Fight a pro policy: {source}")
+                    continue
+                if hashlib.sha256(source.read_bytes()).hexdigest() != model["sha256"]:
+                    raise SystemExit(f"Fight a pro policy changed: {source}")
+                shutil.copy2(source, out_dir / source.name)
+            shutil.copy2(catalog_path, out_dir / "catalog.json")
+            ort = args.source_exe.parent / "onnxruntime.dll"
+            if not ort.is_file():
+                raise SystemExit(f"missing {ort} (tools/fetch_onnxruntime.py, then rebuild melee_source)")
+            shutil.copy2(ort, folder / "onnxruntime.dll")
+            print(f"source port pro AI: {len(catalog['models'])} Phillip policies")
+        elif args.ghost_ai_dir:
             specialists = ("mang0", "zain", "cody", "amsa")
             for pro in specialists:
                 source = args.ghost_ai_dir / f"ghost_ai_{pro}.bin"
@@ -513,6 +544,9 @@ def main():
                      (ROOT / "docs/licenses/dsp-coefficients.txt", "dsp-coefficients.txt"),
                      (ROOT / "docs/licenses/hps_decode-MIT.txt", "hps_decode.txt"),
                      (ROOT / "docs/licenses/slippilab-MIT.txt", "slippilab.txt"),
+                     (ROOT / "docs/licenses/slippi-ai-MIT.txt", "phillip-slippi-ai-MIT.txt"),
+                     (ROOT / "port/third_party/onnxruntime/LICENSE", "onnxruntime.txt"),
+                     (ROOT / "port/third_party/onnxruntime/ThirdPartyNotices.txt", "onnxruntime-third-party.txt"),
                      (ROOT / "port/runtime/gx/ui_sources/gd_melee/assets/kit/SourceSans3-OFL.md",
                       "source-sans-3-OFL.md")):
         if not src.is_file():
