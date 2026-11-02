@@ -203,7 +203,15 @@ std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::st
   const std::string stem = (dir / ("tmp-" + std::to_string(getpid()))).string();
   const std::string in = stem + ".hlsl", out = stem + ".spv", log = stem + ".log";
   { std::ofstream f(in, std::ios::binary); f << hlsl; }
-  const std::string command = std::string("glslangValidator -D -V -e ") + entry + " -S " + (vertex ? "vert" : "frag") +
+  // The release ships glslangValidator in bin/ beside the program (as the OpenGL renderer uses it);
+  // a system copy is the fallback. Run by name alone, a system without glslang could not start Vulkan.
+  static const std::string tool = [] {
+    std::error_code ec;
+    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    const auto shipped = ec ? std::filesystem::path() : exe.parent_path() / "bin" / "glslangValidator";
+    return !shipped.empty() && std::filesystem::is_regular_file(shipped, ec) ? "'" + shipped.string() + "'" : std::string("glslangValidator");
+  }();
+  const std::string command = tool + " -D -V -e " + entry + " -S " + (vertex ? "vert" : "frag") +
       " --target-env vulkan1.3 --auto-map-locations --shift-UBO-binding 0 --shift-texture-binding " + (present ? "1" : "2") +
       " --shift-sampler-binding " + (present ? "5" : "3") + (present && vertex ? " --invert-y" : "") + " -o '" +
       out + "' '" + in + "' > '" + log + "' 2>&1";
