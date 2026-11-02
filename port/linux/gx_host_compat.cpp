@@ -73,7 +73,7 @@ AuthoredStats& authored_stats() { static AuthoredStats stats; return stats; }
 #endif
 void settings_guest_options_frame(uint8_t, uint16_t, uint32_t) {}
 } // namespace gx
-namespace replay_control { bool skip_render() { return false; } }
+namespace replay_control { bool skip_render() { return false; } bool active() { return false; } }   // no replay player in this build
 
 namespace linux_renderer {
 void connect_host() {
