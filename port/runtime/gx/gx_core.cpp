@@ -390,8 +390,11 @@ uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count
       if (!d.col[i].type) { continue; }
       const uint8_t* q = fetch(d.col[i], col_view[i], csize[d.col[i].format]);
       uint8_t* dst = i ? out.col1 : out.col0;
+      // The format alone decides the alpha (read_color: 255 for the formats without one), as in
+      // Dolphin's vertex loader. The declared count (RGB or RGBA) does not: forcing 255 when it
+      // said RGB drew Animelee's character select name bars, an RGBA format with zero alpha
+      // declared RGB, as solid black over the bottom of the first two rows of icons.
       if (q) read_color(q, d.col[i].format, dst);
-      if (!d.col[i].count) dst[3] = 255;
     }
     // texcoords
     for (int t = 0; t < tex_count; ++t) {
