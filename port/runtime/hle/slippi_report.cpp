@@ -52,6 +52,7 @@ bool http(const char* method, const std::string& url, const std::wstring& header
   WinHttpSetTimeouts(session, 5000, 5000, 15000, 15000);
   // TLS 1.2 and 1.3 asked for by name: on some Windows installs WinHTTP's default left them out,
   // and Slippi's servers take nothing older, so every request failed there.
+#ifdef _WIN32   // Linux's HTTP layer (curl) negotiates TLS itself
 #ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
   DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
 #else
@@ -61,6 +62,7 @@ bool http(const char* method, const std::string& url, const std::wstring& header
     protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;   // an older WinHTTP without TLS 1.3
     WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof protocols);
   }
+#endif
   bool ok = false;
   HINTERNET conn = WinHttpConnect(session, host, uc.nPort, 0);
   if (conn) {
