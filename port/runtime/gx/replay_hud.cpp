@@ -3,6 +3,7 @@
 #include "replay_hud.h"
 
 #include "practice_menu.h"
+#include "replay_bar.h"
 #include "replay_coach.h"
 #include "replay_control.h"
 #include "imgui.h"
@@ -20,7 +21,7 @@ namespace {
 
 // GameCube buttons as the pads report them.
 constexpr uint16_t kDLeft = 0x0001, kDRight = 0x0002, kDDown = 0x0004, kDUp = 0x0008, kZ = 0x0010, kA = 0x0100,
-                   kX = 0x0400, kY = 0x0800, kStart = 0x1000;
+                   kB = 0x0200, kX = 0x0400, kY = 0x0800, kStart = 0x1000;
 constexpr int32_t kLead = 60;            // a tip is jumped to a second before it happens
 constexpr int32_t kJump = 5 * 60;
 constexpr double kHoldBack = 0.6;        // Start held this long goes back to the replay
@@ -192,7 +193,7 @@ uint16_t test_presses(int32_t frame) {
         if (colon == std::string::npos || colon + 1 >= item.size()) continue;
         uint16_t b = 0;
         switch (item[colon + 1]) {
-          case 'A': b = kA; break; case 'X': b = kX; break; case 'Y': b = kY; break; case 'Z': b = kZ; break;
+          case 'A': b = kA; break; case 'X': b = kX; break; case 'Y': b = kY; break; case 'Z': b = kZ; break; case 'B': b = kB; break;
           case 'S': b = kStart; break; case 'U': b = kDUp; break; case 'D': b = kDDown; break;
           case 'L': b = kDLeft; break; case 'R': b = kDRight; break; default: break;
         }
@@ -332,6 +333,14 @@ void frame(int style, const practice_menu::Frame& f) {
     }
   }
 
+  // B while watching (in a takeover B is the fighter's): everything the viewer draws goes away for
+  // recording, and B brings it back. Hidden, the takeover's LIVE label and results stay away too.
+  if (live < 0 && (pressed & kB)) {
+    replay_bar::toggle_hidden();
+    host::log("replay: controls %s", replay_bar::all_hidden() ? "hidden" : "shown");
+  }
+  if (replay_bar::all_hidden()) return;
+
   // ---- drawing ----
   const float x0 = f.game_x0, x1 = f.game_x1, y0 = f.game_y0, y1 = f.game_y1;
   const float M = kMargin * u, cxm = (x0 + x1) * 0.5f;
@@ -424,8 +433,8 @@ void frame(int style, const practice_menu::Frame& f) {
   // Bottom: the buttons, with this player's tips on a thin timeline above them.
   {
     const char* spec = live >= 0 ? "S:Retry|S:Hold to go back to the replay"
-                       : st.paused ? "A:Take over|X:Last tip|Y:Next tip|D:Frame|Z:Play|S:Settings"
-                                   : "A:Take over|X:Last tip|Y:Next tip|D:5 s|Z:Pause|R:Fast|S:Settings";
+                       : st.paused ? "A:Take over|X:Last tip|Y:Next tip|D:Frame|Z:Play|B:Hide|S:Settings"
+                                   : "A:Take over|X:Last tip|Y:Next tip|D:5 s|Z:Pause|R:Fast|B:Hide|S:Settings";
     const float ls = u * 0.82f;
     const float lw = practice_menu::legend(dl, 0, 0, ls, spec, 1.0f, false);
     const bool timeline = live < 0 && rs.tips && st.last_frame > st.first_frame;

@@ -24,7 +24,19 @@ void clock_text(int frames, char* out, size_t size) {
   std::snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
 
+// H (here) or B on the controller (gx/replay_hud.cpp) flips it; "Clean replays" flips the start.
+std::atomic<bool> g_hidden{false};
+std::atomic<double> g_hidden_note{0.0};
+
 }  // namespace
+
+bool all_hidden() {
+  return g_hidden.load(std::memory_order_relaxed) != gx::RenderOptions::live_clean_replays().load(std::memory_order_relaxed);
+}
+void toggle_hidden() {
+  g_hidden.store(!g_hidden.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  g_hidden_note.store(all_hidden() ? host::now_seconds() : 0.0, std::memory_order_relaxed);
+}
 
 bool wants_cursor() { return g_cursor.load(std::memory_order_relaxed); }
 bool active() { return replay_control::active(); }
@@ -50,8 +62,7 @@ void draw(float width, float height, bool menu_open) {
   // H hides the bar for good (for recording): it stays away while paused, seeking or when the
   // mouse moves, and every control keeps working. H again brings it back. Read here, on the thread
   // that draws it, only while the game window has the focus and no menu has the keys.
-  static bool hidden = false, h_was_down = true;   // UI thread only; "true" so a held H at start is no press
-  static double hidden_note = 0.0;
+  static bool h_was_down = true;   // UI thread only; "true" so a held H at start is no press
   bool h_down = false;
   if (!menu_open) {
     const HWND front = GetForegroundWindow();
@@ -60,18 +71,16 @@ void draw(float width, float height, bool menu_open) {
       h_down = (GetAsyncKeyState('H') & 0x8000) != 0;
   }
   // "Clean replays" (Overlays) starts it hidden: H then shows it, and H again hides it.
-  const bool clean = gx::RenderOptions::live_clean_replays().load(std::memory_order_relaxed);
-  if (h_down && !h_was_down) {
-    hidden = !hidden;
-    hidden_note = hidden != clean ? now : 0.0;
-    if (hidden == clean) mouse_time = now;   // show it at once
-  }
+  const bool was_hidden = all_hidden();
+  if (h_down && !h_was_down) toggle_hidden();
+  if (was_hidden && !all_hidden()) mouse_time = now;   // show it at once
   h_was_down = h_down || menu_open;
-  if (hidden != clean) {
+  const double hidden_note = g_hidden_note.load(std::memory_order_relaxed);
+  if (all_hidden()) {
     g_cursor.store(false, std::memory_order_relaxed);
     if (hidden_note > 0.0 && now - hidden_note < 2.0) {
       // Said once, briefly, so the key that brings it back is not a secret.
-      const char* note = "Replay bar hidden. H: show it again";
+      const char* note = "Replay controls hidden. H or B: show them again";
       const ImVec2 size = ImGui::CalcTextSize(note);
       const ImVec2 at(16.0f, height - size.y - 20.0f);
       ImDrawList* nl = ImGui::GetForegroundDrawList();

@@ -15,6 +15,10 @@ void draw(float width, float height, bool menu_open);
 bool wants_cursor();
 // A replay is playing: the viewer's keys are in use (Tab is fast forward, not the practice overlay).
 bool active();
+// Everything the replay viewer draws hidden (for recording clips): H, B on the controller, or
+// "Clean replays" at the start. Every control keeps working.
+bool all_hidden();
+void toggle_hidden();
 
 }  // namespace replay_bar
 
