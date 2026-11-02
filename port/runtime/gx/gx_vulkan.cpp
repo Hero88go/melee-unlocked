@@ -41,6 +41,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -50,6 +51,10 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
 #include <vector>
 
 namespace gx {
@@ -223,6 +228,13 @@ std::vector<uint32_t> spirv_for(const std::string& hlsl, bool vertex, const char
   const auto path = spirv_path(spirv_hash(hlsl, vertex, entry, present), vertex);
   std::vector<uint32_t> words = read_spirv(path);
   if (!words.empty()) return words;
+  // One compile at a time: the render thread and the pipeline worker both come here, the shader
+  // compiler is one instance (Windows) or works through files named after the process (Linux), and
+  // two compiles of the same shader would write the same cache file.
+  static std::mutex compile_mutex;
+  std::lock_guard<std::mutex> lock(compile_mutex);
+  words = read_spirv(path);
+  if (!words.empty()) return words;
   std::string error;
   words = compile_hlsl(hlsl, vertex, &error, entry, present);
   if (words.empty()) throw std::runtime_error("vulkan: shader compile failed: " + error.substr(0, 600));
@@ -392,10 +404,12 @@ class VulkanBackend final : public Backend {
 #endif
     host::log("vulkan: %s, internal resolution EFB x%d (window %dx%d), %s", device_name_.c_str(), scale_, client_w_, client_h_,
               present_mode_ == VK_PRESENT_MODE_FIFO_KHR ? "vsync" : present_mode_ == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "immediate");
+    start_pipeline_worker();   // last: a constructor that throws after this would leave the thread joinable
   }
 
   ~VulkanBackend() override {
     if (!device_) return;
+    stop_pipeline_worker();   // before anything it uses goes; what it finished joins the maps emptied below
     vkDeviceWaitIdle(device_);
 #ifdef GX_PC_SETTINGS
     destroy_settings_ui();
@@ -445,6 +459,8 @@ class VulkanBackend final : public Backend {
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override {
     begin_frame(frame);
+    exact_frame_ = !frame_in_match(frame) &&
+                   std::any_of(frame.copies.begin(), frame.copies.end(), [](const EfbCopy& c) { return !c.to_xfb; });
     const size_t original = frame.vertices.size();
     vertex_offsets_.assign(frame.draws.size(), 0);
     size_t total = original;
@@ -831,6 +847,7 @@ class VulkanBackend final : public Backend {
     f.ring.used = 0; f.uploads = false;
     ++sequence_;
     swap_in_ready_replacements();
+    if (async_pipelines_) integrate_pipelines();
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(f.upload, &begin), "begin upload");
@@ -1069,6 +1086,19 @@ class VulkanBackend final : public Backend {
     const PipelineKey key{vs.hash(), ps.hash(), pipeline_state(dc, topology, wire && wire_supported_) | (uint32_t(samples_) << 19)};
     if (auto i = pipelines_.find(key); i != pipelines_.end()) return i->second;
     const std::string vs_hlsl = generate_vertex_shader(vs), ps_hlsl = generate_pixel_shader(ps);
+    // A pipeline not built yet goes to the worker and this draw is skipped until it is there (a frame
+    // or two), as Dolphin's "skip drawing" does: compiling it here held the whole frame, a hitch at
+    // every new scene, effect and stage piece in a first session. A frame that copies the picture
+    // into a texture outside a match (a portrait, a stage screen) and a depth-texture draw still wait
+    // for theirs, since what they draw lasts in that texture for the whole scene.
+    if (async_pipelines_ && !exact_frame_ && !(dc.bp.ztex2() & 12) && !worker_failed_.count(key)) {
+      if (pending_pipelines_.insert(key).second) {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        jobs_.push_back({key, vs_hlsl, ps_hlsl});
+        jobs_cv_.notify_one();
+      }
+      return VK_NULL_HANDLE;
+    }
     VkPipeline p = game_pipeline(key, cached_module(key.vs, vs_hlsl, true), cached_module(key.ps, ps_hlsl, false));
     if (recipes_.size() < kMaxRecipes) recipes_.push_back({key.vs, key.ps, spirv_hash(vs_hlsl, true), spirv_hash(ps_hlsl, false), key.state});
     return p;
@@ -1122,7 +1152,97 @@ class VulkanBackend final : public Backend {
     f.write(reinterpret_cast<const char*>(recipes_.data()), (std::streamsize)(head[1] * sizeof(Recipe)));
   }
 
+  // ---- The pipeline worker ----
+  // One thread builds the pipelines draws ask for (compile, shader modules, pipeline) and hands them
+  // back; the render thread files them at the start of a frame (integrate_pipelines), so only it ever
+  // touches the maps. MELEE_VULKAN_SYNC_PIPELINES=1 (tests): every pipeline built on the render thread.
+  struct PipelineJob { PipelineKey key; std::string vs_hlsl, ps_hlsl; };
+  struct PipelineDone {
+    PipelineKey key{};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderModule vs = VK_NULL_HANDLE, ps = VK_NULL_HANDLE;
+    uint64_t vs_spv = 0, ps_spv = 0;
+  };
+  std::mutex jobs_mutex_;
+  std::condition_variable jobs_cv_;
+  std::deque<PipelineJob> jobs_;
+  std::vector<PipelineDone> done_;
+  bool worker_stop_ = false;
+  std::thread worker_;
+  std::unordered_set<PipelineKey, PipelineKeyHash> pending_pipelines_, worker_failed_;   // render thread only
+  bool async_pipelines_ = false, exact_frame_ = false;
+
+  void start_pipeline_worker() {
+    const char* sync = std::getenv("MELEE_VULKAN_SYNC_PIPELINES");
+    if (sync && *sync == '1') return;
+    worker_ = std::thread([this] { pipeline_worker(); });
+    async_pipelines_ = true;
+  }
+  void stop_pipeline_worker() {
+    if (!worker_.joinable()) return;
+    {
+      std::lock_guard<std::mutex> lock(jobs_mutex_);
+      worker_stop_ = true;
+      jobs_.clear();
+    }
+    jobs_cv_.notify_all();
+    worker_.join();
+    async_pipelines_ = false;
+    integrate_pipelines();
+  }
+  void pipeline_worker() {
+    for (;;) {
+      PipelineJob job;
+      {
+        std::unique_lock<std::mutex> lock(jobs_mutex_);
+        jobs_cv_.wait(lock, [this] { return worker_stop_ || !jobs_.empty(); });
+        if (worker_stop_) return;
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
+      }
+      PipelineDone d;
+      d.key = job.key;
+      try {
+        d.vs = module(spirv_for(job.vs_hlsl, true));
+        d.ps = module(spirv_for(job.ps_hlsl, false));
+        d.pipeline = make_game_pipeline(job.key, d.vs, d.ps);
+        d.vs_spv = spirv_hash(job.vs_hlsl, true);
+        d.ps_spv = spirv_hash(job.ps_hlsl, false);
+      } catch (const std::exception& e) {
+        host::log("vulkan: pipeline worker: %s", e.what());
+      }
+      std::lock_guard<std::mutex> lock(jobs_mutex_);
+      done_.push_back(d);
+    }
+  }
+  void integrate_pipelines() {
+    std::vector<PipelineDone> done;
+    {
+      std::lock_guard<std::mutex> lock(jobs_mutex_);
+      done.swap(done_);
+    }
+    for (const PipelineDone& d : done) {
+      pending_pipelines_.erase(d.key);
+      // A module already kept (the same shader in another pipeline) stays; the new copy goes, which
+      // is allowed once a pipeline is built from it.
+      const uint64_t vk = d.key.vs ^ 0xA5A5000000000000ull, pk = d.key.ps ^ 0x5A5A000000000000ull;
+      if (d.vs && !modules_.emplace(vk, d.vs).second) vkDestroyShaderModule(device_, d.vs, nullptr);
+      if (d.ps && !modules_.emplace(pk, d.ps).second) vkDestroyShaderModule(device_, d.ps, nullptr);
+      if (!d.pipeline) { worker_failed_.insert(d.key); continue; }   // the next draw builds it here and says why
+      if (!pipelines_.emplace(d.key, d.pipeline).second) { vkDestroyPipeline(device_, d.pipeline, nullptr); continue; }
+      if (recipes_.size() < kMaxRecipes) recipes_.push_back({d.key.vs, d.key.ps, d.vs_spv, d.ps_spv, d.key.state, 0});
+    }
+  }
+
   VkPipeline game_pipeline(const PipelineKey& key, VkShaderModule vs_module, VkShaderModule ps_module) {
+    VkPipeline p = make_game_pipeline(key, vs_module, ps_module);
+    pipelines_.emplace(key, p);
+    return p;
+  }
+
+  // The pipeline itself, kept nowhere: the pipeline worker builds through this too, so it reads only
+  // what never changes after start (the layout) and the key (its sample count is the key's bits 19 up).
+  VkPipeline make_game_pipeline(const PipelineKey& key, VkShaderModule vs_module, VkShaderModule ps_module) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs_module, "main", nullptr};
     stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, ps_module, "main", nullptr};
@@ -1159,8 +1279,7 @@ class VulkanBackend final : public Backend {
     VkPipeline p = build_pipeline(stages, vi, bits(s, 17, 1) ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                                   wire_on ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL, wire_on ? VK_CULL_MODE_NONE : culls[bits(s, 15, 2)],
                                   blend, bits(s, 10, 1), bits(s, 11, 1), compare[bits(s, 12, 3)], layout_,
-                                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, samples_);
-    pipelines_.emplace(key, p);
+                                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VkSampleCountFlagBits(s >> 19));
     return p;
   }
 
@@ -1300,6 +1419,7 @@ class VulkanBackend final : public Backend {
       if (++pipeline_failures_ <= 5) host::log("%s", e.what());
       return;
     }
+    if (p == VK_NULL_HANDLE) return;   // its pipeline is still being built: drawn from the next frame it is ready
     Frame_& f = frames_[slot_];
     begin_efb();
     const bool flat = lightweight_flat(lightweight_filter_, dc);
