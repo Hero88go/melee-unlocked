@@ -511,8 +511,8 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         return t < 60;
     case PC_P_SHIELD_DROP:
         /* Shield, then the stick flicked down to the shield drop notch: through the platform. The
-         * notch sits between the drop's threshold and the spot dodge's -0.7 (checked first, so -0.75
-         * spot dodged); -0.695 is inside it on both engines, also as the Static Recomp's -89/128. */
+         * game drops at y <= -0.66 and spot dodges at y <= -0.7, checked first (PlCo common data), so
+         * -0.75 spot dodged; -0.695 is inside the notch on both engines (the Static Recomp's -89/128). */
         pc_shield(o);
         if (t >= 6 && t < 10) o->ly = -0.695f;
         if (f->motion == MU_PC_MS_PASS || (t > 10 && f->airborne)) return 0;

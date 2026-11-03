@@ -173,10 +173,10 @@ static void test_shield_drop() {
     MuPcInput in;
     mu_pc_frame(&c, &s, &v, &in);
     shielded |= (in.buttons & MU_PC_R) != 0;
-    // Inside the notch: at or past the drop's threshold (-0.6875 at most), short of the spot dodge's
-    // -0.7, also after the Static Recomp's 1/128 steps.
+    // Inside the notch: the game's drop threshold (y <= -0.66) short of its spot dodge (y <= -0.7),
+    // also after the Static Recomp's 1/128 steps.
     const float static_ly = std::lround(in.ly * 128.0f) / 128.0f;
-    dropped |= (in.buttons & MU_PC_R) && in.ly <= -0.6875f && in.ly > -0.7f && static_ly <= -0.6875f && static_ly > -0.7f;
+    dropped |= (in.buttons & MU_PC_R) && in.ly <= -0.66f && in.ly > -0.7f && static_ly <= -0.66f && static_ly > -0.7f;
   }
   CHECK(shielded && dropped);
   // On the main stage it never pulls down (that would be a spot dodge).
