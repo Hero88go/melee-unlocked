@@ -1940,6 +1940,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // YouGame: the bridge the game's YouGame rows ask (launcher_yougame.h), up for the whole run.
       launcher::yougame::set_on_session_change([] { PostMessageW(g_main, WM_APP_YOUGAME, 0, 0); });
       if (std::string why; !launcher::yougame::start_bridge(&why)) log_line("yougame: the launcher's bridge did not start (%s)", why.c_str());
+      // Test runs only: sign in to the stand-in site (MELEE_YOUGAME_SITE / _AUTH) as "email:password".
+      if (const char* who = g_launcher_test ? std::getenv("MELEE_LAUNCHER_TEST_YOUGAME") : nullptr)
+        if (const char* colon = std::strchr(who, ':'))
+          std::thread([email = std::string(who, colon), pass = std::string(colon + 1)] {
+            std::string why;
+            if (!launcher::yougame::sign_in(email, pass, &why)) log_line("yougame: test sign-in failed (%s)", why.c_str());
+          }).detach();
       if (const char* ms = g_launcher_test ? std::getenv("MELEE_LAUNCHER_TEST_CAPTURE_MS") : nullptr)
         std::thread([ms = std::atoi(ms)] { Sleep(ms); PostMessageW(g_main, WM_APP + 41, 0, 0); }).detach();
 #ifndef MELEE_NO_SLIPPI   // the public releases are the other build: this one must never install them over itself
