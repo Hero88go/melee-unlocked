@@ -245,9 +245,15 @@ void load_language() {
   if (code.empty()) code = launcher::lang::system_default();
   launcher::lang::set_language(code, {widen(g_dir + "\\lang")});
 }
+bool source_available();   // below: the Source Port is installed beside the launcher
+
 void load_ini() {
   {
     std::ifstream f(ini_path());
+    // A fresh install (no launcher.ini yet) starts on the Source Port when it is installed. An older
+    // file without an engine line is a player who stayed on the Static Recomp, then the only
+    // default, so it keeps that; the choice is saved either way from now on.
+    if (!f && source_available()) g_engine = ENGINE_SOURCE;
     std::string line;
     while (std::getline(f, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -303,7 +309,7 @@ void save_ini() {
     if (g_replay_hide_short) f << "replayhideshort=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
-    if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
+    f << "engine=" << g_engine << "\n";   // always: no line means a player from before the Source Port default
     if (g_vanilla.vanilla) f << "vanilla=1\n";
     if (g_vanilla.own_code) f << "vanillaowncode=1\n";   // kept while Vanilla is off, like the mod choices
     if (!g_language.empty()) f << "language=" << g_language << "\n";
