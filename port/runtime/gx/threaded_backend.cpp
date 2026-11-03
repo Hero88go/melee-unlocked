@@ -173,9 +173,9 @@ class ThreadedBackend final : public Backend {
                     : live_options.fps_cap < 0 ? last_refresh
                     : present_uncapped ? 0.0 : 2.0 * last_refresh;
       // A display that follows the frames (G-Sync, FreeSync, read by the renderer from the display's
-      // own counts) is fed just under its refresh: at the ceiling it stops following the frames.
-      // Detection controls the cap, never the player's V-Sync choice. Windows' VRR presentation
-      // path uses interval 0 with ALLOW_TEARING; forcing interval 1 can add display queueing.
+      // own counts) is fed just under its refresh and synced, whatever the cap and V-Sync say: above
+      // the refresh it stops following and tears, under it syncing costs nothing. A 0.8.99 player on
+      // a 240 Hz G-Sync screen saw tearing with V-Sync off, and again after turning it on and off.
       int vrr = renderer->variable_refresh();
       // Measurement only: hidden test windows read as fixed refresh; MELEE_ASSUME_VRR=1 treats the
       // display as variable refresh so the hand-over present path can be timed there.
@@ -217,7 +217,7 @@ class ThreadedBackend final : public Backend {
           host::log("pacing: frame generation %dx, rendering %.0f frames a second for %.0f shown", fg_mult, wanted, wanted * fg_mult);
         }
       } else fg_logged = 1;
-      renderer->set_display_refresh(last_refresh, false);
+      renderer->set_display_refresh(last_refresh, vrr == 1);
       cap_period = wanted > 0.0 ? 1.0 / wanted : 0.0;
       // With Reflex on, its own limiter holds the rate (in its sleep, at the start of each frame) and
       // this thread's timer stands aside, so the two never wait on each other. "Follow the monitor"
@@ -292,7 +292,7 @@ class ThreadedBackend final : public Backend {
           scanline_why = why; scanline_logged_on = false;
         }
       }
-      renderer->set_display_refresh(last_refresh, scanline_active);
+      renderer->set_display_refresh(last_refresh, vrr == 1 || scanline_active);
       authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       set_authored_capture_wanted(subframes && authored);

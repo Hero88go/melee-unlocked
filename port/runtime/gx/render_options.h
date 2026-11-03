@@ -346,7 +346,7 @@ struct RenderOptions {
   // the window at it. Off = the window is whatever size it has been dragged to.
   bool window_pinned = false;
   AspectMode aspect = AspectMode::Auto;   // --aspect, or "aspect" in port-settings.ini
-  bool vsync = false; // Avoid display queueing by default; preserve an explicit saved choice.
+  bool vsync = true;  // Fresh installs synchronize scanout; a saved explicit choice still wins.
   bool widescreen = false;    // Slippi Widescreen 16:9 code on (present at 16:9 and tell the game)
   // EXPERIMENTAL: widen the frustum in the renderer rather than running the Gecko code, so the HUD
   // and the 2D layer keep their authored size and nothing is written to guest memory. Mutually

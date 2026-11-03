@@ -2047,7 +2047,7 @@ void D3D11Backend::update_variable_refresh() {
   if (!vrr_.add({st.PresentCount, st.SyncRefreshCount, (double)st.SyncQPCTime.QuadPart / qpc_hz}, vrr_nominal_hz_)) return;
   if (vrr_.state() == 1)
     host::log("display: variable refresh (G-Sync or FreeSync) is on: %.0f refreshes a second for %.0f frames on a %.0f Hz "
-              "display; frame cap below %.0f fps, V-Sync follows the player's setting", vrr_.refreshes(), vrr_.shown(),
+              "display; frames are presented synced under %.0f a second", vrr_.refreshes(), vrr_.shown(),
               vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
   else
     host::log("display: fixed refresh: %.0f refreshes a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(),
@@ -2397,8 +2397,8 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     }
     }
     present_wait_ = Stopwatch::now() - wait_start;
-    // Sync by the player's choice or the explicit scanline-sync diagnostic. VRR detection
-    // controls the cap; it must leave the interval-0/ALLOW_TEARING path available with V-Sync off.
+    // Synced with V-Sync on, and on a display that follows the frames (tear_free_, from the
+    // presentation loop), where a frame starts its own refresh and syncing costs nothing.
     const bool synced = opts_.vsync || tear_free_;
     const double present_call = Stopwatch::now();
     // While hidden, only test whether the window can be seen again (see gx_d3d12.cpp).
