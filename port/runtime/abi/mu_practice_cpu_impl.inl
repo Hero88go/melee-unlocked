@@ -510,9 +510,11 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         if (s->plan_len && !f->airborne && f->motion != MU_PC_MS_LANDING_FALL_SPECIAL) return 0;
         return t < 60;
     case PC_P_SHIELD_DROP:
-        /* Shield, then the stick flicked down to the shield drop notch: through the platform. */
+        /* Shield, then the stick flicked down to the shield drop notch: through the platform. The
+         * notch sits between the drop's threshold and the spot dodge's -0.7 (checked first, so -0.75
+         * spot dodged); -0.695 is inside it on both engines, also as the Static Recomp's -89/128. */
         pc_shield(o);
-        if (t >= 6 && t < 10) o->ly = -0.75f;
+        if (t >= 6 && t < 10) o->ly = -0.695f;
         if (f->motion == MU_PC_MS_PASS || (t > 10 && f->airborne)) return 0;
         return t < 24;
     case PC_P_DASH_JUMP:
