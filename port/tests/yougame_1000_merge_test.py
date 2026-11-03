@@ -64,10 +64,10 @@ class YouGame1000MergeTest(unittest.TestCase):
 
     def test_split_menu_rows(self):
         menu = source("sourceport/game/shim/mu_slippi_menu.c")
-        self.assertIn("{ MU_SLP_MODE_RANKED, MU_SLP_MODE_DIRECT, MU_SLP_MODE_UNRANKED,", menu)
-        self.assertIn("{ 0x645, 0x647, 0x646, 0x647, 0x64B, 0x64C, 0x648, 0x64A }", menu)
+        self.assertIn("{ MU_SLP_MODE_RANKED, MU_SLP_MODE_UNRANKED, MU_SLP_MODE_DIRECT, -1,", menu)
+        self.assertIn("{ 0x645, 0x646, 0x647, 0x644, 0x646, 0x647, 0x64B, 0x64C }", menu)
         rows = source("port/runtime/hle/online_rows.cpp")
-        for line in ("kYouGameRanked", "kYouGameDirect", "kSlippiUnranked", "kSlippiDirect"):
+        for line in ("kFriends", "kSlippi,", "kSlippiUnranked", "kSlippiDirect", "kSlippiTeams", "kSlippiParty"):
             self.assertIn(line, rows)
         host = source("port/app/source_host.cpp")
         self.assertIn("online_rows::apply(data, &why)", host)

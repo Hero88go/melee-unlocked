@@ -62,9 +62,16 @@ int serve(int argc, char** argv) {
   std::string why;
   if (!sign_in(argv[3], argv[4], &why)) { std::printf("SIGNIN FAILED %s\n", why.c_str()); return 3; }
   if (!start_bridge(&why)) { std::printf("BRIDGE FAILED %s\n", why.c_str()); return 4; }
+  // The launcher's restart, recorded instead of done: a line the end-to-end run reads.
+  set_restart_older([](const Allowed& older, const std::string& mode) {
+    std::printf("RESTART %s %s\n", older.version.c_str(), mode.c_str());
+    std::fflush(stdout);
+    return std::string();
+  });
   const std::string token = new_launch_token();
   auto wide = [](const char* s) { std::wstring w; for (; *s; ++s) w += (wchar_t)(unsigned char)*s; return w; };
   set_build(argv[5], wide(argv[6]), wide(argv[7]));
+  refresh_allowed(argv[5], wide(argv[6]), wide(argv[7]));
   const Account a = account();
   std::printf("BRIDGE %s %s %s %s\n", bridge_url().c_str(), token.c_str(), a.name.c_str(), a.code.c_str());
   std::fflush(stdout);

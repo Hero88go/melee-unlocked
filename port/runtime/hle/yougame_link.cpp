@@ -152,6 +152,7 @@ pad_mirror::Attachment g_pad_mirror_attachment;
 transport::Events g_net_events;
 std::atomic<bool> g_broker{false}, g_direct{false};
 bool g_launcher = false;                        // MELEE_YOUGAME_LAUNCHER=1: Melee Unlocked's launcher serves the bridge
+std::atomic<int> g_online_mode_arg{0};          // --online-mode: 1 ranked, 2 direct, taken once
 std::atomic<bool> g_launcher_session{false};    // under the launcher: the online menu's last pick was a YouGame row
 std::mutex g_link_mutex;
 std::map<unsigned, int> g_link_events;
@@ -337,13 +338,13 @@ json bridge_stdio(const json& body, int timeout_ms, const std::function<bool()>&
 // POST <bridge>/sdk {type, ...} -> {ok, result | error}. Only the app's loopback address is
 // accepted: the token must never travel anywhere else.
 json bridge_http(const json& body, int timeout_ms) {
-  if (g_bridge_url.empty() || g_bridge_token.empty()) throw std::runtime_error("Start Melee from the YouGame app to play online");
+  if (g_bridge_url.empty() || g_bridge_token.empty()) throw std::runtime_error(g_launcher ? "Start Melee Unlocked from its launcher to play YouGame modes" : "Start Melee from the YouGame app to play online");
   Url u;
-  if (!parse_url(g_bridge_url + "/sdk", u) || u.secure || u.host != L"127.0.0.1") throw std::runtime_error("The YouGame app's address is invalid");
+  if (!parse_url(g_bridge_url + "/sdk", u) || u.secure || u.host != L"127.0.0.1") throw std::runtime_error(g_launcher ? "The launcher's address is invalid" : "The YouGame app's address is invalid");
   HINTERNET session = http_session();
   if (!session) throw std::runtime_error("Networking is unavailable");
   HINTERNET conn = WinHttpConnect(session, u.host.c_str(), u.port, 0);
-  if (!conn) throw std::runtime_error("The YouGame app is not answering");
+  if (!conn) throw std::runtime_error(g_launcher ? "The Melee Unlocked launcher is not answering. Keep it open while you play YouGame modes." : "The YouGame app is not answering");
   HINTERNET req = WinHttpOpenRequest(conn, L"POST", u.path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
   std::string result;
   bool sent = false;
@@ -364,9 +365,9 @@ json bridge_http(const json& body, int timeout_ms) {
     WinHttpCloseHandle(req);
   }
   WinHttpCloseHandle(conn);
-  if (!sent) throw std::runtime_error("The YouGame app is not answering");
+  if (!sent) throw std::runtime_error(g_launcher ? "The Melee Unlocked launcher is not answering. Keep it open while you play YouGame modes." : "The YouGame app is not answering");
   json j = json::parse(result, nullptr, false);
-  if (j.is_discarded() || !j.is_object()) throw std::runtime_error("The YouGame app sent an invalid answer");
+  if (j.is_discarded() || !j.is_object()) throw std::runtime_error(g_launcher ? "The launcher sent an invalid answer" : "The YouGame app sent an invalid answer");
   return j;
 }
 
@@ -810,11 +811,7 @@ uint64_t close_room(Leave why) {
 // What two builds must share to play: the netplay protocol and this build's game. The rooms Worker
 // only matches players with the same key (lobby compatibility).
 std::string compatibility(int mode) {
-#ifdef MELEE_PORT_VERSION
-  std::string v = MELEE_PORT_VERSION;
-#else
-  std::string v = "dev";
-#endif
+  const std::string v = yougame::build_version();
   const auto& build = slippi::online::local_build();
   return compatibility_key(v, build.mod_view, build.fingerprint, build.static_engine,
                            slippi::online::ranked_rules_digest(mode));
@@ -926,6 +923,40 @@ bool active() { return g_stdio || (!g_launcher && !g_bridge_url.empty() && !g_br
 bool launcher() { return g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty(); }
 bool available() { return active() || launcher(); }
 bool session() { return active() || (launcher() && g_launcher_session.load()); }
+std::string build_version() {
+#ifdef MELEE_PORT_VERSION
+  return MELEE_PORT_VERSION;
+#else
+  return "dev";
+#endif
+}
+
+std::string behind_version_now() {
+  if (!launcher()) return {};
+  try {
+    const json hello = bridge({{"type", "hello"}}, 2000);
+    if (hello.count("behind") && hello["behind"].is_object()) return hello["behind"].value("version", "");
+  } catch (const std::exception& e) {
+    host::log("yougame: the launcher did not say which release YouGame is on: %s", e.what());
+  }
+  return {};
+}
+
+bool restart_older(const std::string& mode, std::string* error) {
+  if (!launcher()) { if (error) *error = "Only the launcher can switch versions."; return false; }
+  try {
+    bridge({{"type", "muRestartOlder"}, {"mode", mode}}, 5000);
+    host::log("yougame: restarting in the release YouGame is on (%s)", mode.c_str());
+    return true;
+  } catch (const std::exception& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+}
+
+void set_online_mode_arg(int mode) { g_online_mode_arg = mode; }
+int take_online_mode_arg() { return g_online_mode_arg.exchange(0); }
+
 void set_launcher_session(bool yougame) {
   if (!launcher()) return;
   if (g_launcher_session.exchange(yougame) != yougame)

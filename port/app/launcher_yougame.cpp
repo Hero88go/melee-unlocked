@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cctype>
 #include <deque>
 #include <fstream>
 #include <mutex>
@@ -53,6 +54,9 @@ std::mutex g_mutex;
 Env g_env = kProduction;
 Session g_session;
 std::string g_build_json = "{}";
+std::vector<Allowed> g_allowed;     // the builds YouGame allows, as last read
+Allowed g_behind;                    // the release to offer, version empty when none
+std::function<std::string(const Allowed&, const std::string&)> g_restart_older;
 std::deque<std::string> g_tokens;   // newest first; a few, so a game still running keeps its own
 uint16_t g_port = 0;
 std::atomic<bool> g_bridge_up{false};
@@ -292,8 +296,29 @@ std::string sha256_file(const std::wstring& path) {
   return out;
 }
 
+// "1.0.12" > "1.0.9": compared number by number.
+bool newer(const std::string& a, const std::string& b) {
+  size_t i = 0, j = 0;
+  while (i < a.size() || j < b.size()) {
+    long x = 0, y = 0;
+    while (i < a.size() && a[i] != '.') x = x * 10 + (std::isdigit((unsigned char)a[i]) ? a[i] - '0' : 0), ++i;
+    while (j < b.size() && b[j] != '.') y = y * 10 + (std::isdigit((unsigned char)b[j]) ? b[j] - '0' : 0), ++j;
+    if (x != y) return x > y;
+    ++i; ++j;
+  }
+  return false;
+}
+
 Backend real_backend() {
   Backend b;
+  b.behind = [] { return behind(); };
+  b.restart_older = [](const std::string& mode) {
+    Allowed target;
+    std::function<std::string(const Allowed&, const std::string&)> handler;
+    { std::lock_guard<std::mutex> lock(g_mutex); target = g_behind; handler = g_restart_older; }
+    if (target.version.empty()) return std::string("YouGame allows this version now. Search again.");
+    return handler ? handler(target, mode) : std::string("This launcher cannot switch versions.");
+  };
   b.account = [] { return account(); };
   b.player_id = [] { std::lock_guard<std::mutex> lock(g_mutex); return g_session.user_id; };
   b.code = [] {
@@ -524,6 +549,49 @@ std::string new_launch_token() {
   return token;
 }
 
+// The builds YouGame allows. Assumed route until YouGame names its own: GET /api/native/builds
+// ?slug=melee-unlocked -> {"allowed":[{"version","exe_sha256","game_sha256"}]}. Anything else
+// (no route, an error, no list) means nothing is known, and the game offers no other version.
+std::vector<Allowed> allowed_builds() {
+  std::vector<Allowed> out;
+  try {
+    Env e;
+    { std::lock_guard<std::mutex> lock(g_mutex); e = effective_env(g_env); }
+    const Reply r = http("GET", e.site + "/api/native/builds?slug=" + kSlug, {"Accept: application/json"}, "", 8000);
+    const json j = parse_or_empty(r.body);
+    if (r.status != 200 || !j.count("allowed") || !j["allowed"].is_array()) return out;
+    for (const json& a : j["allowed"])
+      if (a.is_object() && a.count("version") && a["version"].is_string())
+        out.push_back({a["version"], a.value("exe_sha256", ""), a.value("game_sha256", "")});
+  } catch (const std::exception&) {
+  }
+  return out;
+}
+
+void refresh_allowed(const std::string& current_version, const std::wstring& exe, const std::wstring& game_library) {
+  const std::vector<Allowed> allowed = allowed_builds();
+  const std::string exe_hash = sha256_file(exe), game_hash = sha256_file(game_library);
+  Allowed offer;
+  bool current_ok = allowed.empty();
+  for (const Allowed& a : allowed) {
+    if (a.exe_sha256 == exe_hash && a.game_sha256 == game_hash) current_ok = true;
+    // Only a GitHub release this launcher can fetch: 1.0 and later, never this version itself.
+    if (a.version != current_version && !newer("1.0.0", a.version) && (offer.version.empty() || newer(a.version, offer.version)))
+      offer = a;
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_allowed = allowed;
+  g_behind = current_ok ? Allowed{} : offer;
+}
+
+Allowed behind() { std::lock_guard<std::mutex> lock(g_mutex); return g_behind; }
+std::string file_sha256(const std::wstring& path) { return sha256_file(path); }
+
+void set_restart_older(std::function<std::string(const Allowed&, const std::string&)> handler) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_restart_older = std::move(handler);
+}
+
 void set_build(const std::string& version, const std::wstring& exe, const std::wstring& game_library) {
   const json j{{"version", version}, {"exe_sha256", sha256_file(exe)}, {"game_sha256", sha256_file(game_library)}};
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -599,6 +667,11 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
         result["player"] = {{"id", backend.player_id()}, {"name", a.name}};
         result["nameShared"] = true;
       }
+      // YouGame is on an older release than this one: the game offers to restart in it.
+      if (backend.behind) {
+        const Allowed older = backend.behind();
+        if (!older.version.empty()) result["behind"] = {{"version", older.version}};
+      }
       return reply(200, {{"ok", true}, {"result", result}});
     }
     if (!a.signed_in && (type == "mpCode" || type == "mpTicket" || type == "mpRank"))
@@ -609,6 +682,14 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
       return reply(200, {{"ok", true}, {"result", parse_or_empty(backend.rank(mode))}});
     }
     if (type == "mpFriend") return reply(200, {{"ok", false}, {"error", "Enter a connect code"}});
+    // Launcher only, never sent on to YouGame: restart in the release YouGame is on.
+    if (type == "muRestartOlder") {
+      const std::string mode = q.value("mode", std::string("ranked"));
+      const std::string why = backend.restart_older ? backend.restart_older(mode == "direct" ? "direct" : "ranked")
+                                                    : std::string("This launcher cannot switch versions.");
+      if (why.empty()) return reply(200, {{"ok", true}, {"result", json::object()}});
+      return reply(200, {{"ok", false}, {"error", why}});
+    }
     if (type == "mpTicket") {
       const bool ranked = q.value("ranked", false);
       json body{{"slug", kSlug}, {"player_id", backend.player_id()}, {"name", a.name}, {"anonymous", false},

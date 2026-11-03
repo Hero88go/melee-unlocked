@@ -54,6 +54,17 @@ bool available();
 bool session();
 // The online menu's choice, before its character select: true for a YouGame row. Ignored in the app.
 void set_launcher_session(bool yougame);
+// Launcher only: YouGame is on another (older) release than this build. Asks the launcher again
+// (a local answer, under 2 s). Empty when this build is allowed or nothing is known.
+std::string behind_version_now();
+// Asks the launcher to start that release once this game closes, in `mode` ("ranked" or "direct").
+bool restart_older(const std::string& mode, std::string* error);
+// --online-mode ranked|direct: the launcher started this game for that YouGame mode. 1 ranked,
+// 2 direct, 0 none; answered once.
+void set_online_mode_arg(int mode);
+int take_online_mode_arg();
+// This build's version as YouGame and the rooms see it.
+std::string build_version();
 // The bridge is this process's stdin/stdout (the app's sandboxed launch): stdout carries only
 // bridge lines (the log goes to stderr), and the GameCube adapter comes from the app's pad mirror.
 bool stdio_bridge();

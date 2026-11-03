@@ -1,4 +1,4 @@
-"""Draw the online menu's four new row labels and write port/runtime/hle/online_rows.inc.
+"""Draw the online menu's six new row labels and write port/runtime/hle/online_rows.inc.
 
 The labels are 176x30 IA4 images like the menu's own (white letters, black outline). Only our own
 drawings go into the .inc; nothing is copied from the disc. --preview draws them beside the menu's
@@ -18,13 +18,16 @@ import ia4
 
 ROOT = Path(__file__).resolve().parents[2]
 W, H, HP = 176, 30, 32           # image size and its 4-row tile padding
-LABELS = [                        # (C name, text): the order online_rows.cpp writes them
-    ('kYouGameRanked', 'YouGame Ranked'),
-    ('kYouGameDirect', 'YouGame Direct'),
+# (C name, text). Ranked and Unranked keep the menu's own labels; online_rows.cpp writes these six.
+LABELS = [
+    ('kFriends', 'Friends'),
+    ('kSlippi', 'Slippi'),
     ('kSlippiUnranked', 'Slippi Unranked'),
     ('kSlippiDirect', 'Slippi Direct'),
+    ('kSlippiTeams', 'Slippi Teams'),
+    ('kSlippiParty', 'Slippi Party'),
 ]
-FONT, SIZE, STROKE, BASELINE = 'C:/Windows/Fonts/ariblk.ttf', 26, 2, 23
+FONT, SIZE, STROKE, BASELINE = 'C:/Windows/Fonts/ariblk.ttf', 29, 2, 24
 
 
 def draw(text, font_path=FONT, size=SIZE, stroke=STROKE):
@@ -80,12 +83,13 @@ def preview(out, iso):
         im = imgs[i]
         raw = built[0x20 + im['data']: 0x20 + im['data'] + W * HP]
         return Image.frombytes('RGBA', (W, HP), ia4.decode_ia4(raw, W, HP)).crop((0, 0, W, H))
-    # The menu as it will read: the four new rows, then Teams, Party, Log-in, Update.
-    rows = [draw(t) for _, t in LABELS] + [orig(62), orig(63), orig(59), orig(61)]
+    # The two pages as they will read: Ranked, Unranked, Friends, Slippi; then Slippi's four.
+    drawn = [draw(t) for _, t in LABELS]
+    rows = [orig(33), orig(34), drawn[0], drawn[1]] + drawn[2:]
     sheet = Image.new('RGBA', (W * 2 + 30, len(rows) * 34 + 8), (40, 50, 90, 255))
     for i, img in enumerate(rows):
         sheet.alpha_composite(img, (15, 4 + 34 * i))
-    for i, idx in enumerate((33, 34, 58, 62)):
+    for i, idx in enumerate((33, 34, 58, 62, 63, 59, 60, 61)):
         sheet.alpha_composite(orig(idx), (W + 15, 4 + 34 * i))
     sheet.resize((sheet.width * 3, sheet.height * 3), Image.NEAREST).save(out)
     print('wrote', out)

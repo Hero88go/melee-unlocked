@@ -5,6 +5,7 @@ Routes (the ones the launcher calls, see port/app/launcher_yougame.cpp):
   GET  /api/multiplayer/code                               the player's connect code
   GET  /api/multiplayer/rank                               a fixed standing
   POST /api/multiplayer/ticket                             pairs two players into one room
+  GET  /api/native/builds                                  the builds allowed (--allowed VERSION:EXE:GAME ...)
   GET  /room/<code>?ticket=...  (WebSocket)                welcome, join, and relays {t:"msg"} by "to"
 Every request is logged as one JSON line to --log. Nothing here talks to YouGame.
 
@@ -33,6 +34,7 @@ class State:
         self.waiting = {}        # pairing key -> (room code, first user id)
         self.rooms = {}          # code -> {'conns': [Conn], 'size': 2}
         self.next_room = 1
+        self.allowed = None      # /api/native/builds: None answers 404 (YouGame said nothing)
 
     def log(self, **entry):
         entry['at'] = round(time.time(), 3)
@@ -137,6 +139,11 @@ class Handler(socketserver.BaseRequestHandler):
                 s.users[access] = user
             return 200, {'access_token': access, 'refresh_token': refresh, 'expires_in': 3600, 'token_type': 'bearer',
                          'user': {'id': user['id'], 'email': user['email'], 'user_metadata': {'name': user['name']}}}
+        if path == '/api/native/builds':
+            s.log(route='builds')
+            if s.allowed is None:
+                return 404, {'error': 'Not found'}
+            return 200, {'allowed': s.allowed}
         user = s.user_for(headers)
         cookie_ok = any(c.strip().startswith('sb-') for c in headers.get('cookie', '').split(';'))
         if not user:
@@ -230,8 +237,11 @@ def main():
     ap.add_argument('--port', type=int, default=0)
     ap.add_argument('--log', default='')
     ap.add_argument('--portfile', default='')
+    ap.add_argument('--allowed', nargs='*', help='VERSION:EXE_SHA256:GAME_SHA256 entries for /api/native/builds')
     a = ap.parse_args()
     STATE = State(a.log)
+    if a.allowed is not None:
+        STATE.allowed = [dict(zip(('version', 'exe_sha256', 'game_sha256'), x.split(':'))) for x in a.allowed]
     srv = Server(('127.0.0.1', a.port), Handler)
     if a.portfile:
         with open(a.portfile, 'w') as f:

@@ -80,14 +80,14 @@ int main() {
     std::string why;
     CHECK(online_rows::apply(s.file, &why));
     CHECK(why.empty());
-    CHECK(image_is(s, 33, online_rows::kYouGameRanked));
-    CHECK(image_is(s, 34, online_rows::kYouGameDirect));
-    CHECK(image_is(s, 58, online_rows::kSlippiUnranked));
-    CHECK(image_is(s, 62, online_rows::kSlippiDirect));
-    CHECK(image_filled(s, 63, 62));   // Teams moves down one row
-    CHECK(image_filled(s, 59, 63));   // Party
-    CHECK(image_filled(s, 60, 59));   // Log in takes the dead Log out row
-    CHECK(image_filled(s, 61, 61));   // Update stays
+    CHECK(image_filled(s, 33, 33));   // Ranked: the menu's own label
+    CHECK(image_filled(s, 34, 34));   // Unranked
+    CHECK(image_is(s, 58, online_rows::kFriends));
+    CHECK(image_is(s, 62, online_rows::kSlippi));
+    CHECK(image_is(s, 63, online_rows::kSlippiUnranked));
+    CHECK(image_is(s, 59, online_rows::kSlippiDirect));
+    CHECK(image_is(s, 60, online_rows::kSlippiTeams));
+    CHECK(image_is(s, 61, online_rows::kSlippiParty));
   }
   {
     Synthetic s = make(160);          // not the menu the labels were drawn for

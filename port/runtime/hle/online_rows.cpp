@@ -75,16 +75,14 @@ bool apply(std::vector<uint8_t>& file, std::string* why) {
       return fail(why, "label image differs");
   }
   uint8_t* base = file.data() + 0x20;
-  auto copy_of = [&](int i) { return std::vector<uint8_t>(base + data[i], base + data[i] + kBytes); };
-  const auto teams = copy_of(62), party = copy_of(63), login = copy_of(59);
-  // Rows in the menu's order: slots 0-7 show images 33, 34, 58, 62, 63, 59, 60, 61.
-  std::memcpy(base + data[33], kYouGameRanked, kBytes);
-  std::memcpy(base + data[34], kYouGameDirect, kBytes);
-  std::memcpy(base + data[58], kSlippiUnranked, kBytes);
-  std::memcpy(base + data[62], kSlippiDirect, kBytes);
-  std::memcpy(base + data[63], teams.data(), kBytes);
-  std::memcpy(base + data[59], party.data(), kBytes);
-  std::memcpy(base + data[60], login.data(), kBytes);
+  // Rows in the menu's order: slots 0-7 show images 33, 34, 58, 62, 63, 59, 60, 61. Ranked (33) and
+  // Unranked (34) keep the menu's own labels.
+  std::memcpy(base + data[58], kFriends, kBytes);
+  std::memcpy(base + data[62], kSlippi, kBytes);
+  std::memcpy(base + data[63], kSlippiUnranked, kBytes);
+  std::memcpy(base + data[59], kSlippiDirect, kBytes);
+  std::memcpy(base + data[60], kSlippiTeams, kBytes);
+  std::memcpy(base + data[61], kSlippiParty, kBytes);
   if (why) why->clear();
   return true;
 }

@@ -1764,6 +1764,8 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--capture-sim-frame") gfx.capture_sim_frame = std::strtoull(next(), nullptr, 0);
     else if (a == "--script") { if (!host::input_load_script(next())) { std::fprintf(stderr, "cannot load input script\n"); return 1; } scripted = true; }
     else if (a == "--allow-matchmaking") allow_matchmaking = true;
+    // The launcher restarted this game in the release YouGame is on: open that YouGame mode at once.
+    else if (a == "--online-mode") { const std::string m = next(); yougame::set_online_mode_arg(m == "direct" ? 2 : m == "ranked" ? 1 : 0); }
     else if (a == "--dump") gfx.dump_path = next();
     else if (a == "--shader-cache") gfx.shader_cache = next();
     else if (a == "--trace-func") { const char* spec = next(); uint32_t addr = (uint32_t)std::strtoul(spec, nullptr, 16); uint32_t limit = 40;

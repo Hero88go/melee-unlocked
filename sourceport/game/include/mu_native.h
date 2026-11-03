@@ -674,6 +674,7 @@ int mu_slippi_fetch_app_state(void);                      /* B9 (and FA: is Rank
  * (game text, NUL-terminated) into `out`; it returns 0 and leaves `out` empty otherwise. */
 int mu_slippi_ranked_available(void);
 int mu_slippi_yougame_pick(void);   /* the online mode was picked from a YouGame row (split menu) */
+void mu_slippi_yougame_restart_older(void);   /* the offer's Start: the launcher restarts in YouGame's release */
 int mu_slippi_ranked_header(char* out, unsigned int cap);
 int mu_slippi_app_state(void);
 const char* mu_slippi_user_name(void);

@@ -1,0 +1,34 @@
+# YouGame Unranked (the second row under the launcher): Unranked -> online CSS -> pick a character -> Start (search).
+# After the match starts (frame 1 of the online game), the @match section loops: a Fox that dashes,
+# short hops, attacks and shields so the opponent has something to play against for the whole game.
+280 sy=-127
+286
+300 A
+310
+840 sx=61 sy=127
+857
+880 A
+890
+940 START
+950
+@match
+@loop 360
+0
+60 sx=80
+90 sx=80 A
+96
+120 sx=-80
+150 sx=-80 A
+156
+180 X
+183
+190 sx=0 A
+200
+220 sy=-80 A
+230
+250 L
+280
+300 sx=80 Y
+303 sx=80
+320 sx=80 B
+330

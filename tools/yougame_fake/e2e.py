@@ -35,7 +35,13 @@ def main():
     ap.add_argument('--frames', type=int, default=4200)
     ap.add_argument('--script', default='port/scripts/online_bot.txt')
     ap.add_argument('--timeout', type=int, default=0)
+    ap.add_argument('--older', default='', help='YouGame allows only this release: one game, expect the offer and the restart')
+    ap.add_argument('--friends', action='store_true', help='Friends: each game types the code of the other player')
     a = ap.parse_args()
+    if a.friends:
+        a.script = 'port/scripts/yougame_friends_bot.txt'
+    if a.older:
+        a.script = 'port/scripts/yougame_older_bot.txt'
     out = (ROOT / a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     iso = os.environ.get('MELEE_ISO') or find_iso()
@@ -47,7 +53,8 @@ def main():
     fake_log = out / 'fake.jsonl'
     fake_log.unlink(missing_ok=True)
     fake = subprocess.Popen([sys.executable, '-I', str(ROOT / 'tools/yougame_fake/fake_site.py'), '--log', str(fake_log),
-                             '--portfile', str(portfile)], creationflags=no_window)
+                             '--portfile', str(portfile)] + (['--allowed', f'{a.older}:{"a" * 64}:{"b" * 64}'] if a.older else []),
+                            creationflags=no_window)
     for _ in range(100):
         if portfile.exists() and portfile.read_text():
             break
@@ -57,16 +64,24 @@ def main():
     exe, dll = REL / 'melee_source.exe', REL / 'melee_game.dll'
     bridges, games, results = [], [], {'site': site}
     try:
-        for i, email in enumerate(('alice@example.test', 'bob@example.test')):
+        lines = []
+        for i, email in enumerate(('alice@example.test', 'bob@example.test')[:1 if a.older else 2]):
             b = subprocess.Popen([str(REL / 'port_launcher_yougame_test.exe'), '--serve', site, email, 'pw', version, str(exe), str(dll)],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, creationflags=no_window)
             line = b.stdout.readline().split()
             if not line or line[0] != 'BRIDGE':
                 sys.exit(f'bridge {i} failed: {" ".join(line)}')
             bridges.append(b)
+            lines.append(line)
             results[f'bridge{i}'] = {'url': line[1], 'name': line[3], 'code': line[4]}
+        for i, line in enumerate(lines):
             d = out / f'p{i + 1}'
             (d / 'user').mkdir(parents=True, exist_ok=True)
+            if a.friends:   # the code entry's suggestion is the other player's code
+                # Full-width, as the game itself saves a code it played (two bytes each in its text).
+                other = ''.join(chr(ord(c) + 0xFEE0) if '!' <= c <= '~' else c for c in lines[1 - i][4])
+                (d / 'user' / 'direct-codes.json').write_text(json.dumps([{'connectCode': other, 'lastPlayed': ''}],
+                                                                         indent=2, ensure_ascii=False), encoding='utf-8')
             (d / 'cards').mkdir(exist_ok=True)
             settings = d / 'settings.ini'
             settings.write_text('startup 0\nbackend d3d11\nvolume 0\nscale 1\n')
@@ -89,13 +104,28 @@ def main():
                 p.kill()
             log.close()
     finally:
+        bridge_out = []
         for b in bridges:
             try:
                 b.stdin.close()
+                bridge_out.append(b.stdout.read())
                 b.wait(timeout=5)
             except Exception:
                 b.kill()
         fake.kill()
+
+    if a.older:
+        text = (out / 'p1' / 'port.log').read_text(errors='replace') if (out / 'p1' / 'port.log').exists() else ''
+        restart = [l for l in ''.join(bridge_out).splitlines() if l.startswith('RESTART')]
+        row = {'signed_in': bool(re.search(r'yougame: signed in as', text)),
+               'searched_slippi': 'mm.slippi.gg' in text,
+               'game_asked_restart': 'restarting in the release YouGame is on' in text,
+               'launcher_got': restart[0] if restart else None,
+               'ticket_requests': sum(1 for l in fake_log.read_text().splitlines() if '"route": "ticket"' in l) if fake_log.exists() else 0}
+        ok = row['signed_in'] and row['game_asked_restart'] and row['launcher_got'] == f'RESTART {a.older} ranked' and              row['ticket_requests'] == 0 and not row['searched_slippi']
+        (out / 'result.json').write_text(json.dumps(row, indent=2))
+        print(('PASS' if ok else 'FAIL') + ' yougame older release: ' + json.dumps(row) + f' | evidence {out}')
+        return 0 if ok else 1
 
     entries = [json.loads(l) for l in fake_log.read_text().splitlines() if l.strip()] if fake_log.exists() else []
     tickets = [e for e in entries if e.get('route') == 'ticket']

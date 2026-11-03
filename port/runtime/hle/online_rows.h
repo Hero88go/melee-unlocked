@@ -1,7 +1,8 @@
-// The online menu's split layout (GitHub build): YouGame Ranked, YouGame Direct, Slippi Unranked,
-// Slippi Direct, Teams, Party, Log in, Update. The labels are images in MnMaAll; apply() rewrites
-// them in the built file before the game reads it. The game's online menu (mu_slippi_menu.c) uses
-// the split layout only when the host says the labels were rewritten.
+// The online menu's split layout (GitHub build), two pages of the same eight rows: Ranked, Unranked,
+// Friends (YouGame) and Slippi; then Slippi Unranked, Slippi Direct, Slippi Teams, Slippi Party. The
+// labels are images in MnMaAll; apply() rewrites them in the built file before the game reads it.
+// The game's online menu (mu_slippi_menu.c) uses the split layout only when the host says the labels
+// were rewritten.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>

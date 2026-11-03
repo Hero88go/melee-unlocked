@@ -980,6 +980,37 @@ void capture_test_client(HWND window, const char* name) {
 void open_settings(const std::string& tab);   // below; the Mods page's "Choose skins" opens the Mods tab
 
 // ---- YouGame sign-in: email and password, sent only to YouGame's sign-in service ----
+// YouGame on an older release: the game asked to restart in it (bridge thread), and the window
+// thread starts it once the game has closed (WM_APP_GAME_DONE). One start only: the next Play is
+// this version again.
+std::mutex g_yg_restart_mutex;
+std::string g_yg_restart_folder, g_yg_restart_mode;
+std::string g_yougame_launch_args;   // added to the next game start's command line, then cleared
+bool take_yougame_restart(std::string& folder, std::string& mode) {
+  std::lock_guard<std::mutex> lock(g_yg_restart_mutex);
+  if (g_yg_restart_folder.empty()) return false;
+  folder.swap(g_yg_restart_folder); mode.swap(g_yg_restart_mode);
+  g_yg_restart_folder.clear(); g_yg_restart_mode.clear();
+  return true;
+}
+std::string yougame_restart_older(const launcher::yougame::Allowed& older, const std::string& mode) {
+  const std::string folder_name = older.version + "-legacy";   // host::updater::install_release's folder
+  const std::string folder = g_dir + "\Versions\\" + folder_name;
+  const std::string exe = folder + "\melee_source.exe", dll = folder + "\melee_game.dll";
+  if (!file_exists(exe) || !file_exists(dll)) {
+    if (host::updater::rollback_state() != host::updater::RollbackState::Downloading)
+      host::updater::install_release(older.version, false, g_dir);
+    return "Getting Melee Unlocked " + older.version + " for YouGame. Try again in a minute.";
+  }
+  // YouGame's own hashes, when it lists them, must be what was installed.
+  if ((!older.exe_sha256.empty() && launcher::yougame::file_sha256(widen(exe)) != older.exe_sha256) ||
+      (!older.game_sha256.empty() && launcher::yougame::file_sha256(widen(dll)) != older.game_sha256))
+    return "Melee Unlocked " + older.version + " in the Versions folder is not the build YouGame uses.";
+  std::lock_guard<std::mutex> lock(g_yg_restart_mutex);
+  g_yg_restart_folder = folder_name;
+  g_yg_restart_mode = mode;
+  return std::string();
+}
 HWND g_yg_signin = nullptr, g_yg_email = nullptr, g_yg_pass = nullptr, g_yg_status = nullptr, g_yg_ok = nullptr;
 bool g_yg_busy = false;
 LRESULT CALLBACK yougame_signin_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -1576,7 +1607,7 @@ void launch_game_now() {
 #endif
     g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear();
   }
-  std::string cmd = "\"" + exe + "\"" + args + g_lobby_launch_args +
+  std::string cmd = "\"" + exe + "\"" + args + g_lobby_launch_args + g_yougame_launch_args +
       " --lobby-status-file \"" + g_dir + "\\lobby-game-status.json\"";
   g_lobby_game_active = !g_lobby_launch_args.empty();
   g_lobby_launch_args.clear();
@@ -1592,7 +1623,7 @@ void launch_game_now() {
   const std::string yougame_bridge = vanilla_active() ? std::string() : launcher::yougame::bridge_url();
   if (!yougame_bridge.empty()) {
     const std::string game_dir = exe.substr(0, exe.find_last_of("\\/"));
-    launcher::yougame::set_build(g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version,
+    launcher::yougame::set_build(g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version.substr(0, g_active_version.find('-')),
                                  widen(exe), widen(game_dir + "\\melee_game.dll"));
     SetEnvironmentVariableW(L"YOUGAME_BRIDGE", widen(yougame_bridge).c_str());
     SetEnvironmentVariableW(L"YOUGAME_TOKEN", widen(launcher::yougame::new_launch_token()).c_str());
@@ -1940,6 +1971,19 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // YouGame: the bridge the game's YouGame rows ask (launcher_yougame.h), up for the whole run.
       launcher::yougame::set_on_session_change([] { PostMessageW(g_main, WM_APP_YOUGAME, 0, 0); });
       if (std::string why; !launcher::yougame::start_bridge(&why)) log_line("yougame: the launcher's bridge did not start (%s)", why.c_str());
+      // Which builds YouGame allows: when it is on an older release, get that one beside this
+      // version now, so the game's offer to restart in it is ready when a player takes it.
+      launcher::yougame::set_restart_older(yougame_restart_older);
+      if (!vanilla_active())
+        std::thread([exe = source_exe_dir() + "\melee_source.exe", dll = source_exe_dir() + "\melee_game.dll",
+                     version = g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version.substr(0, g_active_version.find('-'))] {
+          launcher::yougame::refresh_allowed(version, widen(exe), widen(dll));
+          const launcher::yougame::Allowed older = launcher::yougame::behind();
+          if (older.version.empty()) return;
+          for (int i = 0; i < 60 && host::updater::releases().empty(); ++i) Sleep(500);   // the release list
+          if (!file_exists(g_dir + "\Versions\\" + older.version + "-legacy\melee_source.exe"))
+            host::updater::install_release(older.version, false, g_dir);
+        }).detach();
       // Test runs only: sign in to the stand-in site (MELEE_YOUGAME_SITE / _AUTH) as "email:password".
       if (const char* who = g_launcher_test ? std::getenv("MELEE_LAUNCHER_TEST_YOUGAME") : nullptr)
         if (const char* colon = std::strchr(who, ':'))
@@ -2165,6 +2209,18 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_APP_GAME_DONE:
       g_playing = false;
+      // The game closed to restart in the release YouGame is on: start it now, straight into the
+      // YouGame mode the player picked. Only this start; the active version stays as it was.
+      if (std::string folder, mode; take_yougame_restart(folder, mode)) {
+        launcher::lobby::game_running(false);
+        const std::string saved = g_active_version;
+        g_active_version = folder;
+        g_yougame_launch_args = " --online-mode " + mode;
+        start_game();
+        g_yougame_launch_args.clear();
+        g_active_version = saved;
+        return 0;
+      }
       // A replay queue that went on to its next replay: that game is running now, so nothing below
       // applies yet and the launcher stays minimized.
       if(replay_game_done((DWORD)wp)) return 0;

@@ -50,6 +50,19 @@ std::string new_launch_token();
 // The files of the build about to start: their SHA-256 goes with every ticket (build check).
 void set_build(const std::string& version, const std::wstring& exe, const std::wstring& game_library);
 
+// YouGame on an older release. YouGame decides which builds its players use and may still be on an
+// older release than this one. The launcher reads the builds YouGame allows (blocking; call off the
+// window thread) and compares them with this installation's files. When this build is not allowed,
+// behind() names the newest allowed GitHub release; the game then offers to restart in it.
+struct Allowed { std::string version, exe_sha256, game_sha256; };
+std::vector<Allowed> allowed_builds();   // empty: YouGame did not say (then nothing is offered)
+void refresh_allowed(const std::string& current_version, const std::wstring& exe, const std::wstring& game_library);
+Allowed behind();                         // version empty: this build is allowed, or nothing is known
+// The game asked to restart in the older release for a YouGame mode ("ranked" or "direct"). The
+// launcher answers "" when it will start that release once the game has closed, else why not yet.
+std::string file_sha256(const std::wstring& path);   // lowercase hex, "" when unreadable
+void set_restart_older(std::function<std::string(const Allowed&, const std::string& mode)> handler);
+
 // ---- testable parts (port/tests/launcher_yougame_test.cpp) ----
 struct HttpRequest {
   std::string method, path, body;
@@ -67,6 +80,8 @@ struct Backend {
   std::function<std::string()> code;
   std::function<std::string(const std::string& mode)> rank;
   std::function<std::string(const std::string& body_json)> ticket;
+  std::function<Allowed()> behind;   // may be empty
+  std::function<std::string(const std::string& mode)> restart_older;   // "" accepted, else why not
 };
 struct BridgeReply { int status = 200; std::string body; };
 // One request to the bridge: token check, then hello / mpCode / mpTicket / mpRank / mpFriend.

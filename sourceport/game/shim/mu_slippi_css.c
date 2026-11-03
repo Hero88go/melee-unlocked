@@ -265,6 +265,11 @@ int mu_slippi_css_inputs(unsigned int trigger)
         if (trigger & HSD_PAD_Z) {
             mu_slippi_cleanup_connections();
         }
+        /* A YouGame row while YouGame is on an older release: Start restarts in that release (the
+         * host answers only when it made the offer). */
+        if ((trigger & HSD_PAD_START) && mu_slippi_yougame_pick()) {
+            mu_slippi_yougame_restart_older();
+        }
         return 0;
 
     case MU_SLP_MM_CONNECTION_SUCCESS:
@@ -529,7 +534,7 @@ static void text_think(HSD_GObj* gobj)
         case MU_SLP_MODE_UNRANKED: set_text_fmt(ST_HEADER, "%s Mode", "Unranked"); break;
         case MU_SLP_MODE_DIRECT:
             if (!p2p && mu_slippi_yougame_pick()) {
-                set_text(ST_HEADER, "YouGame Direct");
+                set_text(ST_HEADER, "Friends");
             } else {
                 set_text_fmt(ST_HEADER, "%s Mode", p2p ? "P2P" : "Direct");
             }

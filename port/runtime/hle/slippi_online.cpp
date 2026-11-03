@@ -874,10 +874,23 @@ void handle_load_savestate(const uint8_t* payload) {
 }
 
 // ---------------------------------------------------------------- lobby
+int g_older_offer_mode = -1;   // YouGame is on an older release: the mode Start restarts into, -1 none
+
 void start_find_match(const uint8_t* payload, const std::string& friend_room = {}) {
   if (yougame::active()) yougame::friends::events.code_screen(false);
   Matchmaking::MatchSearchSettings search;
   search.mode = (Matchmaking::OnlinePlayMode)payload[0];
+  g_older_offer_mode = -1;
+  // Under the launcher, YouGame may still be on an older release: say so, and Start restarts in it.
+  if (yougame::session() && yougame::launcher()) {
+    const std::string older = yougame::behind_version_now();
+    if (!older.empty()) {
+      g_forced_error = "YouGame is on Melee Unlocked " + older + " and you have " + yougame::build_version() +
+                       ". Press Start to restart in " + older + " for YouGame, or Z to go back.";
+      g_older_offer_mode = (int)search.mode;
+      return;
+    }
+  }
   if (const char* reason = local_matchmaking_error((int)search.mode)) {
     g_forced_error = reason;
     return;
@@ -1882,11 +1895,24 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       // bit 1 the split layout (YouGame Ranked, YouGame Direct, then Slippi's rows); bit 2 the
       // YouGame rows are open (the launcher's bridge is up and its account signed in); bit 3 the
       // Ranked header follows, in the game's text encoding.
-      if (payload_len == 1) yougame::set_launcher_session(payload[0] == 1);
+      // 3: Start on the older-release offer (start_find_match): the launcher restarts in that release.
+      if (payload_len == 1 && payload[0] == 3) {
+        if (g_older_offer_mode >= 0) {
+          std::string why;
+          if (yougame::restart_older(g_older_offer_mode == Matchmaking::DIRECT ? "direct" : "ranked", &why)) host::request_exit(0);
+          else g_forced_error = why;
+        }
+      } else if (payload_len == 1) {
+        yougame::set_launcher_session(payload[0] == 1);
+      }
       q.assign(1, 0);
       if (yougame::active()) q[0] |= 1;
       else if (online_rows::applied()) q[0] |= 2;   // the labels were rewritten (Source Port)
       if (yougame::launcher() && yougame::wait_identity(500).ok) q[0] |= 4;
+      // Bit 4/5: started for a YouGame mode (--online-mode): the menu opens Ranked (16) or Direct (32).
+      if (payload_len == 0 && (q[0] & 4)) {
+        if (const int arg = yougame::take_online_mode_arg()) q[0] |= arg == 2 ? 32 : 16;
+      }
       if (yougame::session()) {
         q[0] |= 8;
         std::string text = yougame::ranked_header();

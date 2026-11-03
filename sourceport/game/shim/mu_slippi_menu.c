@@ -86,20 +86,33 @@ static int zelda_sheik;       /* between the online major's OnLoad and OnUnload 
 static unsigned online_loads;  /* OnLoad count: the chat shim's Sheik selector keeps its icon until the next one */
 static int boot_oneshot;      /* boot.asm's one-shot "first menu = online submenu" */
 static int ranked_offered;    /* FA bit 0 at the last app-state fetch: the host runs Ranked (YouGame) */
-/* FA byte 0 at the last app-state fetch (mu_slippi_yougame_flags). Bit 1: the split layout of the
- * GitHub build: YouGame Ranked, YouGame Direct, Slippi Unranked, Slippi Direct, Teams, Party,
- * Log in, Update. Bit 2: its YouGame rows are open (the launcher is signed in to YouGame). */
+/* The YouGame byte at the last app-state fetch. Bit 1: the split layout of the GitHub build, two
+ * pages of the same eight rows: Ranked, Unranked, Friends (YouGame), Slippi; then Slippi Unranked,
+ * Slippi Direct, Slippi Teams, Slippi Party. Bit 2: the YouGame rows are open (the launcher is signed
+ * in to YouGame). A locked row is not drawn, so each page shows only its own rows. */
 static int yg_flags;
 static int yg_pick;           /* the last row picked was a YouGame row (split layout) */
 static int last_slot = -1;    /* the last row picked (split layout): the cursor goes back to it */
-enum { YG_APP_RANKED = 1, YG_SPLIT = 2, YG_ROWS_OPEN = 4, YG_HEADER = 8 };
-enum { SPLIT_LOGIN = 6, SPLIT_UPDATE = 7 };
-/* The split layout's rows 0-5 as Slippi mode ids (rows 0 and 1 are YouGame's). */
-static const signed char split_mode[6] = { MU_SLP_MODE_RANKED, MU_SLP_MODE_DIRECT, MU_SLP_MODE_UNRANKED,
-                                           MU_SLP_MODE_DIRECT, MU_SLP_MODE_TEAMS, MU_SLP_MODE_PARTY };
+enum { YG_APP_RANKED = 1, YG_SPLIT = 2, YG_ROWS_OPEN = 4, YG_HEADER = 8, YG_OPEN_RANKED = 16, YG_OPEN_DIRECT = 32 };
+/* Started for a YouGame mode (--online-mode): the boot menu confirms that row by itself, like the
+ * P2P session's Direct (set at the boot entry, cleared by the menu's think before any match). */
+static int auto_slot = -1;
+static int yg_open;           /* YG_OPEN_* from the first answer that carried it (the host answers it once) */
+enum { SPLIT_SLIPPI = 3, SPLIT_FIRST_SLIPPI = 4 };
+/* The split layout's rows as Slippi mode ids; rows 0-2 are YouGame's, row 3 opens Slippi's page. */
+static const signed char split_mode[8] = { MU_SLP_MODE_RANKED, MU_SLP_MODE_UNRANKED, MU_SLP_MODE_DIRECT, -1,
+                                           MU_SLP_MODE_UNRANKED, MU_SLP_MODE_DIRECT, MU_SLP_MODE_TEAMS,
+                                           MU_SLP_MODE_PARTY };
+static int split_page;        /* 0: Ranked, Unranked, Friends, Slippi; 1: Slippi's four */
 static int split_layout(void) { return (yg_flags & YG_SPLIT) != 0; }
 /* Slippi Direct's row: the P2P session menu confirms it by itself. */
-static int direct_slot(void) { return split_layout() ? 3 : MU_SLP_MODE_DIRECT; }
+static int direct_slot(void) { return split_layout() ? 5 : MU_SLP_MODE_DIRECT; }
+/* The page the online menu opens on: Slippi's own when YouGame's rows are closed and Slippi is signed
+ * in (one press less for a player without YouGame), else the first page. */
+static int split_start_page(void)
+{
+    return !(yg_flags & YG_ROWS_OPEN) && slp.app_state == MU_SLP_APP_LOGGED_IN ? 1 : 0;
+}
 static int yougame_query(int pick, char* out, unsigned int cap);
 static int first_boot = 1;    /* OnMenuLoad's DOFST_IS_FIRST_BOOT */
 /* A peer-to-peer session with menus (mu_online_p2p_menus): the first online submenu confirms Direct
@@ -149,6 +162,7 @@ int mu_slippi_fetch_app_state(void)
     memcpy(user_code, osb + 32, 10);
     user_code[10] = 0;
     yg_flags = yougame_query(-1, NULL, 0);
+    yg_open |= yg_flags & (YG_OPEN_RANKED | YG_OPEN_DIRECT);
     ranked_offered = (yg_flags & YG_APP_RANKED) != 0;
     return slp.app_state;
 }
@@ -165,7 +179,7 @@ int mu_slippi_ranked_header(char* out, unsigned int cap)
 static int yougame_query(int pick, char* out, unsigned int cap)
 {
     u8 r[64];
-    u8 p = (u8) (pick > 0);
+    u8 p = (u8) pick;
     unsigned int got = 0, n;
     memset(r, 0, sizeof r);
     if (out != NULL && cap > 0) {
@@ -187,6 +201,7 @@ static int yougame_query(int pick, char* out, unsigned int cap)
 
 int mu_slippi_ranked_available(void) { return ranked_offered || (split_layout() && yg_pick); }
 int mu_slippi_yougame_pick(void) { return split_layout() && yg_pick; }
+void mu_slippi_yougame_restart_older(void) { yougame_query(3, NULL, 0); }
 
 int mu_slippi_app_state(void) { return slp.app_state; }
 const char* mu_slippi_user_name(void) { return (const char*) user_name; }
@@ -368,16 +383,13 @@ unsigned char mu_slippi_team_costume(int team, int ckind)
 int mu_slippi_option_unlocked(int sel)
 {
     if (split_layout()) {
-        if (sel == 0 || sel == 1) {
-            return (yg_flags & YG_ROWS_OPEN) != 0;   /* YouGame: the launcher's account */
+        if (split_page == 0) {
+            if (sel < SPLIT_SLIPPI) {
+                return (yg_flags & YG_ROWS_OPEN) != 0;   /* YouGame: the launcher's account */
+            }
+            return sel == SPLIT_SLIPPI;   /* Slippi: its page, or its log in / update */
         }
-        if (sel >= 2 && sel <= 5) {
-            return slp.app_state == MU_SLP_APP_LOGGED_IN;   /* Slippi's rows, as before */
-        }
-        if (sel == SPLIT_LOGIN) {
-            return slp.app_state != MU_SLP_APP_LOGGED_IN && slp.app_state != MU_SLP_APP_UPDATE;
-        }
-        return sel == SPLIT_UPDATE && slp.app_state == MU_SLP_APP_UPDATE;
+        return sel >= SPLIT_FIRST_SLIPPI && slp.app_state == MU_SLP_APP_LOGGED_IN;
     }
     switch (slp.app_state) {
     case MU_SLP_APP_LOGGED_IN:
@@ -399,7 +411,7 @@ int mu_slippi_first_unlocked(void)
 {
     int i;
     int count = mn_803EB6B0[MENU_KIND_8].selection_count;
-    /* The split layout starts at YouGame Ranked (locked without the launcher's account). */
+    /* The split layout: the first open row of the page shown. */
     for (i = split_layout() ? 0 : MU_SLP_MODE_UNRANKED; i < count; i++) {
         if (mn_80229938(MENU_KIND_8, i)) {
             break;
@@ -429,12 +441,13 @@ void mu_slippi_menu_prep(void)
     if (!mu_slippi_menus_enabled()) {
         return;
     }
-    static u16 split_descriptions[8] = { 0x645, 0x647, 0x646, 0x647, 0x64B, 0x64C, 0x648, 0x64A };
+    /* Ranked, Unranked, Friends, Slippi ("Compete against online opponents"), then Slippi's four. */
+    static u16 split_descriptions[8] = { 0x645, 0x646, 0x647, 0x644, 0x646, 0x647, 0x64B, 0x64C };
     mu_mnmain_install_online_menu();
     mu_slippi_fetch_app_state();
     if (split_layout()) {
-        /* Play ranked matches / Play a specific person / Play unranked matches / ... */
         mn_803EB6B0[MENU_KIND_8].description_indices = split_descriptions;
+        split_page = split_start_page();
     }
 }
 
@@ -449,6 +462,8 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
         mu_content_mode(-1);   /* back from online: the offline view again */
         *menu_kind = MENU_KIND_8;
         if (split_layout()) {
+            /* Back from a match: the page and row it was started from. */
+            split_page = last_slot >= SPLIT_FIRST_SLIPPI ? 1 : last_slot >= 0 ? 0 : split_start_page();
             *hovered = last_slot >= 0 && mn_80229938(MENU_KIND_8, last_slot) ? (u8) last_slot
                                                                              : (u8) mu_slippi_first_unlocked();
         } else {
@@ -461,7 +476,19 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
         mu_slippi_fetch_app_state();
         *menu_kind = MENU_KIND_8;
         *hovered = (u8) mu_slippi_first_unlocked();
+        if (split_layout() && yg_open) {
+            const int slot = (yg_open & YG_OPEN_DIRECT) ? 2 : 0;   /* Friends or Ranked */
+            yg_open = 0;
+            split_page = 0;
+            if (mn_80229938(MENU_KIND_8, slot)) {
+                *hovered = (u8) slot;
+                auto_slot = slot;
+            }
+        }
         if (mu_online_p2p_menus()) {
+            if (split_layout()) {
+                split_page = 1;   /* Slippi Direct's page */
+            }
             /* The session's players are already known: no choice of mode, straight to Direct's
              * character select. The row is only open when the host reports a signed-in state. */
             if (mn_80229938(MENU_KIND_8, direct_slot())) {
@@ -499,6 +526,9 @@ void mu_slippi_main_menu_loaded(void)
  * force the old menu to clear (AllowSwapToSameSubmenu). Runs from the 1P menu's think. */
 void mu_slippi_switch_to_online_menu(void)
 {
+    if (split_layout()) {
+        split_page = split_start_page();
+    }
     mn_80229894(MENU_KIND_8, (u16) mu_slippi_first_unlocked(), 1);
     slp.force_clear = 1;
 }
@@ -541,6 +571,12 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
     (void) gp;
 
     buttons = mn_80229624(4);
+    if (auto_slot >= 0 && accepts_input) {
+        /* Once: confirm the YouGame row the launcher started this game for. */
+        mn_804A04F0.hovered_selection = (u8) auto_slot;
+        buttons = MenuInput_Confirm;
+        auto_slot = -1;
+    }
     if (p2p_auto_direct && accepts_input) {
         /* Once per run: confirm Direct as a press on this frame would, whatever the pads hold. */
         p2p_auto_direct = 0;
@@ -562,8 +598,18 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         {
         int sel = mn_804A04F0.hovered_selection;
         int act = sel;
-        if (split_layout()) {
-            act = sel < 6 ? split_mode[sel] : sel == SPLIT_LOGIN ? MU_SLP_OPT_LOGIN : MU_SLP_OPT_UPDATE;
+        if (split_layout() && sel == SPLIT_SLIPPI) {
+            /* Slippi: its page, or its log in or update when that is what it needs first. */
+            act = slp.app_state == MU_SLP_APP_LOGGED_IN ? -1
+                : slp.app_state == MU_SLP_APP_UPDATE ? MU_SLP_OPT_UPDATE : MU_SLP_OPT_LOGIN;
+            if (act < 0) {
+                sfxForward();
+                split_page = 1;
+                mn_80229894(MENU_KIND_8, (u16) mu_slippi_first_unlocked(), 1);
+                slp.force_clear = 1;
+            }
+        } else if (split_layout()) {
+            act = split_mode[sel];
         }
         switch (act) {
         case MU_SLP_MODE_RANKED:
@@ -574,7 +620,7 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
             slp.mode = (u8) act;
             if (split_layout()) {
                 /* The host learns which service the next search uses before its character select. */
-                yg_pick = sel < 2;
+                yg_pick = sel < SPLIT_SLIPPI;
                 last_slot = sel;
                 yougame_query(yg_pick, NULL, 0);
             }
@@ -603,6 +649,12 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
             break;
         }
         }
+    } else if (buttons & MenuInput_Back && split_layout() && split_page == 1 && split_start_page() == 0) {
+        /* Slippi's page: back to Ranked, Unranked, Friends, Slippi. */
+        sfxBack();
+        split_page = 0;
+        mn_80229894(MENU_KIND_8, SPLIT_SLIPPI, 3);
+        slp.force_clear = 1;
     } else if (buttons & MenuInput_Back) {
         sfxBack();
         mn_804A04F0.entering_menu = 0;
