@@ -18,6 +18,9 @@ bool active();
 // Everything the replay viewer draws hidden (for recording clips): H, B on the controller, or
 // "Clean replays" at the start. Every control keeps working.
 bool all_hidden();
+// The bar is on screen (the mouse moved, or no controller layer): the controller layer's own
+// timeline and buttons step aside, so the two never stack.
+bool shown();
 void toggle_hidden();
 
 }  // namespace replay_bar

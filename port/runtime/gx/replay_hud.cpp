@@ -438,8 +438,9 @@ void frame(int style, const practice_menu::Frame& f) {
     say_centered(dl, cxm, y + 4 * u, kCaption * u, c_dim(1), next);
   }
 
-  // Bottom: the buttons, with this player's tips on a thin timeline above them.
-  {
+  // Bottom: the buttons, with this player's tips on a thin timeline above them. While the mouse bar
+  // is up it has the bottom to itself (two bars stacked hid each other's text).
+  if (!replay_bar::shown()) {
     const char* spec = live >= 0 ? "S:Retry|S:Hold to go back to the replay"
                        : st.paused ? "A:Take over|X:Last tip|Y:Next tip|D:Frame|Z:Play|B:Hide|S:Settings"
                                    : "A:Take over|X:Last tip|Y:Next tip|D:5 s|Z:Pause|R:Fast|B:Hide|S:Settings";

@@ -26,10 +26,12 @@ void clock_text(int frames, char* out, size_t size) {
 
 // H (here) or B on the controller (gx/replay_hud.cpp) flips it; "Clean replays" flips the start.
 std::atomic<bool> g_hidden{false};
+std::atomic<bool> g_shown{false};   // drawn this frame: the controller layer keeps the bottom clear for it
 std::atomic<double> g_hidden_note{0.0};
 
 }  // namespace
 
+bool shown() { return g_shown.load(std::memory_order_relaxed); }
 bool all_hidden() {
   return g_hidden.load(std::memory_order_relaxed) != gx::RenderOptions::live_clean_replays().load(std::memory_order_relaxed);
 }
@@ -78,6 +80,7 @@ void draw(float width, float height, bool menu_open) {
   const double hidden_note = g_hidden_note.load(std::memory_order_relaxed);
   if (all_hidden()) {
     g_cursor.store(false, std::memory_order_relaxed);
+    g_shown.store(false, std::memory_order_relaxed);
     if (hidden_note > 0.0 && now - hidden_note < 2.0) {
       // Said once, briefly, so the key that brings it back is not a secret.
       const char* note = "Replay controls hidden. H or B: show them again";
@@ -95,6 +98,7 @@ void draw(float width, float height, bool menu_open) {
   const bool visible = !menu_open && (mouse_recent || (!replay_control::pad_layer() &&
                                       (st.paused || st.seeking || (st.last_input > 0.0 && now - st.last_input < kShowSeconds))));
   g_cursor.store(visible && mouse_recent, std::memory_order_relaxed);
+  g_shown.store(visible, std::memory_order_relaxed);
   if (!visible) return;
 
   const float text_h = ImGui::GetTextLineHeight();
@@ -149,7 +153,7 @@ void draw(float width, float height, bool menu_open) {
   }
   dl->AddText(ImVec2(line_x0, line_y + 10.0f), dim,
               "Space: pause     Left, Right: 5 seconds (Shift: 30)     Right or . while paused: one frame     "
-              "[ ] or Down, Up: speed     Tab or R: fast forward     Home: restart     H: hide this bar");
+              "[ ] or Down, Up: speed     Tab or R: fast forward     Home: restart     H: hide everything");
   dl->PopClipRect();
 
   if (over) {
