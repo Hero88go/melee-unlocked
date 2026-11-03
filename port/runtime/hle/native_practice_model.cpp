@@ -105,13 +105,14 @@ void Lifecycle::reset() {
 }
 
 // A Teams lobby code is whatever the players agree on (Slippi's Teams screen takes any letters
-// and numbers); it is not a player's connect code, so no NAME#123 shape is asked for.
+// and numbers, and @ to queue with a teammate); it is not a player's connect code, so no NAME#123
+// shape is asked for.
 bool normalize_teams_code(const std::string& input, std::string* normalized, std::string* error) {
   std::string out;
   for (unsigned char ch : input) {
     if (std::isspace(ch)) continue;
     if (ch >= 'a' && ch <= 'z') ch = (unsigned char)std::toupper(ch);
-    if (!(std::isalnum(ch) || ch == '#')) {
+    if (!(std::isalnum(ch) || ch == '#' || ch == '@')) {
       if (error) *error = "Use letters and numbers";
       return false;
     }

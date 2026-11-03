@@ -86,6 +86,8 @@ uint32_t g_lobby_boot_ticks = 0;
 // After an online session (the other player left, the connection dropped, the player left): back
 // into a Training match with the same character, then "search again?". g_enter_* presses through
 // Training's character and stage select for the player; g_offer_* is the prompt.
+int g_last_opponent = -1;            // the last online opponent's character (Training's CPU after the session)
+uint8_t g_last_opponent_costume = 0;
 bool g_enter_training = false;
 bool g_enter_seen_select = false;   // Training's character select was reached (a restart starts in the match)
 int g_enter_port = 0;
@@ -581,6 +583,8 @@ void enter_training_after_session(MatchMode mode, int local_index = -1, int test
     g_practice.stage = css.stage;   // the online match's stage, kept for Training when it is a legal one
     write_event_backup();
     set_training_pick(0, character, costume);
+    // The CPU is the player just faced, not whatever Training's character select was left on.
+    if (g_last_opponent >= 0) set_training_pick(1, g_last_opponent, g_last_opponent_costume);
   }
   g_offer_mode = mode == MatchMode::Unranked || mode == MatchMode::Direct || mode == MatchMode::Teams ? mode : MatchMode::None;
   g_offer_code.clear();
@@ -832,7 +836,22 @@ void tick() {
     if (session) {
       session_seen = true;
       session_mode_seen = slippi::online::session_mode();
-      if (slippi::online::is_online_match()) { played = true; local_index_seen = slippi::online::local_player_index(); }
+      if (slippi::online::is_online_match()) {
+        played = true;
+        local_index_seen = slippi::online::local_player_index();
+        // The opponent's character, for Training's CPU afterwards (once a second; the slots are
+        // cleared when the next match starts).
+        static uint32_t seen_ticks = 0;
+        if (++seen_ticks % 60 == 0) {
+          const PracticeConfig match = capture_practice();
+          for (int i = 0; i < 4; ++i)
+            if (i != local_index_seen && match.players[i].active && match.players[i].character < 26) {
+              g_last_opponent = (int)match.players[i].character;
+              g_last_opponent_costume = match.players[i].costume;
+              break;
+            }
+        }
+      }
     } else if (session_seen) {
       session_seen = false;
       // Unranked ends its session after every game, so there it would leave the online screens after
@@ -867,7 +886,8 @@ void tick() {
 
   if (g_lifecycle.phase() == Phase::Searching) {
     ++g_search_ticks;
-    if (g_search_ticks > kSearchTimeoutTicks) {
+    // Teams waits for three other players: ten minutes, where Unranked and Direct give up after 90 s.
+    if (g_search_ticks > (g_match_mode == MatchMode::Teams ? 60u * 600u : kSearchTimeoutTicks)) {
       fail(std::string("The ") + match_mode_name(g_match_mode) + " search timed out", true);
     } else {
       const slippi::online::NativeMatchPoll poll = slippi::online::native_poll_match();
@@ -946,7 +966,7 @@ void apply_pads(host::PadState* pads) {
     static uint16_t held_at_entry[4];
     static bool entry_seen = false;
     bool touched = false;
-    if (major == kTrainingMajor && minor < 2) {
+    if (major == kTrainingMajor && minor == 0) {   // the character select (the stage is picked at once)
       for (int i = 0; i < 4; ++i) {
         const host::PadState& p = pads[i];
         if (p.err != 0) continue;

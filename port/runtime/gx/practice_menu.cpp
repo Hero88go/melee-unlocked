@@ -337,12 +337,12 @@ std::vector<Level> g_stack{Level{}};
 double g_page_changed_at = -10.0;
 
 // The on-screen keyboard (Direct codes and the codes skipped in Unranked).
-const char kKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#";
+const char kKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@";   // @: a Teams code with a teammate
 constexpr int kKeyCols = 13;
-constexpr int kKeyCount = (int)sizeof(kKeys) - 1;   // 37 characters, then Delete / Paste / OK
+constexpr int kKeyCount = (int)sizeof(kKeys) - 1;   // 38 characters, then Delete / Paste / OK
 int g_kb_target = 0;          // 0 Direct, 1..3 a skipped code, 4 Teams
 std::string g_kb_text;
-int g_kb_cursor = 0;          // 0..36 characters, 37 Delete, 38 Paste, 39 OK
+int g_kb_cursor = 0;          // 0..37 characters, 38 Delete, 39 Paste, 40 OK
 std::string g_last_direct, g_last_teams;
 
 int share_of(const uint8_t* group, int count, int index, const uint8_t* group2 = nullptr, int count2 = 0) {
