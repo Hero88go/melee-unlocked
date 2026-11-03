@@ -816,7 +816,6 @@ void paint_yougame_line(HDC dc) {
   const launcher::yougame::Account a = launcher::yougame::account();
   std::wstring base = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
                                   : launcher::lang::txw(L"YouGame: not connected");
-  if (launcher::yougame::env().id == "staging") base += L" [staging]";
   dot(dc, CX, 287, a.signed_in ? C_OK : C_FAINT);
   const RECT line = LR(CX + 15, 284, CW - 15, 17);
   HGDIOBJ old = SelectObject(dc, g_font);

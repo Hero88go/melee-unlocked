@@ -12,7 +12,7 @@
 
 namespace launcher::yougame {
 
-// The YouGame site the launcher talks to. Production unless launcher.ini says yougame_env=staging.
+// The YouGame site the launcher talks to. Staging unless launcher.ini says yougame_env=production.
 struct Env {
   std::string id;        // "production" or "staging"
   std::string site;      // https://yougame.co

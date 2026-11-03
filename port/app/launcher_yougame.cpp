@@ -56,7 +56,9 @@ struct Session {
 };
 
 std::mutex g_mutex;
-Env g_env = kProduction;
+// Staging until Melee Unlocked is listed on the production site; launcher.ini yougame_env=production
+// switches.
+Env g_env = kStaging;
 Session g_session;
 std::string g_build_json = "{}";
 std::vector<Allowed> g_allowed;     // the builds YouGame allows, as last read
@@ -425,7 +427,7 @@ const Env& env() { static thread_local Env e; std::lock_guard<std::mutex> lock(g
 
 void set_env(const std::string& id) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  const Env& next = id == "staging" ? kStaging : kProduction;
+  const Env& next = id == "production" ? kProduction : kStaging;
   if (next.id != g_env.id) g_session = Session{};
   g_env = next;
 }
@@ -433,7 +435,7 @@ void set_env(const std::string& id) {
 bool load_line(const std::string& line) {
   if (line.rfind("yougame_env=", 0) == 0) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_env = line.substr(12) == "staging" ? kStaging : kProduction;
+    g_env = line.substr(12) == "production" ? kProduction : kStaging;
     return true;
   }
   if (line.rfind("yougame_session=", 0) == 0) {
@@ -456,7 +458,7 @@ bool load_line(const std::string& line) {
 std::string ini_lines() {
   std::lock_guard<std::mutex> lock(g_mutex);
   std::string out;
-  if (g_env.id != "production") out += "yougame_env=" + g_env.id + "\n";
+  if (g_env.id != "staging") out += "yougame_env=" + g_env.id + "\n";
   if (!g_session.refresh.empty()) {
     const json j{{"env", g_env.id}, {"access", g_session.access}, {"refresh", g_session.refresh}, {"user", g_session.user_id},
                  {"email", g_session.email}, {"name", g_session.name}, {"code", g_session.code}, {"expires_at", g_session.expires_at}};
