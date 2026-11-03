@@ -43,6 +43,7 @@ struct SettingsState {
   // The Esc menu (back to game, settings, quit), for keyboards without an F1 key and so quitting
   // does not need Alt-Tab. menu_quit: showing "Quit Melee Unlocked?" instead of the buttons.
   bool menu_open = false, menu_quit = false;
+  bool menu_quit_focus_pending = false;  // focus confirmation once when replacing the menu items
   // A texture pack was switched on or off: the backend drops what it has uploaded so the next
   // draw rebuilds it with (or without) its replacement.
   bool textures_dirty = false;

@@ -251,6 +251,7 @@ struct LocalBuild {
   std::string name;
   bool allow_unverified = false;
   bool extended_content = false;
+  bool static_engine = false;
 };
 inline LocalBuild& local_build_storage() { static LocalBuild b; return b; }
 inline void set_local_build(const LocalBuild& build) { local_build_storage() = build; }

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "replay_control.h"
 #include "replay_coach.h"
 #include "audio.h"
 #include "host.h"
+#include "sim_work.h"
 #ifdef MELEE_NO_SLIPPI
 #include "netplay_state.h"   // no host music player to pause in this build
 #else
@@ -126,6 +128,7 @@ void pump_own_window() {
 }
 
 void sleep_until(double deadline) {
+  host::perf::Scope wait_cost(host::perf::Stage::Wait);
   while (!host::exit_requested()) {
     const double left = deadline - host::now_seconds();
     if (left <= 0.0) break;
@@ -185,7 +188,7 @@ void set_fast(bool fast, int32_t frame) {
 //   speed@F:S    S is 4x (fast forward until another speed action), 1x, 0.5x or 0.25x
 // Example: "pause@600:120,back@1500:300,speed@2000:4x,speed@2600:1x".
 void parse_script() {
-  const char* text = std::getenv("MELEE_TEST_REPLAY_CONTROLS");
+  const char* text = host::test_env::getenv("MELEE_TEST_REPLAY_CONTROLS");
   if (!text || !*text) return;
   const std::string all(text);
   for (size_t pos = 0; pos < all.size();) {
@@ -489,7 +492,7 @@ void takeover_requests(int32_t frame) {
     static bool parsed = false;
     if (!parsed) {
       parsed = true;
-      if (const char* v = std::getenv("MELEE_TEST_TAKEOVER")) {
+      if (const char* v = host::test_env::getenv("MELEE_TEST_TAKEOVER")) {
         std::sscanf(v, "%d,%d,%d", &test_frame, &test_port, &test_retry);
         host::log("replay: test takeover at frame %d of P%d, retry at %d (first gate %d)", test_frame, test_port + 1, test_retry, frame);
       }
@@ -524,7 +527,7 @@ void analyze_steps(int32_t frame) {
   // Tests: MELEE_TEST_ANALYZE=<frame> asks for the pass at that frame.
   static int32_t test_at = -2;
   if (test_at == -2) {
-    const char* v = std::getenv("MELEE_TEST_ANALYZE");
+    const char* v = host::test_env::getenv("MELEE_TEST_ANALYZE");
     test_at = v ? (int32_t)std::strtol(v, nullptr, 10) : -1;
   }
   if (test_at >= 0 && frame >= test_at && g_an_phase.load() == 0) { g_an_request.store(true); test_at = -1; }
@@ -675,7 +678,7 @@ Gate gate(int32_t frame) {
     if (host::exit_requested()) break;
     waiting = true;
     pump_own_window();
-    Sleep(4);
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait); Sleep(4); }
   }
   keep_if_due(frame);
   pace(frame);
@@ -731,7 +734,7 @@ void set_pad_layer(bool on) { g_pad_layer.store(on); }
 void set_defense(int d) { g_defense.store(d, std::memory_order_relaxed); }
 int defense() {
   // MELEE_TEST_REPLAY_DEFENSE=<0..3> (tests only): the Opponent setting, also in runs that draw no layer.
-  static const int test = [] { const char* v = std::getenv("MELEE_TEST_REPLAY_DEFENSE"); return v ? std::atoi(v) : -1; }();
+  static const int test = [] { const char* v = host::test_env::getenv("MELEE_TEST_REPLAY_DEFENSE"); return v ? std::atoi(v) : -1; }();
   return test >= 0 ? test : g_defense.load(std::memory_order_relaxed);
 }
 bool pad_layer() { return g_pad_layer.load(std::memory_order_relaxed); }

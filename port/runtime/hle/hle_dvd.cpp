@@ -1,6 +1,8 @@
 // DVD HLE: file reads served from the ISO, completions delivered at guest wait points.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "hle.h"
+#include "sim_work.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -97,14 +99,14 @@ void dvd_poll() {
   while (!g_dvd_pending.empty()) {
     AsyncRead& r = g_dvd_pending.front();
     if (host::cpu->tb < r.ready_tb) return;
-    if (!r.done->load(std::memory_order_acquire)) { host::SimCostScope cost(host::SIM_DVD); std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); }); }
+    if (!r.done->load(std::memory_order_acquire)) { host::SimCostScope cost(host::SIM_DVD); std::unique_lock<std::mutex> lk(g_dvd_mutex); host::perf::Scope wait_cost(host::perf::Stage::Wait); g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); }); }
     uint8_t* dest = host::try_ptr(r.addr, r.length);   // null was logged by start_read
     if (dest) std::memcpy(dest, r.data->data(), r.length);
     // The renderer reuses a texture snapshot while this memory's write version is unchanged, so the
     // copy must count as a write (as host::disc_read does when it reads straight into guest memory).
     // Without it a texture drawn before its file arrived stayed blank (0.8.6: black track names).
     // MELEE_TEST_DVD_NO_MARK=1 (tests): the 0.8.6 behaviour, to prove the stale-snapshot check.
-    static const bool no_mark = [] { const char* v = std::getenv("MELEE_TEST_DVD_NO_MARK"); return v && *v == '1'; }();
+    static const bool no_mark = [] { const char* v = host::test_env::getenv("MELEE_TEST_DVD_NO_MARK"); return v && *v == '1'; }();
     if (dest && !no_mark) host::mark_ram_write(r.addr, r.length);
     finish_read(r.block, r.addr, r.length, r.disc_offset);
     if (r.callback) { uint32_t cb = r.callback, len = r.length, blk = r.block; host::post_completion([cb, len, blk] { host::call_guest(cb, len, blk); }); }
@@ -119,6 +121,7 @@ void dvd_settle() {
   for (AsyncRead& r : g_dvd_pending) {
     if (r.done->load(std::memory_order_acquire)) continue;
     std::unique_lock<std::mutex> lk(g_dvd_mutex);
+    host::perf::Scope wait_cost(host::perf::Stage::Wait);
     g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); });
   }
 }

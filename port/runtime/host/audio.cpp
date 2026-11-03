@@ -48,6 +48,9 @@ constexpr int BLOCK_BYTES = 640;      // one 5 ms AI DMA frame: 160 stereo sampl
 constexpr int BLOCKS = 24;            // 120 ms of queue; more than that is dropped (fast mode)
 std::atomic<int> g_volume{0};
 std::atomic<bool> g_muted{false};     // audio_set_muted: the game's blocks are not queued
+std::atomic<int> g_page_volume{100};  // audio_set_page_volume: the YouGame page's master
+// What plays: the player's volume under the page's master.
+int output_volume() { return g_volume.load() * g_page_volume.load() / 100; }
 std::mutex g_mutex;
 uint64_t g_frames = 0, g_dropped = 0;
 bool g_open = false;
@@ -330,7 +333,7 @@ void wasapi_thread() {
     if (!g_direct && !top_up) continue;
     float* out = samples.data();
     const char* dump_volume = g_device_dump ? std::getenv("MELEE_AUDIO_DUMP_VOLUME") : nullptr;
-    const int volume = g_device_dump ? (dump_volume ? std::clamp(std::atoi(dump_volume), 0, 100) : 100) : g_volume.load();
+    const int volume = g_device_dump ? (dump_volume ? std::clamp(std::atoi(dump_volume), 0, 100) : 100) : output_volume();
     uint64_t read = g_ring_read.load(std::memory_order_relaxed);
 
     // Rate control: steer the ring towards the target fill instead of letting it drift into an
@@ -1044,7 +1047,7 @@ struct AsioRender { bool interrupted = false, started = false; uint32_t recovery
 void asio_render(long index) {
   const long n = g_asio_buffer;
   float* out = g_asio_mix.data();
-  const int volume = g_volume.load();
+  const int volume = output_volume();
   uint64_t read = g_ring_read.load(std::memory_order_relaxed);
   const uint64_t buffered = g_ring_write.load(std::memory_order_acquire) - read;
   const uint64_t pull32 = (uint64_t)n * SAMPLE_RATE / g_device_rate + 1;
@@ -1301,6 +1304,7 @@ void asio_close() {
 }  // namespace
 
 void audio_set_volume(int volume) { g_volume.store(std::clamp(volume, 0, 100)); }
+void audio_set_page_volume(int volume) { g_page_volume.store(std::clamp(volume, 0, 100)); }
 void audio_set_muted(bool muted) { g_muted.store(muted, std::memory_order_relaxed); }
 void audio_set_device(const char* id) { g_requested_device = id ? id : ""; }
 void audio_set_remember(bool remember) { g_remember = remember; }
@@ -1484,10 +1488,11 @@ static void audio_push_ordered(const uint8_t* samples, size_t bytes,
     if (!g_out) { g_frames += BLOCK_BYTES / 4; continue; }
     WAVEHDR& h = g_headers[g_next];
     if (!(h.dwFlags & WHDR_DONE)) { ++g_dropped; continue; }
+    const int volume = output_volume();
     for (int i = 0; i < BLOCK_BYTES / 2; ++i)
-      g_blocks[g_next][i] = (int16_t)((int32_t)converted[i] * g_volume / 100);
-    slippi::jukebox::mix(g_blocks[g_next], BLOCK_BYTES / 4, g_volume / 100.0);
-    mix_ui_sound(g_blocks[g_next], BLOCK_BYTES / 4, g_volume.load());
+      g_blocks[g_next][i] = (int16_t)((int32_t)converted[i] * volume / 100);
+    slippi::jukebox::mix(g_blocks[g_next], BLOCK_BYTES / 4, volume / 100.0);
+    mix_ui_sound(g_blocks[g_next], BLOCK_BYTES / 4, volume);
     h.dwFlags &= ~WHDR_DONE;
     if (waveOutWrite(g_out, &h, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) { h.dwFlags |= WHDR_DONE; ++g_dropped; continue; }
     g_next = (g_next + 1) % BLOCKS;

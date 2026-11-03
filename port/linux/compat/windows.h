@@ -7,6 +7,9 @@
 #error "port/linux/compat is for the Linux build only"
 #endif
 #include <cstddef>
+#ifdef __APPLE__
+#include <cstdlib>
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <cstring>

@@ -1,3 +1,4 @@
+#include "test_env.h"
 #include "render_observer.h"
 // GX command processor: FIFO -> register state -> captured frames.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -10,6 +11,7 @@
 namespace gx { void settings_guest_options_frame(uint8_t menu, uint16_t selection, uint32_t buttons); }
 #endif
 #include "host.h"
+#include "sim_work.h"
 #include "audio.h"
 #include "native_pose_bridge.h"
 #include "replay_control.h"
@@ -481,7 +483,7 @@ void snapshot_textures(DrawCall& dc) {
                                          palette_bytes ? g_tmem_generation : 0);
     // MELEE_TEST_TEXSNAP_VERIFY=1 (tests): the snapshot a draw uses must equal the texels in memory.
     // A difference means memory changed without a write version (a host write that was not marked).
-    static const bool verify = [] { const char* v = std::getenv("MELEE_TEST_TEXSNAP_VERIFY"); return v && *v == '1'; }();
+    static const bool verify = [] { const char* v = host::test_env::getenv("MELEE_TEST_TEXSNAP_VERIFY"); return v && *v == '1'; }();
     if (verify && t.data && (t.data->image.size() != total || std::memcmp(t.data->image.data(), texels, total) != 0)) {
       static uint32_t reported = 0;
       static uint64_t stale = 0;
@@ -668,7 +670,9 @@ void bp_write(uint32_t value) {
         // a read at the console address made every native match look like a menu to the renderer.
         { uint32_t major = 0, minor = 0, match_frame = 0;
           host::current_scene(&major, &minor, &match_frame);
-          g_frame.scene_major = (uint8_t)major; g_frame.scene_minor = (uint8_t)minor; }
+          g_frame.scene_major = (uint8_t)major; g_frame.scene_minor = (uint8_t)minor;
+          g_frame.source_retrace = host::retrace_count();
+          g_frame.source_match_frame = match_frame; }
         // The HUD objects and the guest Settings menu row are read and written at their console
         // addresses, which only the recompiled build keeps in guest RAM: the native game holds
         // them in its own image with its own layout, so it skips both.
@@ -705,7 +709,10 @@ void bp_write(uint32_t value) {
         // A replay viewer on the way to a jump's target simulates frames nobody sees: they are not
         // handed to the renderer, and the next frame that is shown is not the last shown one's neighbour.
         const bool unseen = replay_control::skip_render();
-        if (g_backend && !unseen) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
+        if (g_backend && !unseen) {
+          host::perf::Scope submit_cost(host::perf::Stage::Submit);
+          g_backend->submit_and_recycle(g_frame);
+        }   // hands over the buffers, returns recycled ones
         else g_frame.clear();
         if (unseen) g_discontinuity = g_hard_cut = true;
         g_texture_snapshots.end_frame();
@@ -903,7 +910,7 @@ void lightweight_publish_counts() {
   g_lw_last_skipped.store(skipped, std::memory_order_relaxed);
 }
 void arcade_debug(const Frame& f, const LightweightFilter& e) {
-  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_ARCADE_LOG"); return v && *v == '1'; }();
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_TEST_ARCADE_LOG"); return v && *v == '1'; }();
   static uint32_t n = 0;
   if (!on || ++n != 200) return;
   host::log("arcade: plane z %.1f, %zu draws", e.plane_z, f.draws.size());
@@ -918,7 +925,7 @@ void arcade_debug(const Frame& f, const LightweightFilter& e) {
   }
 }
 void lightweight_debug(const Frame& f, const LightweightFilter& e) {
-  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_LIGHTWEIGHT_LOG"); return v && *v == '1'; }();
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_TEST_LIGHTWEIGHT_LOG"); return v && *v == '1'; }();
   static uint32_t n = 0;
   if (!on || e.level < 2 || (n++ % 600) != 0) return;
   uint32_t world = 0, skinned = 0, owned = 0, other_camera = 0;
@@ -1067,6 +1074,7 @@ void write_fifo_bytes(const uint8_t* data, size_t bytes) {
 static void drain_fifo() {
   if (g_buf.size() - g_buf_pos < g_parse_need) return;   // the pending command is still incomplete
   g_parse_need = 0;
+  host::perf::Scope work_cost(host::perf::Stage::Decode);
   host::SimCostScope cost(host::SIM_DECODE);   // everything the simulation thread spends turning FIFO bytes into draws
   while (g_buf_pos < g_buf.size()) {
     size_t n = parse_command(g_buf.data() + g_buf_pos, g_buf.size() - g_buf_pos);

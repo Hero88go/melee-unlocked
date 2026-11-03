@@ -5,6 +5,7 @@
  * The settings come from the host (CMD_PRACTICE_CPU, source_host.cpp) once a frame. The model and
  * its state are ordinary game data here, so savestates and the lab's recordings keep them.
  * Offline Training only: never online, while an online match is pending, or in replay playback. */
+#include "mu_test_env.h"
 #include <dolphin/os.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/forward.h>
@@ -225,7 +226,7 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
          * (or an AI and the practice CPU) can play whole matches in a hidden run. */
         static int test_pro = -2;
         if (test_pro == -2) {
-            const char* v = getenv("MELEE_TEST_AI_P1");
+            const char* v = mu_test_getenv("MELEE_TEST_AI_P1");
             test_pro = v != NULL ? (int) (v[0] - '0') : -1;
         }
         if (test_pro >= 0) {
@@ -249,7 +250,7 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
          * a CPU (a pro AI against the game's level 9 CPU in a VS match, MELEE_PC_ANY_MODE). */
         static int only = -2;
         if (only == -2) {
-            const char* v = getenv("MELEE_TEST_PC_PORT");
+            const char* v = mu_test_getenv("MELEE_TEST_PC_PORT");
             only = v != NULL ? (int) (v[0] - '0') : -1;
         }
         if (only >= 0) {

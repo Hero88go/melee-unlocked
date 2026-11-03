@@ -1,4 +1,5 @@
 /* The library's entry point, and the host table everything else in the shim calls through. */
+#include "mu_test_env.h"
 #include "mu_host.h"
 #include "mu_shim.h"
 #include "mu_20xx_cpu.h"
@@ -31,6 +32,15 @@ _Static_assert(MU_OPTION_LAB_DI_MASK == MU_GAME_OPTION_LAB_DI_MASK &&
                MU_OPTION_LAB_TECH_MASK == MU_GAME_OPTION_LAB_TECH_MASK &&
                MU_OPTION_LAB_TECH_SHIFT == MU_GAME_OPTION_LAB_TECH_SHIFT &&
                MU_OPTION_LAB_LOOP == MU_GAME_OPTION_LAB_LOOP, "Training dummy option bits");
+
+char* getenv(const char* name);
+
+/* Older hosts keep the standalone diagnostic behavior. */
+const char* mu_test_getenv(const char* name)
+{
+    return mu_host && mu_host->version >= 23 && mu_host->test_getenv
+        ? mu_host->test_getenv(name) : getenv(name);
+}
 
 unsigned int mu_game_options(void)
 {
@@ -255,7 +265,7 @@ uint32_t mu_snapshot_ranges(MuStateRegion* out, uint32_t capacity);
 int mu_practice_bridge(int op, int* args, int count);
 _Static_assert(MU_PRACTICE_DIRECT_FIRST_MATCH == 9 && MU_PRACTICE_REQUEST_MAJOR == 6 && MU_PRACTICE_FRAME_PAUSE == 10 &&
                MU_PRACTICE_CPU_MOVE == 11 && MU_PRACTICE_TRAINING_PICK == 12 &&
-               MU_PRACTICE_TRAINING_STAGE == 13 && MU_PRACTICE_UNLOCKED == 14,
+               MU_PRACTICE_TRAINING_STAGE == 13 && MU_PRACTICE_UNLOCKED == 14 && MU_PRACTICE_PAGE_PAUSE == 15,
                "practice op numbering (mu_practice.c)");
 
 /* Native game-side Slippi hooks use this instead of the console's EXI memory-mapped device. */
@@ -353,7 +363,7 @@ static void mu_early_rng_seed(void)
     static uint32_t seed;
     static unsigned at;
     if (!parsed) {
-        const char* text = getenv("MELEE_TEST_EARLY_RNG_SEED");
+        const char* text = mu_test_getenv("MELEE_TEST_EARLY_RNG_SEED");
         char* end = 0;
         parsed = 1;
         if (text) {

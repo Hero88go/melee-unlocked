@@ -5,6 +5,7 @@
 #define ENET_BUILDING_LIB 1
 #include <string.h>
 #include "enet/enet.h"
+#include "enet/yg_enet_socket.h"
 
 /** @defgroup host ENet host functions
     @{
@@ -82,7 +83,7 @@ enet_host_create (const ENetAddress * address, size_t peerCount, size_t channelL
     host -> outgoingBandwidth = outgoingBandwidth;
     host -> bandwidthThrottleEpoch = 0;
     host -> recalculateBandwidthLimits = 0;
-    host -> mtu = ENET_HOST_DEFAULT_MTU;
+    host -> mtu = yg_enet_mtu (host -> socket, ENET_HOST_DEFAULT_MTU);
     host -> peerCount = peerCount;
     host -> commandCount = 0;
     host -> bufferCount = 0;
@@ -197,6 +198,7 @@ enet_host_connect (ENetHost * host, const ENetAddress * address, size_t channelC
     currentPeer -> channels = (ENetChannel *) enet_malloc (channelCount * sizeof (ENetChannel));
     if (currentPeer -> channels == NULL)
       return NULL;
+    currentPeer -> mtu = yg_enet_mtu (host -> socket, currentPeer -> mtu);
     currentPeer -> channelCount = channelCount;
     currentPeer -> state = ENET_PEER_STATE_CONNECTING;
     currentPeer -> address = * address;

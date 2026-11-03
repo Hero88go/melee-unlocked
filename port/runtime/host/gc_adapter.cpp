@@ -1,3 +1,8 @@
+#include "test_env.h"
+#ifdef __APPLE__
+#include "host.h"
+#include "gc_adapter_mirror_mac.h"
+#else
 // Official / Mayflash / Hand Held Legend "GameCube Controller Adapter for Wii U", through libusb as
 // Dolphin uses it. Same protocol as Dolphin's GCAdapter: one 0x13 byte starts the 37-byte report
 // stream on endpoint 0x81 (status + 9 bytes per port), 0x11 + 4 bytes sets rumble.
@@ -12,6 +17,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
 #include "phob.h"
+#include "yougame_link.h"
+#ifndef _WIN32
+#include "pad_mirror_posix.h"
+#endif
 #define NOMINMAX
 #include <windows.h>
 #ifdef _WIN32
@@ -26,6 +35,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -37,6 +47,13 @@
 
 namespace host {
 namespace {
+
+// The app's helper is the sole adapter owner in stdio-bridge mode. Keep this check at
+// startup and at the transport entry points, including reset and the I/O workers.
+bool direct_adapter_allowed() { return !options.no_gc_adapter && !yougame::stdio_bridge(); }
+#ifdef GC_ADAPTER_TEST_HOOK
+unsigned g_test_scanner_starts = 0, g_test_libusb_opens = 0, g_test_hid_opens = 0;
+#endif
 
 enum : uint16_t {
   PAD_LEFT = 0x0001, PAD_RIGHT = 0x0002, PAD_DOWN = 0x0004, PAD_UP = 0x0008, PAD_Z = 0x0010, PAD_R = 0x0020, PAD_L = 0x0040,
@@ -154,6 +171,87 @@ std::thread g_writer;
 std::mutex g_rumble_mutex;
 std::condition_variable g_rumble_wake;
 
+// Launched by YouGame, the game never opens the adapter: the YouGame app's controller helper holds
+// it (and inside the app's sandbox no USB device can be opened at all). The helper keeps every raw
+// report it reads in a shared section, the "pad mirror", whose handle the app passes over the bridge
+// (yougame_link.h pad_mirror_handle), and takes the rumble back from it. The reports are the
+// adapter's own bytes, so everything below (neutral points, triggers, recalibration) is unchanged.
+// The layout is the helper's (desktop/native/src/main.cpp in the YouGame repository).
+#ifdef _WIN32
+struct PadMirror {
+  char magic[4];               // "YGPM"
+  uint32_t version;            // 1
+  volatile LONG seq;           // even: stable; odd: being written
+  uint32_t reports;            // reports written
+  double at_ms;                // the helper's clock
+  float rate_hz;               // the helper's reads per second
+  uint8_t connected;           // the adapter is open and reporting
+  uint8_t report[37];          // the raw report
+  uint8_t reserved[2];
+  volatile LONG rumble_seq;    // ours: bumped after each rumble change
+  uint8_t rumble[4];           // ours: motor on per port
+};
+static_assert(offsetof(PadMirror, report) == 29 && offsetof(PadMirror, rumble_seq) == 68 && sizeof(PadMirror) == 80, "the helper's layout");
+PadMirror* g_mirror = nullptr;           // under g_mutex
+uintptr_t g_mirror_handle = 0;
+uint32_t g_mirror_reports = 0;
+std::chrono::steady_clock::time_point g_mirror_moved;
+
+// Maps the section the app named, once per handle (a restarted helper hands over a new one).
+void attach_mirror() {
+  const uintptr_t handle = yougame::pad_mirror_handle();
+  if (!handle || handle == g_mirror_handle) return;
+  if (g_mirror) UnmapViewOfFile(g_mirror);
+  g_mirror_handle = handle;
+  g_mirror = (PadMirror*)MapViewOfFile((HANDLE)handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(PadMirror));
+  if (g_mirror && (std::memcmp(g_mirror->magic, "YGPM", 4) != 0 || g_mirror->version != 1)) {
+    UnmapViewOfFile(g_mirror);
+    g_mirror = nullptr;
+  }
+  for (auto& o : g_origin) o.set = false;
+  log(g_mirror ? "gc adapter: reading the YouGame app's adapter" : "gc adapter: the YouGame app's adapter could not be read (error %lu)", GetLastError());
+}
+
+// The latest report from the mirror; false when there is none, the adapter is gone or it went quiet.
+bool read_mirror(uint8_t rep[37]) {
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const LONG before = g_mirror->seq;
+    if (before & 1) { YieldProcessor(); continue; }
+    MemoryBarrier();
+    std::memcpy(rep, g_mirror->report, 37);
+    const bool connected = g_mirror->connected != 0;
+    const uint32_t reports = g_mirror->reports;
+    const float rate = g_mirror->rate_hz;
+    MemoryBarrier();
+    if (g_mirror->seq != before) continue;
+    const auto now = std::chrono::steady_clock::now();
+    if (reports != g_mirror_reports) { g_mirror_reports = reports; g_mirror_moved = now; }
+    // The helper rewrites the report on every read, changed or not, so half a second without a new
+    // one means the helper or the adapter stopped.
+    const bool live = connected && reports && now - g_mirror_moved < std::chrono::milliseconds(500) && rep[0] == 0x21;
+    g_poll_rate_hz.store(live ? rate : 0.0, std::memory_order_relaxed);
+    return live;
+  }
+  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
+  return false;
+}
+
+// A live report from an attached mirror (read_mirror itself assumes one is attached).
+bool mirror_live(uint8_t rep[37]) { return g_mirror && read_mirror(rep); }
+#else
+yougame::pad_mirror::Reader g_posix_mirror;
+void attach_mirror() {
+  g_posix_mirror.attach_once(yougame::pad_mirror_attachment(),
+      [] { for (auto& o : g_origin) o.set = false; }, log);
+}
+bool read_mirror(uint8_t rep[37]) {
+  const bool live = g_posix_mirror.read(rep);
+  g_poll_rate_hz.store(g_posix_mirror.rate_hz(), std::memory_order_relaxed);
+  return live;
+}
+bool mirror_live(uint8_t rep[37]) { return g_posix_mirror.attached() && read_mirror(rep); }
+#endif
+
 // Finds the adapter and records the VID:PID of everything else, so a log from someone whose adapter
 // is not recognised says what they actually had plugged in.
 libusb_device* find_adapter(libusb_device** list, ssize_t count, std::string* others) {
@@ -198,6 +296,7 @@ int hid_transfer(bool write, uint8_t* data, DWORD length, DWORD* done, DWORD tim
 #endif
 
 int adapter_write(const uint8_t* data, int length, int* wrote, unsigned timeout_ms) {
+  if (!direct_adapter_allowed()) { *wrote = 0; return LIBUSB_ERROR_NO_DEVICE; }
   if (g_dev) return libusb_interrupt_transfer(g_dev, g_ep_out, const_cast<uint8_t*>(data), length, wrote, timeout_ms);
   // Windows wants every output report padded to the longest one the device declares. If that is
   // refused, the exact length is tried: a raw passthrough may hand the bytes to the device as they are.
@@ -213,6 +312,7 @@ int adapter_write(const uint8_t* data, int length, int* wrote, unsigned timeout_
 }
 
 int adapter_read(uint8_t* data, int length, int* got, unsigned timeout_ms) {
+  if (!direct_adapter_allowed()) { *got = 0; return LIBUSB_ERROR_NO_DEVICE; }
   if (g_dev) return libusb_interrupt_transfer(g_dev, g_ep_in, data, length, got, timeout_ms);
   uint8_t report[256];
   const DWORD want = g_hid_in_len < sizeof report ? g_hid_in_len : (DWORD)sizeof report;
@@ -228,6 +328,7 @@ int adapter_read(uint8_t* data, int length, int* got, unsigned timeout_ms) {
 bool g_detached_kernel = false;   // Linux: the kernel driver this game let go of, given back on close
 
 void reader_thread() {
+  if (!direct_adapter_allowed()) return;
   // The adapter is polled as fast as this thread asks again. The simulation and render threads run
   // above normal priority, and at normal priority this one was sometimes late with the next request:
   // an adapter that shows its rate dropped from 1000 Hz to 500 or lower. It only sleeps in the USB
@@ -255,7 +356,7 @@ void reader_thread() {
   auto poll_window_start = std::chrono::steady_clock::now();
   auto last_report = poll_window_start;
   unsigned reports_in_window = 0;
-  while (g_running.load()) {
+  while (g_running.load() && direct_adapter_allowed()) {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_report >= std::chrono::milliseconds(500)) {
       g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
@@ -310,13 +411,13 @@ void reader_thread() {
 // between two reads, so every motor change delayed the next read by the length of an output
 // transfer and the adapter saw a gap in its polling.
 void writer_thread() {
-  while (g_running.load()) {
+  while (g_running.load() && direct_adapter_allowed()) {
     {
       std::unique_lock<std::mutex> lock(g_rumble_mutex);
       g_rumble_wake.wait_for(lock, std::chrono::milliseconds(100),
                              [] { return g_rumble_dirty.load() || !g_running.load(); });
     }
-    if (!g_running.load()) break;
+    if (!g_running.load() || !direct_adapter_allowed()) break;
     if (g_rumble_dirty.exchange(false)) {
       uint8_t cmd[5] = {0x11, g_rumble[0], g_rumble[1], g_rumble[2], g_rumble[3]};
       int wrote = 0;
@@ -326,6 +427,7 @@ void writer_thread() {
 }
 
 void close_adapter(bool reset_transport = false) {
+  reset_transport = reset_transport && direct_adapter_allowed();
   {
     // Under the writer's mutex: a store between its predicate check and its sleep would be a
     // wakeup it never sees.
@@ -365,6 +467,7 @@ void close_adapter(bool reset_transport = false) {
 bool adapter_open() { return g_dev || g_hid != INVALID_HANDLE_VALUE; }
 
 void start_threads() {
+  if (!direct_adapter_allowed()) return;
   g_logged_missing = false;
   g_logged_restart = false;
   g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
@@ -379,6 +482,11 @@ void start_threads() {
 bool open_hid() { return false; }
 #else
 bool open_hid() {
+  if (!direct_adapter_allowed()) return false;
+#ifdef GC_ADAPTER_TEST_HOOK
+  ++g_test_hid_opens;
+  return false;
+#endif
   GUID hid_guid;
   HidD_GetHidGuid(&hid_guid);
   HDEVINFO set = SetupDiGetClassDevsA(&hid_guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -442,6 +550,11 @@ bool steam_is_running() {
 }
 
 bool open_libusb() {
+  if (!direct_adapter_allowed()) return false;
+#ifdef GC_ADAPTER_TEST_HOOK
+  ++g_test_libusb_opens;
+  return false;
+#endif
   if (!g_ctx && libusb_init(&g_ctx) != 0) {
     if (!g_logged_missing) { log("gc adapter: libusb could not start; keyboard/XInput stay active"); g_logged_missing = true; }
     g_ctx = nullptr;
@@ -573,6 +686,7 @@ bool open_libusb() {
 
 // libusb first, so an adapter that works today is opened exactly as before.
 bool open_adapter() {
+  if (!direct_adapter_allowed()) return false;
   return open_libusb() || open_hid();
 }
 
@@ -588,17 +702,21 @@ std::once_flag g_scanner_started;
 void scanner_thread();
 
 void ensure_scanner_started() {
-  // --no-gc-adapter (and every hidden test run) never opens the adapter, whoever asks: the Controls
-  // tab's status line used to start the scanner and take a real adapter from the player.
-  if (options.no_gc_adapter) return;
+  if (!direct_adapter_allowed()) return;
+  // (direct_adapter_allowed covers --no-gc-adapter: every hidden test run never opens the adapter,
+  // whoever asks; the Controls tab's status line used to start the scanner and take a real adapter.)
   std::call_once(g_scanner_started, [] {
     g_scanner_run.store(true);
+#ifdef GC_ADAPTER_TEST_HOOK
+    ++g_test_scanner_starts;  // Exercise lazy startup without ever scanning real hardware.
+#else
     g_scanner = std::thread(scanner_thread);
+#endif
   });
 }
 
 void scanner_thread() {
-  while (g_scanner_run.load()) {
+  while (g_scanner_run.load() && direct_adapter_allowed()) {
     if (g_reset_requested.exchange(false)) {
       log("gc adapter: resetting the connection and controller origins");
       close_adapter(true);
@@ -619,10 +737,23 @@ void scanner_thread() {
 }  // namespace
 
 double gcadapter_poll_rate_hz() {
+  if (options.no_gc_adapter) return 0.0;
+  if (yougame::stdio_bridge()) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    attach_mirror();
+    uint8_t rep[37];
+    if (!mirror_live(rep)) return 0.0;
+  }
   return g_poll_rate_hz.load(std::memory_order_relaxed);
 }
 
 std::string gcadapter_problem() {
+  if (yougame::stdio_bridge()) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    attach_mirror();
+    uint8_t rep[37];
+    return mirror_live(rep) ? "Controllers come from the YouGame app" : "No GameCube adapter from the YouGame app";
+  }
   ensure_scanner_started();
   std::lock_guard<std::mutex> lock(g_problem_mutex);
   return g_problem;
@@ -633,7 +764,7 @@ bool gcadapter_reset_pending() {
 }
 
 bool gcadapter_request_reset() {
-  if (options.no_gc_adapter) return false;
+  if (!direct_adapter_allowed()) return false;
   ensure_scanner_started();
   std::lock_guard<std::mutex> scanner_lock(g_scanner_mutex);
   if (!g_scanner_run.load() || g_resetting.exchange(true)) return false;
@@ -651,15 +782,25 @@ bool gcadapter_request_reset() {
 // Fills ports that have a controller plugged into the adapter; returns the mask of those ports.
 uint32_t gcadapter_poll(PadState out[4]) {
   if (options.no_gc_adapter || g_resetting.load()) return 0;
-  ensure_scanner_started();
-  auto now = std::chrono::steady_clock::now();
-  if (!g_running.load()) return 0;
   uint8_t rep[37];
   // Held for the whole report: the scanner thread resets the origins under it when the adapter closes.
-  std::lock_guard<std::mutex> lk(g_mutex);
-  if (g_resetting.load() || !g_have_report) return 0;
-  std::memcpy(rep, g_report, 37);
-  {
+  std::unique_lock<std::mutex> lk(g_mutex, std::defer_lock);
+  if (yougame::stdio_bridge()) {
+    // YouGame: the app's adapter through the pad mirror, never our own USB.
+    lk.lock();
+    attach_mirror();
+#ifdef _WIN32
+    if (!g_mirror || !read_mirror(rep)) return 0;
+#else
+    if (!read_mirror(rep)) return 0;
+#endif
+  } else {
+    ensure_scanner_started();
+    auto now = std::chrono::steady_clock::now();
+    if (!g_running.load()) return 0;
+    lk.lock();
+    if (g_resetting.load() || !g_have_report) return 0;
+    std::memcpy(rep, g_report, 37);
     TickTiming& tick = tick_timing();
     if (tick.pad_age < 0) tick.pad_age = std::chrono::duration<double, std::milli>(now - g_report_time).count();
   }
@@ -710,9 +851,19 @@ void gcadapter_recalibrate(int port) {
 }
 
 void gcadapter_rumble(int port, bool on) {
-  if (port < 0 || port > 3) return;
+  if (options.no_gc_adapter || port < 0 || port > 3) return;
   if (g_resetting.load()) on = false;
   uint8_t v = on ? 1 : 0;
+  if (yougame::stdio_bridge()) {
+#ifdef _WIN32
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (g_mirror && g_mirror->rumble[port] != v) { g_mirror->rumble[port] = v; InterlockedIncrement(&g_mirror->rumble_seq); }
+#else
+    static std::once_flag said;
+    std::call_once(said, [] { log("gc adapter: rumble unavailable through the YouGame app on this system"); });
+#endif
+    return;
+  }
   if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; g_rumble_wake.notify_one(); }
 }
 
@@ -774,7 +925,7 @@ void test_script_thread(std::vector<ScriptStep> steps) {
 }
 
 void gcadapter_test_script_start() {
-  const char* path = std::getenv("MELEE_TEST_ADAPTER_SCRIPT");
+  const char* path = host::test_env::getenv("MELEE_TEST_ADAPTER_SCRIPT");
   if (!path || !options.no_gc_adapter || g_test_thread.joinable()) return;
   std::ifstream in(path);
   std::vector<ScriptStep> steps;
@@ -852,3 +1003,4 @@ int gcadapter_scope(int port, GCScopeSample* out, int max) {
 }
 
 }  // namespace host
+#endif

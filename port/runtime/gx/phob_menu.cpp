@@ -13,6 +13,7 @@
 // the controller being set up with PhobVision's buttons: A/L/R next, Z back, X/Y turn a notch, B puts
 // it back, Start cancels.
 // SPDX-License-Identifier: GPL-3.0-only
+#include "test_env.h"
 #include "phob_menu.h"
 #include "host.h"
 #include "phob.h"
@@ -1158,14 +1159,14 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
   static bool test_done = false;
   if (!test_done) {
     test_done = true;
-    if (const char* t = std::getenv("MELEE_TEST_PHOB")) {
+    if (const char* t = host::test_env::getenv("MELEE_TEST_PHOB")) {
       const int n = std::atoi(t);
       if (n >= 0 && n < SCREEN_COUNT) m.screen = (Screen)n;
-      if (std::getenv("MELEE_TEST_CONTROLLER_TEST")) g_scopes_only = true;   // as the Controls tab's Controller test opens it
+      if (host::test_env::getenv("MELEE_TEST_CONTROLLER_TEST")) g_scopes_only = true;   // as the Controls tab's Controller test opens it
       m.stickmap = 1;
       m.cap.stick_thresh = m.screen == PRESSTIME || m.screen == REACTION ? 23 : 10;
       m.cap.trigger_thresh = m.screen == REACTION ? 49 : 255;
-      if (const char* ac = std::getenv("MELEE_TEST_PHOB_ACTION")) {
+      if (const char* ac = host::test_env::getenv("MELEE_TEST_PHOB_ACTION")) {
         const std::string act = ac;
         const auto arg = [&](const char* key) { return act.rfind(key, 0) == 0 ? std::atoi(act.c_str() + std::strlen(key)) : -1; };
         const Stick which = m.screen == CSTICKCAL || m.screen == CNOTCHFIX ? CSTICK : ASTICK;
@@ -1229,7 +1230,7 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
         if (std::abs(nav.stick_x) < 30 && std::abs(nav.stick_y) < 30) { nav.stick_x = (int8_t)std::clamp(sx, -127, 127); nav.stick_y = (int8_t)std::clamp(sy, -127, 127); }
       }
     }
-    if (std::getenv("MELEE_TEST_PHOB")) {   // test runs: what the menu's controller does
+    if (host::test_env::getenv("MELEE_TEST_PHOB")) {   // test runs: what the menu's controller does
       static uint32_t last = 0xFFFFFFFF;
       const uint32_t sig = nav.buttons | (nav.armed ? 0x10000u : 0);
       if (sig != last) { last = sig; host::log("phob test: menu pad %04X armed %d screen %d", nav.buttons, (int)nav.armed, (int)m.screen); }
@@ -1287,7 +1288,7 @@ PhobNativeOut phob_native_frame(const PhobNativeIn& in_frame) {
         begin_capture(port, m, mode);
       if (feed_capture(port, m)) {
         m.shown = m.cap; m.have_shown = true;
-        if (std::getenv("MELEE_TEST_PHOB")) host::log("phob test: result %d %.1f %.1f %.1f", (int)mode, m.cap.percents[0], m.cap.percents[1], m.cap.percents[2]);
+        if (host::test_env::getenv("MELEE_TEST_PHOB")) host::log("phob test: result %d %.1f %.1f %.1f", (int)mode, m.cap.percents[0], m.cap.percents[1], m.cap.percents[2]);
         if (mode == Mode::Snapback) m.last_snapback = std::fmax(0.0f, 100 - m.cap.percents[0]);
         if (mode == Mode::Dashback) { m.last_db_van = m.cap.percents[0]; m.last_db_ucf = m.cap.percents[1]; }
         if (mode == Mode::Pivot) for (int i = 0; i < 3; i++) m.last_pivot[i] = m.cap.percents[i];

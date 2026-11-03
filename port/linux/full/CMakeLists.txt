@@ -10,6 +10,7 @@ if(NOT EXISTS "${MELEE_PORT_GEN}/hle_decls.h" OR NOT EXISTS "${MELEE_PORT_GEN}/g
   message(FATAL_ERROR "MELEE_PORT_GEN must name a folder with hle_decls.h and guest_symbols.h (python port/recomp/recomp.py)")
 endif()
 find_package(SDL2 REQUIRED)
+find_package(X11 REQUIRED COMPONENTS Xext Xshape)
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(CURL REQUIRED)
@@ -66,6 +67,22 @@ file(GLOB FULL_ENET_SOURCES "${PORT}/third_party/enet/*.c")
 add_library(full_enet STATIC ${FULL_ENET_SOURCES})
 target_include_directories(full_enet PUBLIC "${PORT}/third_party/enet/include")
 target_compile_definitions(full_enet PRIVATE HAS_SOCKLEN_T=1 HAS_POLL=1 HAS_FCNTL=1 HAS_MSGHDR_FLAGS=1 HAS_GETADDRINFO=1 HAS_GETNAMEINFO=1 HAS_INET_PTON=1 HAS_INET_NTOP=1)
+target_link_libraries(full_enet PUBLIC Threads::Threads)
+add_executable(yg_enet_posix_ring_test "${PORT}/tests/yg_enet_posix_ring_test.c")
+target_link_libraries(yg_enet_posix_ring_test PRIVATE full_enet)
+add_test(NAME yg_enet_posix_ring COMMAND yg_enet_posix_ring_test)
+set_tests_properties(yg_enet_posix_ring PROPERTIES TIMEOUT 30)
+set(FAKE_RING_ENET_SOURCES ${FULL_ENET_SOURCES})
+list(REMOVE_ITEM FAKE_RING_ENET_SOURCES "${PORT}/third_party/enet/unix.c" "${PORT}/third_party/enet/win32.c")
+add_executable(yg_enet_socket_test "${PORT}/tests/yg_enet_socket_test.c" ${FAKE_RING_ENET_SOURCES})
+target_include_directories(yg_enet_socket_test PRIVATE "${PORT}/third_party/enet/include")
+target_link_libraries(yg_enet_socket_test PRIVATE Threads::Threads)
+add_test(NAME yg_enet_socket COMMAND yg_enet_socket_test)
+add_executable(yougame_transport_test "${PORT}/tests/yougame_transport_test.cpp")
+target_include_directories(yougame_transport_test PRIVATE "${PORT}/runtime/hle" "${PORT}/third_party")
+target_compile_features(yougame_transport_test PRIVATE cxx_std_17)
+target_link_libraries(yougame_transport_test PRIVATE Threads::Threads)
+add_test(NAME yougame_transport COMMAND yougame_transport_test)
 add_library(full_monocypher STATIC "${PORT}/third_party/monocypher/monocypher.c" "${PORT}/third_party/monocypher/monocypher-ed25519.c")
 target_include_directories(full_monocypher PUBLIC "${PORT}/third_party/monocypher")
 
@@ -91,9 +108,9 @@ foreach(removed
   list(REMOVE_ITEM FULL_RUNTIME_SOURCES "${PORT}/${removed}")
 endforeach()
 add_library(full_runtime STATIC ${FULL_RUNTIME_SOURCES} "${PORT}/third_party/slippilib/SlippiGame.cpp"
-  "${COMPAT}/compat.cpp" ../xinput_sdl.cpp ../hid_linux.cpp ../renderer_gl.cpp ../renderer_presenter.cpp
+  "${COMPAT}/compat.cpp" "${COMPAT}/winhttp_ws.cpp" ../xinput_sdl.cpp ../hid_linux.cpp ../renderer_gl.cpp ../renderer_presenter.cpp
   gx_backend_linux.cpp pc_settings_gl.cpp audio_sdl.cpp linux_media.cpp gpu_features_linux.cpp)
-target_compile_definitions(full_runtime PUBLIC MELEE_LINUX GX_PC_SETTINGS
+target_compile_definitions(full_runtime PUBLIC MELEE_LINUX GX_PC_SETTINGS MELEE_LINUX_X11_EMBED
   PRIVATE MELEE_PORT_VERSION="${MELEE_PORT_VERSION}" MELEE_PLAYBACK_GCT_BASE=0u MELEE_PLAYBACK_GCT_SIZE=0u
   GX_SHADER_CACHE_VERSION="linux-gl-1")
 target_include_directories(full_runtime PUBLIC "${COMPAT}" "${PORT}/runtime/ppc" "${PORT}/runtime/host" "${PORT}/runtime/hle"
@@ -102,7 +119,12 @@ target_include_directories(full_runtime PUBLIC "${COMPAT}" "${PORT}/runtime/ppc"
 target_compile_features(full_runtime PUBLIC cxx_std_17)
 target_compile_options(full_runtime PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
 target_link_libraries(full_runtime PUBLIC full_native_animation full_enet full_imgui PkgConfig::LIBUSB SDL2::SDL2 OpenGL::GL
-  GLEW::GLEW CURL::libcurl OpenSSL::Crypto PkgConfig::FFMPEG Threads::Threads ${CMAKE_DL_LIBS} m)
+  GLEW::GLEW CURL::libcurl OpenSSL::Crypto PkgConfig::FFMPEG Threads::Threads X11::X11 X11::Xext ${CMAKE_DL_LIBS} m)
+
+add_executable(linux_ws_frame_test "${COMPAT}/tests/ws_frame_test.cpp")
+target_compile_features(linux_ws_frame_test PRIVATE cxx_std_17)
+target_link_libraries(linux_ws_frame_test PRIVATE OpenSSL::Crypto)
+add_test(NAME linux_ws_frames COMMAND linux_ws_frame_test)
 
 add_library(full_mu_net STATIC "${PORT}/runtime/mu_net/session_types.cpp" "${PORT}/runtime/mu_net/peer_identity.cpp"
   "${PORT}/runtime/mu_net/session_security.cpp" "${PORT}/runtime/mu_net/input_transport.cpp" "${PORT}/runtime/mu_net/peer_connector.cpp"
@@ -113,15 +135,28 @@ target_compile_definitions(full_mu_net PRIVATE MELEE_LINUX)
 target_compile_options(full_mu_net PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
 target_link_libraries(full_mu_net PUBLIC full_enet PRIVATE full_monocypher OpenSSL::Crypto)
 
-add_executable(melee_source "${PORT}/app/main.cpp" settings_window_linux.cpp "${PORT}/app/source_host.cpp"
+add_executable(melee_source ../embed/yougame_embed_x11.c "${PORT}/app/main.cpp" settings_window_linux.cpp "${PORT}/app/source_host.cpp"
   "${PORT}/app/source_guest_boundary.cpp" "${PORT}/app/source_p2p.cpp" "${NATIVE_RECORDING_CODES}")
 target_include_directories(melee_source PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${PORT}/runtime/abi" "${PORT}/app")
 target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
   MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}" MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS}
   MELEE_GAME_LIBRARY_NAME="${MELEE_GAME_FILE}")
 set_target_properties(melee_source PROPERTIES OUTPUT_NAME ${MELEE_SOURCE_NAME})
-target_compile_options(melee_source PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
+# The shared Win32 compatibility preinclude is C++; never force it into the C99 helper.
+target_compile_options(melee_source PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${MELEE_LINUX_COMMON_FLAGS}>")
+target_compile_features(melee_source PRIVATE c_std_99)
 target_link_libraries(melee_source PRIVATE full_runtime full_mu_net)
+option(YOUGAME_AGENT_TEST_HOOK "Staging test builds: read agent-test.json in app-launched YouGame mode" OFF)
+if(YOUGAME_AGENT_TEST_HOOK)
+  # Windows defines this privately on runtime and both game hosts. Linux has one full host;
+  # melee_linux is the separate minimal host and does not contain these hook sources.
+  target_compile_definitions(melee_source PRIVATE YOUGAME_AGENT_TEST_HOOK)
+  target_compile_definitions(full_runtime PRIVATE YOUGAME_AGENT_TEST_HOOK)
+  message(STATUS "YOUGAME_AGENT_TEST_HOOK=ON: staging agent-test build")
+else()
+  add_test(NAME linux_agent_test_hook_absent COMMAND sh
+    "${PORT}/tests/agent_test_hook_absent.sh" $<TARGET_FILE:melee_source> $<TARGET_FILE:melee_linux>)
+endif()
 set_target_properties(melee_source PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The release carries its own copies of the libraries that differ between distributions, in lib/
 # beside the program (tools/package_linux_release.py); without lib/ the system's are used.

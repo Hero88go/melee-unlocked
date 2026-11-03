@@ -1,6 +1,9 @@
 // Port of the playback half of Dolphin's CEXISlippi (mode "normal", rollback display off, no
 // fast-forward, no seeking): enough to replay a file frame-exact and record it again.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include "slippi_playback.h"
 #include "slippi_playback_legacy.h"
 #include "exi_slippi.h"
@@ -128,7 +131,12 @@ void prepare_gecko_list() {
   host::log("playback: gecko list from the replay: %zu codes kept, %zu denylisted, %zu bytes", kept, dropped, g_gecko_list.size());
   // The recompiler bakes this list (see recomp.py --extra-gct) so its caves run as translated code.
   std::string dump = host::options.replay_dir + "/gecko_list.bin";
-  if (FILE* f = std::fopen(dump.c_str(), "wb")) { std::fwrite(g_gecko_list.data(), 1, g_gecko_list.size(), f); std::fclose(f); host::log("playback: served code list written to %s", dump.c_str()); }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  FILE* dump_file = yougame::agent_paths::output(dump, true);
+#else
+  FILE* dump_file = std::fopen(dump.c_str(), "wb");
+#endif
+  if (FILE* f = dump_file) { std::fwrite(g_gecko_list.data(), 1, g_gecko_list.size(), f); std::fclose(f); host::log("playback: served code list written to %s", dump.c_str()); }
 }
 
 void character_frame_data(const Slippi::FrameData* frame, uint8_t port, bool follower, std::vector<uint8_t>& q) {

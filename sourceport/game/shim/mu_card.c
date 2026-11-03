@@ -10,6 +10,12 @@
 
 static s32 mu_xferred;
 
+int mu_card_boot_confirm(unsigned int channel, unsigned int decision)
+{
+    return mu_host && mu_host->version >= 23 && mu_host->card_boot_confirm &&
+           mu_host->card_boot_confirm(channel, decision);
+}
+
 static void mu_card_finish(void* a, intptr_t packed)
 {
     CARDCallback callback = (CARDCallback) a;

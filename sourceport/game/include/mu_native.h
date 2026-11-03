@@ -459,6 +459,8 @@ void mu_hud_scale(struct HSD_GObj* gobj, int stock);
  * host's overlays (nicknames above the fighters). */
 void mu_hud_report(void);
 unsigned int mu_mod_flags(void);
+/* YouGame-only automatic answers in the memory-card scene (shim/mu_card.c). */
+int mu_card_boot_confirm(unsigned int channel, unsigned int decision);
 #ifndef MU_MOD_ASSETS_PRESENT
 #define MU_MOD_ASSETS_PRESENT 0x1u
 #endif
@@ -666,7 +668,12 @@ int mu_slippi_menus_enabled(void);
 MuSlippiMenuState* mu_slippi_state(void);
 int mu_slippi_cmd(unsigned int cmd, const void* payload, unsigned int size, void* reply,
                   unsigned int reply_cap, unsigned int* reply_size);
-int mu_slippi_fetch_app_state(void);                      /* B9 */
+int mu_slippi_fetch_app_state(void);                      /* B9 (and FA: is Ranked offered) */
+/* FA, this fork's own: nonzero when the host offers Ranked (YouGame mode; Ranked v1 plays the
+ * Unranked screens). mu_slippi_ranked_header also copies the Ranked character select's header
+ * (game text, NUL-terminated) into `out`; it returns 0 and leaves `out` empty otherwise. */
+int mu_slippi_ranked_available(void);
+int mu_slippi_ranked_header(char* out, unsigned int cap);
 int mu_slippi_app_state(void);
 const char* mu_slippi_user_name(void);
 const char* mu_slippi_user_code(void);

@@ -22,6 +22,13 @@ struct Hooks {
   gx::RenderOptions* options = nullptr;
   std::function<void(const gx::Frame&)> frame_begin;
   std::function<void(int, int)> before_swap;
+#ifdef MELEE_LINUX_X11_EMBED
+  // Full host: native drawable pixels from the window pump; false stops render submission.
+  std::function<bool(int*, int*)> drawable_size;
+#endif
+  // After each swap: the window test knobs (Mac and Linux), and on the Mac first-frame fullscreen display and
+  // embedded-panel readiness.
+  std::function<void(uint64_t)> after_swap;
 };
 void set_hooks(gx::Backend& backend, Hooks hooks);
 void capture_efb(gx::Backend& backend, const std::filesystem::path& path);

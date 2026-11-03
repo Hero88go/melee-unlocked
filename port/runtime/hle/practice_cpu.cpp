@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "practice_cpu.h"
 
 #include "host.h"
@@ -27,17 +28,17 @@ MuPcConfig g_config = [] {
   MuPcConfig c;
   mu_pc_defaults(&c);
   // MELEE_TEST_PRACTICE_CPU=<preset> (tests only): on, with that preset, without a settings file.
-  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_CPU")) {
+  if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_CPU")) {
     mu_pc_preset(std::atoi(v), &c);
     c.enabled = 1;
   }
   // MELEE_TEST_PRACTICE_GHOST=<index> (tests only): on, playing that habit ghost.
-  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_GHOST")) {
+  if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_GHOST")) {
     if (practice_cpu::ghost(std::atoi(v), c)) c.enabled = 1;
   }
   // MELEE_TEST_PRACTICE_TOOLS=<MU_PC_TOOL_* bits, hex> (tests only): the Training tools, as the
   // Practice page's Tools rows set them.
-  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_TOOLS")) c.tools = (uint8_t)std::strtoul(v, nullptr, 16);
+  if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_TOOLS")) c.tools = (uint8_t)std::strtoul(v, nullptr, 16);
   return c;
 }();
 std::atomic<uint32_t> g_generation{1};
@@ -80,7 +81,7 @@ bool ghost(int index, MuPcConfig& c) {
 
 MuPcConfig config() { std::lock_guard<std::mutex> lk(g_mutex); return g_config; }
 void initialize_source_test_ghost() {
-  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_GHOST")) {
+  if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_GHOST")) {
     MuPcConfig c = config();
     if (ghost(std::atoi(v), c)) {
       c.enabled = 1;

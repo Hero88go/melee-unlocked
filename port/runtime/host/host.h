@@ -165,6 +165,10 @@ extern void (*native_state_snapshot)(MuStatePod*);
 // absolute retrace, so the same script drives both builds into the same match despite differing
 // boot and menu timing. Safe to call every retrace; cheap either way.
 void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+// The same live snapshot used by digest logging, without opening a log.
+void agent_test_digest_state(MuStatePod* out);
+#endif
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);
@@ -176,7 +180,9 @@ void request_user_exit();
 void set_replay_viewing(bool on);
 // Local launcher mailbox for an explicitly accepted lobby Direct match.
 // Only a normal completed game with one known winner contributes to W/L history.
-void publish_lobby_result(int winner_index, int end_method);
+// Also YouGame's word that an online game ended (yougame::game_ended): `lras` is the port a No
+// Contest names (-1 none), `placements` the Game End record's four placement bytes when known.
+void publish_lobby_result(int winner_index, int end_method, int lras = -1, const uint8_t* placements = nullptr);
 // Relaunch this executable with the same command line, then shut down the way request_exit does,
 // so the replay is finalised and the pipeline cache written before the new process takes over.
 // Used for settings a running device cannot adopt, the graphics backend being the one that
@@ -195,7 +201,8 @@ enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, S
                // (the audio steps), and how far past their deadlines those waits returned.
                SIM_INPUT, SIM_WAIT, SIM_LATE, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
-double last_sim_frame_ms();
+double last_sim_frame_ms();            // wall time of the most recent simulation interval (in-frame waits included)
+void report_sim_work();                // once, at orderly quit; completed intervals only
 double last_sim_frame_work_ms();       // the same frame without its in-frame pacing waits: the thread's own work            // work time of the most recent simulation frame (sleep excluded)
 bool last_sim_frame_late();          // the most recent frame finished after its 60 Hz deadline (the pacer had nothing to wait)
 

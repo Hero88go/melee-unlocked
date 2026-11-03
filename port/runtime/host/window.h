@@ -32,6 +32,21 @@ void window_set_dpi_callback(DpiCallback cb);
 void window_pump();
 void window_set_fullscreen(bool enabled);
 bool window_is_fullscreen();
+#ifndef _WIN32
+// Linux video/render thread: uses page visibility after X11 adoption, SDL otherwise.
+bool window_visible();
+#endif
+#ifdef MELEE_LINUX_X11_EMBED
+// Successful X11 adoption (false after graceful standalone fallback).
+bool window_embedded();
+#endif
+#ifdef __APPLE__
+void window_prefer_simple_fullscreen();   // macOS: non-Spaces full screen; before window_create
+void window_defer_fullscreen_show();
+#endif
+#ifndef _WIN32
+void window_presented(uint64_t frame);    // SDL hosts (Mac, Linux): after each swap; the window test knobs
+#endif
 // Resize the client area, as the resolution picker in the PC settings panel does. Ignored while
 // the window is fullscreen (there the client area is the monitor) and clamped to the monitor.
 void window_set_client_size(int w, int h);
@@ -39,7 +54,10 @@ bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the 
 // True once each time the game window comes back to the front: exclusive fullscreen, which Windows
 // leaves on Alt+Tab, is entered again then.
 bool window_take_activation();
-bool window_take_escape();              // true once per Esc press, like the F1 toggle
+bool window_take_escape();              // true once per Esc press, like the F1 toggle (F1 under YouGame)
+// The key that opens the in-game menu: "Esc", or "F1" in the YouGame app, which keeps Esc for
+// itself (it is how players leave full screen everywhere on YouGame).
+const char* window_menu_key();
 bool window_take_settings_toggle();     // true once per F1 press (auto-repeat ignored), however late it is read
 bool window_take_legacy_settings_toggle(); // true once per F11 press (auto-repeat ignored)
 int window_take_trace_mark();             // once per mark key press, its kind: 1 plain (F8), 2 looked wrong (F6), 3 input wrong (F7), 4 sounded wrong (F9); else 0

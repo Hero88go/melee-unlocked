@@ -39,9 +39,9 @@ typedef struct
 typedef fd_set ENetSocketSet;
 
 #define ENET_SOCKETSET_EMPTY(sockset)          FD_ZERO (& (sockset))
-#define ENET_SOCKETSET_ADD(sockset, socket)    FD_SET (socket, & (sockset))
-#define ENET_SOCKETSET_REMOVE(sockset, socket) FD_CLR (socket, & (sockset))
-#define ENET_SOCKETSET_CHECK(sockset, socket)  FD_ISSET (socket, & (sockset))
+#define ENET_SOCKETSET_ADD(sockset, socket)    do { if ((socket) >= 0 && (socket) < FD_SETSIZE) FD_SET (socket, & (sockset)); } while (0)
+#define ENET_SOCKETSET_REMOVE(sockset, socket) do { if ((socket) >= 0 && (socket) < FD_SETSIZE) FD_CLR (socket, & (sockset)); } while (0)
+#define ENET_SOCKETSET_CHECK(sockset, socket)  ((socket) >= 0 && (socket) < FD_SETSIZE && FD_ISSET (socket, & (sockset)))
     
 #endif /* __ENET_UNIX_H__ */
 

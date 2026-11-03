@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "controller_profiles.h"
-#include "host.h"
-#include "input_bindings.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <system_error>
 
@@ -14,13 +13,15 @@ namespace host {
 namespace {
 
 // Action names as the settings file already spells them (pc_settings.cpp kActionNames).
-constexpr const char* kActions[kProfileActions] = {"A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
-                                                    "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight",
-                                                    "LAnalog", "RAnalog", "ModX", "ModY", "LightShield", "MidShield", "StickMod"};
-static_assert(kProfileActions == static_cast<int>(BindAction::Count), "Profiles must include every action");
+constexpr const char* kActions[] = {"A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
+                                 "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight",
+                                 "LAnalog", "RAnalog", "ModX", "ModY", "LightShield", "MidShield", "StickMod"};
+static_assert(std::size(kActions) == static_cast<size_t>(BindAction::Count),
+              "Profile action names must cover every binding action");
 // Profiles written before the control stick was rebindable stop here; ones written before L and R
-// were split stop four later. Either way the missing actions keep what the caller passed in.
-constexpr int kFirstStickAction = 16;
+// were split stop four later; ones before box/modifier bindings stop at RAnalog.
+// Missing appended actions keep what the caller passed in, as the stick directions always did.
+constexpr int kFirstStickAction = static_cast<int>(BindAction::SUp);
 constexpr const char* kDeviceKeys[(int)ProfileDevice::Count] = {"keyboard", "xinput", "playstation", "gcadapter", "switchpro", "hid"};
 constexpr const char* kHeader = "# Melee Unlocked controller profile";
 constexpr const char* kExtension = ".profile";
@@ -109,8 +110,8 @@ bool profile_load(ProfileDevice device, const std::string& name, ProfileBindings
   std::ifstream in(file_for(clean));
   if (!in) return false;
   ProfileBindings read{};   // an action a profile does not mention is left unbound
-  // Except the control stick directions: an older profile has no lines for them, and unbinding
-  // them would take a keyboard player's movement keys away. They keep what the caller passed in.
+  // Stick directions and later actions keep the caller's bindings when absent in an older file.
+  // This preserves movement keys, trigger migration sentinels and the new modifier defaults.
   for (int i = kFirstStickAction; i < kProfileActions; ++i) read[i] = bindings[i];
   bool device_ok = false;
   std::string line;

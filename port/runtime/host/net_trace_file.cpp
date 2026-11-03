@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include "net_trace_file.h"
 #include <chrono>
 #include <filesystem>
@@ -115,7 +118,11 @@ void Writer::report_saved(const std::string& path, size_t rows) {
 // A ".part" file whose match never got a replay: nothing is kept.
 void Writer::drop_pending() {
   if (pending_.empty()) return;
-  std::remove(pending_.c_str());
+  #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::remove_output(pending_);
+#else
+    std::remove(pending_.c_str());
+#endif
   pending_.clear();
   pending_rows_ = 0;
 }
@@ -125,12 +132,20 @@ void Writer::close_file() {
   std::fclose(file_);
   file_ = nullptr;
   if (rows_ == 0 || !marked_) {
-    std::remove(path_.c_str());   // no player mark or checksum disagreement
+    #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::remove_output(path_);
+#else
+    std::remove(path_.c_str());
+#endif   // no player mark or checksum disagreement
   } else if (path_ == final_) {
     report_saved(final_, rows_);
   } else if (!final_.empty()) {
     std::error_code ec;
+    #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::rename_output(path_, final_, ec);
+#else
     std::filesystem::rename(std::filesystem::path(path_), std::filesystem::path(final_), ec);
+#endif
     if (!ec) report_saved(final_, rows_);
     else if (log_) {
       char line[400];
@@ -153,6 +168,9 @@ void Writer::handle(const Command& command) {
       close_file();
       drop_pending();
       std::error_code ec;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+      if (!yougame::agent_paths::replay((std::filesystem::u8path(command.a) / "Game.trace").u8string()))
+#endif
       std::filesystem::create_directories(std::filesystem::path(command.a), ec);
       if (!command.b.empty()) {
         final_ = trace_path(command.b);
@@ -161,7 +179,11 @@ void Writer::handle(const Command& command) {
         // The process id keeps two clients that share a replay folder apart.
         path_ = command.a + "\\Game_unsaved_" + std::to_string(_getpid()) + ".trace.part";
       }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+      file_ = yougame::agent_paths::output(path_, true);
+#else
       file_ = std::fopen(path_.c_str(), "wb");
+#endif
       if (!file_) {
         if (log_) {
           char line[400];
@@ -193,7 +215,11 @@ void Writer::handle(const Command& command) {
       } else if (!pending_.empty()) {
         const std::string target = trace_path(command.a);
         std::error_code ec;
-        std::filesystem::rename(std::filesystem::path(pending_), std::filesystem::path(target), ec);
+        #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::rename_output(pending_, target, ec);
+#else
+    std::filesystem::rename(std::filesystem::path(pending_), std::filesystem::path(target), ec);
+#endif
         if (!ec) { report_saved(target, pending_rows_); pending_.clear(); pending_rows_ = 0; }
         else drop_pending();
       }

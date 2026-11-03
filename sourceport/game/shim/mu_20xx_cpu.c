@@ -22,6 +22,7 @@
  * keeps it: the top byte of the fighter object's gxlink_prios (console address object+0x20), which
  * only camera objects use. It is game memory, so snapshots and savestates carry it, and it starts
  * at zero with every new fighter object. */
+#include "mu_test_env.h"
 #include <dolphin/os.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/forward.h>
@@ -75,7 +76,7 @@ static unsigned int cpu_word(void)
     static unsigned int reported = 0xFFFFFFFFu;
     unsigned int word;
     if (forced < 0) {
-        const char* v = getenv("MELEE_TEST_CPU_TRAIN");
+        const char* v = mu_test_getenv("MELEE_TEST_CPU_TRAIN");
         forced_word = v != NULL ? (unsigned int) strtoul(v, NULL, 16) & MU_CPU_ALL : 0;
         forced = forced_word != 0;
     }

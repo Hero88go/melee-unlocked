@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "subframe.h"
+#include "../host/sim_work.h"
 #include "authored_pose.h"
 #include "gx_shader.h"
 #include <cstdlib>
@@ -668,7 +669,8 @@ class SolverPool {
     cv_.notify_all();
     fn(0);
     std::unique_lock<std::mutex> lk(m_);
-    done_.wait(lk, [&] { return pending_ == 0; });
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+      done_.wait(lk, [&] { return pending_ == 0; }); }
     job_ = nullptr;
   }
  private:

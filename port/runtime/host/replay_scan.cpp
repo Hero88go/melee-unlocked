@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "replay_scan.h"
 
 #include "slippilib/SlippiGame.h"
@@ -163,7 +164,7 @@ std::vector<Event> scan(Slippi::SlippiGame& game) {
       }
       const Frame& a = ai->second;
       // MELEE_TEST_SCAN_TRACE=<frame> (tests only): each step of the reading that starts at that frame.
-      static const int trace_frame = [] { const char* v = std::getenv("MELEE_TEST_SCAN_TRACE"); return v ? std::atoi(v) : -1000; }();
+      static const int trace_frame = [] { const char* v = host::test_env::getenv("MELEE_TEST_SCAN_TRACE"); return v ? std::atoi(v) : -1000; }();
       if (t.frame == trace_frame)
         std::printf("scan trace %d: step %d att act %d hl %.0f f %02X %02X %02X %02X can %d | def act %d hl %.0f f %02X %02X %02X %02X can %d\n",
                     t.frame, t.count, a.postAction, a.hitlag, a.stateFlags[0], a.stateFlags[1], a.stateFlags[2], a.stateFlags[3],

@@ -1,16 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include "exi_slippi.h"
 #include "jukebox.h"
 #include "slippi_spectate.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
+#include "yougame_link.h"
 #include "native_practice.h"
 #include "gecko_data.h"
 #include "unlock_code_policy.h"
 #include "offline_results_code_policy.h"
 #include "host.h"
 #include "vcdiff.h"
+#include "sysgen_boot.h"
 #include "lab_view.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_static.h"
+#endif
 #define NOMINMAX
 #include <windows.h>
 #include <cstdio>
@@ -136,7 +144,11 @@ void close_file() {
   std::fclose(g_file); g_file = nullptr;
   if (g_discard_replay) {
     g_discard_replay = false;
+    #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::remove_output(g_replay_path);
+#else
     std::remove(g_replay_path.c_str());
+#endif
     host::log("slippi: replay not kept: %s (%s)", g_replay_path.c_str(),
               g_discard_reason ? g_discard_reason : "20XX CPUs were on, and a replay cannot hold what they do");
     g_discard_reason = nullptr;
@@ -144,6 +156,9 @@ void close_file() {
   }
   ++g_replays_written;
   host::log("slippi: replay written: %s (%u raw bytes, last frame %d)", g_replay_path.c_str(), g_written, g_last_frame);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  host::log("replay: recording written to %s", g_replay_path.c_str());
+#endif
 }
 
 void create_file() {
@@ -151,10 +166,18 @@ void create_file() {
   // The folder is UTF-8 (a replay folder the player chose can have any name): wide calls, and its
   // parents too.
   std::error_code ec;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (!yougame::agent_paths::replay((std::filesystem::u8path(g_replay_dir) / "Game.slp").u8string()))
+#endif
   std::filesystem::create_directories(std::filesystem::u8path(g_replay_dir), ec);
   char stamp[32];
   std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%S", std::localtime(&g_start_time));
   g_replay_path = g_replay_dir + "\\Game_" + stamp + ".slp";
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (yougame::agent_paths::replay(g_replay_path))
+    g_file = yougame::agent_paths::output(g_replay_path, true, true);
+  else
+#endif
   g_file = _wfopen(std::filesystem::u8path(g_replay_path).wstring().c_str(), L"wb");
   if (!g_file) { host::log("slippi: cannot create %s", g_replay_path.c_str()); return; }
   const uint8_t header[] = {'{', 'U', 3, 'r', 'a', 'w', '[', '$', 'U', '#', 'l', 0, 0, 0, 0};
@@ -648,7 +671,11 @@ std::unordered_map<std::string, std::vector<uint8_t>> g_file_cache;
 std::mutex g_file_cache_mutex;   // the boot-time preload thread and the simulation thread share it
 
 bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
+#ifdef _WIN32
+  FILE* f = _wfopen(std::filesystem::u8path(path).c_str(), L"rb");
+#else
   FILE* f = std::fopen(path.c_str(), "rb");
+#endif
   if (!f) return false;
   std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
   out.resize(n > 0 ? (size_t)n : 0);
@@ -674,13 +701,15 @@ bool game_file_name_allowed(const std::string& name) {
 std::vector<uint8_t> build_game_file(const std::string& name) {
   std::vector<uint8_t> out;
   if (!game_file_name_allowed(name)) return out;
-  std::string base = host::options.sys_dir + "/GameFiles/GALE01/" + name;
+  std::string base = host::sys_game_file_path(name);
   std::vector<uint8_t> blob;
   if (name != "MxDt.dat" && read_whole_file(base, blob)) {
     out = std::move(blob);
     host::log("slippi: served %s (%zu bytes)", name.c_str(), out.size());
     return out;
   }
+  if (host::required_sys_asset(name))
+    host::die("Sys generation failed: %s: required Sys asset cannot be read", name.c_str());
   if (read_whole_file(base + ".diff", blob)) {
     uint32_t off = 0, size = 0;
     std::vector<uint8_t> source;
@@ -733,7 +762,7 @@ static void preload_game_files() {
   if (host::mod_clean_mode()) return;   // the game never asks: Slippi's file loader is not in it
   std::error_code ec;
   std::filesystem::path dir = std::filesystem::path(host::options.sys_dir) / "GameFiles" / "GALE01";
-  std::vector<std::string> names;
+  std::vector<std::string> names = host::generated_sys_names();
   for (auto& entry : std::filesystem::directory_iterator(dir, ec)) {
     if (!entry.is_regular_file(ec)) continue;
     std::string name = entry.path().filename().string();
@@ -847,7 +876,24 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_STOP_MUSIC: jukebox::stop(); break;
       case CMD_CHANGE_MUSIC_VOLUME: jukebox::set_melee_volume(mem[loc + 1]); break;
       case CMD_RECEIVE_COMMANDS: break;   // handled above
-      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); spectate::end_game(); break;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+      case CMD_RECEIVE_GAME_INFO:
+        yougame::agent_test::static_match.event(yougame::agent_test::StaticEvent::GameStart,
+            !host::game_image && yougame::active() && online::session_mode() >= 0 && !playback::enabled(), [] {});
+        write_to_file(&mem[loc], payload + 1, "");
+        break;
+#endif
+      case CMD_RECEIVE_GAME_END:
+#ifdef YOUGAME_AGENT_TEST_HOOK
+        yougame::agent_test::static_match.event(yougame::agent_test::StaticEvent::GameEnd,
+            !host::game_image && yougame::active() && !playback::enabled(), [] {});
+#endif
+        // ReportGameQuery has no placements. Teams needs the same Game End record that
+        // Source publishes; ReportGameQuery is not used for YouGame Teams.
+        if (!host::game_image && yougame::active() && online::session_mode() == 3 && !playback::enabled() && loc + payload < size)
+          host::publish_lobby_result(-1, payload ? mem[loc + 1] : 0,
+              payload >= 2 ? (int)(int8_t)mem[loc + 2] : -1, payload >= 6 ? &mem[loc + 3] : nullptr);
+        write_to_file(&mem[loc], payload + 1, "close"); spectate::end_game(); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
       case CMD_PREPARE_REPLAY: playback::prepare_game_info(&mem[loc + 1], g_read_queue); break;
       case CMD_READ_FRAME: playback::prepare_frame_data(&mem[loc + 1], g_read_queue); break;

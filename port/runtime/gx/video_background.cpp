@@ -41,6 +41,9 @@ namespace gx::video_bg {
 namespace {
 
 std::filesystem::path exe_directory() {
+#ifdef __APPLE__
+  return std::filesystem::current_path();  // writable media folders belong to the selected profile
+#endif
   wchar_t path[32768]{};
   DWORD n = GetModuleFileNameW(nullptr, path, (DWORD)std::size(path));
   if (!n || n >= std::size(path)) return std::filesystem::current_path();

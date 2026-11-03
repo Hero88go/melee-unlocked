@@ -3,6 +3,7 @@
 // with the same wire formats, so the port can play against stock Slippi clients.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "slippi_game_prep.h"
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -101,8 +102,12 @@ struct PlayerSelections {
   uint32_t rng_offset = 0;
   int message_id = 0;
   bool error = false;
-  void Merge(const PlayerSelections& s);
-  void Reset();
+  void Merge(const PlayerSelections& s) {
+    rng_offset = s.rng_offset;
+    if (s.is_stage_selected) { stage_id = s.stage_id; is_stage_selected = true; alt_stage_mode = s.alt_stage_mode; }
+    if (s.is_character_selected) { character_id = s.character_id; character_color = s.character_color; team_id = s.team_id; is_character_selected = true; }
+  }
+  void Reset() { character_id = character_color = team_id = 0; is_character_selected = false; stage_id = 0; is_stage_selected = false; rng_offset = 0; }
 };
 
 struct MatchInfo {
@@ -211,13 +216,16 @@ class NetplayClient {
   // The median of the last pre-match pings (NP_MSG_MU_PING) to the first opponent, 0 if none yet.
   int PreMatchPingMs() const { return (int)(prematch_ping_ms_.load(std::memory_order_relaxed)); }
   void SendChatMessage(int message_id);
+  void SendGamePrepStep(const GamePrepStep& step);
+  std::array<uint8_t, 6> FetchGamePrepStep(uint8_t index) { return game_prep_.fetch(index); }
   void SendAsync(std::unique_ptr<Packet> packet);
   uint8_t remote_sent_chat_message_id = 0;
   // The opponents' builds (NP_MSG_MU_BUILD), and when the connection completed. early_pads: the
   // build takes early inputs (a trailing byte older builds never sent and never read).
-  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; bool early_pads = false, pings = false;
+  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; bool early_pads = false, pings = false, static_engine = false;
                        uint32_t shield_rgb = 0;   // their own shield colour, 0x1000000 | RGB, 0 none sent
-                       uint8_t port = 0xFF; };   // their in-game slot
+                       uint8_t port = 0xFF;       // their in-game slot
+                       std::string ranked_rules_digest; };
   // The shield colour the opponent on in-game `slot` sent (0 none).
   uint32_t RemoteShieldColor(int slot);
   RemoteBuild GetRemoteBuild(int index);
@@ -244,16 +252,30 @@ class NetplayClient {
   std::unique_ptr<PlayerSelections> ReadSelections(Packet& p);
   std::unique_ptr<PlayerSelections> ReadChatMessage(Packet& p);
 
+  GamePrepQueue game_prep_;
   std::mutex pad_mutex_, ack_mutex_, async_mutex_;
   // timing_mutex_: last_frame_timing_, has_game_started_, frame_offset_data_ (network thread and game
   // thread). chat_mutex_: remote_chat_message_selection_. selection_mutex_: match_info_ (the network
   // thread merges remote selections, the game thread reads, resets and sets its own; the player_idx
   // fields are written once in the constructor and read without it).
-  // Lock order: these are leaf locks. Each is taken alone and released before the next, with one
-  // nesting only: chat_mutex_ then async_mutex_ (the chat-disabled reply is queued under chat_mutex_).
+  // Selection receipt takes selection_mutex_, timing_mutex_ and pad_mutex_ together so its
+  // pre-start decision and queue reset are atomic. Other locks are taken alone, except
+  // chat_mutex_ then async_mutex_ (the chat-disabled reply is queued under chat_mutex_).
   // async_mutex_ is never held while taking another, so no two are ever taken in opposite orders.
   std::mutex timing_mutex_, chat_mutex_, selection_mutex_;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  struct AsyncPacket {
+    std::unique_ptr<Packet> packet;
+    uint64_t enqueued_ms, generation;
+  };
+  std::deque<AsyncPacket> async_queue_;
+  std::atomic<uint64_t> net_test_generation_{0};
+  // Serializes generation changes against due sends. May precede build_mutex_
+  // via Send(), and is never held with async_mutex_.
+  std::mutex net_test_generation_mutex_;
+#else
   std::deque<std::unique_ptr<Packet>> async_queue_;
+#endif
   _ENetHost* client_ = nullptr;
   std::vector<_ENetPeer*> server_;
   std::thread thread_;
@@ -292,10 +314,10 @@ class NetplayClient {
 
 class Matchmaking {
  public:
-  // Slippi's mode ids. RANKED stays defined only as protocol id 0: Melee Unlocked never searches it.
+  // Slippi's mode ids. Ranked is backed by YouGame when launched by its app.
   enum OnlinePlayMode { RANKED = 0, UNRANKED = 1, DIRECT = 2, TEAMS = 3, PARTY = 4 };
   enum ProcessState { IDLE, INITIALIZING, MATCHMAKING, OPPONENT_CONNECTING, CONNECTION_SUCCESS, ERROR_ENCOUNTERED };
-  struct MatchSearchSettings { OnlinePlayMode mode = UNRANKED; std::string connect_code; std::vector<std::string> blocked_codes; };
+  struct MatchSearchSettings { OnlinePlayMode mode = UNRANKED; std::string connect_code; std::vector<std::string> blocked_codes; std::string friend_room; };
   // True when an opponent in the match is on the Unranked block list (codes compared ignoring case
   // and spaces). Public for the unit test.
   static bool IsBlockedMatch(OnlinePlayMode mode, const std::vector<std::string>& blocked,
@@ -355,7 +377,9 @@ class Matchmaking {
     return true;
   }
   MatchmakeResult GetMatchmakeResult() const { std::lock_guard<std::mutex> lk(result_mutex_); return mm_result_; }
-  static bool IsFixedRulesMode(OnlinePlayMode m) { return m == UNRANKED || m == PARTY; }
+  // As Slippi's: Ranked plays Unranked's rules (legal characters, the stage list). Standalone Melee
+  // Unlocked never reaches Ranked (native_online_policy.h); YouGame mode does.
+  static bool IsFixedRulesMode(OnlinePlayMode m) { return m == UNRANKED || m == RANKED || m == PARTY; }
   static LocalPeer local_peer;          // set from the command line for local 2-4 instance tests
   static uint16_t forced_port;          // 0 = random 41000..50999
   // False in hidden or scripted runs unless --allow-matchmaking: an automated run must never
@@ -365,6 +389,7 @@ class Matchmaking {
  private:
   void MatchmakeThread();
   void startMatchmaking();
+  void startYouGameMatchmaking();
   void handleMatchmaking();
   void handleConnecting();
   void disconnectFromServer();

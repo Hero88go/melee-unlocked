@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 22
+#define MU_HOST_API_VERSION 23
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -374,6 +374,12 @@ typedef struct MuHostApi {
     /* Version 22. Screen shake strength (VIDEO > Screen shake): the camera's quake offset is scaled
      * by this, 1 the game's own. Camera only, read live; "Disable screen shake" still zeroes it. */
     float (*screen_shake_scale)(void);
+
+    /* Version 23. YouGame answers only the card scene's create/created prompts.
+     * The game still probes, creates and writes the save using its own disc assets. */
+    int32_t (*card_boot_confirm)(uint32_t channel, uint32_t decision);
+    /* Version 23. Session-gated diagnostic environment; NULL means unset. */
+    const char* (*test_getenv)(const char* name);
 } MuHostApi;
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):
@@ -647,6 +653,8 @@ enum {
     MU_PRACTICE_TRAINING_PICK = 12,     /* a[0] slot (0 player, 1 CPU), a[1] character, a[2] costume: Training's select starts there */
     MU_PRACTICE_FRAME_PAUSE = 10,       /* a[0] pause (1), run (0) or ask (-1); a[1] step one frame; a[0] out: paused */
     MU_PRACTICE_UNLOCKED = 14,          /* out a[0]: bit per character kind the memory card has unlocked */
+    MU_PRACTICE_PAGE_PAUSE = 15,        /* YouGame app sessions: in [0] -1 query, 0 resume, 1 pause; out [0] flag,
+                                           [1] live match, [2] scene frame counter */
 };
 
 /* The library's one export. The host fills `host`, the game fills `game`. */

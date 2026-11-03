@@ -53,6 +53,7 @@ enum {
     CMD_SEND_CHAT = 0xBB,
     CMD_GET_NEW_SEED = 0xBC,
     CMD_NAME_ENTRY_INDEX = 0xBE,
+    CMD_YOUGAME_RANKED = 0xFA,   /* this fork's: flags (bit 0: Ranked offered), then the header text */
     REPLY_CAPACITY = 4096,   /* the bridge refuses a smaller reply buffer */
     MSRB_SIZE = 962,
     OSB_SIZE = 42,
@@ -84,6 +85,7 @@ static int installed;         /* the online major replaced GM_HANYU_CSS (main.as
 static int zelda_sheik;       /* between the online major's OnLoad and OnUnload */
 static unsigned online_loads;  /* OnLoad count: the chat shim's Sheik selector keeps its icon until the next one */
 static int boot_oneshot;      /* boot.asm's one-shot "first menu = online submenu" */
+static int ranked_offered;    /* FA bit 0 at the last app-state fetch: the host runs Ranked (YouGame) */
 static int first_boot = 1;    /* OnMenuLoad's DOFST_IS_FIRST_BOOT */
 /* A peer-to-peer session with menus (mu_online_p2p_menus): the first online submenu confirms Direct
  * by itself. Set in the boot menu entry and cleared by that menu's think a few frames later, both
@@ -131,8 +133,35 @@ int mu_slippi_fetch_app_state(void)
     user_name[31] = 0;
     memcpy(user_code, osb + 32, 10);
     user_code[10] = 0;
+    ranked_offered = mu_slippi_ranked_header(NULL, 0);
     return slp.app_state;
 }
+
+/* FA: flags, then the Ranked character select's header (61 bytes of game text). A host without
+ * the command answers nothing: Ranked stays hidden and the header stays "Ranked Mode". */
+int mu_slippi_ranked_header(char* out, unsigned int cap)
+{
+    u8 r[64];
+    unsigned int got = 0, n;
+    memset(r, 0, sizeof r);
+    if (out != NULL && cap > 0) {
+        out[0] = 0;
+    }
+    if (mu_slippi_cmd(CMD_YOUGAME_RANKED, NULL, 0, r, sizeof r, &got) != 0 || got < 1 || !(r[0] & 1)) {
+        return 0;
+    }
+    if (got > sizeof r) {
+        got = sizeof r;
+    }
+    if (out != NULL && cap > 0) {
+        n = got - 1 < cap - 1 ? got - 1 : cap - 1;
+        memcpy(out, r + 1, n);
+        out[n] = 0;
+    }
+    return 1;
+}
+
+int mu_slippi_ranked_available(void) { return ranked_offered; }
 
 int mu_slippi_app_state(void) { return slp.app_state; }
 const char* mu_slippi_user_name(void) { return (const char*) user_name; }
@@ -308,14 +337,15 @@ unsigned char mu_slippi_team_costume(int team, int ckind)
     }
 }
 
-/* HandleOnlineLockedOptions (Melee Unlocked edit: Ranked hidden when logged in). Logged out (or an
- * unknown state): only Log in. Logged in: Unranked, Direct, Teams, Party. Update required: only
- * Update. */
+/* HandleOnlineLockedOptions (Melee Unlocked edit: Ranked hidden when logged in, unless the host
+ * offers it: YouGame mode). Logged out (or an unknown state): only Log in. Logged in: Unranked,
+ * Direct, Teams, Party (and Ranked under YouGame). Update required: only Update. */
 int mu_slippi_option_unlocked(int sel)
 {
     switch (slp.app_state) {
     case MU_SLP_APP_LOGGED_IN:
-        return sel >= MU_SLP_MODE_UNRANKED && sel <= MU_SLP_MODE_PARTY;
+        return (sel >= MU_SLP_MODE_UNRANKED && sel <= MU_SLP_MODE_PARTY) ||
+               (sel == MU_SLP_MODE_RANKED && ranked_offered);
     case MU_SLP_APP_UPDATE:
         return sel != MU_SLP_MODE_RANKED && sel != MU_SLP_MODE_UNRANKED &&
                sel != MU_SLP_MODE_DIRECT && sel != MU_SLP_MODE_TEAMS &&
@@ -540,7 +570,8 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
 /* ---- the online major (Slippi Online Scene/main.asm) ----
  * GM_HANYU_CSS (unused in retail) becomes the online mode: states 0 CSS, 1 SSS, 2 VS, 3 Results,
  * 4 Splash. Slippi writes the raw next-state byte (id + 1); gm_SetNextGameModeStateId(id) is the
- * same write. The Ranked-only GameSetup state is not ported (Ranked is hidden). */
+ * same write. The Ranked-only GameSetup state is not ported: standalone Melee Unlocked hides Ranked,
+ * and YouGame's Ranked v1 plays the Unranked states (CSS, random legal stage, splash, VS). */
 
 static CSSData online_css_data;   /* Slippi reuses the event CSS buffer; the choice is saved in vs.unk_530 */
 
@@ -601,7 +632,7 @@ static void css_decide(GameModeState* state)
         }
         break;
     default:
-        /* Unranked, Party (and Ranked, which this build never reaches) */
+        /* Unranked, Party, and Ranked (YouGame only, on the Unranked flow) */
         break;
     }
     mu_slippi_splash_init();

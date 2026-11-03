@@ -1,8 +1,12 @@
 ﻿// Port of Slippi's jukebox (Rust, hps_decode 0.3.0) onto the host audio mixer.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "jukebox.h"
 #include "host.h"
 #include "audio_sinc.h"
+#ifdef __APPLE__
+#include "slippi_online.h"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -364,7 +368,12 @@ bool resolve_music_pack_path(const std::string& disc_path, std::filesystem::path
   wchar_t module[32768];
   const DWORD n = GetModuleFileNameW(nullptr, module, (DWORD)_countof(module));
   if (!n || n >= _countof(module)) return false;
+#ifdef __APPLE__
+  // The player's user folder (--user-dir), never the read-only .app bundle the game may run from.
+  const std::filesystem::path root = std::filesystem::u8path(slippi::online::config().user_dir) / "MusicPacks";
+#else
   const std::filesystem::path root = std::filesystem::path(std::wstring(module, n)).parent_path() / L"MusicPacks";
+#endif
   const std::filesystem::path direct = root / disc;
   std::error_code ec;
   if (std::filesystem::is_regular_file(direct, ec) && !ec) { *out = direct; return true; }
@@ -442,7 +451,7 @@ void start_song(uint32_t disc_offset, uint32_t size) {
   const uint32_t generation = ++g_song_generation;
   std::thread([disc_offset, size, generation, song_gain] { host::optional_work("jukebox", [&] {
     // MELEE_TEST_JUKEBOX_OOM (tests only, hidden runs): every song load runs out of memory.
-    if (std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_JUKEBOX_OOM")) throw std::bad_alloc();
+    if (std::getenv("MELEE_NO_GC_ADAPTER") && host::test_env::getenv("MELEE_TEST_JUKEBOX_OOM")) throw std::bad_alloc();
     std::filesystem::path custom_path;
     const MusicPackReader pack_reader = g_music_packs_enabled.load(std::memory_order_relaxed)
         ? g_music_pack_reader.load() : nullptr;
@@ -491,9 +500,13 @@ bool music_packs_enabled() { return g_music_packs_enabled.load(std::memory_order
 void open_music_packs_folder() {
   wchar_t path[32768];
   const DWORD length = GetModuleFileNameW(nullptr, path, (DWORD)_countof(path));
+#ifdef __APPLE__
+  const std::filesystem::path folder = std::filesystem::u8path(slippi::online::config().user_dir) / "MusicPacks";
+#else
   const std::filesystem::path folder = length && length < _countof(path)
       ? std::filesystem::path(std::wstring(path, length)).parent_path() / L"MusicPacks"
       : std::filesystem::path(L"MusicPacks");
+#endif
   std::error_code ec;
   std::filesystem::create_directories(folder, ec);
   if (ec) { host::log("jukebox: cannot create music folder (%s)", ec.message().c_str()); return; }

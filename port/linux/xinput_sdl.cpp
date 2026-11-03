@@ -11,6 +11,8 @@
 #include <mutex>
 #include <string>
 
+namespace host { void log(const char* fmt, ...); } // melee.log (--log-file)
+
 namespace {
 struct Slot { SDL_GameController* pad = nullptr; SDL_JoystickID id = -1; DWORD packet = 0; std::string name; uint16_t vendor = 0, product = 0; };
 std::mutex g_mutex;
@@ -38,7 +40,10 @@ void rescan_locked() {
   g_next_scan = now + std::chrono::milliseconds(500);
   SDL_GameControllerUpdate();
   for (auto& s : g_slots)
-    if (s.pad && !SDL_GameControllerGetAttached(s.pad)) { SDL_GameControllerClose(s.pad); s = Slot{}; }
+    if (s.pad && !SDL_GameControllerGetAttached(s.pad)) {
+      host::log("pads: slot %d closed", int(&s - g_slots));
+      SDL_GameControllerClose(s.pad); s = Slot{};
+    }
   const int count = SDL_NumJoysticks();
   for (int i = 0; i < count; ++i) {
     if (!SDL_IsGameController(i)) continue;
@@ -53,6 +58,9 @@ void rescan_locked() {
     free_slot->pad = pad; free_slot->id = id; free_slot->vendor = vendor; free_slot->product = product;
     const char* name = SDL_GameControllerName(pad);
     free_slot->name = name ? name : "Controller";
+    // The pad's id and SDL type only, never its name (names can be user-set; pack-platform).
+    host::log("pads: slot %d <- vid:pid %04X:%04X type %d", int(free_slot - g_slots), unsigned(vendor), unsigned(product),
+              int(SDL_GameControllerGetType(pad)));
   }
 }
 

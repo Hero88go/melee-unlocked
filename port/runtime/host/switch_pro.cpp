@@ -18,7 +18,9 @@
 #include <windows.h>
 #include <hidsdi.h>
 #include "input_bindings.h"
+#ifndef __APPLE__
 #include <libusb.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -294,6 +296,9 @@ const char* gamecube_start(int slot, uint32_t pid) {
       {0x09, 0x91, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // player light
   };
   static const uint8_t kLengths[] = {16, 8, 8, 22, 25, 9, 16, 12, 8, 28, 12, 12, 8, 8, 7, 11, 16};
+#ifdef __APPLE__
+  (void)pid; (void)slot; return "USB initialization unavailable on macOS; use SDL controller input";
+#else
   static libusb_context* context = nullptr;
   if (!context && libusb_init(&context) != 0) { context = nullptr; return "libusb could not start"; }
   libusb_device** list = nullptr;
@@ -353,6 +358,7 @@ const char* gamecube_start(int slot, uint32_t pid) {
   if (handle) libusb_close(handle);
   libusb_free_device_list(list, 1);
   return why;
+#endif
 }
 
 void initialise(int slot) {

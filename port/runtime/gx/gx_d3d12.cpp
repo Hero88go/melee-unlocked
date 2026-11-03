@@ -1,6 +1,10 @@
 // D3D12 backend: replays captured GX frames into an EFB render target and presents XFB copies.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
+#include "test_env.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -37,6 +41,7 @@
 #include "exi_slippi.h"
 #endif
 #include "gx_shader.h"
+#include "yougame_parity.h"
 #include "crt_shader.h"
 #include "present_shader.h"
 #include "user_shader.h"
@@ -56,6 +61,7 @@
 #include "video_background.h"
 #include "video_background_learning.h"
 #include "host.h"
+#include "sim_work.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
 #include "gecko_data.h"
 #ifdef GX_PC_SETTINGS
@@ -173,7 +179,7 @@ template <class T> const IID& IID_PPV_ARGS_Helper_IID() { return __uuidof(T); }
 // right after CreateDXGIFactory1 had worked there. These hold no C++ objects, so structured
 // exception handling can catch the fault. MELEE_TEST_DXGI_FAULT=1 faults CreateDXGIFactory2,
 // =2 also the device check in d3d12_usable (the game then starts on Direct3D 11).
-int dxgi_test_fault() { const char* v = std::getenv("MELEE_TEST_DXGI_FAULT"); return v ? std::atoi(v) : 0; }
+int dxgi_test_fault() { const char* v = host::test_env::getenv("MELEE_TEST_DXGI_FAULT"); return v ? std::atoi(v) : 0; }
 HRESULT guarded_factory2(bool through_streamline, IDXGIFactory4** out) {
   __try {
     if (dxgi_test_fault() >= 1) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
@@ -742,7 +748,7 @@ class D3D12Backend : public Backend {
   HANDLE fence_event_ = nullptr;
   uint64_t fence_value_ = 0;
   void wait_fence(uint64_t value) {
-    if (value && fence_->GetCompletedValue() < value) { fence_->SetEventOnCompletion(value, fence_event_); WaitForSingleObject(fence_event_, INFINITE); }
+    if (value && fence_->GetCompletedValue() < value) { fence_->SetEventOnCompletion(value, fence_event_); host::perf::Scope wait_cost(host::perf::Stage::Wait); WaitForSingleObject(fence_event_, INFINITE); }
   }
   ComPtr<ID3D12RootSignature> root_;
   ComPtr<ID3D12RootSignature> blit_root_;
@@ -869,8 +875,8 @@ void D3D12Backend::init() {
   }
   // MELEE_TEST_DEVICE_LOST=1 (tests only, hidden and headless runs) takes the device away at once;
   // =old also treats the GPU as one whose highest level is Direct3D 11.
-  if (std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_DEVICE_LOST")) {
-    if (std::string(std::getenv("MELEE_TEST_DEVICE_LOST")) == "old") g_check_level11 = true;
+  if (std::getenv("MELEE_NO_GC_ADAPTER") && host::test_env::getenv("MELEE_TEST_DEVICE_LOST")) {
+    if (std::string(host::test_env::getenv("MELEE_TEST_DEVICE_LOST")) == "old") g_check_level11 = true;
     ComPtr<ID3D12Device5> removable;
     if (SUCCEEDED(device_.As(&removable))) removable->RemoveDevice();
   }
@@ -1078,7 +1084,8 @@ void D3D12Backend::create_swapchain(bool waitable) {
 // timeout, and says so once.
 void D3D12Backend::wait_frame_latency() {
   if (!frame_latency_waitable_) return;
-  const DWORD result = WaitForSingleObjectEx(frame_latency_waitable_, 100, FALSE);
+  const DWORD result = [&] { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+    return WaitForSingleObjectEx(frame_latency_waitable_, 100, FALSE); }();
   if (result == WAIT_OBJECT_0) { waitable_timeouts_ = 0; return; }
   if (result == WAIT_TIMEOUT) {
     if (++waitable_timeouts_ < 3) return;
@@ -1648,6 +1655,7 @@ void D3D12Backend::wait_gpu() {
   queue_->Signal(fence_.Get(), fence_value_);
   if (fence_->GetCompletedValue() < fence_value_) {
     fence_->SetEventOnCompletion(fence_value_, fence_event_);
+    host::perf::Scope wait_cost(host::perf::Stage::Wait);
     WaitForSingleObject(fence_event_, INFINITE);
   }
 }
@@ -1812,7 +1820,7 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
   std::lock_guard<std::mutex> lk(pipeline_library_mutex_);
   ID3D12PipelineLibrary* library = pipeline_library_faulted_ ? nullptr : pipeline_library_.Get();
   // MELEE_TEST_PIPELINE_FAULT=1 (tests only): the first library call faults, as Windows' cache did.
-  static bool test_fault = std::getenv("MELEE_TEST_PIPELINE_FAULT") != nullptr;
+  static bool test_fault = host::test_env::getenv("MELEE_TEST_PIPELINE_FAULT") != nullptr;
   if (library && test_fault) { test_fault = false; library = reinterpret_cast<ID3D12PipelineLibrary*>(uintptr_t(16)); }
   // A fault leaves whatever the call had written to its output unknown: that pointer is never used
   // (nor released), so each call writes into a fresh one.
@@ -2063,6 +2071,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       Stopwatch wait_sw;
       {
         std::unique_lock<std::mutex> lk(pso_mutex_);
+        host::perf::Scope wait_cost(host::perf::Stage::Wait);
         pso_done_cv_.wait_for(lk, std::chrono::microseconds(exact ? 2000 : std::min(pso_wait_budget_us_, 2000)), [&] { return !pso_done_.empty(); });
       }
       pso_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
@@ -3305,18 +3314,26 @@ void D3D12Backend::capture_backbuffer() {
     if (pending_captures_.size() >= opts_.capture_burst) flush_captures();
     return;
   }
-  std::ofstream f(opts_.capture_path, std::ios::binary);
+  #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::ppm(opts_.capture_path, desc.Width, desc.Height, data, pitch);
+#else
+    std::ofstream f(opts_.capture_path, std::ios::binary);
   f << "P6\n" << desc.Width << ' ' << desc.Height << "\n255\n";
   for (UINT y = 0; y < desc.Height; ++y) for (UINT x = 0; x < desc.Width; ++x) f.write((const char*)data + (size_t)y * pitch + x * 4, 3);
+#endif
   staging->Unmap(0, nullptr);
   host::log("captured %s (sim frame %llu)", opts_.capture_path.c_str(), (unsigned long long)capture_sequence_);
 }
 
 void D3D12Backend::flush_captures() {
   for (const PendingCapture& pc : pending_captures_) {
+    #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::ppm(pc.path, pc.w, pc.h, pc.data.data(), pc.pitch);
+#else
     std::ofstream f(pc.path, std::ios::binary);
     f << "P6\n" << pc.w << ' ' << pc.h << "\n255\n";
     for (UINT y = 0; y < pc.h; ++y) for (UINT x = 0; x < pc.w; ++x) f.write((const char*)pc.data.data() + (size_t)y * pc.pitch + x * 4, 3);
+#endif
     host::log("captured %s (sim frame %llu)", pc.path.c_str(), (unsigned long long)pc.sequence);
   }
   pending_captures_.clear();
@@ -3730,6 +3747,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // A backlog frame presents nothing and takes no place; a hidden window gets no presents to signal it.
     if (!occluded_) wait_frame_latency();
     diag("frame latency wait");
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
     for (;;) {
       double remaining = present_deadline_ - Stopwatch::now();
       if (remaining <= 0) break;
@@ -3738,6 +3756,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
         if (SetWaitableTimer(present_timer_, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(present_timer_, INFINITE);
         else SwitchToThread();
       } else YieldProcessor();
+    }
     }
     present_wait_ = Stopwatch::now()-wait_start;
     streamline::pcl_marker(3); streamline::pcl_marker(4);
@@ -3753,13 +3772,16 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // (a Discord stream) frames that flashed an old picture. Not under frame generation, which
       // paces its own presents.
       const bool test_only = occluded_ && fg_applied_ <= 0;
-      const HRESULT present_hr = test_only ? swapchain_->Present(0, DXGI_PRESENT_TEST)
-          : swapchain_->Present(synced ? 1 : 0, (!synced && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
-      const bool now_occluded = present_hr == DXGI_STATUS_OCCLUDED;
+      const HRESULT present_result = [&] { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+        return test_only ? swapchain_->Present(0, DXGI_PRESENT_TEST)
+            : swapchain_->Present(synced ? 1 : 0, (!synced && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0); }();
+      const bool now_occluded = present_result == DXGI_STATUS_OCCLUDED;
       if (now_occluded != occluded_) {
         occluded_ = now_occluded;
         host::log(occluded_ ? "d3d12: window hidden, presents paused" : "d3d12: window visible, presents resumed");
       }
+      // Ready = the first real frame drawn, visible or not (see gx_d3d11.cpp).
+      yougame::parity::signals.presented(SUCCEEDED(present_result) && frame.test_fill < 0);
       present_wait_ += Stopwatch::now() - present_call;   // a synced Present waits for the display (see gx_d3d11.cpp)
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
@@ -3901,7 +3923,7 @@ void D3D12Backend::prewarm_upscalers() {
     // MELEE_TEST_WARMUP_REFUSED=<n> (tests only, hidden and headless runs) refuses the first n frames.
     HRESULT closed = list_->Close();
     {
-      static int refuse = std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_WARMUP_REFUSED") ? std::atoi(std::getenv("MELEE_TEST_WARMUP_REFUSED")) : 0;
+      static int refuse = std::getenv("MELEE_NO_GC_ADAPTER") && host::test_env::getenv("MELEE_TEST_WARMUP_REFUSED") ? std::atoi(host::test_env::getenv("MELEE_TEST_WARMUP_REFUSED")) : 0;
       if (SUCCEEDED(closed) && refuse > 0) { --refuse; closed = E_INVALIDARG; }
     }
     if (FAILED(closed)) {
@@ -3986,7 +4008,8 @@ void D3D12Backend::prewarm_pipelines() {
     if (pending && host::now_seconds() >= panel_after)
       host::loading_show(L"Compiling shaders (first launch of this version)", total - pending, total);
     if (!pending) break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
   }
   host::loading_close();
   host::window_set_title(host::window_title_base().c_str());

@@ -1,12 +1,17 @@
 // Linux: the PC settings panel on its own, with no game behind it (the launcher's Settings button),
 // on an SDL window with an OpenGL context. The panel body is the same settings_frame the game runs.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "render_options.h"
 #include "pc_settings.h"
 #include "window.h"
 #include "host.h"
 #include <SDL.h>
+#ifdef __APPLE__
+#include <OpenGL/gl3.h>
+#else
 #include <GL/glew.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -46,7 +51,7 @@ void save_test_shot(const std::string& path, int w, int h) {
 int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent, std::function<void()> reload) {
   (void)standby_parent;   // the Linux launcher starts the window when Settings is pressed
   (void)reload;
-  const char* shot_env = std::getenv("MELEE_TEST_SETTINGS_SHOT");
+  const char* shot_env = host::test_env::getenv("MELEE_TEST_SETTINGS_SHOT");
   const std::string shot = shot_env ? shot_env : "";
   gx::settings_fill_window(true);
   void* window = host::window_create(kBaseWidth, kBaseHeight, L"Melee Unlocked settings", shot.empty());
@@ -54,8 +59,10 @@ int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent
   SDL_Window* sdl = static_cast<SDL_Window*>(window);
   SDL_GLContext context = SDL_GL_CreateContext(sdl);
   if (!context) { host::log("settings: no OpenGL context (%s)", SDL_GetError()); return 1; }
+#ifndef __APPLE__
   glewExperimental = GL_TRUE;
   glewInit();
+#endif
   glGetError();
   SDL_GL_SetSwapInterval(1);
   // A scaled desktop: the drawable is larger than the window in points; the panel follows it.

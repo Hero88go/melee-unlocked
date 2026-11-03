@@ -1,6 +1,7 @@
 // Linux build: the synchronous WinHTTP subset the host and launcher use (crash reports, the updater,
 // the lobby), over libcurl. A request is performed in full at WinHttpReceiveResponse; ReadData then
-// hands back the buffered body. SPDX-License-Identifier: GPL-2.0-or-later
+// hands back the buffered body. WebSocket upgrades live in winhttp_ws.cpp.
+// SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "windows.h"
 
@@ -27,6 +28,16 @@ typedef int INTERNET_SCHEME;
 #define WINHTTP_QUERY_CONTENT_LENGTH 5u
 #define WINHTTP_QUERY_FLAG_NUMBER 0x20000000u
 #define WINHTTP_OPTION_REDIRECT_POLICY 88u
+#define WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET 114u
+#define WINHTTP_OPTION_RECEIVE_TIMEOUT 6u
+#define WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS 1000u
+enum WINHTTP_WEB_SOCKET_BUFFER_TYPE {
+  WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE = 0,
+  WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE = 1,
+  WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE = 2,
+  WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE = 3,
+  WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE = 4
+};
 #define WINHTTP_OPTION_REDIRECT_POLICY_NEVER 0u
 #define WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP 1u
 #define WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS 2u
@@ -59,4 +70,8 @@ BOOL WinHttpQueryHeaders(HINTERNET request, DWORD level, LPCWSTR name, LPVOID bu
 BOOL WinHttpQueryDataAvailable(HINTERNET request, LPDWORD available);
 BOOL WinHttpReadData(HINTERNET request, LPVOID buffer, DWORD size, LPDWORD read);
 BOOL WinHttpCloseHandle(HINTERNET handle);
+HINTERNET WinHttpWebSocketCompleteUpgrade(HINTERNET request, DWORD_PTR context);
+DWORD WinHttpWebSocketSend(HINTERNET socket, WINHTTP_WEB_SOCKET_BUFFER_TYPE type, LPVOID buffer, DWORD size);
+DWORD WinHttpWebSocketReceive(HINTERNET socket, LPVOID buffer, DWORD size, LPDWORD got, WINHTTP_WEB_SOCKET_BUFFER_TYPE* type);
+DWORD WinHttpWebSocketShutdown(HINTERNET socket, USHORT status, LPVOID reason, DWORD length);
 BOOL WinHttpCrackUrl(LPCWSTR url, DWORD length, DWORD flags, URL_COMPONENTS* parts);

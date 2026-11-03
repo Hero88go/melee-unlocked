@@ -17,6 +17,9 @@
 #include <memory>
 #include <string>
 #include <cctype>
+#ifdef __APPLE__
+#include "../../mac/embed_mac.h"
+#endif
 
 namespace gx {
 
@@ -111,8 +114,18 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
   if (opts.pc_settings) g_presentation->settings = std::make_unique<PcSettingsUIGL>(hwnd, opts);
   linux_renderer::Hooks hooks;
   hooks.options = &opts;
+#ifndef __APPLE__
+  if (host::window_embedded()) hooks.drawable_size = [](int* w, int* h) {
+    if (host::window_closed() || host::exit_requested()) return false;
+    host::window_client_size(w, h);
+    return *w > 0 && *h > 0;
+  };
+#endif
   hooks.frame_begin = [](const Frame& frame) {
     auto& p = *g_presentation;
+#ifdef __APPLE__
+    p.options.fullscreen = host::window_is_fullscreen();
+#endif
     // As the Windows renderers: the Slippi widescreen code, Fountain of Dreams reflections and
     // True widescreen follow the settings every frame (they are game changes, not drawing).
     static bool widescreen_sent = false, fod_sent = false;
@@ -137,6 +150,14 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
     auto& p = *g_presentation;
     if (p.settings) p.settings->draw();
   };
+#ifdef __APPLE__
+  hooks.after_swap = [window](uint64_t frame) {
+    mac_embed::frame_presented(window);
+    host::window_presented(frame);
+  };
+#else
+  hooks.after_swap = [](uint64_t frame) { host::window_presented(frame); };
+#endif
   linux_renderer::set_hooks(*renderer, std::move(hooks));
   return renderer.release();
 }

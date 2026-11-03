@@ -205,6 +205,7 @@ struct Frame {
   std::array<HudPlayerSnapshot, 4> hud_players{};
   std::array<std::string, 4> player_names{};
   uint64_t sequence = 0;
+  uint32_t source_retrace = 0, source_match_frame = 0;
   // The game's scene controller when this frame was finished: major scene (2 VS, 0x1C training,
   // 1 the menus) and the minor scene within it (2 is in-game for the match modes; the character and
   // stage selects come before it). Read on the simulation thread; the presentation thread decides
@@ -246,7 +247,7 @@ struct Frame {
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; hard_cut = false; test_fill = -1; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; source_retrace = source_match_frame = 0; time = 0.0; tick = {}; discontinuous = false; hard_cut = false; test_fill = -1; }
 };
 
 // Display latency test for photodiode testers that press X + D-pad Down (LDAT, pico lag testers;

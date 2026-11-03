@@ -9,6 +9,7 @@
 #pragma once
 #include <string>
 #include "host.h"
+#include "lcancel_policy.h"
 #include "../abi/mu_lcancel_view.h"
 
 namespace lcancel {
@@ -19,6 +20,8 @@ void set_indicator(bool on);
 void set_flash_mode(int mode);
 int flash_mode();
 void set_automatic(bool on);
+// Ranked refuses changes for the whole session, preserving the player's saved choice.
+bool automatic_setting_locked();
 bool indicator_enabled();
 bool automatic_enabled();
 // Diagnostics: per-frame CSV of every observed local fighter. Empty = off.
@@ -31,13 +34,16 @@ void apply(host::PadState pads[4]);
 // The native game keeps its fighters in its own layout, so it hands the values this helper reads
 // over itself (MuGameApi.lcancel_view). Unset, they are read from guest memory (recompiled build).
 void set_native_view(void (*fill)(MuLcancelView* out));
+#ifdef YOUGAME_AGENT_TEST_HOOK
+void agent_test_view(MuLcancelView* out);
+#endif
 
 // The indicator itself needs nothing from the UI: feedback tints the fighter through
 // gx::set_player_tint, which is a renderer-side colour and never a write into the game.
 
 // ---- gating, for the panel and the character-select notice ----
 // nullptr when the automatic press is allowed right now (offline, or an online Direct session);
-// otherwise the name of the online mode that suppresses it ("Unranked", "Teams", "Party").
+// otherwise the name of the online mode that suppresses it ("Ranked", "Unranked", "Teams", "Party").
 const char* auto_suppressed_mode();
 // True while an online session exists and its match has not started: matchmaking and the online
 // character select screen. The notice about the suppressed setting belongs here.

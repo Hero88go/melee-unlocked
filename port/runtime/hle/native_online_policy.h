@@ -8,14 +8,17 @@ namespace slippi::online {
 enum class NativeGameplayProfile { Vanilla, Akaneia, OtherMod };
 
 // Slippi's mode IDs are Ranked=0, Unranked=1, Direct=2, Teams=3, Party=4.
-// Melee Unlocked does not offer Ranked, on either engine; every matchmaking entry (the game's own
-// online menus, practice matchmaking, Discord joins) goes through this check.
+// Standalone Melee Unlocked has no Ranked backend; YouGame supplies it when its app launches the game.
+// Every matchmaking entry (the game's own online menus, practice matchmaking, Discord joins) goes
+// through this check.
 // Direct and Teams are the modes in which every client can deliberately run the same mod: both are
 // played by code with friends, so the clients can check each other's build (see build_verdict).
-inline const char* native_profile_mode_error(NativeGameplayProfile profile, int mode) {
+// YouGame also isolates Ranked/Unranked mod rooms and requires a verified same-build peer.
+inline const char* native_profile_mode_error(NativeGameplayProfile profile, int mode, bool yougame = false) {
   if (mode < 0 || mode > 4) return "Unsupported matchmaking mode";
-  if (mode == 0) return "Ranked is not available in Melee Unlocked. Play Unranked, Direct or Teams.";
-  // A mod's own gameplay (its fighters, stages and files) only in Direct and Teams, against the same
+  if (mode == 0 && !yougame) return "Ranked is not available in Melee Unlocked. Play Unranked, Direct or Teams.";
+  if (yougame && (mode == 0 || mode == 1)) return nullptr;
+  // Standalone mod gameplay (its fighters, stages and files) only in Direct and Teams, against the same
   // build on every side. Source content views switch the other modes to retail files. A Static mod
   // session has no such switch, so a non-Vanilla profile reaching here elsewhere is refused.
   if (profile == NativeGameplayProfile::Akaneia && mode != 2 && mode != 3)
@@ -32,12 +35,57 @@ inline bool native_mod_fingerprint_valid(const std::string& fingerprint) {
   return true;
 }
 
+// Source content-view table (has_mod=false always means retail):
+// Offline (mode < 0): mod. Direct (2): mod iff enabled and the opponent is not plain.
+// YouGame Ranked/Unranked (0/1): mod iff the full fingerprint is valid. Other modes: retail.
+// Standalone keeps the original offline/Direct rule for every fingerprint and setting.
+inline bool native_source_mod_view(bool has_mod, int mode, bool yougame, bool plain_opponent,
+                                   bool live_mods_in_direct, const std::string& fingerprint) {
+  if (!has_mod) return false;
+  if (mode < 0) return true;
+  if (mode == 2) return !plain_opponent && live_mods_in_direct;
+  return yougame && (mode == 0 || mode == 1) && native_mod_fingerprint_valid(fingerprint);
+}
+
 inline bool native_direct_builds_match(bool local_mod, const std::string& local_fingerprint,
                                       bool remote_mod, const std::string& remote_fingerprint) {
   if (local_mod != remote_mod) return false;
   if (!local_mod) return true;
   return native_mod_fingerprint_valid(local_fingerprint) &&
          native_mod_fingerprint_valid(remote_fingerprint) && local_fingerprint == remote_fingerprint;
+}
+
+// YouGame Ranked/Unranked never permits an unverified mod peer or a mod/vanilla pair.
+inline bool native_yougame_online_builds_match(bool local_mod, const std::string& local_fingerprint,
+                                               bool remote_mod, const std::string& remote_fingerprint) {
+  return native_direct_builds_match(local_mod, local_fingerprint, remote_mod, remote_fingerprint);
+}
+
+// The peer policy used by build_verdict: 1 play, 0 wait, -1 refuse. No unverified fallback.
+inline int native_yougame_online_build_verdict(bool local_mod, const std::string& local_fingerprint,
+                                              bool received, bool remote_mod,
+                                              const std::string& remote_fingerprint, bool wait_expired) {
+  if (!received) return wait_expired ? -1 : 0;
+  return native_yougame_online_builds_match(local_mod, local_fingerprint, remote_mod, remote_fingerprint) ? 1 : -1;
+}
+
+// Compatibility name for existing Unranked callers.
+inline bool native_yougame_unranked_builds_match(bool local_mod, const std::string& local_fingerprint,
+                                                bool remote_mod, const std::string& remote_fingerprint) {
+  return native_yougame_online_builds_match(local_mod, local_fingerprint, remote_mod, remote_fingerprint);
+}
+
+// Extended-content builds advertise support for added fighters and stages. The peer's full
+// fingerprint must pass build_verdict before either player's selections can start a match.
+inline bool native_yougame_online_mod_content(bool yougame, int mode, bool mod_view,
+                                              bool extended_content, const std::string& fingerprint) {
+  return yougame && (mode == 0 || mode == 1) && mod_view && extended_content && native_mod_fingerprint_valid(fingerprint);
+}
+
+// Compatibility name for existing Unranked callers; the policy also covers Ranked.
+inline bool native_yougame_unranked_mod_content(bool yougame, int mode, bool mod_view,
+                                               bool extended_content, const std::string& fingerprint) {
+  return native_yougame_online_mod_content(yougame, mode, mod_view, extended_content, fingerprint);
 }
 
 // Called only after the Direct build check succeeds. Static mod code supports its own extended

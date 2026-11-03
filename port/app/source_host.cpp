@@ -7,11 +7,23 @@
 // What still differs from the recompiled build is listed where it happens: no memory card yet
 // (M10), Slippi's game side not present (M12).
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
+#include "layer_fingerprint.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include "source_host.h"
 #include <windows.h>
 #ifndef _WIN32
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include "../mac/elf_loader.h"
+#include "../mac/platform_paths.h"
+#include "../mac/context_registers.h"
+#include <csetjmp>
+#else
 #include <link.h>
+#endif
 #include <csignal>
 #endif
 #include <algorithm>
@@ -32,6 +44,9 @@
 #include <unordered_set>
 #include <vector>
 #include "host.h"
+#include "sim_work.h"
+#include "rollback_perf.h"
+#include "yougame_net_test.h"
 #include "audio.h"
 #include "console_sound_mode.h"
 #include "audio_core.h"
@@ -57,11 +72,19 @@
 // Both builds: the neutral netplay state. In the build without the Slippi layer it also answers the
 // Slippi names; in the normal build a peer-to-peer session (--p2p-*) is found through it.
 #include "netplay_state.h"
+#include "yougame_link.h"
+#include "yougame_mode_policy.h"
+#include "yougame_memcard.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_fight.h"
+#endif
+#include "yougame_exit_reason.h"
 #ifndef MELEE_NO_SLIPPI
 #include "native_practice.h"
 #include "jukebox.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
+#include "online_test_quit.h"
 #include "source_p2p.h"
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
@@ -104,6 +127,10 @@ constexpr uint32_t LOCKED_CACHE_SIZE = 16u << 10;
 // Right after MEM1, so the game's own statics (the font atlas, static textures) have a physical
 // address the GX texture and display-list registers can hold: 26 bits, the first 64 MB.
 constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
+// The end of what GX can address: the game image must fit below it. The range itself is held from
+// startup by g_game_image_reservation (below); in the YouGame sandbox, with bottom-up ASLR on, the
+// process's early allocations (the GPU driver's among them) otherwise land anywhere in the low 4 GB.
+constexpr uintptr_t GAME_IMAGE_HOLD_END = 0x84000000u;
 
 // The game library must load at GAME_IMAGE_BASE. Everything the host does before loading it (mod
 // scans, cosmetics, the music pack index) allocates, and a heap block placed there moved the library
@@ -113,7 +140,9 @@ struct GameImageReservation {
   void* base = nullptr;
   GameImageReservation() {
     // Generous: the image's own size is checked again after the load.
+#ifndef __APPLE__
     base = VirtualAlloc((void*)GAME_IMAGE_BASE, 0x04000000u, MEM_RESERVE, PAGE_NOACCESS);
+#endif
   }
   void release() {
     if (base) VirtualFree(base, 0, MEM_RELEASE);
@@ -123,6 +152,12 @@ struct GameImageReservation {
 GameImageReservation g_game_image_reservation;
 
 MuGameApi g_game{};
+#ifdef __APPLE__
+mac_elf::Image g_mac_image;
+std::jmp_buf g_mac_run_boundary;
+bool g_mac_running = false;
+std::string g_dll = (mac_host::resources() / "melee_game.so").string();
+#else
 #ifdef _WIN32
 // The compatibility build (melee_source_compat.exe) loads its own SSE2 game library, as on Linux.
 std::string g_dll = std::strcmp(MELEE_CPU_BASELINE_NAME, "AVX2") == 0 ? "melee_game.dll" : "melee_game_compat.dll";
@@ -131,17 +166,38 @@ std::string g_dll = MELEE_GAME_LIBRARY_NAME;   // the compatibility build loads 
 #else
 std::string g_dll = "melee_game.so";
 #endif
+#endif
 audio_core::State g_audio;
 
 // Native online play (host API 13). While the game re-simulates after a rollback load, the
 // machine stands still: no time, alarms, audio, retraces or presentation.
 native_savestate::Engine g_savestates;
 bool g_resim = false;
+bool gl_costs_enabled() {
+  // First use follows session-policy setup; global initialization precedes it.
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_GL_COSTS"); return v && *v == '1'; }();
+  return on;
+}
+uint64_t g_resim_gx_bytes = 0;
 uint64_t g_resim_phases = 0, g_resim_polls = 0, g_resim_vi_waits = 0;
 // --online-test: a Slippi mode id (the harness enters the match without menus), or -1.
 int g_online_test_mode = -1;
 uint8_t g_online_test_character = 2, g_online_test_color = 0;
 bool g_online_test_started = false;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+bool g_agent_fight_match = false; // bounded by the native online Game Start / Game End events
+#endif
+// --online-test ranked plays one whole best-of-3 set (YouGame mode): after each game the harness
+// locks the same character in again, and the run ends once the set's room is done.
+struct RankedHarness {
+  yougame::online_test::QuitAfter quit;
+  uint64_t game_end_ms = 0;      // the last game's Game End record (0: in the match scene since)
+  bool reentry_asked = false;    // asked the game back into Debug VS's match scene for the next game
+  uint64_t done_ms = 0;          // the set's room closed
+  bool exiting = false;
+};
+RankedHarness g_ranked_harness;
+constexpr int32_t kGameModeDebugVs = 0x0E;   // GM_DEBUG_VS: the harness's (and Slippi playback's) major
 
 bool trace_ax_voice_window() {
   const char* range = std::getenv("MELEE_TRACE_AX_SFX");
@@ -267,6 +323,7 @@ bool g_mod_root_explicit = false;
 // in command-line order, then Mods/Files when it exists. A later layer wins over an earlier one.
 std::string g_mod_profile_name;
 std::vector<mods::Layer> g_mod_layers;
+std::vector<mods::Layer> g_explicit_mod_layers;
 std::vector<std::filesystem::path> g_mod_gcis;
 std::string g_mod_fingerprint;                 // content identity of the enabled layers, "" = vanilla
 std::string g_direct_fingerprint;              // what Direct compares when not the content identity (Melee Maker)
@@ -291,48 +348,12 @@ const KnownPack kKnownPacks[] = {
 constexpr const char kArcadePackName[] = "2D-style build";
 bool arcade_pack_name(const char* name) { return std::strncmp(name, kArcadePackName, sizeof kArcadePackName - 1) == 0; }
 
-// An ISO layer's fingerprint covers what it changes: every changed or added file's path and
-// content, the changed main.dol runs and the retail files it drops. Hashing a whole modded disc
-// takes seconds, so the result is cached by path, size and modification time.
+// Session identity must be derived from this launch's loaded layer bytes.
 std::string iso_layer_fingerprint(const std::filesystem::path& iso, const std::string& profile) {
-  namespace fs = std::filesystem;
-  std::error_code ec;
-  const auto size = fs::file_size(iso, ec);
-  const auto stamp = fs::last_write_time(iso, ec).time_since_epoch().count();
-  const std::string key = fs::absolute(iso, ec).u8string() + "|" + std::to_string(size) + "|" + std::to_string(stamp);
-  const fs::path cache = fs::path("Mods") / ".cache" / "fingerprints.txt";
-  {
-    std::ifstream in(cache);
-    std::string line;
-    while (std::getline(in, line)) {
-      const auto tab = line.rfind('\t');
-      if (tab == key.size() && line.compare(0, tab, key) == 0) return line.substr(tab + 1);
-    }
-  }
   const auto begin = std::chrono::steady_clock::now();
-  mods::Sha256 total;
-  std::vector<uint8_t> buffer(1 << 20);
-  for (const auto& file : g_mod_overlay.files()) {
-    if (file.profile != profile) continue;
-    total.update(file.path + "\t" + std::to_string(file.length) + "\n");
-    for (uint64_t pos = 0; pos < file.length; pos += buffer.size()) {
-      const uint32_t n = (uint32_t)std::min<uint64_t>(buffer.size(), file.length - pos);
-      if (g_mod_overlay.read(file.start + (uint32_t)pos, buffer.data(), n) != ModOverlay::Read::Success) return {};
-      total.update(buffer.data(), n);
-    }
-  }
-  for (const auto& report : g_mod_overlay.iso_reports()) {
-    if (report.profile != profile) continue;
-    for (const auto& run : report.dol_runs)
-      total.update("dol " + std::to_string(run.first) + " " + std::to_string(run.second) + "\n");
-    for (const auto& gone : report.deleted) total.update("deleted " + gone + "\n");
-  }
-  const std::string fingerprint = total.hex();
+  const auto fingerprint = layer_fingerprint(g_mod_overlay, profile, [] { return mods::Sha256{}; });
   host::log("mods: fingerprinted %s in %.1f s", iso.u8string().c_str(),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count());
-  fs::create_directories(cache.parent_path(), ec);
-  std::ofstream out(cache, std::ios::app);
-  out << key << '\t' << fingerprint << '\n';
   return fingerprint;
 }
 
@@ -435,8 +456,12 @@ void load_mod_overlay() {
   namespace fs = std::filesystem;
   std::error_code ec;
   apply_detected_mods();
-  if (!host::gameplay::mod_autodetect_disabled && !g_mod_root_explicit && fs::exists(g_mod_root, ec) && !ec)
-    g_mod_layers.push_back({mods::LayerKind::Dir, g_mod_root});
+  if (!host::gameplay::mod_autodetect_disabled && !g_mod_root_explicit) {
+    if (!yougame::mode_policy::mod_sources(yougame::active()).folders)
+      host::log("mods: implicit Mods/Files overlay ignored in YouGame mode; mods come from the listing");
+    else if (fs::exists(g_mod_root, ec) && !ec)
+      g_mod_layers.push_back({mods::LayerKind::Dir, g_mod_root});
+  }
   if (g_mod_layers.empty()) return;
   std::string error;
   g_mod_overlay.set_layered(true);
@@ -472,14 +497,23 @@ void load_mod_overlay() {
   uint32_t layer_index = 0;
   for (const auto& layer : g_mod_layers) {
     const std::string label = "layer " + std::to_string(++layer_index) + " " + layer.path.u8string();
+    const bool explicit_layer = std::any_of(g_explicit_mod_layers.begin(), g_explicit_mod_layers.end(),
+        [&](const mods::Layer& selected) { return selected.kind == layer.kind && selected.path == layer.path; });
+    mods::Detected detected;
+    const auto overlay_failed = [&] {
+      if (g_mod_overlay.native_fighters_refused())
+        yougame::notify_mod_refused(explicit_layer, yougame::mode_policy::ModRefusal::NativeFighters,
+                                   detected.name, detected.version);
+      host::die("mods: %s", error.c_str());
+    };
     std::string fingerprint;
     switch (layer.kind) {
     case mods::LayerKind::Iso:
-      if (!g_mod_overlay.add_iso(layer.path, label, lookup, read_base, error)) host::die("mods: %s", error.c_str());
+      if (!g_mod_overlay.add_iso(layer.path, label, lookup, read_base, error)) overlay_failed();
       fingerprint = iso_layer_fingerprint(layer.path, label);
       break;
     case mods::LayerKind::Dir:
-      if (!g_mod_overlay.add_directory(layer.path, label, error)) host::die("mods: %s", error.c_str());
+      if (!g_mod_overlay.add_directory(layer.path, label, error)) overlay_failed();
       fingerprint = dir_layer_fingerprint(label);
       break;
     case mods::LayerKind::Gci: {
@@ -923,6 +957,42 @@ void log_native_pose_bridge_stats() {
             (unsigned long long)stats.rejected[MU_NATIVE_POSE_REJECT_ENVELOPE_LIMIT],
             (unsigned long long)stats.rejected[MU_NATIVE_POSE_REJECT_BOUND_ANIMATION]);
 }
+// The body counter is already exposed by the read-only page-pause query (a[0]=-1).
+// Unlike PADRead / VI waits, the clock callback also runs in every resim body
+// (HSD_PerfSetStartTime). Only query it while catch-up is active.
+uint32_t rollback_engine_frame() {
+  int32_t state[3] = {-1, 0, 0};
+  return g_game.practice && g_game.practice(MU_PRACTICE_PAGE_PAUSE, state, 3) == 0 && state[2] >= 0
+      ? static_cast<uint32_t>(state[2]) : 0;
+}
+void rollback_log(bool exiting = false) {
+  using namespace host::rollback;
+  auto& a = accumulator;
+  if (!a.online) return;
+  const auto ns = now_ns();
+  if (exiting) a.end(ns, rollback_engine_frame(), presentation);
+  if (!exiting && !a.due(ns)) return;
+  const auto counts = presentation.snapshot();
+  auto text = line(exiting ? "match" : "interval", ns - (exiting ? a.started_ns : a.window_ns),
+                   exiting ? a.match : a.interval, counts - (exiting ? a.match_present : a.interval_present));
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  const auto& config = yougame::net_test::config();
+  if (config.enabled()) text += " [AGENT TEST net=+" + std::to_string(config.delay_ms) +
+      " ms jitter 0.." + std::to_string(config.jitter_ms) + "]";
+#endif
+  host::log("%s", text.c_str());
+  if (exiting) a.stop(presentation);
+  else a.next_window(ns, counts);
+}
+void rollback_frame_callback() {
+  using namespace host::rollback;
+  if (!accumulator.catching_up) return;
+  const auto frame = rollback_engine_frame();
+  if (frame > accumulator.last_frame()) {
+    accumulator.frame(now_ns(), frame);
+    rollback_log();
+  }
+}
 template <class F> void guarded(F&& f) {
   try { f(); } catch (const ExitRequested& stop) {
     g_exit_code = stop.code;
@@ -930,7 +1000,11 @@ template <class F> void guarded(F&& f) {
 #ifndef MELEE_NO_SLIPPI
     slippi::spectate::stop();
 #endif
+    rollback_log(true);
     log_native_pose_bridge_stats();
+#ifdef __APPLE__
+    if (g_mac_running) std::longjmp(g_mac_run_boundary, 1);
+#endif
     if (g_shutdown) g_shutdown(stop.code);
     host::end_process(stop.code);   // everything is saved: do not run the libraries' unload code
   }
@@ -940,6 +1014,21 @@ template <class F> void guarded(F&& f) {
 void h_log(const char* text) {
   std::string line = text ? text : "";
   while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+  if (line.rfind("online: match starts,", 0) == 0) {
+    using namespace host::rollback;
+    rollback_log(true);
+    accumulator.start(now_ns(), presentation);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+    const auto& config = yougame::net_test::config();
+    if (config.enabled()) host::log("AGENT TEST net delay: outgoing input +%u ms, jitter 0..%u ms (Direct)",
+                                   config.delay_ms, config.jitter_ms);
+#endif
+  }
+  if (line.rfind("online: match exit:", 0) == 0) rollback_log(true);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (line.rfind("online: rollback time:", 0) == 0)
+    line.replace(0, sizeof("online: rollback time:") - 1, "online: rollback time (emulated clock):");
+#endif
   // MELEE_TRACE_AX_VOICES: the game's sound-request and stream traces also get the timebase, to
   // place each on the AX frame timeline (the game's own lines carry only the retrace).
   static const bool request_tb = std::getenv("MELEE_TRACE_AX_VOICES") != nullptr;
@@ -958,9 +1047,16 @@ void h_panic(const char* file, int32_t line, const char* message) {
     if (pc > GAME_IMAGE_BASE && pc < GAME_IMAGE_BASE + host::game_image_size)
       host::log("  stack: melee_game.dll+0x%llX", (unsigned long long)(pc - 1 - GAME_IMAGE_BASE));
   }
+#ifdef __APPLE__
+  host::log("game panic: %s", message ? message : "");
+  host::end_process(1);
+#endif
   host::die("game stopped at %s:%d: %s", file ? file : "?", line, message ? message : "");
 }
-uint64_t h_ticks() { return host::cpu->tb; }
+uint64_t h_ticks() {
+  if (g_resim) rollback_frame_callback();
+  return host::cpu->tb;
+}
 // The date the game's calendar works from. It was zero, so every save and every Training Mode CE
 // export was dated January 1, 2000.
 uint64_t h_boot_time() { return host::console_epoch_ticks(); }
@@ -975,7 +1071,7 @@ void native_audio_tick() {
 
 void h_poll() {
   // A re-simulated frame never waits on the machine; count it if something does.
-  if (g_resim) { ++g_resim_polls; return; }
+  if (g_resim) { ++g_resim_polls; rollback_frame_callback(); return; }
   guarded([] {
     host::advance_time(2048);   // time flows in busy waits, as it does for the recompiled build
     native_audio_tick();
@@ -987,6 +1083,7 @@ void h_poll() {
 static void (*g_look_snapshot)(MuLookSnapshot*) = nullptr;
 static void (*g_look_items)(MuLookItems*) = nullptr;
 void native_retrace() {
+  rollback_log();
   native_audio_tick();
   g_game.fire_alarms(host::cpu->tb);
   g_game.retrace();
@@ -999,7 +1096,10 @@ void native_retrace() {
   }
 }
 
-void h_gx_fifo(const uint8_t* data, uint32_t size) { guarded([&] { gx::write_fifo_bytes(data, size); }); }
+void h_gx_fifo(const uint8_t* data, uint32_t size) {
+  if (gl_costs_enabled() && g_resim) g_resim_gx_bytes += size;
+  guarded([&] { gx::write_fifo_bytes(data, size); });
+}
 void h_native_render_scope_event(const MuNativeRenderScopeEvent* event) {
   if (!event) return;
   gx::native_render_scope_event({event->sequence, event->scope_id, event->phase, event->reserved});
@@ -1206,7 +1306,7 @@ void begin_native_savestates(int slots = slippi::ROLLBACK_MAX_FRAMES) {   // a r
   }
   // Diagnostic (MELEE_SNAPSHOT_EXCLUDE=lo-hi[,lo-hi...], hex): leave extra ranges out, to find
   // which memory a rollback must not restore.
-  if (const char* extra = std::getenv("MELEE_SNAPSHOT_EXCLUDE")) {
+  if (const char* extra = host::test_env::getenv("MELEE_SNAPSHOT_EXCLUDE")) {
     for (const char* p = extra; *p;) {
       char* end = nullptr;
       const unsigned long long lo = std::strtoull(p, &end, 16);
@@ -1651,7 +1751,7 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           replay_coach::Event e;
           if (replay_coach::parse(p, n, e)) {
             replay_coach::add(e);
-            static const bool log_events = std::getenv("MELEE_TEST_COACH_LOG") != nullptr;   // tests
+            static const bool log_events = host::test_env::getenv("MELEE_TEST_COACH_LOG") != nullptr;   // tests
             if (log_events) {
               const replay_coach::Readout r = replay_coach::readout(e);
               host::log("coach: frame %d P%d %s %s %s | %s (move %d)", e.frame, e.actor + 1, r.head.c_str(), r.value.c_str(),
@@ -1692,7 +1792,7 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           uint32_t growth = host::cosmetics::largest_fighter_growth();
           // MELEE_TEST_DEMO_GROWTH=<bytes>: test runs only, stands in for installed skins that much larger.
           static const uint32_t test_growth = [] {
-            const char* v = std::getenv("MELEE_TEST_DEMO_GROWTH");
+            const char* v = host::test_env::getenv("MELEE_TEST_DEMO_GROWTH");
             return v && host::options.no_gc_adapter ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u;
           }();
           growth += test_growth;
@@ -1826,22 +1926,22 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
 }
 
 // The view for the online mode the game reports (0-4), or offline (-1): offline and Direct with the
-// mod on show the mod; every other online mode shows the retail game. The online rules and the
-// build the opponent is told follow it.
+// mod on show the mod; YouGame Ranked/Unranked also shows a mod with a verified fingerprint. Other
+// online modes show the retail game. The online rules and the build the opponent is told follow it.
 // A Direct opponent on Slippi Dolphin (no build message): that match plays the retail game. Set and
 // cleared by slippi_online.cpp (set_plain_opponent_handler); g_content_mode is the mode last applied.
 bool g_plain_opponent = false;
 int g_content_mode = -1;
 slippi::online::LocalBuild content_build_for_mode(int mode) {
   const bool mods = !g_view_alias.empty();
-  const bool retail = mods && mode >= 0 && (g_plain_opponent || !(mode == 2 && gx::RenderOptions::live_mods_in_direct()));
   slippi::online::LocalBuild build;
-  build.mod_view = mods && !retail;
+  build.fingerprint = g_direct_fingerprint.empty() ? g_mod_fingerprint : g_direct_fingerprint;
+  build.mod_view = slippi::online::native_source_mod_view(mods, mode, yougame::active(), g_plain_opponent,
+                                                         gx::RenderOptions::live_mods_in_direct(), build.fingerprint);
   // Akaneia and ACE: their added fighters are compiled into this game library (an Akaneia disc is
   // refused without them), so Direct and Teams may pick them, as on the Static Recomp. Before this
   // only Static mod boots said so, and the Source Port refused every added fighter online.
   build.extended_content = build.mod_view && g_mod_gameplay_profile == slippi::online::NativeGameplayProfile::Akaneia;
-  build.fingerprint = g_direct_fingerprint.empty() ? g_mod_fingerprint : g_direct_fingerprint;
   build.name = g_mod_display_name;
   build.allow_unverified = gx::RenderOptions::live_mods_dolphin_ok();
   return build;
@@ -1849,16 +1949,18 @@ slippi::online::LocalBuild content_build_for_mode(int mode) {
 
 void apply_content_mode(int mode) {
   const bool mods = !g_view_alias.empty();
-  bool retail = false;
-  if (mods && mode >= 0) retail = g_plain_opponent || !(mode == 2 && gx::RenderOptions::live_mods_in_direct());
+  const auto build = content_build_for_mode(mode);
+  const bool retail = mods && !build.mod_view;
   g_content_mode = mode;
   if (retail != g_retail_view)
     host::log("content: %s view (%s)", retail ? "retail" : "mod",
               mode < 0 ? "offline" : mode == 2 && retail ? "Direct, the opponent is on Slippi Dolphin" :
-              mode == 2 ? "Direct" : "online mode that plays the retail game");
+              mode == 2 ? "Direct" : mode == 0 && build.mod_view ? "YouGame Ranked, same verified build" :
+              mode == 1 && build.mod_view ? "YouGame Unranked, same verified build" :
+              "online mode that plays the retail game");
   g_retail_view = retail;
   mods::status().retail_view = retail;   // the panel's notice counts the pack skins swapped in this view
-  slippi::online::set_local_build(content_build_for_mode(mode));
+  slippi::online::set_local_build(build);
 }
 
 // slippi_online.cpp's word on the Direct opponent (see g_plain_opponent). The view follows at once:
@@ -1881,12 +1983,30 @@ void prepare_practice_content(int mode, bool activate) {
 }
 
 void h_resim_phase(int32_t entering) {
+  if (gl_costs_enabled()) {
+    if (entering) g_resim_gx_bytes = 0;
+    else host::log("rollback GX: resim_fifo_bytes=%llu", (unsigned long long)g_resim_gx_bytes);
+  }
+  // The existing read-only pause query exposes the engine body counter. Resimulation
+  // loops bypass VI waits entirely, so counting those waits would miss real frames.
+  if (auto* timer = host::perf::active) {
+    int32_t state[3] = {-1, 0, 0};
+    const bool have_frame = g_game.practice &&
+        g_game.practice(MU_PRACTICE_PAGE_PAUSE, state, 3) == 0 && state[2] >= 0;
+    timer->set_resim(entering != 0, static_cast<uint32_t>(state[2]), have_frame);
+  }
+  using namespace host::rollback;
+  const auto ns = now_ns();
+  if (entering) accumulator.begin(ns, rollback_engine_frame(), presentation);
+  else accumulator.end(ns, rollback_engine_frame(), presentation);
+  rollback_log();
   g_resim = entering != 0;
   if (g_resim) ++g_resim_phases;
 }
 
 // --online-test: the harness enters an online match without menus. The first time the game asks,
 // matchmaking starts (local test peering, from --local-peer); the game then waits for the match.
+void ranked_harness_tick();
 int32_t h_online_test_match(MuOnlineMatch* out) {
 #ifdef MELEE_NO_SLIPPI
   // A session asks for a match through the neutral state (netplay_state.h). The game calls this at
@@ -1931,7 +2051,11 @@ int32_t h_online_test_match(MuOnlineMatch* out) {
     g_online_test_started = true;
     apply_content_mode(mode);   // a launcher or harness match skips the online menu's mode pick
     std::string error;
-    if (slippi::online::native_start_match(mode, from_lobby ? lobby.lobby_code : "PEER#001", character,
+    // Tests: MELEE_ONLINE_TEST_CODE names the opponent of a harness Direct match (YouGame mode).
+    const char* test_code = std::getenv("MELEE_ONLINE_TEST_CODE");
+    // Teams solo queue requires an empty code, including when a Direct test code is set.
+    const std::string connect_code = from_lobby ? lobby.lobby_code : mode == 3 ? "" : test_code ? test_code : "PEER#001";
+    if (slippi::online::native_start_match(mode, connect_code, character,
                                            g_online_test_color, &error))
       host::log("online launch: searching (mode %d, character %u, color %u)", mode,
                 character, g_online_test_color);
@@ -1939,6 +2063,14 @@ int32_t h_online_test_match(MuOnlineMatch* out) {
       host::log("online test: matchmaking did not start: %s", error.c_str());
       if (from_lobby) host::request_exit(2);
     }
+  } else if (mode == 0 && !from_lobby) {
+    ranked_harness_tick();   // a receipt-triggered quit takes priority over another lock-in
+    if (g_ranked_harness.quit.triggered()) return 0;
+    // Ranked: the match scene again after a game of the set; the next game needs a lock-in.
+    g_ranked_harness.game_end_ms = 0;
+    g_ranked_harness.reentry_asked = false;
+    if (slippi::online::native_ranked_next_game(character, g_online_test_color))
+      host::log("online test: ranked, locked in for the set's next game");
   }
   if (out) {
     std::memset(out, 0, sizeof *out);
@@ -1955,7 +2087,7 @@ uint32_t h_vi_retrace_count() { return host::retrace_count(); }
 uint32_t h_vi_next_field() { return host::retrace_count() & 1; }
 void h_vi_set_black(int32_t) {}
 void h_vi_wait_retrace() {
-  if (g_resim) { ++g_resim_vi_waits; return; }
+  if (g_resim) { ++g_resim_vi_waits; rollback_frame_callback(); return; }
   guarded([] { host::retrace(); });
 }
 
@@ -1986,9 +2118,70 @@ int32_t h_vi_idle_step() {
   return stepped;
 }
 
+// --online-test ranked, once a frame (the game reads its pads every frame, in every scene). A game
+// that ended and is not back in Debug VS's match scene within 5 s (a results screen waiting for a
+// press) is asked back into it for the set's next game; once the set's room has closed the run ends.
+void ranked_harness_tick() {
+  if (g_online_test_mode != 0 || !g_online_test_started) return;
+  RankedHarness& h = g_ranked_harness;
+  h.quit.poll(yougame::ranked_games_received(), [&] {
+    host::log("yougame: test quit after game %d", h.quit.game());
+    slippi::online::native_cleanup_match();   // same path as the player leaving the online menus
+  });
+  if (h.quit.triggered()) {
+    // close_room flushes the concession and leaves on its worker; never exit ahead of it.
+    if (!h.exiting && yougame::ranked_room_retired()) {
+      h.exiting = true;
+      host::request_exit(0);
+    }
+    return;
+  }
+  const uint64_t now = GetTickCount64();
+  if (yougame::ranked_room_retired()) {
+    if (!h.done_ms) {
+      h.done_ms = now;
+      host::log("online test: the ranked set is over and its room has closed; ending the run");
+    } else if (!h.exiting && now - h.done_ms > 2000) {
+      h.exiting = true;
+      host::request_exit(0);
+    }
+    return;
+  }
+  if (!h.game_end_ms || h.reentry_asked || now - h.game_end_ms < 5000 || !g_game.practice) return;
+  h.reentry_asked = true;
+  int32_t scene[2] = {0, 0};
+  if (g_game.practice(MU_PRACTICE_SCENE, scene, 2) != 0 || (scene[0] == kGameModeDebugVs && scene[1] == 1)) return;
+  int32_t major[1] = {kGameModeDebugVs};
+  g_game.practice(MU_PRACTICE_REQUEST_MAJOR, major, 1);
+  host::log("online test: ranked, back to the match scene for the next game (from major %d state %d)", scene[0], scene[1]);
+}
+
 void h_pad_read(MuPadStatus out[4]) {
+  if (g_online_test_mode == 0) ranked_harness_tick();
   host::PadState pads[4];
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  using namespace yougame::agent_test;
+  current_fight_sample = {};
+  if (fight_enabled && yougame::active() && g_online_test_mode >= 0 && g_agent_fight_match &&
+      !g_replaying && slippi::online::is_online_match() && g_game.state_snapshot && g_game.lcancel_view) {
+    MuStatePod state{};
+    MuLcancelView air{};
+    g_game.state_snapshot(&state);
+    g_game.lcancel_view(&air);
+    // The harness reads controller port 0, even when matchmaking puts us in player slot 1.
+    // A neutral netplay request can explicitly choose a different physical controller port.
+    const auto request = host::netplay::match_request();
+    int32_t stage = 31;
+    if (g_game.practice) g_game.practice(MU_PRACTICE_GET_STAGE, &stage, 1);
+    current_fight_sample = fight_sample(
+        {fight_enabled, true, true, true, false, slippi::online::local_player_slot(),
+         request.requested ? request.local_port : 0, fight_stage_edge(stage)}, state, air);
+  }
+#endif
   host::input_poll(pads);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  current_fight_sample = {};
+#endif
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
   slippi::native_practice::apply_pads(pads);   // Training after an online session, the requeue prompt
   bool offline_gameplay = false;
@@ -2006,7 +2199,7 @@ void h_pad_read(MuPadStatus out[4]) {
   gx::set_arcade_display(gx::ArcadeSource::Codes, user_gecko::arcade_bits_of_codes());
   // Hidden test hook: MELEE_TEST_INSTALL_LOOK=<0 Diet, 1 Animelee, 2 Animelee x DBZ> starts that one-click install once.
   {
-    static const int test_install = [] { const char* v = std::getenv("MELEE_TEST_INSTALL_LOOK"); return v && *v ? std::atoi(v) : -1; }();
+    static const int test_install = [] { const char* v = host::test_env::getenv("MELEE_TEST_INSTALL_LOOK"); return v && *v ? std::atoi(v) : -1; }();
     static int frames = 0;
     if (test_install >= 0 && ++frames == 120) {
       wchar_t exe[MAX_PATH] = {};
@@ -2123,10 +2316,18 @@ void index_music_paths() {
     if (alias != g_view_alias.end() && alias->second > 0 && alias->second < (int32_t)g_fst.size())
       g_music_paths.try_emplace(g_fst[(size_t)alias->second].offset, relative);
   }
+#ifdef __APPLE__
+  // macOS: the program sits inside a signed, read-only .app bundle (the YouGame sandbox denies writes there and a
+  // write would break the code seal), so music packs live in the player's user folder (--user-dir) instead.
+  const auto& user = slippi::online::config().user_dir;
+  if (user.empty()) return;
+  const std::filesystem::path root = std::filesystem::u8path(user) / "MusicPacks";
+#else
   wchar_t module[32768];
   const DWORD n = GetModuleFileNameW(nullptr, module, (DWORD)_countof(module));
   if (!n || n >= _countof(module)) return;
   const std::filesystem::path root = std::filesystem::path(std::wstring(module, n)).parent_path() / L"MusicPacks";
+#endif
   std::error_code ec;
   std::filesystem::create_directories(root, ec);
   if (ec) return;
@@ -2303,6 +2504,13 @@ void card_mount_files() {
   size_t slot = 0;
   for (const auto& entry : std::filesystem::directory_iterator(g_card_dir, ec)) {
     if (ec || entry.path().extension() != L".gci" || slot >= CARD_MAX_FILES) continue;
+    if (!yougame::mode_policy::mod_sources(yougame::active()).folders && mods::check_te_file(entry.path()).te) {
+      std::string identity, error;
+      const bool explicit_import = mods::gci_identity(entry.path(), &identity, &error) &&
+          std::any_of(g_card_imports.begin(), g_card_imports.end(),
+                      [&](const mods::CardImport& item) { return item.identity == identity; });
+      if (!yougame::mode_policy::card_save_allowed(true, true, explicit_import)) continue;
+    }
     FILE* in = _wfopen(entry.path().c_str(), L"rb");
     if (!in) continue;
     auto* file = new SourceCardFile;
@@ -2592,7 +2800,7 @@ void h_ai_start_dma(int32_t on) {
   const bool was_running = g_audio.running;
   audio_core::start_dma(g_audio, on != 0, host::cpu->tb, host::TB_HZ);
   // Diagnostic only (M4): move the AX clock against the retrace grid by this many timebase ticks.
-  static const char* shift = std::getenv("MELEE_TEST_AX_PHASE_SHIFT");
+  static const char* shift = host::test_env::getenv("MELEE_TEST_AX_PHASE_SHIFT");
   if (!was_running && g_audio.running && shift)
     g_audio.next_tb += std::strtoull(shift, nullptr, 0);
   // MELEE_AUDIO_PHASE_US=N (measurement, 0 to 5000): start the 5 ms AX clock N microseconds later
@@ -2821,6 +3029,27 @@ void write_replay_recording() {
     host::log("replay: recording failed: %s", g_replay_stream.error().c_str());
     return;
   }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (yougame::agent_paths::replay((std::filesystem::u8path(host::options.replay_dir) / "Game.slp").u8string())) {
+    std::time_t now = g_replay_stream.start_time() ? (std::time_t)g_replay_stream.start_time() : std::time(nullptr);
+    std::tm tm{}; localtime_s(&tm, &now);
+    char name[64]; std::strftime(name, sizeof name, "Game_%Y%m%dT%H%M%S", &tm);
+    for (unsigned suffix = 0; suffix < 10000; ++suffix) {
+      const auto out = std::filesystem::u8path(host::options.replay_dir) /
+          (std::string(name) + (suffix ? "_" + std::to_string(suffix) : "") + ".slp");
+      FILE* f = yougame::agent_paths::output(out.u8string(), true, true);
+      if (!f) { if (errno == EEXIST) continue; host::log("replay: cannot create recording inside data directory"); return; }
+      const bool written = std::fwrite(file.data(), 1, file.size(), f) == file.size();
+      const bool closed = std::fclose(f) == 0;
+      g_replay_written = written && closed;
+      host::log("replay: %s %s (%zu bytes)", g_replay_written ? "recording written to" : "write failed for", out.u8string().c_str(), file.size());
+      if (g_replay_written) net_trace::replay_saved(out.u8string().c_str());
+      return;
+    }
+    host::log("replay: recording name collision limit reached");
+    return;
+  }
+#endif
   std::error_code ec;
   std::filesystem::create_directories(host::options.replay_dir, ec);
   // Named by the game's start, as Dolphin names the file when the game creates it.
@@ -2905,6 +3134,11 @@ int32_t h_replay_stock_steal(int32_t frame, int32_t port) {
 }
 
 void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (command == 0x36)
+    g_agent_fight_match = !g_replaying && size >= 0x2F8 && (payload[0x1A3] == 0x08 || payload[0x2BD] != 0);
+  if (command == 0x39) g_agent_fight_match = false;
+#endif
   if (!g_replay && command == 0x36) {
     write_replay_recording();
     // Game Start payload offsets (the payload has no command byte): 0x1A3 major scene, 0x2BD the
@@ -2964,12 +3198,17 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
         winner = slot;
       }
     }
-    host::publish_lobby_result(winner, size ? payload[0] : 0);
+    host::publish_lobby_result(winner, size ? payload[0] : 0, size >= 2 ? (int)(int8_t)payload[1] : -1,
+                               size >= 6 ? payload + 2 : nullptr);
+    if (g_online_test_mode == 0) { g_ranked_harness.game_end_ms = GetTickCount64(); g_ranked_harness.reentry_asked = false; }
     write_replay_recording();
   }
 }
 
 void h_replay_finished() {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  g_agent_fight_match = false;
+#endif
   if (!g_replay) {
     write_replay_recording();
     return; // An ordinary VS match returns to the menu, ready to record the next match.
@@ -2987,9 +3226,23 @@ void h_replay_finished() {
 }
 #endif
 
+int32_t h_card_boot_confirm(uint32_t channel, uint32_t decision) {
+#ifdef __APPLE__
+  // The isolated Mac memory-card check records the two automatic boot confirmations.
+  const bool answer = yougame::memcard::confirm(yougame::active(), channel, decision);
+  static unsigned logged = 0;
+  if (answer && !(logged & (1u << decision))) {
+    logged |= 1u << decision;
+    host::log("yougame: memory-card boot auto-confirm decision %u (slot A)", decision);
+  }
+#endif
+  return yougame::memcard::confirm(yougame::active(), channel, decision);
+}
+
 MuHostApi make_host() {
   MuHostApi h{};
   h.version = MU_HOST_API_VERSION;
+  h.test_getenv = host::test_env::getenv;
   h.log = h_log; h.panic = h_panic; h.ticks = h_ticks; h.boot_time = h_boot_time; h.poll = h_poll;
   h.gx_fifo = h_gx_fifo; h.vi_configure = h_vi_configure; h.vi_set_next_framebuffer = h_vi_set_next_framebuffer;
   h.vi_flush = h_vi_flush; h.vi_retrace_count = h_vi_retrace_count; h.vi_next_field = h_vi_next_field;
@@ -3039,6 +3292,7 @@ MuHostApi make_host() {
   h.shield_color = h_shield_color;
   h.grid_color = h_grid_color;
   h.screen_shake_scale = h_screen_shake_scale;
+  h.card_boot_confirm = h_card_boot_confirm;
   return h;
 }
 
@@ -3052,16 +3306,24 @@ struct sigaction g_previous_crash_action[32];
 void on_game_signal(int sig, siginfo_t* si, void* uc_void) {
   const ucontext_t* uc = static_cast<const ucontext_t*>(uc_void);
   const uint64_t base = GAME_IMAGE_BASE, end = base + host::game_image_size;
+#ifdef __APPLE__
+  const uint64_t rip = uc ? mac_or_linux_rip(uc) : 0;
+#else
   const uint64_t rip = uc ? (uint64_t)uc->uc_mcontext.gregs[REG_RIP] : 0;
+#endif
   if (rip >= base && rip < end) {
     write_replay_recording();
     host::log("game crash signal %d at melee_game.so+0x%llX, address %p", sig, (unsigned long long)(rip - base), si ? si->si_addr : nullptr);
+#ifndef __APPLE__
     host::log("  rax %016llX rbx %016llX rcx %016llX rdx %016llX", (unsigned long long)uc->uc_mcontext.gregs[REG_RAX],
               (unsigned long long)uc->uc_mcontext.gregs[REG_RBX], (unsigned long long)uc->uc_mcontext.gregs[REG_RCX],
               (unsigned long long)uc->uc_mcontext.gregs[REG_RDX]);
     // The game's frames on its stack (GCC keeps frame pointers out, so this is the return addresses
     // that point into the game, as the Windows leaf fallback reads them).
     const uint64_t* sp = (const uint64_t*)uc->uc_mcontext.gregs[REG_RSP];
+#else
+    const uint64_t* sp = (const uint64_t*)uc->uc_mcontext->__ss.__rsp;
+#endif
     for (int i = 0, shown = 0; i < 512 && shown < 24; ++i) {
       const uint64_t v = sp[i];
       if (v > base && v < end) { host::log("  stack: melee_game.so+0x%llX", (unsigned long long)(v - 1 - base)); ++shown; }
@@ -3144,7 +3406,7 @@ bool card_self_test(const char* directory) { return card_self_test_impl(director
 bool set_online_test(const char* spec) {
   std::string s = spec ? spec : "";
   std::string mode = s.substr(0, s.find(':'));
-  int id = mode == "unranked" ? 1 : mode == "direct" ? 2 : mode == "teams" ? 3 : -1;
+  int id = mode == "ranked" ? 0 : mode == "unranked" ? 1 : mode == "direct" ? 2 : mode == "teams" ? 3 : -1;
   if (id < 0) return false;
   int character = 2, color = 0;
   size_t colon = s.find(':');
@@ -3154,6 +3416,7 @@ bool set_online_test(const char* spec) {
     if (end && *end == ':') color = (int)std::strtol(end + 1, &end, 10);
     if (!end || *end != '\0' || character < 0 || character > 255 || color < 0 || color > 5) return false;
   }
+  g_ranked_harness.quit = yougame::online_test::QuitAfter(id, std::getenv("MELEE_ONLINE_TEST_QUIT_AFTER"));
   g_online_test_mode = id;
   g_online_test_character = (uint8_t)character;
   g_online_test_color = (uint8_t)color;
@@ -3164,18 +3427,21 @@ void set_slippi_menus(bool on) { g_slippi_menus_requested = on; }
 
 void set_mod_directory(const char* path) {
   g_mod_layers.push_back({mods::LayerKind::Dir, std::filesystem::u8path(path)});
+  g_explicit_mod_layers.push_back(g_mod_layers.back());
   g_mod_root_explicit = true;
 }
 
 void set_mod_iso(const char* path) {
   g_mod_layers.push_back({mods::LayerKind::Iso, std::filesystem::u8path(path)});
+  g_explicit_mod_layers.push_back(g_mod_layers.back());
 }
 
 void set_mod_gci(const char* path) {
   g_mod_layers.push_back({mods::LayerKind::Gci, std::filesystem::u8path(path)});
+  g_explicit_mod_layers.push_back(g_mod_layers.back());
 }
 
-bool set_mod_profile(const char* name) {
+bool set_mod_profile(const char* name, bool explicit_layer) {
   mods::Profile profile;
   std::string error;
   if (!name || !*name || !mods::parse_profile(mods::profile_path(name), &profile, &error)) {
@@ -3187,6 +3453,8 @@ bool set_mod_profile(const char* name) {
   mods::status().requested = name;
   // The profile's layers come first; command-line layers, wherever they were given, load after it.
   g_mod_layers.insert(g_mod_layers.begin(), profile.layers.begin(), profile.layers.end());
+  if (explicit_layer)
+    g_explicit_mod_layers.insert(g_explicit_mod_layers.end(), profile.layers.begin(), profile.layers.end());
   return true;
 }
 
@@ -3304,7 +3572,7 @@ bool set_replay(const char* path) {
     const std::vector<replay_coach::Event> found = replay_scan::scan(*g_replay);
     replay_coach::add_scanned(found);
     host::log("replay: %zu frame data events read from the file (%.0f ms)", found.size(), (host::now_seconds() - started) * 1000.0);
-    if (std::getenv("MELEE_TEST_COACH_LOG")) {   // tests: the file's readings, to compare with the game's
+    if (host::test_env::getenv("MELEE_TEST_COACH_LOG")) {   // tests: the file's readings, to compare with the game's
       for (const replay_coach::Event& e : found) {
         if (e.kind != replay_coach::Kind::Shield && e.kind != replay_coach::Kind::Hit) continue;
         const replay_coach::Readout r = replay_coach::readout(e);
@@ -3370,10 +3638,128 @@ bool set_replay(const char* path) {
 }
 #endif
 
+#ifdef _WIN32
+// Inside an AppContainer (the YouGame desktop app's sandbox) Windows relocates every image it loads,
+// even one built for a fixed base with ASLR off, and the game image works only at GAME_IMAGE_BASE (its
+// 32-bit pointers sit beside MEM1). There the host maps the image itself, the way the loader would:
+// sections at their addresses, imports bound, page protections, the exception tables registered, the
+// TLS callbacks and the entry point run. The image uses no implicit TLS (its .tls holds only the
+// runtime's callbacks), so there is no TLS slot to set up. Everywhere else LoadLibrary does it.
+static bool in_app_container() {
+  HANDLE token = nullptr;
+  DWORD is = 0, len = 0;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  const bool ok = GetTokenInformation(token, TokenIsAppContainer, &is, sizeof is, &len);
+  CloseHandle(token);
+  return ok && is != 0;
+}
+
+static HMODULE map_game_image(const std::string& path, std::string* error) {
+  // Found as LoadLibrary would: a bare name sits beside the program (the working directory is the
+  // sandbox's data folder).
+  std::filesystem::path file_path = std::filesystem::u8path(path);
+  if (file_path.is_relative()) {
+    wchar_t exe[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) file_path = std::filesystem::path(exe).parent_path() / file_path;
+  }
+  std::ifstream in(file_path, std::ios::binary);
+  std::vector<uint8_t> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto* dos = (const IMAGE_DOS_HEADER*)file.data();
+  if (file.size() < sizeof(IMAGE_DOS_HEADER) || dos->e_magic != IMAGE_DOS_SIGNATURE || (size_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS) > file.size()) {
+    *error = "not a Windows image";
+    return nullptr;
+  }
+  const auto* nt = (const IMAGE_NT_HEADERS*)(file.data() + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 || nt->OptionalHeader.ImageBase != GAME_IMAGE_BASE) {
+    *error = "not the x64 game image for this base";
+    return nullptr;
+  }
+  const size_t size = nt->OptionalHeader.SizeOfImage;
+  // Committed inside the range held since startup (g_game_image_reservation), so nothing can take it in
+  // between. GAME_IMAGE_HOLD_END bounds the image to what GX can address.
+  if (!g_game_image_reservation.base || size > GAME_IMAGE_HOLD_END - GAME_IMAGE_BASE) { *error = "its address range is not held"; return nullptr; }
+  auto* base = (uint8_t*)VirtualAlloc((void*)GAME_IMAGE_BASE, size, MEM_COMMIT, PAGE_READWRITE);
+  if (base != (uint8_t*)GAME_IMAGE_BASE) {
+    *error = "its address range could not be committed";
+    return nullptr;
+  }
+  std::memcpy(base, file.data(), std::min<size_t>(nt->OptionalHeader.SizeOfHeaders, file.size()));
+  const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+  for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+    const size_t raw = std::min<size_t>(sec[i].SizeOfRawData, sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData);
+    if (sec[i].VirtualAddress + raw > size || sec[i].PointerToRawData + raw > file.size()) { *error = "a section is out of bounds"; VirtualFree(base, size, MEM_DECOMMIT); return nullptr; }
+    std::memcpy(base + sec[i].VirtualAddress, file.data() + sec[i].PointerToRawData, raw);
+  }
+  // Imports: the system's runtime and kernel32, bound by name or ordinal.
+  const auto& imp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+  for (auto* d = (IMAGE_IMPORT_DESCRIPTOR*)(base + imp.VirtualAddress); imp.Size && d->Name; ++d) {
+    const char* dll = (const char*)(base + d->Name);
+    HMODULE lib = LoadLibraryA(dll);
+    if (!lib) { *error = std::string("cannot load ") + dll; VirtualFree(base, size, MEM_DECOMMIT); return nullptr; }
+    auto* names = (IMAGE_THUNK_DATA64*)(base + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk));
+    auto* slots = (IMAGE_THUNK_DATA64*)(base + d->FirstThunk);
+    for (; names->u1.AddressOfData; ++names, ++slots) {
+      FARPROC fn = IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal)
+                       ? GetProcAddress(lib, (LPCSTR)IMAGE_ORDINAL64(names->u1.Ordinal))
+                       : GetProcAddress(lib, ((const IMAGE_IMPORT_BY_NAME*)(base + names->u1.AddressOfData))->Name);
+      if (!fn) { *error = std::string("missing import from ") + dll; VirtualFree(base, size, MEM_DECOMMIT); return nullptr; }
+      slots->u1.Function = (ULONGLONG)fn;
+    }
+  }
+  // Page protections from the section flags, the headers read-only.
+  DWORD old = 0;
+  VirtualProtect(base, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &old);
+  for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+    const DWORD c = sec[i].Characteristics;
+    const size_t len = sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData;
+    if (!len) continue;
+    const bool x = c & IMAGE_SCN_MEM_EXECUTE, w = c & IMAGE_SCN_MEM_WRITE;
+    VirtualProtect(base + sec[i].VirtualAddress, len, x ? (w ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ) : (w ? PAGE_READWRITE : PAGE_READONLY), &old);
+  }
+  FlushInstructionCache(GetCurrentProcess(), base, size);
+  // Unwinding (C++ exceptions, the crash handler's stack walk) needs the image's function table.
+  const auto& pdata = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+  if (pdata.Size) RtlAddFunctionTable((PRUNTIME_FUNCTION)(base + pdata.VirtualAddress), pdata.Size / sizeof(RUNTIME_FUNCTION), (DWORD64)base);
+  using Init = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
+  const auto& tls = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+  if (tls.Size) {
+    const auto* dir = (const IMAGE_TLS_DIRECTORY64*)(base + tls.VirtualAddress);
+    for (auto* cb = (PIMAGE_TLS_CALLBACK*)dir->AddressOfCallBacks; cb && *cb; ++cb) (*cb)((PVOID)base, DLL_PROCESS_ATTACH, nullptr);
+  }
+  if (nt->OptionalHeader.AddressOfEntryPoint && !((Init)(base + nt->OptionalHeader.AddressOfEntryPoint))((HINSTANCE)base, DLL_PROCESS_ATTACH, nullptr)) {
+    *error = "its initialisation failed";
+    return nullptr;
+  }
+  return (HMODULE)base;
+}
+
+// GetProcAddress for an image the loader never saw (map_game_image).
+static FARPROC image_export(HMODULE module, const char* name) {
+  auto* base = (const uint8_t*)module;
+  const auto* nt = (const IMAGE_NT_HEADERS*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+  const auto& ed = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+  if (!ed.Size) return nullptr;
+  const auto* dir = (const IMAGE_EXPORT_DIRECTORY*)(base + ed.VirtualAddress);
+  const auto* names = (const DWORD*)(base + dir->AddressOfNames);
+  const auto* ordinals = (const WORD*)(base + dir->AddressOfNameOrdinals);
+  const auto* functions = (const DWORD*)(base + dir->AddressOfFunctions);
+  for (DWORD i = 0; i < dir->NumberOfNames; ++i)
+    if (std::strcmp((const char*)(base + names[i]), name) == 0) return (FARPROC)(base + functions[ordinals[i]]);
+  return nullptr;
+}
+
+#endif  // _WIN32: AppContainer and PE image loading
+
 bool reserve_memory() {
   // First, before anything else in the process can take the range: the game's 32-bit disc pointers
   // expect its memory where the console had it.
+#ifdef __APPLE__
+  std::string error;
+  void* mem1 = mac_elf::activate_mem1(&error) ? (void*)MEM1_BASE : nullptr;
+  if (!mem1) host::log("Mac memory: %s", error.c_str());
+#else
   void* mem1 = VirtualAlloc((void*)MEM1_BASE, MEM1_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+#endif
   void* lc = VirtualAlloc((void*)LOCKED_CACHE_BASE, LOCKED_CACHE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
   if (mem1 != (void*)MEM1_BASE || lc != (void*)LOCKED_CACHE_BASE) {
     char msg[200];
@@ -3401,7 +3787,8 @@ int run(void (*shutdown)(int)) {
   slippi::jukebox::set_disc_reader(jukebox_disc_read);
   mods::status().source_port = true;
   // Tests only: 20XX TE's features without mounting its save (its menu memory changes scripted runs).
-  if (std::getenv("MELEE_TEST_TE_OWNED")) mods::status().te_owned = true;
+  if (yougame::mode_policy::mod_sources(yougame::active()).folders && host::test_env::getenv("MELEE_TEST_TE_OWNED"))
+    mods::status().te_owned = true;
   if (!read_fst()) host::die("this disc image has no readable file table. Use a clean, uncompressed Melee NTSC 1.02 ISO (a trimmed or compressed image will not work)");
   // A readable FST and retail DOL do not prove that the disc's assets exist. A damaged image can
   // have zero-filled file extents, which otherwise reach lbArchive_InitializeDAT during boot.
@@ -3421,12 +3808,24 @@ int run(void (*shutdown)(int)) {
   // A game library built with the native Akaneia fighters exports this name; one built without them
   // does not, and an Akaneia disc stays refused. Looked up without running any of its code.
   {
-    const char* named = std::getenv("MELEE_GAME_DLL");
+    const char* named = yougame::mode_policy::mod_sources(yougame::active()).folders
+                            ? std::getenv("MELEE_GAME_DLL") : nullptr;
 #ifndef _WIN32
     // The library cannot be loaded twice at its fixed address, so its exported names are read from
     // the file: the symbol name sits in the dynamic string table only when it is exported.
     {
-      std::ifstream file(named ? named : g_dll.c_str(), std::ios::binary);
+      std::filesystem::path library = named ? named : g_dll;
+#ifndef __APPLE__
+      // Read the file the loader will map: LoadLibraryA (port/linux/compat) takes a bare name from
+      // beside the program first, while the app's Linux jail may start the game in its data folder.
+      if (library.u8string().find('/') == std::string::npos) {
+        std::error_code ec;
+        const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec && std::filesystem::exists(self.parent_path() / library, ec)) library = self.parent_path() / library;
+      }
+#endif
+      std::ifstream file(library, std::ios::binary);
+      if (!file) host::log("mods: cannot read %s to check for native Akaneia fighters", library.u8string().c_str());
       const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
       static const char kName[] = "mu_ak_native_build";
       if (bytes.find(std::string(kName, sizeof kName)) != std::string::npos) {
@@ -3463,26 +3862,41 @@ int run(void (*shutdown)(int)) {
                     : host::options.vanilla_game ? "--vanilla-game"
                     : mods::status().rogue ? "rogueMelee disc, played offline with its own menus" : nullptr);
   apply_content_mode(-1);   // offline: the mod's files, if a profile is loaded
+#ifndef MELEE_NO_SLIPPI
+  slippi::online::load_ranked_rules();
+#endif
   // The native game reads the retail DOL's data and the retail file formats; a modded disc (patched
   // DOL, m-ex) is refused here with a message instead of failing somewhere inside the game.
-  if (!host::disc_has_vanilla_dol())
+  if (!host::disc_has_vanilla_dol()) {
+    yougame::notify_mod_refused(!g_explicit_mod_layers.empty(), yougame::mode_policy::ModRefusal::ModdedDol);
     host::die("ISO DOL does not match vanilla Melee NTSC 1.02; the Source engine runs only the retail game (modded discs are not supported)");
+  }
   // Diagnostic builds of the game (for example the M0 maths audit) without replacing the shipped DLL.
-  if (const char* dll = std::getenv("MELEE_GAME_DLL")) g_dll = dll;
+  if (yougame::mode_policy::mod_sources(yougame::active()).folders)
+    if (const char* dll = std::getenv("MELEE_GAME_DLL")) g_dll = dll;
 #ifndef MELEE_NO_SLIPPI
   // With the spectator server on, offline matches are recorded too, for the broadcast only (no .slp
   // unless --record-native asked for one): Slippi Dolphin sends every game it records, offline ones
   // included. Set before the game library loads, so its C runtime sees it.
-  if (!std::getenv("MELEE_SOURCE_RECORD") && gx::RenderOptions::live_slippi_spectator()) {
+  if (!std::getenv("MELEE_SOURCE_RECORD") &&
+      yougame::mode_policy::spectator_allowed(yougame::active(), gx::RenderOptions::live_slippi_spectator())) {
     _putenv_s("MELEE_SOURCE_RECORD", "2");
     SetEnvironmentVariableA("MELEE_SOURCE_RECORD", "2");
   }
 #endif
   ghost_ai::enable();   // the pro AI needs the game library's fighters: Source Port only
   practice_cpu::initialize_source_test_ghost();
+#ifdef __APPLE__
+  std::string mac_error;
+  if (!g_mac_image.load(g_dll, &mac_error)) host::die("%s", mac_error.c_str());
+  HMODULE module = (HMODULE)GAME_IMAGE_BASE;
+  host::game_image = (uint8_t*)GAME_IMAGE_BASE;
+  host::game_image_size = g_mac_image.size();
+  auto game_proc = [&](const char* name) { return g_mac_image.symbol(name); };
+#else
+#ifndef _WIN32
   g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
-#ifndef _WIN32
   if (!module) host::die("cannot load %s (%s)", g_dll.c_str(), dlerror());
   // The ELF's load segments: the game must start at GAME_IMAGE_BASE, its 32-bit disc pointers and
   // GX's physical window depend on it (sourceport/cmake/game-linux-layout.ld places it there).
@@ -3507,17 +3921,31 @@ int run(void (*shutdown)(int)) {
     host::game_image_size = (uint32_t)(scan.hi - scan.lo);
   }
 #else
+  // In the YouGame sandbox (an AppContainer) the host maps the image itself into the range held
+  // since startup (g_game_image_reservation) and keeps the hold; elsewhere the loader needs it free.
+  const bool sandboxed = in_app_container();
+  if (!sandboxed) g_game_image_reservation.release();
+  std::string map_error;
+  HMODULE module = sandboxed ? map_game_image(g_dll, &map_error) : LoadLibraryA(g_dll.c_str());
+  if (!module && sandboxed) host::die("cannot map %s: %s", g_dll.c_str(), map_error.c_str());
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());
+  if (sandboxed) host::log("source port: %s mapped at its base by the host (sandboxed)", g_dll.c_str());
   if ((uintptr_t)module != GAME_IMAGE_BASE) host::die("%s loaded at %p, not at %llX", g_dll.c_str(), (void*)module, (unsigned long long)GAME_IMAGE_BASE);
   const auto* nt = (const IMAGE_NT_HEADERS*)((const uint8_t*)module + ((const IMAGE_DOS_HEADER*)module)->e_lfanew);
   host::game_image = (uint8_t*)module;
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
 #endif
-  auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
-  g_look_snapshot = (void (*)(MuLookSnapshot*))GetProcAddress(module, "mu_look_snapshot_v1");
-  g_look_items = (void (*)(MuLookItems*))GetProcAddress(module, "mu_look_items_v1");
-  user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
-  user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
+#ifdef _WIN32
+  auto game_proc = [&](const char* name) { return sandboxed ? image_export(module, name) : GetProcAddress(module, name); };
+#else
+  auto game_proc = [&](const char* name) { return GetProcAddress(module, name); };
+#endif
+#endif
+  auto entry = (MuGameEntry)game_proc("mu_game_entry");
+  g_look_snapshot = (void (*)(MuLookSnapshot*))game_proc("mu_look_snapshot_v1");
+  g_look_items = (void (*)(MuLookItems*))game_proc("mu_look_items_v1");
+  user_gecko::set_native_writer((user_gecko::NativeWrite)game_proc("mu_user_gecko_write"));
+  user_gecko::set_native_reader((user_gecko::NativeRead)game_proc("mu_user_gecko_read"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   // The game library and this program come from the same release and refuse each other otherwise.
@@ -3565,7 +3993,15 @@ int run(void (*shutdown)(int)) {
 #ifndef MELEE_NO_SLIPPI
   slippi::spectate::start();   // Slippi Dolphin's spectator server (settings: Spectator server)
 #endif
+#ifdef __APPLE__
+  g_mac_running = true;
+  if (setjmp(g_mac_run_boundary) == 0) guarded([&] { code = g_game.run(); });
+  else code = g_exit_code;
+  g_mac_running = false;
+#else
   guarded([&] { code = g_game.run(); });
+#endif
+  rollback_log(true);
   log_native_pose_bridge_stats();
   gx::set_native_pose_capture_enabled(false);
   host::log("game returned %d", code);

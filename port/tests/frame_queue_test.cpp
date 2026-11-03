@@ -65,11 +65,21 @@ int main() {
   {
     gx::FrameQueue queue;
     for (uint64_t i = 1; i <= 32; ++i) check(queue.push(frame(i)));
-    auto blocked = std::async(std::launch::async, [&] { return queue.push(frame(33)); });
+    auto blocked = std::async(std::launch::async, [&] {
+      host::perf::active = &host::perf::sim_timer;
+      host::perf::active->begin();
+      const bool pushed = queue.push(frame(33));
+      const auto timing = host::perf::active->finish();
+      check(timing.get(host::perf::Stage::Wait) > 0);
+      check(host::perf::active->stage == host::perf::Stage::Step);
+      return pushed;
+    });
     check(blocked.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout);
     gx::Frame out;
     check(queue.pop(out) && out.sequence == 1);
     check(blocked.get());
+    check(host::perf::active == nullptr); // consumer scopes stay inactive
+    check(!host::perf::sim_timer.running && host::perf::sim_timer.work.count == 1); // survives producer exit
     check(queue.size() == 32);
   }
   // finish() stops new frames but still hands over what is already queued, in order.

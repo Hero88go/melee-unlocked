@@ -13,6 +13,7 @@
 #include <melee/ft/types.h>
 #include <melee/gm/gm_1A3F.h>
 #include <melee/gm/gmvs.h>
+#include "mu_yougame_pause.h"
 #include <melee/gm/types.h>
 #include <melee/gr/stage.h>
 #include <sysdolphin/baselib/gobj.h>
@@ -151,6 +152,7 @@ void mu_practice_enter_mode(int mode) { (void) mode; }
  * moved a practice match into the online menus are refused. */
 int mu_practice_bridge(int op, int* a, int n)
 {
+    if (op == 15) return mu_yougame_page_pause(a, n);   /* MU_PRACTICE_PAGE_PAUSE */
     if (op == 0 && n >= 2) {   /* MU_PRACTICE_SCENE */
         a[0] = gm_GetCurrentGameMode();
         a[1] = gm_GetCurrentSceneIndex();

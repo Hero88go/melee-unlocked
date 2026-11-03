@@ -36,6 +36,7 @@ class ModOverlay {
   enum class Read { NotOverridden, Success, Failed };
   Read read(uint32_t offset, void* destination, uint32_t size) const;
   const std::vector<File>& files() const { return files_; }
+  bool native_fighters_refused() const { return native_fighters_refused_; }
 
   // Layer order: a later pack's differing copy of a file replaces the earlier one, and the pair is
   // recorded in conflicts() for the player to see. Off (the default), a differing copy is an error.
@@ -59,6 +60,7 @@ class ModOverlay {
   bool add_files(std::vector<File>&& files, std::string& error);
   static bool same_contents(const File& a, const File& b);
   std::vector<File> files_;
+  bool native_fighters_refused_ = false;
   bool layered_ = false;
   std::vector<Conflict> conflicts_;
   BaseDisc base_;

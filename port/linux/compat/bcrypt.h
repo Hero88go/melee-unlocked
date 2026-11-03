@@ -3,7 +3,11 @@
 #pragma once
 #include "windows.h"
 
+#ifdef __APPLE__
+typedef int32_t NTSTATUS;  // Windows status codes are signed 32-bit, including on LP64 hosts.
+#else
 typedef long NTSTATUS;
+#endif
 typedef void* BCRYPT_ALG_HANDLE;
 typedef void* BCRYPT_HASH_HANDLE;
 #define BCRYPT_SUCCESS(status) (((NTSTATUS)(status)) >= 0)

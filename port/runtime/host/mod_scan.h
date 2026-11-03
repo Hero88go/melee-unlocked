@@ -102,6 +102,13 @@ struct ScanResult {
 // Kind::Unsupported with a message saying why; any other file comes back with an empty message
 // (not listed).
 Detected identify(const std::filesystem::path& file, const ScanOptions& options, std::string* log = nullptr);
+// The parent grants vanilla execution only after reading this launch's disc bytes.
+inline Detected identify_vanilla(const std::filesystem::path& file, ScanOptions options = {},
+                                 std::string* log = nullptr) {
+  options.use_cache = false;
+  options.base_iso.clear();
+  return identify(file, options, log);
+}
 // The whole Mods folder, recursively (Mods/.cache and the loose-file overlay Mods/Files are skipped),
 // with the player's choices applied. A pack seen for the first time is turned on and the choice is
 // recorded in *choices; a second card save found while one is on stays off.

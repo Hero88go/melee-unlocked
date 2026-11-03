@@ -6,8 +6,18 @@
 #include "bcrypt.h"
 #include "commdlg.h"
 #include "winhttp.h"
+#include "winhttp_ws_internal.h"
 #include <curl/curl.h>
+#ifdef __APPLE__
+#include <CommonCrypto/CommonDigest.h>
+#include <mach/mach.h>
+#include <mach-o/dyld.h>
+#include <crt_externs.h>
+#include <sys/sysctl.h>
+#include <net/route.h>
+#else
 #include <openssl/evp.h>
+#endif
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <iconv.h>
@@ -15,7 +25,9 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/mman.h>
+#ifndef __APPLE__
 #include <sys/random.h>
+#endif
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -31,9 +43,30 @@
 #include <string>
 #include <thread>
 #include <vector>
+#ifdef __APPLE__
+#include <unordered_map>
+#endif
 
 extern char** environ;
 namespace fs = std::filesystem;
+#ifdef __APPLE__
+static fs::path self_executable(std::error_code& ec) {
+  uint32_t n = 0; _NSGetExecutablePath(nullptr, &n);
+  std::vector<char> buf(n);
+  if (_NSGetExecutablePath(buf.data(), &n)) { ec = std::make_error_code(std::errc::io_error); return {}; }
+  return fs::weakly_canonical(buf.data(), ec);
+}
+static int clock_nanosleep(clockid_t clock, int, const timespec* due, timespec*) {
+  timespec now{}; clock_gettime(clock, &now);
+  timespec left{due->tv_sec - now.tv_sec, due->tv_nsec - now.tv_nsec};
+  if (left.tv_nsec < 0) { --left.tv_sec; left.tv_nsec += 1000000000; }
+  if (left.tv_sec < 0) return 0;
+  return nanosleep(&left, nullptr) == 0 ? 0 : errno;
+}
+#ifndef TIMER_ABSTIME
+#define TIMER_ABSTIME 1
+#endif
+#endif
 
 namespace {
 thread_local DWORD g_last_error = 0;
@@ -133,7 +166,11 @@ std::string linux_program(std::string path) {
   }
   if (path.find('/') == std::string::npos) {
     std::error_code ec;
+#ifdef __APPLE__
+    const fs::path self = self_executable(ec);
+#else
     const fs::path self = fs::read_symlink("/proc/self/exe", ec);
+#endif
     if (!ec && fs::exists(self.parent_path() / path)) return (self.parent_path() / path).string();
   }
   return path;
@@ -200,6 +237,9 @@ DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
 HANDLE GetCurrentProcess() { return &g_current_process; }
 HANDLE GetCurrentThread() { return &g_current_thread; }
 BOOL SetThreadPriority(HANDLE, int priority) {
+#ifdef __APPLE__
+  (void)priority; return TRUE;  // advisory Windows priority; keep AppKit on its main thread
+#else
   // Background mode (I/O and CPU priority lowered for a while, then restored).
   if (priority == THREAD_MODE_BACKGROUND_BEGIN) { (void)setpriority(PRIO_PROCESS, (id_t)gettid(), 10); return TRUE; }
   if (priority == THREAD_MODE_BACKGROUND_END) { (void)setpriority(PRIO_PROCESS, (id_t)gettid(), 0); return TRUE; }
@@ -214,6 +254,7 @@ BOOL SetThreadPriority(HANDLE, int priority) {
     (void)setpriority(PRIO_PROCESS, (id_t)gettid(), 2);
   }
   return TRUE;
+#endif
 }
 DWORD GetLastError() { return g_last_error; }
 void SetLastError(DWORD error) { g_last_error = error; }
@@ -326,8 +367,13 @@ DWORD GetEnvironmentVariableA(LPCSTR name, LPSTR buffer, DWORD size) {
 }
 LPWSTR GetCommandLineW() {
   static std::wstring line = [] {
+#ifdef __APPLE__
+    std::string all;
+    for (int i = 0; i < *_NSGetArgc(); ++i) { all += (*_NSGetArgv())[i]; all += '\0'; }
+#else
     std::ifstream in("/proc/self/cmdline", std::ios::binary);
     std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+#endif
     std::wstring out; size_t start = 0;
     for (size_t i = 0; i <= all.size(); ++i) {
       if (i == all.size() || all[i] == 0) {
@@ -349,7 +395,11 @@ void LeaveCriticalSection(CRITICAL_SECTION* cs) { static_cast<std::recursive_mut
 DWORD GetModuleFileNameA(HMODULE module, LPSTR out, DWORD size) {
   std::string path;
   if (!module) {
+#ifdef __APPLE__
+    std::error_code ec; path = self_executable(ec).string();
+#else
     std::error_code ec; path = fs::read_symlink("/proc/self/exe", ec).string();
+#endif
   } else {
     Dl_info info{};
     void* sym = dlsym(module, "mu_game_entry");
@@ -385,7 +435,11 @@ HMODULE LoadLibraryA(LPCSTR name) {
   // A bare name is looked for beside the program first, as Windows does.
   if (lib.find('/') == std::string::npos) {
     std::error_code ec;
+#ifdef __APPLE__
+    const fs::path self = self_executable(ec);
+#else
     const fs::path self = fs::read_symlink("/proc/self/exe", ec);
+#endif
     if (!ec && fs::exists(self.parent_path() / lib))
       if (HMODULE h = dlopen((self.parent_path() / lib).c_str(), RTLD_NOW | RTLD_LOCAL)) return h;
   }
@@ -407,19 +461,33 @@ static int prot_of(DWORD protect) {
     default: return PROT_READ | PROT_WRITE;
   }
 }
+#ifdef __APPLE__
+namespace {
+std::mutex& allocation_mutex() { static std::mutex m; return m; }
+std::unordered_map<void*, size_t>& allocations() { static std::unordered_map<void*, size_t> sizes; return sizes; }
+}
+#endif
 LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD type, DWORD protect) {
   const int prot = (type & MEM_COMMIT) ? prot_of(protect) : PROT_NONE;
   if (address && !(type & MEM_RESERVE)) {   // commit inside an earlier reservation
     return mprotect(address, size, prot) == 0 ? address : nullptr;
   }
   int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+#ifdef __APPLE__
+  // A checked hint never overwrites a live mapping.
+  void* p = mmap(address, size, prot, flags, -1, 0);
+#else
   void* p = mmap(address, size, prot, address ? flags | MAP_FIXED_NOREPLACE : flags, -1, 0);
+#endif
   // WSL1 and kernels before 4.17 reject or ignore NOREPLACE: a plain hint, whose result is checked
   // below, can never replace a live mapping either.
   if (address && p == MAP_FAILED && (errno == EINVAL || errno == ENOTSUP || errno == ENOSYS))
     p = mmap(address, size, prot, flags, -1, 0);
   if (p == MAP_FAILED) { fail_errno(); return nullptr; }
   if (address && p != address) { munmap(p, size); return nullptr; }
+#ifdef __APPLE__
+  { std::lock_guard<std::mutex> lock(allocation_mutex()); allocations()[p] = size; }
+#endif
   return p;
 }
 // Windows releases a whole reservation from its base with size 0; the size of each reservation is
@@ -428,6 +496,12 @@ BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD type) {
   if (!address) return FALSE;
   if (type & MEM_RELEASE) {
     if (!size) {
+#ifdef __APPLE__
+      std::lock_guard<std::mutex> lock(allocation_mutex());
+      auto& sizes = allocations();
+      auto found = sizes.find(address);
+      if (found != sizes.end()) { size = found->second; sizes.erase(found); }
+#else
       // Find the mapping's extent in /proc/self/maps.
       std::ifstream maps("/proc/self/maps"); std::string line;
       const uintptr_t a = (uintptr_t)address;
@@ -435,6 +509,7 @@ BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD type) {
         uintptr_t lo = 0, hi = 0;
         if (std::sscanf(line.c_str(), "%lx-%lx", &lo, &hi) == 2 && lo == a) { size = hi - lo; break; }
       }
+#endif
       if (!size) return FALSE;
     }
     return munmap(address, size) == 0;
@@ -459,10 +534,16 @@ void GetSystemInfo(SYSTEM_INFO* info) {
   info->dwNumberOfProcessors = (DWORD)std::max(1L, sysconf(_SC_NPROCESSORS_ONLN));
 }
 void GetCurrentThreadStackLimits(ULONG_PTR* low, ULONG_PTR* high) {
+#ifdef __APPLE__
+  void* top = pthread_get_stackaddr_np(pthread_self());
+  size_t size = pthread_get_stacksize_np(pthread_self());
+  void* base = (char*)top - size;
+#else
   pthread_attr_t attr; void* base = nullptr; size_t size = 0;
   pthread_getattr_np(pthread_self(), &attr);
   pthread_attr_getstack(&attr, &base, &size);
   pthread_attr_destroy(&attr);
+#endif
   if (low) *low = (ULONG_PTR)base;
   if (high) *high = (ULONG_PTR)base + size;
 }
@@ -644,9 +725,18 @@ BOOL GetFileAttributesExA(LPCSTR path, GET_FILEEX_INFO_LEVELS, LPVOID out) {
   auto* data = static_cast<WIN32_FILE_ATTRIBUTE_DATA*>(out);
   std::memset(data, 0, sizeof *data);
   data->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+#ifdef __APPLE__
+  to_filetime(st.st_ctimespec, &data->ftCreationTime);
+  to_filetime(st.st_atimespec, &data->ftLastAccessTime);
+#else
   to_filetime(st.st_ctim, &data->ftCreationTime);
   to_filetime(st.st_atim, &data->ftLastAccessTime);
+#endif
+#ifdef __APPLE__
+  to_filetime(st.st_mtimespec, &data->ftLastWriteTime);
+#else
   to_filetime(st.st_mtim, &data->ftLastWriteTime);
+#endif
   data->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32);
   data->nFileSizeLow = (DWORD)st.st_size;
   return TRUE;
@@ -866,6 +956,37 @@ std::wstring linux_compat::choose_folder(const wchar_t* title) {
 
 // ---- routing ----
 DWORD GetBestRoute(DWORD, DWORD, MIB_IPFORWARDROW* row) {
+#ifdef __APPLE__
+  if (!row) return ERROR_FILE_NOT_FOUND;
+  int mib[] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY};
+  size_t bytes = 0;
+  if (sysctl(mib, 6, nullptr, &bytes, nullptr, 0)) return ERROR_FILE_NOT_FOUND;
+  std::vector<char> routes(bytes);
+  if (sysctl(mib, 6, routes.data(), &bytes, nullptr, 0)) return ERROR_FILE_NOT_FOUND;
+  for (size_t at = 0; at + sizeof(rt_msghdr) <= bytes;) {
+    const auto* message = reinterpret_cast<const rt_msghdr*>(routes.data() + at);
+    if (message->rtm_msglen < sizeof(*message) || message->rtm_msglen > bytes - at) break;
+    const char* cursor = reinterpret_cast<const char*>(message + 1);
+    const char* end = routes.data() + at + message->rtm_msglen;
+    const sockaddr_in *destination = nullptr, *gateway = nullptr;
+    for (int index = 0; index < RTAX_MAX && cursor + sizeof(sockaddr) <= end; ++index) {
+      if (!(message->rtm_addrs & (1 << index))) continue;
+      const auto* address = reinterpret_cast<const sockaddr*>(cursor);
+      size_t length = address->sa_len ? (address->sa_len + sizeof(long) - 1) & ~(sizeof(long) - 1) : sizeof(long);
+      if (cursor + length > end || !length) break;
+      if (address->sa_family == AF_INET && address->sa_len >= sizeof(sockaddr_in)) {
+        if (index == RTAX_DST) destination = reinterpret_cast<const sockaddr_in*>(address);
+        if (index == RTAX_GATEWAY) gateway = reinterpret_cast<const sockaddr_in*>(address);
+      }
+      cursor += length;
+    }
+    if ((message->rtm_flags & RTF_UP) && destination && gateway && destination->sin_addr.s_addr == 0) {
+      std::memset(row, 0, sizeof *row); row->dwForwardNextHop = gateway->sin_addr.s_addr; return NO_ERROR;
+    }
+    at += message->rtm_msglen;
+  }
+  return ERROR_FILE_NOT_FOUND;
+#else
   std::ifstream in("/proc/net/route"); std::string line;
   std::getline(in, line);   // header
   unsigned best_metric = ~0u; bool found = false;
@@ -878,8 +999,12 @@ DWORD GetBestRoute(DWORD, DWORD, MIB_IPFORWARDROW* row) {
     best_metric = metric; found = true;
   }
   return found ? NO_ERROR : 1168u;   // ERROR_NOT_FOUND
+#endif
 }
 
+#ifdef __APPLE__
+#include "../../mac/bcrypt_apple.inl"
+#else
 // ---- BCrypt over OpenSSL ----
 namespace {
 struct Algorithm { const EVP_MD* md = nullptr; bool rng = false; };
@@ -948,6 +1073,7 @@ NTSTATUS BCryptGenRandom(BCRYPT_ALG_HANDLE, PUCHAR buffer, ULONG size, ULONG) {
   }
   return STATUS_SUCCESS;
 }
+#endif
 
 // ---- WinHTTP over libcurl ----
 namespace {
@@ -957,6 +1083,9 @@ struct HttpRequest {
   HttpConnect* connect; std::string verb, path; bool secure; std::vector<std::string> headers;
   std::string body, response; size_t read_at = 0; long status = 0; bool done = false; bool follow;
   int connect_ms, receive_ms;
+  bool upgrade = false;
+  HINTERNET websocket = nullptr;
+  ~HttpRequest() { if (websocket) winhttp_ws_close(websocket); }
 };
 enum class Kind { Session, Connect, Request };
 struct Any { Kind kind; void* p; };
@@ -997,8 +1126,19 @@ BOOL WinHttpSetTimeouts(HINTERNET handle, int, int connect, int, int receive) {
   if (a->kind == Kind::Request) { auto* r = static_cast<HttpRequest*>(a->p); r->connect_ms = connect; r->receive_ms = receive; }
   return TRUE;
 }
-BOOL WinHttpSetOption(HINTERNET handle, DWORD option, LPVOID buffer, DWORD) {
+BOOL WinHttpSetOption(HINTERNET handle, DWORD option, LPVOID buffer, DWORD length) {
+  if (option == WINHTTP_OPTION_RECEIVE_TIMEOUT && buffer && length == sizeof(DWORD) &&
+      winhttp_ws_timeout(handle, *static_cast<DWORD*>(buffer))) return TRUE;
   auto* a = static_cast<Any*>(handle);
+  if (a && a->kind == Kind::Request) {
+    auto* r = static_cast<HttpRequest*>(a->p);
+    if (option == WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET) { r->upgrade = true; return TRUE; }
+    if (option == WINHTTP_OPTION_RECEIVE_TIMEOUT) {
+      if (!buffer || length != sizeof(DWORD)) return FALSE;
+      r->receive_ms = (int)std::min<DWORD>(*static_cast<DWORD*>(buffer), INT_MAX);
+      return TRUE;
+    }
+  }
   if (!a || option != WINHTTP_OPTION_REDIRECT_POLICY || !buffer) return TRUE;
   const bool follow = *static_cast<DWORD*>(buffer) != WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
   if (a->kind == Kind::Session) static_cast<HttpSession*>(a->p)->follow = follow;
@@ -1025,6 +1165,11 @@ BOOL WinHttpReceiveResponse(HINTERNET request, LPVOID) {
   if (!a || a->kind != Kind::Request) return FALSE;
   auto* r = static_cast<HttpRequest*>(a->p);
   if (r->done) return TRUE;
+  if (r->upgrade) {
+    r->done = winhttp_ws_open(r->connect->host, r->connect->port, r->secure, r->path, r->headers,
+                             r->connect_ms, r->receive_ms, r->status, r->websocket);
+    return r->done;
+  }
   CURL* curl = curl_easy_init();
   if (!curl) return FALSE;
   const bool default_port = r->connect->port == 0 || r->connect->port == (r->secure ? 443 : 80);
@@ -1094,6 +1239,7 @@ BOOL WinHttpReadData(HINTERNET request, LPVOID buffer, DWORD size, LPDWORD got) 
   return TRUE;
 }
 BOOL WinHttpCloseHandle(HINTERNET handle) {
+  if (winhttp_ws_close(handle)) return TRUE;
   auto* a = static_cast<Any*>(handle);
   if (!a) return FALSE;
   if (a->kind == Kind::Session) delete static_cast<HttpSession*>(a->p);
@@ -1101,6 +1247,15 @@ BOOL WinHttpCloseHandle(HINTERNET handle) {
   else delete static_cast<HttpRequest*>(a->p);
   delete a;
   return TRUE;
+}
+HINTERNET WinHttpWebSocketCompleteUpgrade(HINTERNET request, DWORD_PTR) {
+  auto* a = static_cast<Any*>(request);
+  if (!a || a->kind != Kind::Request) return nullptr;
+  auto* r = static_cast<HttpRequest*>(a->p);
+  if (!r->done || r->status != 101) return nullptr;
+  HINTERNET socket = r->websocket;
+  r->websocket = nullptr; // ownership passes from the request to the caller
+  return socket;
 }
 BOOL WinHttpCrackUrl(LPCWSTR url, DWORD length, DWORD, URL_COMPONENTS* parts) {
   if (!url || !parts) return FALSE;
@@ -1140,8 +1295,22 @@ BOOL WinHttpCrackUrl(LPCWSTR url, DWORD length, DWORD, URL_COMPONENTS* parts) {
 #include "psapi.h"
 #include <sched.h>
 #include <dirent.h>
+#ifndef __APPLE__
 #include <sys/sysinfo.h>
+#endif
 BOOL GlobalMemoryStatusEx(MEMORYSTATUSEX* status) {
+#ifdef __APPLE__
+  uint64_t total = 0; size_t bytes = sizeof(total);
+  if (sysctlbyname("hw.memsize", &total, &bytes, nullptr, 0)) return FALSE;
+  vm_statistics64_data_t vm{}; mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &count)) return FALSE;
+  status->ullTotalPhys = total;
+  status->ullAvailPhys = ((uint64_t)vm.free_count + vm.inactive_count) * vm_page_size;
+  status->ullTotalPageFile = total; status->ullAvailPageFile = status->ullAvailPhys;
+  status->ullTotalVirtual = 1ull << 47; status->ullAvailVirtual = 1ull << 46;
+  status->ullAvailExtendedVirtual = 0;
+  status->dwMemoryLoad = total ? (DWORD)(100 - std::min(total, status->ullAvailPhys) * 100 / total) : 0;
+#else
   struct sysinfo si{};
   if (sysinfo(&si) != 0) return FALSE;
   const uint64_t unit = si.mem_unit ? si.mem_unit : 1;
@@ -1153,10 +1322,17 @@ BOOL GlobalMemoryStatusEx(MEMORYSTATUSEX* status) {
   status->ullAvailVirtual = 1ull << 46;
   status->ullAvailExtendedVirtual = 0;
   status->dwMemoryLoad = status->ullTotalPhys ? (DWORD)(100 - status->ullAvailPhys * 100 / status->ullTotalPhys) : 0;
+#endif
   return TRUE;
 }
 BOOL SwitchToThread() { return sched_yield() == 0; }
 BOOL K32GetProcessMemoryInfo(HANDLE, PROCESS_MEMORY_COUNTERS* counters, DWORD size) {
+#ifdef __APPLE__
+  mach_task_basic_info_data_t info{}; mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count)) return FALSE;
+  rusage usage{}; getrusage(RUSAGE_SELF, &usage);
+  uint64_t rss = info.resident_size, peak = usage.ru_maxrss, vm = info.virtual_size;
+#else
   std::ifstream in("/proc/self/status"); std::string line;
   uint64_t rss = 0, peak = 0, vm = 0;
   while (std::getline(in, line)) {
@@ -1165,6 +1341,7 @@ BOOL K32GetProcessMemoryInfo(HANDLE, PROCESS_MEMORY_COUNTERS* counters, DWORD si
     else if (std::sscanf(line.c_str(), "VmHWM: %llu kB", &kb) == 1) peak = kb * 1024;
     else if (std::sscanf(line.c_str(), "VmData: %llu kB", &kb) == 1) vm = kb * 1024;
   }
+#endif
   std::memset(counters, 0, size);
   counters->cb = size;
   counters->WorkingSetSize = rss; counters->PeakWorkingSetSize = peak;
@@ -1177,6 +1354,10 @@ struct Snapshot : Handle { Snapshot() : Handle(Snap) {} std::vector<PROCESSENTRY
 }
 HANDLE CreateToolhelp32Snapshot(DWORD flags, DWORD) {
   auto* s = new Snapshot;
+#ifdef __APPLE__
+  // Process discovery is unavailable in the Mac spike; never inspect other apps.
+  (void)flags;
+#else
   DIR* proc = opendir("/proc");
   if (!proc) { delete s; return INVALID_HANDLE_VALUE; }
   while (dirent* e = readdir(proc)) {
@@ -1208,6 +1389,7 @@ HANDLE CreateToolhelp32Snapshot(DWORD flags, DWORD) {
     }
   }
   closedir(proc);
+#endif
   return s;
 }
 BOOL Process32FirstW(HANDLE snapshot, PROCESSENTRY32W* entry) {

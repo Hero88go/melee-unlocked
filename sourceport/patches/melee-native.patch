@@ -115583,7 +115583,7 @@ index ad71183a5..37b8df5cd 100644
      }
      return false;
  }
-@@ -163,76 +186,76 @@ static inline int get_lang_val(int idx)
+@@ -163,76 +186,97 @@ static inline int get_lang_val(int idx)
  
  static inline void unk_inline(void)
  {
@@ -115636,6 +115636,27 @@ index ad71183a5..37b8df5cd 100644
 +        gm_801AE74C(0, !enter_data.unk1C);
          return;
      case 4:
++#ifdef MU_NATIVE
++        /* YouGame takes decision 5's Yes branch. The normal create/write runs in 6;
++         * only the question and successful-creation acknowledgement are skipped.
++         * Standalone keeps the existing native shortcut below. */
++        if (mu_card_boot_confirm(enter_data.unk0.chan, 5)) {
++            gm_801AEE6C(0, 0xB, get_lang_val(0xB));
++            enter_data.decision = tickDecision_6;
++            return;
++        }
++        /* The card works and has room but holds no Melee save (a fresh card folder): create it
++         * without asking. This is the prompt's own "Yes" path (decisions 5, 6 and 7) without its
++         * three screens, and the save is then written with the current data. If creating fails,
++         * the console's prompt below still shows, so a real card problem is never hidden. */
++        if (lb_8001C8BC() == LbCardResult_Ready) {
++            enter_data.unk8.unk0 = 1;
++            enter_data.decision = tickDecision_20;
++            lbCardGame_SetCardStatus(LbCardStatus_0);
++            lbCardGame_SaveChanges();
++            return;
++        }
++#endif
          gm_801AEE6C(1, 0xA, get_lang_val(0xA));
 -        gm_80480DA8.unk14 = 5;
 +        enter_data.decision = 5;
@@ -115687,7 +115708,7 @@ index ad71183a5..37b8df5cd 100644
          return;
      case 0:
      case 7:
-@@ -268,15 +291,25 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -268,15 +312,25 @@ void gm_Scene_MemCard_OnFrame(void)
          return;
      }
  
@@ -115717,7 +115738,7 @@ index ad71183a5..37b8df5cd 100644
          }
          break;
      case 1:
-@@ -284,15 +317,15 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -284,15 +338,15 @@ void gm_Scene_MemCard_OnFrame(void)
          break;
      case 2:
          if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
@@ -115741,7 +115762,7 @@ index ad71183a5..37b8df5cd 100644
                  }
              } else {
                  unk_inline();
-@@ -301,9 +334,9 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -301,9 +355,9 @@ void gm_Scene_MemCard_OnFrame(void)
          break;
      case 3:
          if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
@@ -115753,7 +115774,7 @@ index ad71183a5..37b8df5cd 100644
              } else {
                  unk_inline();
              }
-@@ -313,18 +346,18 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -313,18 +367,18 @@ void gm_Scene_MemCard_OnFrame(void)
          if (!gm_801AF0D4()) {
              if (!lb_8001CC4C()) {
                  gm_801AEE6C(0, 0xB, get_lang_val(0xB));
@@ -115776,9 +115797,12 @@ index ad71183a5..37b8df5cd 100644
              } else {
                  unk_inline();
              }
-@@ -334,18 +367,18 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -334,18 +388,27 @@ void gm_Scene_MemCard_OnFrame(void)
          if (!gm_801AF0D4()) {
              if (!lb_8001C8BC()) {
++#ifdef MU_NATIVE
++                if (!mu_card_boot_confirm(enter_data.unk0.chan, 7))
++#endif
                  gm_801AEE6C(0, 0xC, get_lang_val(0xC));
 -                gm_80480DA8.unk14 = 7;
 +                enter_data.decision = 7;
@@ -115790,7 +115814,14 @@ index ad71183a5..37b8df5cd 100644
          }
          break;
      case 7:
-         if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
+-        if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
++        if (!gm_801AF0D4() &&
++#ifdef MU_NATIVE
++            (mu_card_boot_confirm(enter_data.unk0.chan, 7) ||
++             gm_801AEDC8_flag_check())) {
++#else
++            gm_801AEDC8_flag_check()) {
++#endif
 -            gm_80480DA8.unk8.unk0 = 1;
 -            gm_80480DA8.unk14 = 0x14;
 -            lb_8001CBAC(0);
@@ -115800,7 +115831,7 @@ index ad71183a5..37b8df5cd 100644
          }
          break;
      case 8:
-@@ -365,13 +398,13 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -365,13 +428,13 @@ void gm_Scene_MemCard_OnFrame(void)
          break;
      case 11:
          if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
@@ -115818,7 +115849,7 @@ index ad71183a5..37b8df5cd 100644
                  }
              } else {
                  unk_inline();
-@@ -380,7 +413,7 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -380,7 +443,7 @@ void gm_Scene_MemCard_OnFrame(void)
          break;
      case 12:
          if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
@@ -115827,7 +115858,7 @@ index ad71183a5..37b8df5cd 100644
          }
          break;
      case 13:
-@@ -410,23 +443,23 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -410,23 +473,23 @@ void gm_Scene_MemCard_OnFrame(void)
          break;
      case 18:
          if (!gm_801AF0D4() && gm_801AEDC8_flag_check()) {
@@ -115861,7 +115892,7 @@ index ad71183a5..37b8df5cd 100644
              }
          }
          break;
-@@ -441,22 +474,22 @@ void gm_Scene_MemCard_OnFrame(void)
+@@ -441,22 +504,22 @@ void gm_Scene_MemCard_OnFrame(void)
  
  static inline bool checkUnk0(void)
  {
@@ -115892,7 +115923,7 @@ index ad71183a5..37b8df5cd 100644
      lbCardNew_AllocWorkArea();
      lbCardGame_LoadArchive(0);
      gm_801ADDD8();
-@@ -466,9 +499,9 @@ void gm_Scene_MemCard_OnEnter(void* user_data)
+@@ -466,9 +529,9 @@ void gm_Scene_MemCard_OnEnter(void* user_data)
  
  void gm_Scene_MemCard_OnExit(void* user_data)
  {

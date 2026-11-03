@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "net_overlay.h"
 #include "net_trace.h"
 #include "host.h"
@@ -26,7 +27,7 @@ std::string g_note;
 double g_note_until = 0.0;
 
 bool test_mode() {
-  static const bool on = std::getenv("MELEE_TEST_NET_OVERLAY") != nullptr;
+  static const bool on = host::test_env::getenv("MELEE_TEST_NET_OVERLAY") != nullptr;
   return on;
 }
 

@@ -7,6 +7,7 @@
 #include <thread>
 #include "hle.h"
 #include "card_backup.h"
+#include "hle_card_filter.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -115,6 +116,7 @@ void mount() {
   try {
     for (auto& entry : std::filesystem::directory_iterator(g_dir, ec)) {
       if (entry.path().extension() != L".gci" || slot >= MAX_FILES) continue;
+      if (hle::card::file_filter && !hle::card::file_filter(entry.path())) continue;
       FILE* in = _wfopen(entry.path().c_str(), L"rb");
       if (!in) continue;
       auto* f = new File;

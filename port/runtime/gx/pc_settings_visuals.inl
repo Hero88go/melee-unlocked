@@ -432,7 +432,7 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.13f, 0.27f, 0.96f));
-    if (ImGui::Button("F1  Return##simple_return", ImVec2(143.0f, 38.0f))) state.open = false;
+    if (ImGui::Button(yougame::stdio_bridge() ? "Return##simple_return" : "F1  Return##simple_return", ImVec2(143.0f, 38.0f))) state.open = false;
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
     const float menu_x = p.x + s.x - 40;
@@ -478,7 +478,7 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     draw->AddLine(card[0],card[1],hovered?IM_COL32(255,224,246,255):
                   settings_palette_tint(appearance,IM_COL32(255,135,204,220)),1.8f);
     if (nav_frame) settings_nav_frame(draw,card);
-    const char* label=chip==0?"B  BACK":"F1  RETURN";
+    const char* label=chip==0?"B  BACK":yougame::stdio_bridge()?"RETURN":"F1  RETURN";
     settings_slanted_text(draw,settings_heading_font(),13.0f,
                           ImVec2(x+(appearance==0?18.0f:14.0f),top+6-pop),
                           chip==0?IM_COL32(255,245,251,255):IM_COL32(255,224,242,255),label,.08f);

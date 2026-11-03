@@ -34,6 +34,9 @@ constexpr double MAX_SKEW = 0.001;
 
 std::atomic<int> g_volume{0};
 std::atomic<bool> g_muted{false};
+std::atomic<int> g_page_volume{100};  // audio_set_page_volume: the YouGame page's master
+// What plays: the player's volume under the page's master (audio.h).
+int output_volume() { return g_volume.load(std::memory_order_relaxed) * g_page_volume.load(std::memory_order_relaxed) / 100; }
 std::atomic<double> g_speed{1.0};
 std::atomic<bool> g_gameplay{false};
 bool g_open = false;
@@ -124,7 +127,7 @@ void render(float* out, size_t frames) {
   const double step = g_rate * SAMPLE_RATE / g_device_rate;
   if (g_rate < g_rate_min.load()) g_rate_min.store(g_rate);
   if (g_rate > g_rate_max.load()) g_rate_max.store(g_rate);
-  const int volume = g_volume.load(std::memory_order_relaxed);
+  const int volume = output_volume();
   uint64_t starved = 0;
   for (size_t i = 0; i < frames; ++i) {
     const uint64_t base = read;
@@ -156,9 +159,9 @@ void callback(void*, Uint8* stream, int len) {
   const size_t frames = (size_t)len / (2 * sizeof(float));
   render(out, frames);
 #ifndef MELEE_NO_SLIPPI
-  slippi::jukebox::mix(out, frames, g_volume.load() / 100.0, (double)g_device_rate / g_rate, g_device_rate);
+  slippi::jukebox::mix(out, frames, output_volume() / 100.0, (double)g_device_rate / g_rate, g_device_rate);
 #endif
-  mix_ui_sound(out, frames, g_volume.load(), g_device_rate);
+  mix_ui_sound(out, frames, output_volume(), g_device_rate);
   for (size_t i = 0; i < frames * 2; ++i) out[i] = audio_pcm_float(out[i]);
 }
 
@@ -203,6 +206,7 @@ bool open_device() {
 }  // namespace
 
 void audio_set_volume(int volume) { g_volume.store(std::clamp(volume, 0, 100)); }
+void audio_set_page_volume(int volume) { g_page_volume.store(std::clamp(volume, 0, 100)); }
 void audio_set_muted(bool muted) { g_muted.store(muted, std::memory_order_relaxed); }
 void audio_set_device(const char* id) { g_requested_device = id ? id : ""; }
 void audio_set_remember(bool remember) { g_remember = remember; }

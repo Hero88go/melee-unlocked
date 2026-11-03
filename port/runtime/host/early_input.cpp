@@ -4,6 +4,7 @@
 // will first appear in. The host knows that frame exactly: the pad polled at the next frame goes out
 // as (last sent frame + 1), and every change seen between two polls lands in that pad.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "early_input.h"
 #include "host.h"
 #include "tick_timing.h"
@@ -83,7 +84,7 @@ int env_override() {
 // inputs and only the timing of what the other side learns differs.
 double test_lead_seconds() {
   static const double value = [] {
-    const char* v = std::getenv("MELEE_TEST_EARLY_LEAD_MS");
+    const char* v = host::test_env::getenv("MELEE_TEST_EARLY_LEAD_MS");
     const double ms = v && *v ? std::atof(v) : 0.0;
     return ms > 0.0 && ms < 16.0 ? ms / 1000.0 : 0.0;
   }();
@@ -134,7 +135,7 @@ void emit(const uint8_t now[kPadBytes], bool force) {
         (now_seconds() - tick_timing().pad) * 1000.0);
   // MELEE_TEST_EARLY_LIE=1 (tests): every early pad goes out with its first button byte inverted, a
   // peer sending made-up early pads; the receiver must stop using them (mu_online.c, early trust).
-  static const bool lie = [] { const char* v = std::getenv("MELEE_TEST_EARLY_LIE"); return v && *v == '1'; }();
+  static const bool lie = [] { const char* v = host::test_env::getenv("MELEE_TEST_EARLY_LIE"); return v && *v == '1'; }();
   if (lie) {
     uint8_t fake[kPadBytes];
     std::memcpy(fake, now, kPadBytes);

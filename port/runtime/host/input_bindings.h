@@ -8,43 +8,15 @@
 #include <cstdint>
 #include <array>
 #include "box_melee.h"
+#include "input_binding_types.h"
 
 namespace host {
 
-enum class BindAction : uint8_t {
-  A, B, X, Y, Z, Start, L, R, DUp, DDown, DLeft, DRight,
-  // C-stick directions, for devices that have them as buttons (keyboard, box controllers). A pad
-  // with an analog C-stick keeps using it; a bound direction pushes the C-stick all the way.
-  CUp, CDown, CLeft, CRight,
-  // Control stick directions, the same idea. These were the one thing on the keyboard that could
-  // not be rebound: the stick was hard wired to the arrow keys while every other key was a
-  // setting, so anyone who did not want their right hand on the arrows was stuck. Left unbound on
-  // a pad, whose analog stick feeds these directly.
-  SUp, SDown, SLeft, SRight,
-  // A GameCube trigger is two inputs: the analog travel (light shield) and the click at its end
-  // (full shield, tech, air dodge). L and R above are the click alone; these are the travel alone.
-  // Appended, so saved profiles and every table indexed by this enum keep their meaning.
-  LAnalog, RAnalog,
-  // A box controller's own buttons, for one that sends plain buttons and leaves the stick maths to
-  // the PC (a Frame1 or B0XX in DInput or keyboard mode, or a keyboard set up as one). Binding Mod X
-  // or Mod Y on a device turns its button-made stick and C-stick into the box's Melee coordinates
-  // (box_melee.h); a device without them keeps the plain full-push directions. The shield buttons
-  // are the box's light and mid shield, analog travel on R. Appended, like the rest.
-  ModX, ModY, LightShield, MidShield,
-  // Dolphin's per-stick Modifier: while held, a stick made of buttons pushes only part of the way
-  // (g_stick_modifier_percent, 50 by default), so a keyboard can walk. Appended, like the rest.
-  StickMod,
-  Count
-};
 inline constexpr bool is_box_action(int i) { return i >= (int)BindAction::ModX && i <= (int)BindAction::MidShield; }
 inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
 inline constexpr bool is_analog_action(int i) { return i == (int)BindAction::LAnalog || i == (int)BindAction::RAnalog; }
 inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp && i <= (int)BindAction::SRight; }
 
-// Every table carries a `level` per binding beside the binding itself: its own analog threshold,
-// 0 = default (see "per-binding analog level" below).
-struct KeyBindings { int vk[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };
-struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };  // 0 = unbound
 // XInput reserves these wButtons bits. They identify analog triggers in binding
 // capture and profiles; hardware button bits are masked before they are added.
 inline constexpr uint16_t kXInputBindLT = 0x0400, kXInputBindRT = 0x0800;
@@ -55,12 +27,6 @@ inline uint16_t xinput_binding_buttons(uint16_t buttons, uint8_t left, uint8_t r
   if (right > right_threshold) buttons |= kXInputBindRT;
   return buttons;
 }
-struct GCBindings { unsigned short mask[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };  // GC adapter raw button mask, same layout as kActionPadBit
-// Generic HID gamepads (B0XX, Frame1, vJoy, third-party pads). Thirty-two bits rather than sixteen
-// because a box controller really does have more than sixteen buttons, and the numbering is the
-// device's own: bit N is HID button N+1, whatever that button happens to be labelled.
-struct HidBindings { uint32_t mask[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };
-
 // Native DualShock 4 HID button masks. These are independent of XInput and are
 // populated from the controller's USB/Bluetooth Raw Input report.
 enum : uint16_t {
@@ -543,14 +509,8 @@ inline void apply_stick_radius(const Deadzone& dz, int8_t& x, int8_t& y, bool c)
   x = scale(x); y = scale(y);
 }
 
-extern KeyBindings g_key_bindings;
 extern int g_stick_modifier_percent;   // the stick modifier's push, percent of a full one (default 50)
-extern std::array<PadBindings, 4> g_pad_bindings;
-extern std::array<GCBindings, 4> g_gc_bindings;
-extern std::array<PadBindings, 4> g_ds4_bindings;
 void ds4_bindings_defaults();   // fills g_ds4_bindings with the defaults, once (before the settings are read)
-extern std::array<PadBindings, 4> g_swpro_bindings;
-extern std::array<HidBindings, 4> g_hid_bindings;
 
 // ---- port assignment: which physical device feeds each in-game port ----
 // Appended to, never reordered: the settings file stores a port's source as the index of the
@@ -631,7 +591,6 @@ inline std::array<PortSource, 4> default_port_sources() {
 extern std::array<PortSource, 4> g_port_sources;
 
 // ---- rebind capture ----
-enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro, HidPad };
 
 // Starts listening. Call once when the settings UI enters "press a button" mode.
 // Starts listening for the next press on ONE device: the kind and index of the tab being rebound.

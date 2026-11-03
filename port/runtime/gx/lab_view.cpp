@@ -4,6 +4,7 @@
 // Drawing follows Slippi Lab (MIT, github.com/frankborden/slippilab): src/state/replayStore.tsx
 // (computeRenderData), src/components/viewer/{Player,Stage,Item,Camera}.tsx. Where this file
 // differs, the comment says why.
+#include "test_env.h"
 #include "lab_view.h"
 #include "../abi/mu_look_snapshot.h"
 #include "gx_core.h"
@@ -288,7 +289,7 @@ void read_skeleton(uint32_t entity, std::vector<Frame::Bone>& out) {
     const uint32_t next = guest32(it.jobj + 0x08), child = guest32(it.jobj + 0x10), parent = guest32(it.jobj + 0x0C);
     if (next && top < 192 && guest_span(next, 0x88)) stack[top++] = {next, it.depth};
     if (child && top < 192 && guest_span(child, 0x88)) stack[top++] = {child, it.depth + 1};
-    static const bool dump = std::getenv("MELEE_TEST_LAB_BONES") != nullptr;   // tests: the joints of one frame
+    static const bool dump = host::test_env::getenv("MELEE_TEST_LAB_BONES") != nullptr;   // tests: the joints of one frame
     static int dumped = 0;
     if (dump && dumped < 200 && g_building.number >= 0)
       ++dumped, host::log("lab bones: jobj %08X depth %d at %.1f %.1f parent %08X", it.jobj, it.depth,

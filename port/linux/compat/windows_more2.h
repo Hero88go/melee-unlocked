@@ -51,8 +51,23 @@ inline unsigned long long linux_xgetbv(unsigned index) {
   __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(index));
   return ((unsigned long long)hi << 32) | lo;
 }
+#ifdef __APPLE__
+#ifdef _xgetbv
+#undef _xgetbv
+#endif
+#endif
 #define _xgetbv linux_xgetbv
-inline int _putenv_s(const char* name, const char* value) { return setenv(name, value, 1); }
+#ifdef __APPLE__
+inline int _putenv_s(const char* name, const char* value) {
+  if (!name || !value) return EINVAL;
+  return *value ? setenv(name, value, 1) : unsetenv(name);  // Win32 removes an empty value
+}
+#else
+// Windows semantics: an empty value removes the variable. setenv(name, "") would leave it defined, and code that
+// only checks getenv() != nullptr (MELEE_LAG_TEST in the game library) would then switch on (10-25: a vanilla-only
+// launch booted the lag test's develop mode, skipping the memory-card check).
+inline int _putenv_s(const char* name, const char* value) { return value && *value ? setenv(name, value, 1) : unsetenv(name); }
+#endif
 #define ERROR_FILE_EXISTS 80L
 #define MEM_WRITE_WATCH 0x00200000u
 #define CaptureStackBackTrace RtlCaptureStackBackTrace

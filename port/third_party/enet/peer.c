@@ -5,6 +5,7 @@
 #include <string.h>
 #define ENET_BUILDING_LIB 1
 #include "enet/enet.h"
+#include "enet/yg_enet_socket.h"
 
 /** @defgroup peer ENet peer functions 
     @{
@@ -410,7 +411,7 @@ enet_peer_reset (ENetPeer * peer)
     peer -> highestRoundTripTimeVariance = 0;
     peer -> roundTripTime = ENET_PEER_DEFAULT_ROUND_TRIP_TIME;
     peer -> roundTripTimeVariance = 0;
-    peer -> mtu = peer -> host -> mtu;
+    peer -> mtu = yg_enet_mtu (peer -> host -> socket, peer -> host -> mtu);
     peer -> reliableDataInTransit = 0;
     peer -> outgoingReliableSequenceNumber = 0;
     peer -> windowSize = ENET_PROTOCOL_MAXIMUM_WINDOW_SIZE;

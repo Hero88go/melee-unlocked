@@ -28,6 +28,7 @@
  *     alpha and id colors, the pack's color overlays. A host whose block is still 24 bytes keeps
  *     none of them, and their rows show as not available.
  * Offline only, never with the vanilla game; the host refuses changes online and in playback. */
+#include "mu_test_env.h"
 #include <dolphin/os.h>
 #include <melee/if/textlib.h>
 #include <melee/if/types.h>
@@ -447,7 +448,7 @@ static int hpm_test_byte(unsigned int index)
     static unsigned char bytes[HPM_SETTINGS_MAX - HPM_SETTINGS_SIZE];
     static unsigned int count;
     if (!parsed) {
-        const char* spec = getenv("MELEE_TEST_HP_TRAIN");
+        const char* spec = mu_test_getenv("MELEE_TEST_HP_TRAIN");
         parsed = 1;
         while (spec != NULL && count < sizeof bytes) {
             int v = 0, k;

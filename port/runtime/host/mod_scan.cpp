@@ -1,5 +1,6 @@
 ﻿// SPDX-License-Identifier: GPL-2.0-or-later
 #include "mod_scan.h"
+#include "gc_content_sha1.h"
 #include "gameplay_policy.h"
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -473,6 +474,48 @@ DiscInfo parse_disc(std::ifstream& in, uint64_t image_size) {
   return info;
 }
 
+// YouGame desktop gcManifest's GALE01 rev 2 content identity (gc-content 2).
+constexpr const char kRetailContentFingerprint[] = "4852be98b97acd8def716d11a5b781f24f9fcfab";
+
+// Share the ISO fingerprint cache with source_host's layer fingerprints, using a versioned
+// namespace so a layer-diff fingerprint can never stand in for a whole-content fingerprint.
+std::string cached_content_fingerprint(const fs::path& file, const DiscInfo& info,
+                                       const ScanOptions& options, std::string* log) {
+  std::error_code ec;
+  const auto stamp = fs::last_write_time(file, ec).time_since_epoch().count();
+  if (ec) return {};
+  const auto absolute = fs::absolute(file, ec).u8string();
+  if (ec) return {};
+  const std::string key = "yougame-gc-content-2|" + absolute + "|" + std::to_string(info.size) + "|" + std::to_string(static_cast<int64_t>(stamp));
+  const fs::path cache = options.mods_dir / ".cache" / "fingerprints.txt";
+  // Cache records are tab/newline delimited, just like the existing layer cache.
+  const bool cacheable = options.use_cache && key.find_first_of("\t\r\n") == std::string::npos;
+  if (cacheable) {
+    std::ifstream entries(cache);
+    std::string line;
+    while (std::getline(entries, line)) {
+      const auto tab = line.rfind('\t');
+      if (tab == key.size() && line.compare(0, tab, key) == 0) {
+        const auto hash = line.substr(tab + 1);
+        if (hash.size() == 40 && hash.find_first_not_of("0123456789abcdef") == std::string::npos) {
+          if (log) *log = "retail content fingerprint cached";
+          return hash;
+        }
+      }
+    }
+  }
+  const auto started = std::chrono::steady_clock::now();
+  const auto fingerprint = gc_content_sha1(file, [] { return Hasher(BCRYPT_SHA1_ALGORITHM); });
+  if (log) *log = "retail content fingerprint in " + std::to_string(
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()) + " ms";
+  if (cacheable && !fingerprint.empty()) {
+    fs::create_directories(cache.parent_path(), ec);
+    std::ofstream out(cache, std::ios::app);
+    out << key << '\t' << fingerprint << '\n';
+  }
+  return fingerprint;
+}
+
 bool retail_dol_by_hash(std::ifstream& in, const DiscInfo& info) {
   if (!info.dol_offset || info.dol_offset + (uint64_t)kRetailDolSize > info.size) return false;
   std::vector<uint8_t> image(kRetailDolSize);
@@ -531,7 +574,7 @@ std::shared_ptr<const BaseDisc> load_base(const fs::path& iso) {
   const uint64_t size = fs::file_size(iso, ec);
   if (ec) return nullptr;
   const auto stamp = fs::last_write_time(iso, ec).time_since_epoch().count();
-  const std::string identity = fs::absolute(iso, ec).u8string() + "|" + std::to_string(size) + "|" + std::to_string(stamp);
+  const std::string identity = fs::absolute(iso, ec).u8string() + "|" + std::to_string(size) + "|" + std::to_string(static_cast<long long>(stamp));
   std::lock_guard<std::mutex> lock(mutex);
   if (cached && cached->identity == identity) return cached;
   std::ifstream in(iso, std::ios::binary);
@@ -967,6 +1010,15 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
       return d;
     }
   }
+  if (options.base_iso.empty() &&
+      cached_content_fingerprint(file, info, options, log) == kRetailContentFingerprint) {
+    if (used_base) *used_base = false;
+    d.kind = Kind::Vanilla; d.name = "Melee NTSC 1.02";
+    set_support(d, Engine::Either, Support::Supported, false);
+    d.message = "Unmodified Melee 1.02 disc: there is nothing to load from it.";
+    d.restart = false;
+    return d;
+  }
   d.kind = Kind::AssetMod; d.name = title;
   set_support(d, Engine::Either, Support::Supported, true);
   d.message = "Detected: " + title + " (changes the game's files)";
@@ -1005,14 +1057,14 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 13";   // 13: Melee Maker 1.3.8 plays on either engine
+constexpr const char kCacheHeader[] = "mu-scan 14";   // 14: retail content identity independent of disc padding
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {
   std::error_code ec;
   const uint64_t size = fs::file_size(file, ec);
   const auto stamp = fs::last_write_time(file, ec).time_since_epoch().count();
-  return fs::absolute(file, ec).u8string() + "|" + std::to_string(size) + "|" + std::to_string(stamp);
+  return fs::absolute(file, ec).u8string() + "|" + std::to_string(size) + "|" + std::to_string(static_cast<long long>(stamp));
 }
 
 Kind kind_from(const std::string& s) {

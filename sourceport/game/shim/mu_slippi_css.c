@@ -310,6 +310,13 @@ int mu_slippi_css_inputs(unsigned int trigger)
             case MU_SLP_MODE_PARTY:
                 tx_lock_in(SB_RAND);
                 break;
+            case MU_SLP_MODE_RANKED:
+                /* YouGame's Ranked v1: the next game of the set locks in as Unranked does (a random
+                 * legal stage). Without the host's Ranked the console stalls, as below. */
+                if (mu_slippi_ranked_available()) {
+                    tx_lock_in(SB_RAND);
+                }
+                break;
             case MU_SLP_MODE_DIRECT:
             case MU_SLP_MODE_TEAMS:
                 if (st->is_winner == MU_SLP_WINNER_LOST) {
@@ -463,6 +470,26 @@ enum {
     ST_ERR4 = 14,
 };
 
+/* The Ranked header: the host's ("Ranked - Gold II - 1534", "Ranked - Placements 2/5", see
+ * yougame_ranked.h RankCache::header) under YouGame, else "Ranked Mode". The same text, drawn
+ * smaller when it is longer than the other modes' headers so it stays inside the panel. */
+static void ranked_header(void)
+{
+    char header[64];
+    int glyphs = 0, i;
+    if (!mu_slippi_ranked_header(header, sizeof header) || header[0] == 0) {
+        set_text_fmt(ST_HEADER, "%s Mode", "Ranked");
+        return;
+    }
+    for (i = 0; header[i] != 0; i++, glyphs++) {
+        if ((header[i] & 0x80) && header[i + 1] != 0) {
+            i++;   /* a Shift-JIS pair is one glyph */
+        }
+    }
+    HSD_SisLib_803A7548(dt.text, ST_HEADER, glyphs > 22 ? 0.4f : 0.5f, glyphs > 22 ? 0.4f : 0.5f);
+    set_text(ST_HEADER, header);
+}
+
 static void text_think(HSD_GObj* gobj)
 {
     MuSlippiMenuState* st = mu_slippi_state();
@@ -493,12 +520,15 @@ static void text_think(HSD_GObj* gobj)
 
     /* Header */
     if (conn > MU_SLP_MM_CONNECTION_SUCCESS) {
+        if (st->mode == MU_SLP_MODE_RANKED) {
+            HSD_SisLib_803A7548(dt.text, ST_HEADER, 0.5f, 0.5f);   /* the Ranked header may have shrunk */
+        }
         set_text(ST_HEADER, "Error");
     } else {
         switch (st->mode) {
         case MU_SLP_MODE_UNRANKED: set_text_fmt(ST_HEADER, "%s Mode", "Unranked"); break;
         case MU_SLP_MODE_DIRECT: set_text_fmt(ST_HEADER, "%s Mode", p2p ? "P2P" : "Direct"); break;
-        case MU_SLP_MODE_RANKED: set_text_fmt(ST_HEADER, "%s Mode", "Ranked"); break;
+        case MU_SLP_MODE_RANKED: ranked_header(); break;
         case MU_SLP_MODE_TEAMS: set_text_fmt(ST_HEADER, "%s Mode", "Teams"); break;
         case MU_SLP_MODE_PARTY: set_text_fmt(ST_HEADER, "%s Mode", "Party"); break;
         default: set_text(ST_HEADER, "Error"); break;

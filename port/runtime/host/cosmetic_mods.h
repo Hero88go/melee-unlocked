@@ -51,6 +51,24 @@ struct AssetInfo {
   std::string voice_source;
 };
 
+// Pure helpers shared by the one-shot CLI and its window-free tests.
+namespace cli {
+inline std::string slot_key(const AssetInfo& asset) {
+  return asset.target_path + (asset.scope.empty() ? "" : "#" + asset.scope);
+}
+inline bool known_slot(const std::vector<AssetInfo>& catalog, const std::string& slot) {
+  for (const auto& asset : catalog) if (slot_key(asset) == slot) return true;
+  return false;
+}
+inline std::string online_column(const std::string& kind, bool known, bool allowed,
+                                 const std::string& reason) {
+  if (kind != "character_costume") return {};
+  if (!known) return " | online unknown (pass --iso)";
+  if (allowed) return " | online ok";
+  return " | online off: " + reason;
+}
+}  // namespace cli
+
 // The skins grouped by where they came from: imports as one pack, each scanned disc or folder as
 // another. `variants` is sorted, "" first. online_on counts the skins known to stay on online;
 // online_unchecked the imports not applied yet (their verdict comes when the game starts).
@@ -214,6 +232,9 @@ struct CostumeSlot { std::string target_path, character, costume; };
 std::vector<CostumeSlot> costume_slots();
 
 std::vector<AssetInfo> assets();
+// Status only: uses a cached scan verdict, or validates an import against the open clean disc.
+// Does not select assets, publish a runtime profile, or persist the comparison.
+std::string online_status_column(const std::string& asset_id, bool compare_with_open_disc);
 bool refresh_catalog(std::string* error = nullptr);
 bool rename_asset(const std::string& asset_id, const std::string& display_name,
                   std::string* error = nullptr);

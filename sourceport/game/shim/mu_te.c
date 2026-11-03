@@ -4,6 +4,7 @@
  * behaviors as C at each site, switched by the player in the settings panel. They are offline
  * conveniences: an online match and replay playback always play the unmodified rules, so a replay
  * or an opponent never sees them. Tournament Mode keeps only the features tournaments allow. */
+#include "mu_test_env.h"
 #include "mu_host.h"
 #include "mu_hp.h"
 #include "mu_native.h"
@@ -192,7 +193,7 @@ void mu_test_seed_nametags(void)
         {(char) 0x82, (char) 0x61, (char) 0x82, (char) 0x61, (char) 0x82, (char) 0x61, 0, 0},
         {(char) 0x82, (char) 0x62, (char) 0x82, (char) 0x62, (char) 0x82, (char) 0x62, 0, 0},
     };
-    const char* spec = getenv("MELEE_TEST_NAMETAGS");
+    const char* spec = mu_test_getenv("MELEE_TEST_NAMETAGS");
     int n, i, k;
     if (spec == NULL) {
         return;

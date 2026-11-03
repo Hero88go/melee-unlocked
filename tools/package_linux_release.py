@@ -146,6 +146,12 @@ def shader_pak():
     return bytes(pak)
 
 
+def agent_test_hook_enabled(executable):
+    # Inspect the artifact rather than a possibly stale CMake cache. The hook loader always
+    # carries this filename, including in stripped builds (the production scanner uses it too).
+    return b'agent-test.json' in executable.read_bytes()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build-linux/port/linux/full')
@@ -174,6 +180,9 @@ def main():
     for need in (exe, launcher, game, snapexcl, compat_exe, compat_game):
         if not need.is_file():
             raise SystemExit(f'missing {need} (run tools/build_linux.py first)')
+    agent_hook = agent_test_hook_enabled(exe)
+    hook_status = 'ON (STAGING ONLY; not a production package)' if agent_hook else 'OFF'
+    print('YOUGAME_AGENT_TEST_HOOK=' + hook_status, flush=True)
     reported = subprocess.run([str(exe), '--version'], capture_output=True, text=True, timeout=60).stdout.strip()
     if reported != version:
         raise SystemExit(f'the Source Port reports {reported!r}, not {version!r}')
@@ -187,12 +196,13 @@ def main():
     if version.encode() not in launcher.read_bytes():
         raise SystemExit(f'the launcher was built before VERSION became {version}')
 
-    name = f'MeleeUnlocked-{version}'
+    name = f'MeleeUnlocked-{version}' + ('-agent-test' if agent_hook else '')
     stage = args.out / 'linux-stage'
     folder = stage / name
     if stage.exists():
         shutil.rmtree(stage)
     folder.mkdir(parents=True)
+    (folder / 'BUILD-INFO.txt').write_text('YOUGAME_AGENT_TEST_HOOK=' + hook_status + '\n', encoding='utf-8')
 
     # The programs, without their debug information; the game library's goes to melee_game.dbg, linked
     # back to it, as the Windows build's does (addr2line -e melee_game.dbg reads crash offsets).
@@ -340,6 +350,16 @@ def main():
         shutil.copytree(playback, folder / 'SysPlayback', ignore=shutil.ignore_patterns('README.md', '.git*'))
         (folder / 'SysPlayback/GC').mkdir(exist_ok=True)
         shutil.copy2(coef, folder / 'SysPlayback/GC/dsp_coef.bin')
+    # Two of Slippi's Sys files are mostly Nintendo's own disc assets (compliance-lead, 10-25): they never ship. The
+    # host rebuilds them from the player's disc (host/sysgen.cpp reads deltas/ beside the program), as on the Mac.
+    deltas = json.loads((ROOT / 'port/sys_deltas/manifest.json').read_text())
+    for target in {f['target'] for f in deltas['files']}:
+        for sys_folder in ('Sys', 'SysPlayback'):
+            (folder / sys_folder / 'GameFiles/GALE01' / target).unlink(missing_ok=True)
+    (folder / 'deltas').mkdir()
+    shutil.copy2(ROOT / 'port/sys_deltas/manifest.json', folder / 'deltas/manifest.json')
+    for f in deltas['files']:
+        shutil.copy2(ROOT / 'port/sys_deltas' / f['delta'], folder / 'deltas' / f['delta'])
     (folder / 'Shaders').mkdir()
     (folder / 'Shaders/crt-shaders.pak').write_bytes(shader_pak())
     if (ROOT / 'lang').is_dir():
@@ -354,7 +374,8 @@ def main():
         (folder / sub).mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'docs/training-mods.md', folder / 'TrainingMods.md')
     shutil.copy2(UDEV, folder / UDEV.name)
-    (folder / 'README.txt').write_text(README.format(version=version), encoding='utf-8')
+    staging = 'STAGING AGENT-TEST BUILD: NOT FOR PRODUCTION\n\n' if agent_hook else ''
+    (folder / 'README.txt').write_text(staging + README.format(version=version), encoding='utf-8')
     for src, dst in ((ROOT / 'LICENSE', 'COPYING.txt'), (ROOT / 'NOTICE', 'NOTICE.txt'),
                      (ROOT / 'port/third_party/dht/LICENCE', 'dht.txt'),
                      (ROOT / 'port/third_party/monocypher/LICENCE.md', 'monocypher.md'),

@@ -49,3 +49,19 @@ typedef struct in_addr IN_ADDR;
 #ifndef SO_EXCLUSIVEADDRUSE
 #define SO_EXCLUSIVEADDRUSE SO_REUSEADDR
 #endif
+#ifdef __APPLE__
+
+// Win32 callers use int lengths; BSD sockets require socklen_t.
+inline int getsockname(SOCKET s, sockaddr* addr, int* len) {
+  socklen_t n = *len; int r = ::getsockname(s, addr, &n); *len = (int)n; return r;
+}
+inline int getpeername(SOCKET s, sockaddr* addr, int* len) {
+  socklen_t n = *len; int r = ::getpeername(s, addr, &n); *len = (int)n; return r;
+}
+inline ssize_t recvfrom(SOCKET s, void* buf, size_t size, int flags, sockaddr* addr, int* len) {
+  socklen_t n = *len; auto r = ::recvfrom(s, buf, size, flags, addr, &n); *len = (int)n; return r;
+}
+inline int getsockopt(SOCKET s, int level, int option, void* value, int* len) {
+  socklen_t n = *len; int r = ::getsockopt(s, level, option, value, &n); *len = (int)n; return r;
+}
+#endif

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "host.h"
 #include "replay_hud.h"
 
@@ -184,7 +185,7 @@ uint16_t test_presses(int32_t frame, uint32_t drawn) {
   static bool parsed = false;
   if (!parsed) {
     parsed = true;
-    if (const char* v = std::getenv("MELEE_TEST_REPLAY_PRESS")) {
+    if (const char* v = host::test_env::getenv("MELEE_TEST_REPLAY_PRESS")) {
       const std::string all(v);
       for (size_t pos = 0; pos < all.size();) {
         size_t comma = all.find(',', pos);
@@ -231,7 +232,7 @@ void frame(int style, const practice_menu::Frame& f) {
     static bool length_set = false;
     if (!length_set) {
       length_set = true;
-      if (const char* v = std::getenv("MELEE_TEST_REPLAY_LENGTH")) practice_menu::replay_settings().length = (uint8_t)std::atoi(v);
+      if (const char* v = host::test_env::getenv("MELEE_TEST_REPLAY_LENGTH")) practice_menu::replay_settings().length = (uint8_t)std::atoi(v);
     }
   }
   const practice_menu::ReplaySettings& rs = practice_menu::replay_settings();

@@ -56,6 +56,7 @@
  * Offline only. Online, while online is pending, in Slippi's online menus, and with the pack not
  * loaded, every function here leaves the game exactly as it is. In replay playback only the
  * replay's own word counts (a replay recorded without the pack has none). */
+#include "mu_test_env.h"
 #include <dolphin/dvd.h>
 #include <dolphin/os.h>
 #include <melee/gm/gmvs.h>
@@ -559,7 +560,7 @@ int mu_hp_match_stage(int stkind)
     static int page = -2;
     unsigned char set[MU_HP_SETTINGS_SIZE];
     if (page == -2) {
-        const char* v = getenv("MELEE_TEST_HP_PAGE");
+        const char* v = mu_test_getenv("MELEE_TEST_HP_PAGE");
         page = v != NULL && v[0] >= '1' && v[0] <= '4' && v[1] == 0 ? v[0] - '1' : -1;
     }
     if (page < 0 || stkind < 0 || !hp_live()) {

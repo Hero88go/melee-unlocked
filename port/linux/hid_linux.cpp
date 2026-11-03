@@ -2,8 +2,10 @@
 // (HidP_*), Raw Input device queries over /dev/hidraw, and the reader thread that hands each report
 // to the controller readers in Windows' layout. SPDX-License-Identifier: GPL-2.0-or-later
 #include "hidsdi.h"
+#ifndef __APPLE__
 #include <linux/hidraw.h>
 #include <linux/input.h>
+#endif
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -188,6 +190,9 @@ linux_hid::ReportFn g_report = nullptr;
 linux_hid::RemovedFn g_removed = nullptr;
 
 bool read_descriptor(int fd, std::vector<uint8_t>& out) {
+#ifdef __APPLE__
+  (void)fd; (void)out; return false;
+#else
   int size = 0;
   if (ioctl(fd, HIDIOCGRDESCSIZE, &size) < 0 || size <= 0) return false;
   hidraw_report_descriptor desc{};
@@ -195,6 +200,7 @@ bool read_descriptor(int fd, std::vector<uint8_t>& out) {
   if (ioctl(fd, HIDIOCGRDESC, &desc) < 0) return false;
   out.assign(desc.value, desc.value + desc.size);
   return true;
+#endif
 }
 
 Device* find_device_locked(const std::string& path) {
@@ -209,6 +215,7 @@ bool wanted(const Device& d) {
 }
 
 void scan() {
+#ifndef __APPLE__
   std::vector<std::string> present;
   if (DIR* dir = opendir("/dev")) {
     while (dirent* e = readdir(dir)) if (!std::strncmp(e->d_name, "hidraw", 6)) present.push_back(std::string("/dev/") + e->d_name);
@@ -241,6 +248,7 @@ void scan() {
       g_devices.push_back(std::move(d));
     }
   }
+#endif
 }
 
 void reader() {
@@ -464,12 +472,16 @@ BOOL HidD_SetOutputReport(HANDLE file, LPVOID report, ULONG length) {
   return write(fd, report, length) == (ssize_t)length;
 }
 BOOL HidD_GetProductString(HANDLE file, LPVOID buffer, ULONG length) {
+#ifdef __APPLE__
+  (void)file; (void)buffer; (void)length; return FALSE;
+#else
   const int fd = linux_compat::fd_of_handle(file);
   if (fd < 0 || !buffer || length < sizeof(wchar_t)) return FALSE;
   char name[256] = {};
   if (ioctl(fd, HIDIOCGRAWNAME(sizeof name), name) < 0) return FALSE;
   const int chars = MultiByteToWideChar(CP_UTF8, 0, name, -1, static_cast<wchar_t*>(buffer), (int)(length / sizeof(wchar_t)));
   return chars > 0;
+#endif
 }
 BOOL HidD_FlushQueue(HANDLE file) {
   const int fd = linux_compat::fd_of_handle(file);
@@ -524,6 +536,9 @@ UINT GetRawInputDeviceList(RAWINPUTDEVICELIST* list, UINT* count, UINT) {
 }
 
 void linux_hid::start(ReportFn report, RemovedFn removed) {
+#ifdef __APPLE__
+  (void)report; (void)removed; return;
+#endif
   if (g_running.exchange(true)) return;
   g_report = report; g_removed = removed;
   g_thread = std::thread(reader);

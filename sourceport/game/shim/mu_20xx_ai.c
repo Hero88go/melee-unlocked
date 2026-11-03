@@ -18,6 +18,7 @@
  *
  * Off unless the player turns "20XX CPUs" on. Never in an online match. In replay playback the
  * host passes the options the replay was recorded with, so playback follows the recording. */
+#include "mu_test_env.h"
 #include <dolphin/os.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/forward.h>
@@ -3038,7 +3039,7 @@ int mu_20xx_ai_enabled(void)
 {
     static int forced = -1;
     if (forced < 0) {
-        const char* v = getenv("MELEE_TEST_20XX_AI");
+        const char* v = mu_test_getenv("MELEE_TEST_20XX_AI");
         forced = v != NULL && *v != '\0' && *v != '0';
     }
     if (forced) {

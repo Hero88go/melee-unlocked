@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "native_practice.h"
 
 #include "host.h"
 #include "practice_cpu.h"
 #include "slippi_online.h"
+#include "yougame_link.h"
+#include "yougame_ux.h"
+#include "yougame_friends.h"
 #include "slippi_playback.h"
 #include "../gx/render_options.h"
 
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <future>
+#include <memory>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -96,6 +103,10 @@ MatchMode g_offer_mode = MatchMode::None;
 std::string g_offer_code;
 std::string g_offer_reason;
 bool g_offer_shown = false;
+bool g_friend_handoff = false;
+uint32_t g_friend_menu_ticks = 0;
+std::future<std::string> g_friend_picker;
+std::shared_ptr<std::atomic<bool>> g_friend_picker_stop;
 
 // The Source Port's game answers through its practice bridge (game API 6); the static recomp's
 // state is read and written at its console addresses.
@@ -103,7 +114,8 @@ NativeBridge g_bridge = nullptr;
 ContentBridge g_content_bridge = nullptr;
 enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
        OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE, OP_CPU_MOVE,
-       OP_TRAINING_PICK, OP_TRAINING_STAGE, OP_UNLOCKED };
+       OP_TRAINING_PICK, OP_TRAINING_STAGE, OP_UNLOCKED, OP_PAGE_PAUSE };
+static_assert(OP_FRAME_PAUSE == 10 && OP_UNLOCKED == 14 && OP_PAGE_PAUSE == 15, "practice op numbering (mu_host.h)");
 std::atomic<uint32_t> g_unlocked{0xFFFFFFFFu};   // tick(): the card's unlocked characters, read in Training
 
 uint8_t current_major() {
@@ -266,7 +278,7 @@ void cpu_move(float dx, float dy) {
       std::memcpy(&bits, &v, 4);
       host::wr32(fp + 0xB0 + axis * 4, bits);
       host::wr32(fp + 0xBC + axis * 4, bits);
-      if (axis == 0 && std::getenv("MELEE_TEST_FRAME_ADVANCE")) host::log("practice: CPU moved to x %.1f", v);
+      if (axis == 0 && host::test_env::getenv("MELEE_TEST_FRAME_ADVANCE")) host::log("practice: CPU moved to x %.1f", v);
     }
     return;
   }
@@ -280,7 +292,7 @@ void frame_advance_tick() {
   static bool frozen = false, combo_was = false, z_was = false;
   static uint32_t z_held = 0;
   // Tests (hidden VS matches): MELEE_TEST_FRAME_ADVANCE=1 turns the option on outside Training.
-  static const bool test = std::getenv("MELEE_TEST_FRAME_ADVANCE") != nullptr;
+  static const bool test = host::test_env::getenv("MELEE_TEST_FRAME_ADVANCE") != nullptr;
   const bool allowed = ((practice_cpu::config().tools & MU_PC_TOOL_FRAME_ADVANCE) || test) && (is_training() || test) &&
                        (test ? is_offline_gameplay_scene(current_major(), current_minor()) : is_offline_gameplay()) && g_lifecycle.phase() == Phase::Idle && !slippi::playback::enabled() &&
                        slippi::online::session_mode() < 0;
@@ -310,7 +322,7 @@ void frame_advance_tick() {
     static uint32_t freeze_at = 0; static std::vector<uint32_t> steps; static bool parsed = false;
     if (!parsed) {
       parsed = true;
-      const std::string v = std::getenv("MELEE_TEST_FRAME_ADVANCE");
+      const std::string v = host::test_env::getenv("MELEE_TEST_FRAME_ADVANCE");
       freeze_at = (uint32_t)std::strtoul(v.c_str(), nullptr, 10);
       for (size_t at = v.find(':'); at != std::string::npos; at = v.find(',', at + 1))
         steps.push_back((uint32_t)std::strtoul(v.c_str() + at + 1, nullptr, 10));
@@ -647,6 +659,123 @@ void submit_acknowledge_failure() {
 }
 
 void tick() {
+  // This tick runs at retrace even while the scene is frozen. No game state is
+  // accessed by the stdin reader; online sessions never touch these pause flags.
+  if (yougame::stdio_bridge()) {
+    const bool online = slippi::online::session_mode() >= 0;
+    int32_t a[3] = {-1, 0, 0};
+    if (!online && !slippi::playback::enabled()) {
+      if (g_bridge) g_bridge(OP_PAGE_PAUSE, a, 3);
+      else {
+        const uint32_t info = host::rd32(0x804D6720u);
+        const int kind = info && host::try_ptr(info, 1) ? host::rd8(info) : -1;
+        a[0] = host::rd8(kMinorSceneControl + 0x10) & 1;
+        a[1] = (kind == 2 || kind == 3 || kind == 4 || kind == 0x2C) &&
+               host::rd8(0x8046B6A0u) == 0;
+        a[2] = host::rd32(kMinorSceneControl);
+      }
+    }
+    const uint32_t scene = (uint32_t(current_major()) << 8) | current_minor();
+    const auto pause_result = yougame::ux::page_pause.tick(true, online, a[1] != 0, scene, uint32_t(a[2]),
+        a[0] > 0, [&](bool paused) {
+          if (g_bridge) { int32_t args[3] = {paused ? 1 : 0, 0, 0}; g_bridge(OP_PAGE_PAUSE, args, 3); }
+          // Same scheduler API as Source/Start pause, context 0 skips the pause menu.
+          else {
+            // Retrace interrupts arbitrary guest code; preserve its complete CPU context.
+            struct Restore {
+              ppc::Context saved = *host::cpu;
+              ~Restore() { *host::cpu = saved; ppc::update_mxcsr(*host::cpu); }
+            } restore;
+            host::call_guest(paused ? 0x801A4634u : 0x801A4674u, 0);
+          }
+        });
+    if (pause_result.released_scene) host::log("pause: released (scene changed)");
+    if (pause_result.event) {   // the page greys or restores its Pause button from this
+      yougame::pause_event(pause_result.pausable, pause_result.paused, pause_result.reason);
+      host::log("pause: told the page pausable %d paused %d (%s)", pause_result.pausable ? 1 : 0,
+                pause_result.paused ? 1 : 0, pause_result.reason ? pause_result.reason : "-");
+    }
+    using PauseOutcome = yougame::ux::PagePause::Outcome;
+    switch (pause_result.outcome) {
+      case PauseOutcome::None: break;
+      case PauseOutcome::Applied: host::log("pause: applied (page)"); break;
+      case PauseOutcome::Cleared: host::log("pause: cleared (page)"); break;
+      case PauseOutcome::IgnoredOnline: host::log("pause: ignored (online)"); break;
+      case PauseOutcome::IgnoredNotInMatch: host::log("pause: ignored (not in a match)"); break;
+      case PauseOutcome::IgnoredAlreadyPaused: host::log("pause: ignored (already paused)"); break;
+      case PauseOutcome::IgnoredUnownedResume:
+        host::log("pause: ignored (resume for a pause the page didn't set)"); break;
+    }
+  }
+
+  if (yougame::active() && !slippi::playback::enabled()) {
+    const auto major = current_major(), minor = current_minor();
+    if (major == kOnlineMajor) g_friend_handoff = false;
+    // Wait for the main menu's initialization/cleanup. Never interrupt a local or online match.
+    if (major == 1) ++g_friend_menu_ticks;
+    else g_friend_menu_ticks = 0;
+    const bool safe = yougame::friends::menu_safe(major, minor) &&
+                      (major != 1 || g_friend_menu_ticks >= 120);
+    if (g_friend_picker.valid() && (!safe || !yougame::friends::events.code_screen())) {
+      *g_friend_picker_stop = true;
+      g_friend_picker = {};
+    }
+    if (safe && yougame::identity().ok) {
+      auto room = yougame::friends::events.take_join(true);
+      const bool host_friend = yougame::friends::events.take_host();
+      // Keep code entry in place until the page has chosen a room. A picker error is
+      // shown there, with no matchmaking session or room to clean up.
+      if (host_friend && !g_friend_picker.valid() && room.empty()) {
+        g_friend_picker_stop = std::make_shared<std::atomic<bool>>(false);
+        std::packaged_task<std::string()> task([stop = g_friend_picker_stop] {
+          return yougame::pick_friend_room([stop] { return stop->load(); });
+        });
+        g_friend_picker = task.get_future();
+        std::thread(std::move(task)).detach();
+      }
+      if (g_friend_picker.valid()) {
+        if (!room.empty() || !yougame::friends::events.code_screen()) {
+          *g_friend_picker_stop = true;
+          g_friend_picker = {};
+        } else if (g_friend_picker.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+          try { room = g_friend_picker.get(); }
+          catch (const std::exception& e) { yougame::friends::events.picker_error(e.what()); }
+        }
+      }
+      if (!room.empty()) {
+        slippi::online::native_cleanup_match();
+        g_lifecycle = Lifecycle{};
+        clear_search_metadata();
+        set_online_mode(2);
+        g_practice = {};
+        g_practice.valid = true;
+        g_practice.players[0].active = true;
+        g_practice.players[0].character = 0;
+        write_event_backup();
+        if (g_bridge) { int32_t a[1] = {yougame::friends::kFirstCssWinner}; g_bridge(OP_DIRECT_FIRST_MATCH, a, 1); }
+        else {
+          host::wr8(kDirectIsWinner, yougame::friends::kFirstCssWinner);
+          host::wr8(kDirectChoseStage, 0);
+          // Keep a menu's ordinary decide callback from replacing the accepted destination.
+          static bool hooks = false;
+          if (!hooks) {
+            hooks = true;
+            const auto redirect = [](ppc::Context& context) {
+              if (g_friend_handoff) context.r[3] = kOnlineMajor;
+            };
+            ppc::add_entry_hook(0x801A42E8u, redirect);
+            ppc::add_entry_hook(0x801A42F8u, redirect);
+          }
+        }
+        if (g_content_bridge) g_content_bridge(2, true);
+        std::string error;
+        const bool started = slippi::online::native_start_match(2, {}, 0, 0, &error, room);
+        g_friend_handoff = !g_bridge;
+        request_major(kOnlineMajor);  // the CSS also shows any policy/start error
+        if (!started) host::log("yougame: could not join friends: %s", error.c_str());
+      }
+    }
+  }
   // Launcher matches start only once the title/main-menu scene is initialized. Both players have
   // explicitly agreed already; the first main supplies an initial fighter to Slippi's normal CSS.
   // This coordinator runs only for static recomp; native uses its game-side online scene bridge.
@@ -683,7 +812,7 @@ void tick() {
       }
     }
   }
-  // Test only (MELEE_PRACTICE_AUTOSTART=unranked or direct:CODE): start one search after two
+  // Test only (MELEE_PRACTICE_AUTOSTART=unranked, teams or direct:CODE): start one search after two
   // seconds of offline gameplay, as pressing Tab and choosing would. Hidden test runs have no Tab.
   {
     static const char* autostart = std::getenv("MELEE_PRACTICE_AUTOSTART");
@@ -695,6 +824,7 @@ void tick() {
         const std::string spec = autostart;
         host::log("native practice: test autostart %s", spec.c_str());
         if (spec.rfind("direct:", 0) == 0) submit_start_direct(spec.substr(7));
+        else if (spec == "teams") submit_start_teams({});
         else if (spec.rfind("teams:", 0) == 0) submit_start_teams(spec.substr(6));
         else submit_start_unranked();
       }
@@ -793,12 +923,12 @@ void tick() {
   // MELEE_TEST_AFTER_SESSION=<tick> (tests only): at that tick on the main menu, the step an ended
   // online session takes (Unranked), so the way into Training and the prompt can run without a peer.
   {
-    static const int test_at = [] { const char* v = std::getenv("MELEE_TEST_AFTER_SESSION"); return v ? std::atoi(v) : -1; }();
+    static const int test_at = [] { const char* v = host::test_env::getenv("MELEE_TEST_AFTER_SESSION"); return v ? std::atoi(v) : -1; }();
     static int ticks = 0;
-    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, -1, [] { const char* c = std::getenv("MELEE_TEST_P1_CHAR"); return c ? std::atoi(c) : 2; }());   // Fox, or MELEE_TEST_P1_CHAR
+    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, -1, [] { const char* c = host::test_env::getenv("MELEE_TEST_P1_CHAR"); return c ? std::atoi(c) : 2; }());   // Fox, or MELEE_TEST_P1_CHAR
     // MELEE_TEST_TRAIN_AGAINST=<tick>,<character> (tests only): a ghost's character picked at that tick.
     static int against_at = -1, against = -1;
-    static const bool parsed = [] { if (const char* v = std::getenv("MELEE_TEST_TRAIN_AGAINST")) std::sscanf(v, "%d,%d", &against_at, &against); return true; }();
+    static const bool parsed = [] { if (const char* v = host::test_env::getenv("MELEE_TEST_TRAIN_AGAINST")) std::sscanf(v, "%d,%d", &against_at, &against); return true; }();
     (void)parsed;
     if (against_at >= 0 && ticks == against_at) submit_train_against(against);
   }

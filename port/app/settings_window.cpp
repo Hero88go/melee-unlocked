@@ -11,6 +11,7 @@
 // none of this can drift from what the game shows.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
+#include "test_env.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <d3d12.h>
@@ -163,8 +164,8 @@ static void save_test_shot(ID3D11Device* device, ID3D11DeviceContext* context, I
 int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent, std::function<void()> reload) {
   g_standby_parent = standby_parent;
   g_standby_reload = std::move(reload);
-  if (const char* dpi = std::getenv("MELEE_TEST_UI_DPI")) g_test_dpi = std::clamp(std::atoi(dpi), 96, 384);
-  if (const char* shot = std::getenv("MELEE_TEST_SETTINGS_SHOT")) g_test_shot = shot;
+  if (const char* dpi = host::test_env::getenv("MELEE_TEST_UI_DPI")) g_test_dpi = std::clamp(std::atoi(dpi), 96, 384);
+  if (const char* shot = host::test_env::getenv("MELEE_TEST_SETTINGS_SHOT")) g_test_shot = shot;
   // This window scales itself, so the process says so before the window exists: nothing else
   // declares this executable DPI aware, and an unaware process is told 96 DPI and has its picture
   // stretched by Windows instead. The call fails harmlessly when the awareness is already set. The

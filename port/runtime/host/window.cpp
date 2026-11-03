@@ -1,6 +1,10 @@
 // Win32 window, message pump, keyboard + XInput controller mapping to GameCube pads.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
+#include "test_env.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include <windows.h>
 #include <xinput.h>
 #include <hidsdi.h>
@@ -14,7 +18,25 @@
 #include <algorithm>
 #include <atomic>
 #include <thread>
+#include "yougame_link.h"
+#include "yougame_parity.h"
+#ifdef _WIN32
+#include "yougame_embed_view.h"
+#include "yougame_embed_volume.h"
+#include "audio.h"
+#endif
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_pad.h"
+#include "yougame_agent_keys.h"
+#include "yougame_agent_fight.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"
+#else
+#include "slippi_online.h"
+#endif
+#endif
 #include "host.h"
+#include "sim_work.h"
 #include "early_input.h"
 #include "window.h"
 #include "replay_control.h"
@@ -25,6 +47,23 @@
 #include "playstation_pad.h"
 #ifndef _WIN32
 #include <SDL.h>
+#ifdef MELEE_LINUX_X11_EMBED
+#include <SDL_syswm.h>
+#include "embed/yougame_embed_x11.h"
+#include "embed_visibility.h"
+#include "audio.h"
+#include <sstream>
+// Xlib defines None as a macro; host input enums use None as a member.
+#undef None
+#endif
+#ifdef __APPLE__
+#include "../../mac/embed_mac.h"
+#endif
+#ifdef __APPLE__
+#include <SDL_syswm.h>
+extern "C" bool mac_window_is_fullscreen(void*);
+extern "C" void mac_toggle_fullscreen(void*);
+#endif
 #endif
 
 #pragma comment(lib, "user32.lib")
@@ -33,10 +72,13 @@
 namespace host {
 
 namespace {
+// The caption the YouGame app looks for (yougame-native.json "embed.title").
+constexpr const wchar_t* kBoxTitle = L"Melee Unlocked";
 HWND g_hwnd = nullptr;
 bool g_keys[256];
 std::mutex g_keys_mutex;
 bool g_closed = false;
+yougame::parity::OverlayKey g_overlay_key;   // window thread only
 int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
 DpiCallback g_on_dpi;
@@ -48,6 +90,7 @@ std::atomic<int> g_trace_mark{0};   // 0 none, else the kind of the last mark ke
 std::atomic<int> g_settings_controller_port{-1};
 std::atomic<bool> g_practice_toggle{false};
 std::atomic<bool> g_escape_press{false};
+std::atomic<bool> g_capturing{false};   // a control rebind is waiting for its key (input_begin_capture)
 MessageCallback g_on_message;
 std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
@@ -57,6 +100,10 @@ bool g_ui_has_pad = false;
 bool g_ui_gamecube = false;
 bool g_ui_settings_chord_held[4]{};
 bool g_ui_practice_chord_held[4]{};
+yougame::parity::OverlayPad g_overlay_pad;   // input/simulation thread only
+#ifdef YOUGAME_AGENT_TEST_HOOK
+int g_ui_agent_step = -1;   // protected by g_ui_pad_mutex, alongside the snapshot it identifies
+#endif
 #ifdef _WIN32
 void raw_input(HRAWINPUT raw);
 #else
@@ -77,6 +124,38 @@ LPARAM g_pointer_at = -1;           // where it was then (client coordinates as 
 bool g_pointer_rested = false;      // hidden by the rest rule, until the next movement
 
 #ifdef _WIN32
+// In the YouGame player box (yougame::embedded) the window is a child of the app's window, which
+// stays the foreground window: "has focus" is this child holding the keyboard focus instead.
+std::atomic<bool> g_has_focus{false};
+bool window_focused(HWND h) { return yougame::embedded() ? g_has_focus.load() : GetForegroundWindow() == h; }
+// The player box's commands, posted from the bridge's reader thread to this window's thread.
+constexpr UINT kBoxRect = WM_APP + 20, kBoxShow = WM_APP + 21, kBoxFocus = WM_APP + 22,
+               kBoxView = WM_APP + 23;
+yg_embed_view_state g_embed_view;
+
+void apply_embed_geometry(HWND h, WPARAM w, LPARAM l, bool is_view) {
+  const yg_embed_box box{(int)(w >> 16), (int)(w & 0xFFFF), (int)(l >> 16), (int)(l & 0xFFFF)};
+  const bool first_view = is_view && !g_embed_view.has_view;
+  const auto result = yg_embed_view_update(&g_embed_view, box, is_view);
+  if (!g_embed_view.has_view) {
+    SetWindowPos(h, nullptr, box.x, box.y, box.w, box.h, SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
+  if (is_view) log("embed: view %d %d %d %d", box.x, box.y, box.w, box.h);
+  if (result.warn_clamp) log("embed: rect outside view; clamped to view");
+  const auto& clip = result.clip;
+  HRGN region = CreateRectRgn(clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
+  // Windows owns the region only after a successful SetWindowRgn.
+  if (region && !SetWindowRgn(h, region, TRUE)) DeleteObject(region);
+  if (result.geometry && (first_view || result.move || result.resize)) {
+    const auto& window = result.window;
+    SetWindowPos(h, nullptr, window.x, window.y, window.w, window.h,
+                 SWP_NOZORDER | SWP_NOACTIVATE | (result.resize ? 0 : SWP_NOSIZE));
+  }
+  if (!result.resize) log("embed: clip %d %d %d %d (no resize)", clip.x, clip.y, clip.w, clip.h);
+  ShowWindow(h, result.visible ? SW_SHOWNA : SW_HIDE);
+}
+
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == WM_MOUSEMOVE && l != g_pointer_at) {   // Windows also sends this when nothing moved
     g_pointer_at = l;
@@ -88,7 +167,20 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   // has nothing to do there, and after alt-tabbing back from a music player it sat in the middle of
   // the screen for the rest of the match. It comes back the moment the panel opens or focus leaves.
   // Before the ImGui handler, which would otherwise set the arrow itself.
-  if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && !g_ui_capture.load() && GetForegroundWindow() == h) { SetCursor(nullptr); return TRUE; }
+  if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && !g_ui_capture.load() && window_focused(h)) { SetCursor(nullptr); return TRUE; }
+  // The page owns Shift+Tab in stdio mode, including repeats and release after Shift
+  // was released. Handle focus/close before ImGui can consume the notification.
+  if (m == WM_KILLFOCUS || (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE) ||
+      (m == WM_ACTIVATEAPP && !w) || m == WM_CLOSE || m == WM_DESTROY)
+    yougame::parity::signals.emit(g_overlay_key.cancel());
+  if ((m == WM_KEYDOWN || m == WM_KEYUP) && w == VK_TAB) {
+    const auto event = g_overlay_key.tab(yougame::stdio_bridge(), m == WM_KEYDOWN,
+        (GetKeyState(VK_SHIFT) & 0x8000) != 0, (l & (1LL << 30)) != 0);
+    yougame::parity::signals.emit(event.line);
+    if (event.swallowed) {
+      std::lock_guard<std::mutex> lock(g_keys_mutex); g_keys[VK_TAB] = false; return 0;
+    }
+  }
   // Reserve Tab before ImGui or the game's keyboard bindings see it. The edge reaches the practice
   // UI whether a text field is active or the overlay is closed.
   if (m == WM_KEYDOWN && w == VK_TAB) {
@@ -104,13 +196,32 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_CLOSE: g_closed = true; request_user_exit(); return 0;
     case WM_APP + 7:   // kCursorRefresh, see window_input_capture
-      if (GetForegroundWindow() == h) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
+      if (window_focused(h)) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
       return 0;
+    // The player box (yougame_link.h set_box_handler): where the page's box is, shown or covered, focus.
+    case kBoxRect: case kBoxView:
+      apply_embed_geometry(h, w, l, m == kBoxView);
+      return 0;
+    case kBoxShow:
+      yg_embed_view_show(&g_embed_view, w != 0);
+      ShowWindow(h, (g_embed_view.has_view ? yg_embed_view_visible(&g_embed_view) : w != 0) ? SW_SHOWNA : SW_HIDE);
+      return 0;
+    case kBoxFocus:
+      if (w) SetFocus(h);
+      else if (GetFocus() == h) SetFocus(GetParent(h));
+      return 0;
+    // A click into the game in the player box takes the keyboard: a child window does not get the
+    // focus by itself.
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
+      if (yougame::embedded() && GetFocus() != h) SetFocus(h);
+      break;
+    case WM_SETFOCUS: g_has_focus = true; break;
     case WM_INPUT: raw_input((HRAWINPUT)l); return 0;
     case WM_INPUT_DEVICE_CHANGE: if (w == GIDC_REMOVAL) input_device_removed((HANDLE)l); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_SYSKEYDOWN:
-      if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
+      // Alt+Enter, first press only. In the player box the page owns full screen (it grows the box).
+      if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { if (!yougame::embedded()) g_fullscreen_toggle.store(true); return 0; }
       break;
     case WM_SYSCHAR: if (w == VK_RETURN) return 0; break;   // no beep for Alt+Enter
     // Alt pressed and released alone opens the window menu in keyboard mode, and Windows then runs
@@ -121,21 +232,34 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       // (bit 30 is set on auto-repeats), rather than from ImGui's key state: the panel only runs on
       // frames that are drawn, so presses made during a load queued up and were replayed afterwards,
       // and ImGui's repeat turned a held key into the panel flickering open and shut.
-      if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
-      if (w == VK_F11 && !(l & (1 << 30))) g_legacy_settings_toggle.store(true);
+      //
+      // Under the YouGame app, Esc belongs to the page (it leaves full screen in every game), which
+      // cannot see keys while this window has the keyboard: it is relayed, and F1 does what Esc did
+      // here (opens the menu, goes back a page, closes it). Esc during a rebind only cancels it.
+      if (yougame::stdio_bridge()) {
+        if (w == VK_ESCAPE && !(l & (1 << 30)) && !g_capturing.load()) yougame::relay_key("escape");
+        if (w == VK_F11 && !(l & (1 << 30))) g_legacy_settings_toggle.store(true);
+        if (w == VK_F1 && !(l & (1 << 30))) g_escape_press.store(true);
+      } else {
+        if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
+        if (w == VK_F11 && !(l & (1 << 30))) g_legacy_settings_toggle.store(true);
+        if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
+      }
       if (!(l & (1 << 30))) {   // F6 looked wrong, F7 input wrong, F8 plain, F9 sounded wrong
         if (w == VK_F8) g_trace_mark.store(1);
         else if (w == VK_F6) g_trace_mark.store(2);
         else if (w == VK_F7) g_trace_mark.store(3);
         else if (w == VK_F9) g_trace_mark.store(4);
       }
-      if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
       std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0;
     }
     case WM_KEYUP: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = false; return 0; }
     case WM_SIZE:
       if (w == SIZE_MINIMIZED) host::log("window: minimized");
       if (w != SIZE_MINIMIZED) {
+        // SetWindowRgn/show may send WM_SIZE with unchanged dimensions. Once a
+        // view is known, clip-only updates must never reach the resize callback.
+        if (g_embed_view.has_view && g_client_w == LOWORD(l) && g_client_h == HIWORD(l)) return 0;
         g_client_w = LOWORD(l); g_client_h = HIWORD(l);
         if (g_on_resize && g_client_w > 0 && g_client_h > 0) g_on_resize(g_client_w, g_client_h);
       }
@@ -151,7 +275,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
       }
       break;
-    case WM_KILLFOCUS: { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memset(g_keys, 0, sizeof g_keys); return 0; }
+    case WM_KILLFOCUS: { g_has_focus = false; std::lock_guard<std::mutex> lock(g_keys_mutex); std::memset(g_keys, 0, sizeof g_keys); return 0; }
     // For stutter reports: switching away, a minimized window and a desktop mode change all change
     // how Windows presents the game, so the log marks when each happened.
     case WM_ACTIVATEAPP:
@@ -164,6 +288,9 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   }
   return DefWindowProcW(h, m, w, l);
 }
+#else
+// The SDL window feeds its focus events to the Linux compatibility layer.
+bool window_focused(HWND) { return linux_compat::window_focused(); }
 #endif
 }  // namespace
 
@@ -193,14 +320,62 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   rid[1].usUsagePage = 0x01; rid[1].usUsage = 0x04; rid[1].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
   RECT r{0, 0, w, h};
   AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-  g_hwnd = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+  // The YouGame player box: the app makes this window a child of its own (the sandbox launcher does
+  // it from outside, since a sandboxed process may not; yougame_link.h). It finds the window by class
+  // and caption, so the caption stays fixed, and the window stays hidden until it is adopted.
+  const bool boxed = yougame::embedded();
+  // Adopted = a real parent (not the desktop) and WS_CHILD: the launcher sets WS_CHILD before SetParent,
+  // and Windows can leave the window on the desktop, so any non-null parent is not proof.
+  const auto boxAdopted = [] {
+    const HWND parent = GetAncestor(g_hwnd, GA_PARENT);
+    return parent && parent != GetDesktopWindow() && (GetWindowLongPtrW(g_hwnd, GWL_STYLE) & WS_CHILD);
+  };
+  g_hwnd = CreateWindowExW(0, wc.lpszClassName, boxed ? kBoxTitle : title, boxed ? WS_POPUP : WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   if (!g_hwnd) die("cannot create native window");
+  if (boxed) {
+    HWND window = g_hwnd;
+    RECT client{};
+    GetClientRect(window, &client);
+    g_embed_view = yg_embed_view_init(client.right, client.bottom, 1);
+    yougame::set_box_handler([window](const std::string& line) {
+      int x, y, bw, bh;
+      if (std::sscanf(line.c_str(), "rect %d %d %d %d", &x, &y, &bw, &bh) == 4 && x >= 0 && y >= 0 && bw > 0 && bh > 0)
+        PostMessageW(window, kBoxRect, ((WPARAM)(x & 0xFFFF) << 16) | (WPARAM)(y & 0xFFFF), ((LPARAM)(bw & 0xFFFF) << 16) | (LPARAM)(bh & 0xFFFF));
+      else if (std::sscanf(line.c_str(), "view %d %d %d %d", &x, &y, &bw, &bh) == 4 && x >= 0 && y >= 0 && bw >= 0 && bh >= 0)
+        PostMessageW(window, kBoxView, ((WPARAM)(x & 0xFFFF) << 16) | (WPARAM)(y & 0xFFFF), ((LPARAM)(bw & 0xFFFF) << 16) | (LPARAM)(bh & 0xFFFF));
+      else if (line == "hide" || line == "show") PostMessageW(window, kBoxShow, line == "show", 0);
+      else if (line == "focus" || line == "blur") PostMessageW(window, kBoxFocus, line == "focus", 0);
+      else if (line == "quit") request_exit(0);
+      else if (line.rfind("volume ", 0) == 0) {
+        // The page's volume control: a master over the game's own volume, as on Linux (window_sdl.inl).
+        // One log line per change, so a page that sends volume can be told from a game that ignores it.
+        static std::atomic<int> last{-1};
+        const int volume = yg_embed_volume(line.c_str());
+        if (volume < 0) log("embed: ignored a volume command");
+        else {
+          if (last.exchange(volume) != volume) log("embed: got volume %d", volume);
+          audio_set_page_volume(volume);
+        }
+      }
+    });
+    // Wait for the app to adopt the window, answering messages meanwhile (the launcher's SetParent
+    // sends some), then show it where the page's box is.
+    const ULONGLONG until = GetTickCount64() + 30000;
+    while (!boxAdopted() && GetTickCount64() < until) {
+      MSG msg;
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+      Sleep(5);
+    }
+    if (!boxAdopted()) log("window: the YouGame app did not take the window into its player box; showing it on its own");
+    else log("window: in the YouGame player box");
+  }
   rid[0].hwndTarget = g_hwnd; rid[1].hwndTarget = g_hwnd;
   RegisterRawInputDevices(rid, 2, sizeof rid[0]);
   g_closed = false;
-  g_client_w = w; g_client_h = h;
-  if (visible) ShowWindow(g_hwnd, SW_SHOW);
+  if (!boxed || !g_embed_view.has_view) { g_client_w = w; g_client_h = h; }
+  if (visible && (!boxed || !g_embed_view.has_view || yg_embed_view_visible(&g_embed_view)))
+    ShowWindow(g_hwnd, boxed && boxAdopted() ? SW_SHOWNA : SW_SHOW);
   return g_hwnd;
 }
 
@@ -212,6 +387,7 @@ void window_set_fullscreen(bool enabled) {
   static WINDOWPLACEMENT saved{sizeof(WINDOWPLACEMENT)};
   bool& fullscreen = g_fullscreen;
   if (!g_hwnd || enabled == fullscreen) return;
+  if (yougame::embedded()) return;   // the player box is the page's to size
   if (enabled) {
     GetWindowPlacement(g_hwnd, &saved);
     MONITORINFO info{sizeof(info)};
@@ -335,6 +511,10 @@ bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_
 bool window_ui_pads(PadState pads[4]) {
   std::lock_guard<std::mutex> lock(g_ui_pad_mutex);
   for (int i = 0; i < 4; ++i) pads[i] = g_ui_pads[i];
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (g_ui_agent_step >= 0 && !yougame::agent_test::pad_back.consume_ui(g_ui_agent_step))
+    pads[0] = {};   // already consumed: release while waiting for input_poll to publish the next step
+#endif
   return g_ui_has_pad;
 }
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
@@ -349,8 +529,12 @@ bool window_take_legacy_settings_toggle() { return g_legacy_settings_toggle.exch
 int window_take_settings_controller_port() { return g_settings_controller_port.exchange(-1); }
 bool window_take_practice_toggle() { return g_practice_toggle.exchange(false); }
 bool window_take_escape() { return g_escape_press.exchange(false); }
+const char* window_menu_key() { return yougame::stdio_bridge() ? yougame::parity::kMenuHint : "Esc"; }
 
-void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
+void window_destroy() {
+  yougame::parity::signals.emit(g_overlay_key.cancel());
+  if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; }
+}
 
 void window_pump() {
   if (uint64_t want = g_pending_client_size.exchange(0))
@@ -360,6 +544,12 @@ void window_pump() {
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (!g_closed) yougame::agent_test::key_script.pump(yougame::stdio_bridge(),
+      yougame::agent_test::KeyScript::Clock::now(), yougame::parity::signals, g_overlay_key,
+      [] { yougame::relay_key("escape"); },
+      [](const std::string& line) { log("%s", line.c_str()); });
+#endif
   // The rest rule: the pointer has been still over the game's picture for a while.
   if (g_hwnd && !g_pointer_rested && g_pointer_moved && GetTickCount64() - g_pointer_moved >= kPointerRestMs) {
     POINT at;
@@ -372,7 +562,8 @@ void window_pump() {
   }
 }
 
-void window_set_title(const wchar_t* title) { if (g_hwnd) SetWindowTextW(g_hwnd, title); }
+// In the player box the caption is how the app finds the window: it never changes there.
+void window_set_title(const wchar_t* title) { if (g_hwnd && !yougame::embedded()) SetWindowTextW(g_hwnd, title); }
 
 // Compiling the pipeline cache on the first launch of a new version keeps the first frame back for
 // 20 seconds or more on some machines, with nothing in the game window, which looks like a hang.
@@ -465,6 +656,12 @@ bool window_closed() { return g_closed; }
 void window_client_size(int* w, int* h) { *w = g_client_w; *h = g_client_h; }
 #else
 #include "../../linux/window_sdl.inl"
+#ifdef __APPLE__
+const char* window_menu_key() { return yougame::stdio_bridge() ? yougame::parity::kMenuHint : "Esc"; }
+#else
+// The in-game menu's key, as the Windows window says it: F1 under YouGame, Esc standalone.
+const char* window_menu_key() { return yougame::stdio_bridge() ? "F1" : "Esc"; }
+#endif
 #endif
 
 // GameCube button bits (PADStatus.button)
@@ -497,7 +694,6 @@ std::mutex g_last_pads_mutex;
 PadState g_last_pads[4]{};
 
 namespace {
-std::atomic<bool> g_capturing{false};
 bool g_capture_key_baseline[256]{};
 unsigned short g_capture_pad_baseline[4]{};
 PadState g_capture_gc_baseline[4]{};
@@ -914,8 +1110,17 @@ static void g_pad_frame_reset();   // defined with g_pad_frame below (outside th
 void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); g_pad_frame_reset(); }
 
 bool input_load_script(const char* path) {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  const bool secured = yougame::agent_paths::same(path, yougame::agent_paths::policy.script);
+  std::string snapshot;
+  size_t offset = 0;
+  if (secured && !yougame::agent_paths::script_bytes(path, snapshot)) return false;
+  FILE* f = secured ? nullptr : fopen(path, "r");
+  if (!secured && !f) return false;
+#else
   FILE* f = fopen(path, "r");
   if (!f) return false;
+#endif
   g_script.clear();
   g_script_ports = 1;
   g_script_relative_section = false;
@@ -930,7 +1135,13 @@ bool input_load_script(const char* path) {
   g_match_rt_start = g_match_rt_last = 0;
   g_script_release_after = 0; g_script_release_at = 0;
   char line[256];
-  while (fgets(line, sizeof line, f)) {
+  auto next_line = [&] {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+    if (secured) return yougame::agent_paths::line(snapshot, offset, line, sizeof line);
+#endif
+    return fgets(line, sizeof line, f) != nullptr;
+  };
+  while (next_line()) {
     ScriptEntry e{};
     char* p = line;
     if (*p == '#' || *p == '\n' || *p == '\r') continue;
@@ -987,7 +1198,7 @@ bool input_load_script(const char* path) {
     }
     g_script.push_back(e);
   }
-  fclose(f);
+  if (f) fclose(f);
   return !g_script.empty();
 }
 
@@ -1001,13 +1212,18 @@ bool input_load_script(const char* path) {
 // MELEE_TEST_XINPUT_EVERY_READ=1 (tests) asks on the reading thread on every read, as before.
 static std::atomic<bool> g_xinput_present[4];
 static DWORD xinput_ask(int idx, XINPUT_STATE* state) {
-  static const int slow_ms = [] { const char* v = std::getenv("MELEE_TEST_XINPUT_SLOW_MS"); return v ? std::atoi(v) : 0; }();
-  const DWORD result = XInputGetState((DWORD)idx, state);
-  if (result != ERROR_SUCCESS && slow_ms > 0)
+  static const int slow_ms = [] { const char* v = host::test_env::getenv("MELEE_TEST_XINPUT_SLOW_MS"); return v ? std::atoi(v) : 0; }();
+  const DWORD result = yougame::relay_pads::poll(idx, state, [&] {
+    return XInputGetState((DWORD)idx, state) == ERROR_SUCCESS;
+  }) ? ERROR_SUCCESS : ERROR_DEVICE_NOT_CONNECTED;
+  if (result != ERROR_SUCCESS && slow_ms > 0) {
+    perf::Scope wait_cost(perf::Stage::Wait);
     for (const double until = now_seconds() + slow_ms / 1000.0; now_seconds() < until;) YieldProcessor();
+  }
   return result;
 }
 static void xinput_probe_start() {
+  if (yougame::relay_pads::active()) return;
   if (controller_relay::active()) return;
   static std::once_flag once;
   std::call_once(once, [] {
@@ -1015,6 +1231,7 @@ static void xinput_probe_start() {
       bool reported = false;
       for (;;) {
         for (int idx = 0; idx < 4; ++idx) {
+          if (yougame::relay_pads::active()) return;
           if (controller_relay::active()) return;
           if (g_xinput_present[idx].load(std::memory_order_relaxed)) continue;
           XINPUT_STATE state{};
@@ -1033,17 +1250,18 @@ static void xinput_probe_start() {
   });
 }
 static bool xinput_state(int idx, XINPUT_STATE* state) {
+  if (yougame::relay_pads::active()) return yougame::relay_pads::read(idx, state);
   if (controller_relay::active()) {
     *state={}; controller_relay::Sample s;
     if (!controller_relay::sample(CaptureDevice::XInputPad,idx,s)) return false;
     auto& g=state->Gamepad; g.wButtons=(uint16_t)s.buttons; g.bLeftTrigger=s.left; g.bRightTrigger=s.right;
     g.sThumbLX=s.axes[0]; g.sThumbLY=s.axes[1]; g.sThumbRX=s.axes[2]; g.sThumbRY=s.axes[3]; return true;
   }
-  static const bool every_read = [] { const char* v = std::getenv("MELEE_TEST_XINPUT_EVERY_READ"); return v && *v == '1'; }();
+  static const bool every_read = [] { const char* v = host::test_env::getenv("MELEE_TEST_XINPUT_EVERY_READ"); return v && *v == '1'; }();
   if (every_read) return xinput_ask(idx, state) == ERROR_SUCCESS;
   xinput_probe_start();
   if (!g_xinput_present[idx].load(std::memory_order_relaxed)) return false;
-  if (XInputGetState((DWORD)idx, state) == ERROR_SUCCESS) return true;
+  if (xinput_ask(idx, state) == ERROR_SUCCESS) return true;
   g_xinput_present[idx].store(false, std::memory_order_relaxed);   // unplugged: back to the helper thread
   return false;
 }
@@ -1060,11 +1278,22 @@ static std::atomic<int32_t> g_pad_frame{0};
 void input_note_pad_frame(int32_t frame) { g_pad_frame.store(frame, std::memory_order_relaxed); }
 static void g_pad_frame_reset() { g_pad_frame.store(0, std::memory_order_relaxed); }
 static bool script_pad_frames() {
-  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_SCRIPT_PAD_FRAMES"); return v && *v == '1'; }();
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_TEST_SCRIPT_PAD_FRAMES"); return v && *v == '1'; }();
   return on;
 }
 
+#ifdef YOUGAME_AGENT_TEST_HOOK
+static bool agent_input_allowed(yougame::agent_test::InputKey key) {
+  return yougame::agent_test::input_policy.allowed(
+      yougame::agent_test::live_input_state(slippi::online::session_mode()), key,
+      [](const char* line) { log("%s", line); });
+}
+#endif
+
 static void script_pads(uint32_t frame, bool update_state, PadState out[4]) {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (!agent_input_allowed(yougame::agent_test::InputKey::Script)) return;
+#endif
   // @scene takes over the same "relative section" that @match uses, but starts counting from
   // the retrace where the requested mode/scene was first observed instead of an online match
   // reaching frame 1. Checked every poll (once per retrace) so the wait is not sensitive to
@@ -1139,7 +1368,7 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
   debug.gc_mask = gc_mask;
 
   // Whether the game window has focus: without it, input follows the Background input option.
-  const bool focused = g_hwnd && GetForegroundWindow() == g_hwnd;
+  const bool focused = g_hwnd && window_focused(g_hwnd);
   PadState kb{}; kb.err = 0;
   uint32_t keyboard_actions = 0;
   {
@@ -1155,7 +1384,9 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
     // presentation thread between its frames, up to 2 ms after the press, and a press made in that
     // gap missed the tick. The message rules still hold: Tab stays reserved for matchmaking, and
     // with Alt held the messages decide, since those keys arrive as system keys and never played.
-    const bool live = focused && !(GetAsyncKeyState(VK_MENU) & 0x8000);
+    // In the player box the keys come from the window's messages only: the foreground window is
+    // the app's, and a sandboxed program cannot read the keyboard while another program is in front.
+    const bool live = focused && !yougame::embedded() && !(GetAsyncKeyState(VK_MENU) & 0x8000);
     auto key = [&](int vk) {
       vk &= 0xFF;
       if (!focused) return false;
@@ -1308,16 +1539,64 @@ static void route_takeover(PadState out[4]) {
 }
 
 void input_poll(PadState out[4]) {
+  perf::Scope work_cost(perf::Stage::Input);
   struct InputCost { double start = now_seconds(); ~InputCost() { sim_cost_add(SIM_INPUT, now_seconds() - start); } } input_cost;
   struct UiSnapshot {
     PadState* pads; bool gamecube = false;
     ~UiSnapshot() {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+      // Override the routed port at the common read boundary, before either the chord detector
+      // or ImGui sees it, and before UI capture suppresses gameplay. Covers the script early return
+      // too. Physical polling/routing stays intact, so the next read after completion restores it.
+      auto scripted = yougame::agent_test::pad_back.sample_for_ui(yougame::agent_test::PadBack::Clock::now());
+      if (scripted.active && !agent_input_allowed(yougame::agent_test::InputKey::PadBack))
+        scripted = {};
+      static int reported_step = -1;
+      if (scripted.active) {
+        pads[0] = {};
+        pads[0].button = scripted.pad.button;
+        pads[0].err = scripted.pad.err;
+        gamecube = true;
+        if (scripted.step != reported_step) {
+          reported_step = scripted.step;
+          log("[yougame] agent test: pad %s", yougame::agent_test::pad_back_ui_steps[scripted.step].name);
+        }
+        std::lock_guard<std::mutex> lock(g_last_pads_mutex);
+        g_last_pads[0] = pads[0];
+      } else if (reported_step >= 0) {
+        log("[yougame] agent test: pad done");
+        reported_step = -2;
+      }
+      // Both hosts supply a live sample only during their game PADRead. Fight input wins
+      // over padBack on the local port, so the UI script cannot send a settings chord into combat.
+      if (yougame::agent_test::input_owner(input_script_active(),
+              yougame::agent_test::current_fight_sample.port >= 0 &&
+              yougame::agent_test::current_fight_sample.port < 4) == yougame::agent_test::InputOwner::Fight &&
+          yougame::agent_test::apply_fight(pads, yougame::agent_test::current_fight_sample,
+              yougame::agent_test::live_input_state(slippi::online::session_mode()),
+              [](const char* line) { log("%s", line); })) {
+        gamecube = true;
+        std::lock_guard<std::mutex> lock(g_last_pads_mutex);
+        g_last_pads[yougame::agent_test::current_fight_sample.port] =
+            pads[yougame::agent_test::current_fight_sample.port];
+      }
+#endif
       std::lock_guard<std::mutex> lock(g_ui_pad_mutex);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+      g_ui_agent_step = scripted.step;
+#endif
+      const uint64_t menu_now = static_cast<uint64_t>(now_seconds() * 1000.0);
+      yougame::parity::signals.emit(g_overlay_pad.tick(menu_now));
       bool toggle_settings = false;
       for (int i = 0; i < 4; ++i) {
+        const uint16_t raw_buttons = pads[i].button;
         const bool opened_here =
             settings_shortcut::poll_z_start(pads[i].err == 0, pads[i].button,
                                             g_ui_settings_chord_held[i]);
+        uint16_t menu_buttons = raw_buttons;
+        yougame::parity::signals.emit(g_overlay_pad.poll(yougame::stdio_bridge(), i,
+            pads[i].err == 0, menu_buttons, menu_now, g_ui_settings_chord_held[i]));
+        if (!(menu_buttons & 0x1000)) pads[i].button &= static_cast<uint16_t>(~0x1000);
         toggle_settings |= opened_here;
         if (opened_here) g_settings_controller_port.store(i, std::memory_order_release);
         if (settings_shortcut::poll_practice(pads[i].err == 0, pads[i].button, g_ui_practice_chord_held[i]))
@@ -1351,7 +1630,7 @@ void input_poll(PadState out[4]) {
     if (!g_script_release_at && match_frame > 1) g_script_release_at = retrace_count() + g_script_release_after;
     if (g_script_release_at && retrace_count() >= g_script_release_at) { g_script.clear(); log("script: released, controllers live"); }
   }
-  if (!g_script.empty()) {
+  if (input_script_active()) {
     script_pads(retrace_count(), true, out);
     route_takeover(out);
     // Scripted runs took this return before the overlay's copy was made below, so the controller
@@ -1371,7 +1650,7 @@ void input_poll(PadState out[4]) {
   // MELEE_TEST_PAD_TRACE=<file> (tests only, hidden runs): one line each time a port's input changes,
   // as the game will read it, so a test that drives a controller can check every press arrived.
   if (options.no_gc_adapter) {
-    static FILE* trace = [] { const char* p = std::getenv("MELEE_TEST_PAD_TRACE"); return p && *p ? std::fopen(p, "w") : nullptr; }();
+    static FILE* trace = [] { const char* p = host::test_env::getenv("MELEE_TEST_PAD_TRACE"); return p && *p ? std::fopen(p, "w") : nullptr; }();
     static PadState last[4] = {};
     if (trace)
       for (int port = 0; port < 4; ++port) {
@@ -1393,11 +1672,16 @@ void input_read_devices(PadState out[4]) {
   read_devices(out, debug, false);
 }
 
-bool input_script_active() { return !g_script.empty(); }
+bool input_script_active() {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (!g_script.empty() && !agent_input_allowed(yougame::agent_test::InputKey::Script)) return false;
+#endif
+  return !g_script.empty();
+}
 
 void input_script_peek(uint32_t retrace, PadState out[4]) {
   for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
-  if (!g_script.empty()) script_pads(retrace, false, out);
+  if (input_script_active()) script_pads(retrace, false, out);
 }
 
 std::atomic<bool> g_rumble_enabled{true};
@@ -1427,7 +1711,7 @@ void xinput_rumble_writer() {
     XINPUT_VIBRATION v{};
     v.wLeftMotorSpeed = v.wRightMotorSpeed = on ? 65535 : 0;
     const auto began = std::chrono::steady_clock::now();
-    XInputSetState((DWORD)index, &v);
+    yougame::relay_pads::rumble([&] { XInputSetState((DWORD)index, &v); });
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
     // Said once, with the figure: it tells from a player's log whether their pad is a slow one.
     static bool told = false;
@@ -1438,6 +1722,7 @@ void xinput_rumble_writer() {
 }
 void xinput_rumble(int index, bool on) {
   if (index < 0 || index > 3) return;
+  if (yougame::relay_pads::active()) { yougame::relay_pads::rumble([] {}); return; }
   std::lock_guard<std::mutex> lock(g_xrumble_mutex);
   if (g_xrumble_wanted[index] == on) return;
   g_xrumble_wanted[index] = on;
@@ -1449,6 +1734,7 @@ void xinput_rumble(int index, bool on) {
 void xinput_rumble_settle() {
   std::unique_lock<std::mutex> lock(g_xrumble_mutex);
   if (!g_xrumble_started) return;
+  perf::Scope wait_cost(perf::Stage::Wait);
   g_xrumble_done.wait_for(lock, std::chrono::milliseconds(200), [] {
     for (int i = 0; i < 4; ++i) if (g_xrumble_wanted[i] != g_xrumble_applied[i]) return false;
     return true;

@@ -7,6 +7,7 @@
 // the word after the entry site, is inside the redirected function, so interpretation resumes there;
 // Slippi's recording cave later in the function captures the inputs the block chose, so a replay of
 // such a match plays back exactly with the option off.
+#include "test_env.h"
 #include "hackpack_ai.h"
 #include "gameplay_policy.h"
 #include <cstdlib>
@@ -16,6 +17,8 @@
 #include "exi_slippi.h"
 #include "host.h"
 #include "mod_scan.h"
+#include "yougame_link.h"
+#include "yougame_mode_policy.h"
 #include "slippi_online.h"
 #include "slippi_playback.h"
 
@@ -36,13 +39,22 @@ bool g_hooked = false;
 uint32_t g_gct_lo = 0, g_gct_hi = 0;   // Slippi's code table, followed in RAM while procInput runs from RAM
 
 bool forced_by_env() {
-  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_20XX_AI"); return v && *v && *v != '0'; }();
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_TEST_20XX_AI"); return v && *v && *v != '0'; }();
   return on;
 }
 
 // The Mods folder result, then (tests only) MELEE_TEST_20XX_AI_DISC=<disc image> for runs that skip the scan.
 void look_for_disc() {
   namespace mods = source_port::mods;
+  if (!yougame::mode_policy::mod_sources(yougame::active()).folders) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_blob.clear();
+    g_status = {};
+    g_status.looked = true;
+    g_status.message = "Game mods come from the YouGame listing.";
+    g_looked_after_scan = true;
+    return;
+  }
   Status s;
   s.looked = true;
   std::vector<uint8_t> blob;
@@ -51,7 +63,7 @@ void look_for_disc() {
   for (const auto& d : view.result.items)
     if (d.kind == mods::Kind::HackPack) candidates.push_back(d.path);
   if (candidates.empty())
-    if (const char* test_disc = std::getenv("MELEE_TEST_20XX_AI_DISC"); test_disc && *test_disc)
+    if (const char* test_disc = host::test_env::getenv("MELEE_TEST_20XX_AI_DISC"); test_disc && *test_disc)
       candidates.push_back(std::filesystem::u8path(test_disc));
   for (const auto& path : candidates) {
     s.disc_found = true;
@@ -191,7 +203,7 @@ ppc::Fn g_scene_entry[3] = {};
 // Tests only (MELEE_TEST_20XX_AI_CPUS=1, hidden runs): every human in the match about to start becomes
 // a level 9 CPU, so a script that picks two characters gives a CPU match.
 void test_make_cpus(uint32_t start_melee) {
-  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_20XX_AI_CPUS"); return v && *v == '1'; }();
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_TEST_20XX_AI_CPUS"); return v && *v == '1'; }();
   if (!on || !try_ptr(start_melee, 0x60 + 4 * 0x24)) return;
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t player = start_melee + 0x60 + i * 0x24;   // StartMeleeData.players[i]
@@ -209,7 +221,7 @@ template <int N> void scene_entry_hooked(ppc::Context& c, uint8_t* m) {
 }  // namespace
 
 void boot() {
-  if (gameplay::vanilla_only()) return;
+  if (gameplay::vanilla_only() || !yougame::mode_policy::mod_sources(yougame::active()).folders) return;
   look_for_disc();
   if (g_hooked) return;
   const ppc::Fn hooks[3] = {scene_entry_hooked<0>, scene_entry_hooked<1>, scene_entry_hooked<2>};

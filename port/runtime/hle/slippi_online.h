@@ -21,10 +21,13 @@ struct Config {
   // Up to three connect codes never to play in Unranked: a match with one is turned down and the
   // search goes on. Not in Ranked, Direct, Teams or Party.
   std::string blocked_codes[3];
+  std::string ranked_rules_path; // optional package rules; parsed once after the startup build is set
 };
 Config& config();
 
 void init();
+void load_ranked_rules();
+std::string ranked_rules_digest(int mode); // only a verified YouGame remix Ranked session
 void shutdown();
 // Each engine sets this before its game starts; Static mod discs use OtherMod.
 void set_native_gameplay_profile(NativeGameplayProfile profile);
@@ -40,6 +43,7 @@ struct LocalBuild {
   std::string name;          // shown in messages, e.g. "Akaneia 1.0.1"
   bool allow_unverified = false;
   bool extended_content = false;   // only Static mod boot runs the disc's added fighter/stage code
+  bool static_engine = false;      // engine identity is independent of the selected content view
 };
 void set_local_build(const LocalBuild& build);
 // Called with true when a Direct opponent sent no build while this side shows a mod (the opponent is
@@ -75,7 +79,7 @@ int ping_ms();
 // Every other player's ping in a Slippi match (Teams: up to three), empty when there is none.
 std::vector<int> remote_pings_ms();
 // The online mode of the session that is running or being set up, as a Matchmaking::OnlinePlayMode
-// value (UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4; 0 is Slippi's Ranked, never used). -1 when there is no online session at
+// value (RANKED 0, YouGame mode only; UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4). -1 when there is no online session at
 // all, which is what "offline" means to the rest of the port. Covers matchmaking, the online
 // character select screen and the match itself, so a feature can be gated on the mode before the
 // match starts rather than only once it is running.
@@ -98,7 +102,7 @@ struct NativeMatchPoll {
   std::string opponent;
 };
 bool native_start_match(int mode, const std::string& connect_code, uint8_t character,
-                        uint8_t color, std::string* error);
+                        uint8_t color, std::string* error, const std::string& friend_room = {});
 NativeMatchPoll native_poll_match();
 void native_cleanup_match();
 // The character (and costume) the local player has picked on the online character select, false
@@ -107,5 +111,18 @@ bool local_css_selection(uint8_t* character, uint8_t* color);
 // The Direct code to keep searching for while practicing: the running Direct search's, else the
 // most recent one used. Empty when there is none.
 std::string direct_code_for_practice();
+// The --online-test ranked harness: locks in the same character and colour again (a random legal
+// stage) for the set's next game, when a ranked pair is connected and not locked in. True if it did.
+bool native_ranked_next_game(uint8_t character, uint8_t color);
+
+// The running (or last) online game as negotiated: stage id, the two players' characters, its rng
+// offset and the last online frame. For a YouGame ranked game report's id and detail; -1 unknown.
+struct GameFacts {
+  int stage = -1, frames = -1;
+  int characters[2] = {-1, -1};
+  int teams[4] = {-1, -1, -1, -1}; // actual match block teams, -1 outside Teams
+  int64_t rng = -1;   // the match's rng offset: the same on both players' games
+};
+GameFacts last_game_facts();
 
 }  // namespace slippi::online

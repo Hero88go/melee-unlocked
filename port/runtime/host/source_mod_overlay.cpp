@@ -52,6 +52,7 @@ bool ModOverlay::load(const fs::path& root, std::string& error) {
 
 bool ModOverlay::add_directory(const fs::path& root, const std::string& profile, std::string& error) {
   error.clear();
+  native_fighters_refused_ = false;
   try {
     if (!fs::is_directory(root)) { error = "mod directory does not exist: " + root.u8string(); return false; }
     std::vector<std::pair<std::string, fs::path>> paths;
@@ -78,7 +79,7 @@ bool ModOverlay::add_directory(const fs::path& root, const std::string& profile,
     std::sort(paths.begin(), paths.end());
     std::set<std::string> disc_paths;
     for (const auto& path : paths) disc_paths.insert(path.first);
-    if (akaneia_disabled(disc_paths, error)) return false;
+    if (akaneia_disabled(disc_paths, error)) { native_fighters_refused_ = true; return false; }
     std::vector<File> loaded;
     for (const auto& path : paths) {
       const auto size = fs::file_size(path.second);
@@ -100,6 +101,7 @@ bool ModOverlay::add_directory(const fs::path& root, const std::string& profile,
 bool ModOverlay::add_iso(const fs::path& iso, const std::string& profile,
                          const DiscLookup& lookup, const DiscRead& base_read, std::string& error) {
   error.clear();
+  native_fighters_refused_ = false;
   try {
     const uint64_t image_size = fs::file_size(iso);
     if (image_size < 0x440 || image_size > 16ull * 1024 * 1024 * 1024) {
@@ -217,7 +219,7 @@ bool ModOverlay::add_iso(const fs::path& iso, const std::string& profile,
         if (run_start >= 0) report.dol_runs.push_back({uint32_t(run_start), uint32_t(last_diff + 1 - run_start)});
       }
     }
-    if (akaneia_disabled(names, error)) return false;
+    if (akaneia_disabled(names, error)) { native_fighters_refused_ = true; return false; }
     if (!add_files(std::move(changed), error)) return false;
     reports_.push_back(std::move(report));
     return true;

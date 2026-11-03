@@ -24,7 +24,7 @@ void set_mod_iso(const char* path);
 // writes create a private copy under --card-dir. May be repeated.
 void set_mod_gci(const char* path);
 // Mods/Profiles/<name>.ini (or a path to an .ini): the profile's layers load first, in order.
-bool set_mod_profile(const char* name);
+bool set_mod_profile(const char* name, bool explicit_layer = true);
 // Content identity of the enabled mod layers; empty when none are enabled.
 const std::string& mod_fingerprint();
 // True once any --mod-profile/--mod-iso/--mod-dir/--mod-gci was given.
@@ -34,7 +34,9 @@ bool has_mod_layers();
 // game as a new .slp to --replay-dir. Returns false when the file cannot be read.
 bool set_replay(const char* path);
 // --online-test mode[:character[:color]]: automated tests only. The game boots straight into an
-// online match (no menus) found through --local-peer. Mode is direct, unranked or teams.
+// online match (no menus) found through --local-peer, or through YouGame when the app (or its dev
+// bridge) launched it. Mode is direct, unranked, ranked or teams. Ranked (YouGame mode only) plays
+// the whole best-of-3 set, locking the same character in for each game, then ends the run.
 // Returns false for a malformed spec.
 bool set_online_test(const char* spec);
 // --slippi-menus on|off (default on): Slippi's online menus in the native game. The host serves the

@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "gx_core.h"
+#include "../host/sim_work.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -39,7 +40,8 @@ class FrameQueue {
 public:
   bool push(Frame frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || has_room(); });   // the renderer drains backlogs; this only trips if it is stuck
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+      changed.wait(lock, [&] { return finished || has_room(); }); }   // the renderer drains backlogs; this only trips if it is stuck
     if (finished) return false;
     frames.push_back(std::move(frame));
     pushes.fetch_add(1, std::memory_order_release);
@@ -54,7 +56,8 @@ public:
   // thread refills them instead of reallocating every frame.
   bool push_and_recycle(Frame& frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || has_room(); });
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+      changed.wait(lock, [&] { return finished || has_room(); }); }
     if (finished) return false;
     // Keep one frame of headroom in every buffer handed back to simulation. An abrupt increase in
     // Stadium geometry should allocate into an empty recycled frame here instead of moving a live

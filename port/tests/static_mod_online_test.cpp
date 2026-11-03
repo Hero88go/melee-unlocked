@@ -32,6 +32,8 @@ int main() {
   const auto one = sha256_file(root / "one.iso"), copy = sha256_file(root / "copy.iso"), changed = sha256_file(root / "changed.iso");
   CHECK(native_mod_fingerprint_valid(one) && native_mod_fingerprint_valid(changed));
   CHECK(one == copy && one != changed);
+  CHECK(native_yougame_unranked_builds_match(true, one, true, copy));
+  CHECK(!native_yougame_unranked_builds_match(true, one, true, changed));
   CHECK(native_direct_builds_match(true, one, true, copy));
   CHECK(!native_direct_builds_match(true, one, true, changed));
   CHECK(!native_direct_builds_match(true, one, false, ""));
@@ -51,6 +53,7 @@ int main() {
   CHECK(!native_direct_selection_supported(false, true, 26, 0x56));
   CHECK(native_direct_selection_supported(false, false, 25, 0x55));
   for (auto profile : {NativeGameplayProfile::Akaneia, NativeGameplayProfile::OtherMod}) {
+    CHECK(native_profile_mode_error(profile, 1, true) == nullptr); // YouGame isolates and verifies mod builds
     CHECK(native_profile_mode_error(profile, 2) == nullptr);
     CHECK(native_profile_mode_error(profile, 3) == nullptr);   // Teams: every player on the same build
     for (int mode : {0, 1, 4}) CHECK(native_profile_mode_error(profile, mode) != nullptr);

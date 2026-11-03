@@ -13,6 +13,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include <windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
@@ -53,6 +56,7 @@
 #include "exi_slippi.h"
 #endif
 #include "gx_shader.h"
+#include "yougame_parity.h"
 #include "crt_shader.h"
 #include "user_shader.h"
 #include "gx_texture.h"
@@ -61,6 +65,7 @@
 #include "video_background.h"
 #include "video_background_learning.h"
 #include "host.h"
+#include "sim_work.h"
 #include "window.h"
 #include "gecko_data.h"
 #ifdef GX_PC_SETTINGS
@@ -1320,6 +1325,7 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
       Stopwatch wait_sw;
       {
         std::unique_lock<std::mutex> lk(shader_mutex_);
+        host::perf::Scope wait_cost(host::perf::Stage::Wait);
         shader_done_cv_.wait_for(lk, std::chrono::microseconds(exact ? 2000 : std::min(shader_wait_budget_us_, 2000)), [&] { return !shader_done_.empty(); });
       }
       shader_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
@@ -1914,18 +1920,26 @@ void D3D11Backend::write_capture(const std::string& path, uint64_t sequence) {
     if (pending_captures_.size() >= opts_.capture_burst) flush_captures();
     return;
   }
-  std::ofstream f(path, std::ios::binary);
+  #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::ppm(path, desc.Width, desc.Height, data, m.RowPitch);
+#else
+    std::ofstream f(path, std::ios::binary);
   f << "P6\n" << desc.Width << ' ' << desc.Height << "\n255\n";
   for (UINT y = 0; y < desc.Height; ++y) for (UINT x = 0; x < desc.Width; ++x) f.write((const char*)data + (size_t)y * m.RowPitch + x * 4, 3);
+#endif
   context_->Unmap(capture_staging_.Get(), 0);
   host::log("captured %s (sim frame %llu)", path.c_str(), (unsigned long long)sequence);
 }
 
 void D3D11Backend::flush_captures() {
   for (const PendingCapture& pc : pending_captures_) {
+    #ifdef YOUGAME_AGENT_TEST_HOOK
+    yougame::agent_paths::ppm(pc.path, pc.w, pc.h, pc.data.data(), pc.pitch);
+#else
     std::ofstream f(pc.path, std::ios::binary);
     f << "P6\n" << pc.w << ' ' << pc.h << "\n255\n";
     for (UINT y = 0; y < pc.h; ++y) for (UINT x = 0; x < pc.w; ++x) f.write((const char*)pc.data.data() + (size_t)y * pc.pitch + x * 4, 3);
+#endif
     host::log("captured %s (sim frame %llu)", pc.path.c_str(), (unsigned long long)pc.sequence);
   }
   pending_captures_.clear();
@@ -2371,6 +2385,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // Present it measured the whole frame interval (exactly 5.00 ms at 200 Hz), not GPU work.
     gpu_work_end();
     const double wait_start = Stopwatch::now();
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
     for (;;) {
       double remaining = present_deadline_ - Stopwatch::now();
       if (remaining <= 0) break;
@@ -2380,18 +2395,24 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
         else SwitchToThread();
       } else YieldProcessor();
     }
+    }
     present_wait_ = Stopwatch::now() - wait_start;
     // Sync by the player's choice or the explicit scanline-sync diagnostic. VRR detection
     // controls the cap; it must leave the interval-0/ALLOW_TEARING path available with V-Sync off.
     const bool synced = opts_.vsync || tear_free_;
     const double present_call = Stopwatch::now();
     // While hidden, only test whether the window can be seen again (see gx_d3d12.cpp).
-    const HRESULT present_hr = occluded_ ? swapchain_->Present(0, DXGI_PRESENT_TEST)
-        : swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    if ((present_hr == DXGI_STATUS_OCCLUDED) != occluded_) {
-      occluded_ = present_hr == DXGI_STATUS_OCCLUDED;
+    const HRESULT present_result = [&] { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+        return occluded_ ? swapchain_->Present(0, DXGI_PRESENT_TEST)
+            : swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0); }();
+    if ((present_result == DXGI_STATUS_OCCLUDED) != occluded_) {
+      occluded_ = present_result == DXGI_STATUS_OCCLUDED;
       host::log(occluded_ ? "d3d11: window hidden, presents paused" : "d3d11: window visible, presents resumed");
     }
+    // Ready = the game drew its first real frame, visible or not: the YouGame page hides the window
+    // under its loading cover until ready, and a hidden window's Present returns DXGI_STATUS_OCCLUDED
+    // (a success code). Only read in a YouGame app session.
+    yougame::parity::signals.presented(SUCCEEDED(present_result) && frame.test_fill < 0);
     // A synced Present blocks until the display takes the previous frame: waiting, not drawing.
     // Counted as drawing it inflated the render-time estimate to a whole refresh under synced
     // pacing, and the presentation loop then aimed every frame one refresh too late.
@@ -2454,7 +2475,8 @@ void D3D11Backend::prewarm_pipelines() {
     if (pending && host::now_seconds() >= panel_after)
       host::loading_show(L"Compiling shaders (first launch of this version)", total - pending, total);
     if (!pending) break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
   }
   host::loading_close();
   host::window_set_title(host::window_title_base().c_str());

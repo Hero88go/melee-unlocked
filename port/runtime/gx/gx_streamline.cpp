@@ -1,8 +1,10 @@
 // Streamline / DLSS integration (see gx_streamline.h).
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "gx_streamline.h"
 #include "driver_call_guard.h"
 #include "host.h"
+#include "sim_work.h"
 #define NOMINMAX
 #include <windows.h>
 #include <d3d12.h>
@@ -118,7 +120,7 @@ bool g_have_prev = false;
 
 void log_callback(sl::LogType type, const char* msg) {
   // MELEE_TEST_SL_VERBOSE (tests only): Streamline's verbose log, information lines included.
-  static const bool verbose = std::getenv("MELEE_TEST_SL_VERBOSE") != nullptr;
+  static const bool verbose = host::test_env::getenv("MELEE_TEST_SL_VERBOSE") != nullptr;
   if (type == sl::LogType::eInfo && !verbose) return;
   static std::atomic<uint64_t> count{0};
   uint64_t n = count.fetch_add(1);
@@ -232,7 +234,7 @@ bool init(const std::wstring& exe_dir, bool load_frame_generation) {
   host::log("dlss: loading Streamline features: DLSS%s%s, Reflex, PCL", have_rr_runtime ? ", RR" : "", load_fg ? ", DLSS-G" : "");
   sl::Preferences pref{};
   pref.showConsole = false;
-  pref.logLevel = std::getenv("MELEE_TEST_SL_VERBOSE") ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
+  pref.logLevel = host::test_env::getenv("MELEE_TEST_SL_VERBOSE") ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
   pref.pathsToPlugins = plugin_dirs;
   pref.numPathsToPlugins = 1;
   static std::wstring logs; logs = exe_dir + L"\\streamline-logs"; CreateDirectoryW(logs.c_str(), nullptr);
@@ -502,7 +504,8 @@ bool reflex_sleep(uint32_t frame_index) {
     g_token = nullptr;
     return false;
   }
-  driver_call([&] { return slReflexSleep(*g_token); });
+  { host::perf::Scope wait_cost(host::perf::Stage::Wait);
+    driver_call([&] { return slReflexSleep(*g_token); }); }
   driver_call([&] { return slPCLSetMarker(sl::PCLMarker::eSimulationStart, *g_token); });
   return true;
 }

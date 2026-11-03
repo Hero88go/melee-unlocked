@@ -17,6 +17,10 @@
 #include "cosmetic_mods.h"
 #include "texture_pack.h"
 #include "replay_bar.h"
+#if defined(YOUGAME_AGENT_TEST_HOOK) && !defined(MELEE_NO_SLIPPI)
+#include "yougame_agent_static.h"
+#include "yougame_link.h"
+#endif
 
 static uint32_t s_spec = 5;
 
@@ -362,7 +366,29 @@ HLE(PADRead) {
   static int reported = 0;
   if (host::options.trace_calls && reported++ < 10) host::log("[pad] PADRead(%08X)", ARG0);
   host::PadState pads[4];
+#if defined(YOUGAME_AGENT_TEST_HOOK) && !defined(MELEE_NO_SLIPPI)
+  using namespace yougame::agent_test;
+  current_fight_sample = {};
+  if (!host::game_image && fight_enabled && static_match.in_match() &&
+      yougame::active() && slippi::online::is_online_match() && !slippi::playback::enabled()) {
+    MuStatePod digest{};
+    MuLcancelView air{};
+    host::agent_test_digest_state(&digest);
+    lcancel::agent_test_view(&air);
+    const int slot = slippi::online::local_player_slot();
+    int port = -1;
+    for (int p = 0; p < 4; ++p)
+      if (air.port[p].present && air.port[p].slot == slot) port = p;
+    const auto state = static_fight_state(
+        {true, true, static_match.armed(), true, false, slot, port,
+         fight_stage_edge(slippi::online::last_game_facts().stage)}, digest, air);
+    if (state) current_fight_sample = {port, fight_input(*state)};
+  }
+#endif
   host::input_poll(pads);
+#if defined(YOUGAME_AGENT_TEST_HOOK) && !defined(MELEE_NO_SLIPPI)
+  current_fight_sample = {};
+#endif
   // Automatic L-cancel, if the player turned it on: it presses the analog trigger here, one step
   // upstream of everything the game does with the pad, so the press is sampled, recorded into the
   // replay and sent to the opponent exactly like a press the player made.

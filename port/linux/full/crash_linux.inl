@@ -5,8 +5,13 @@
 #include <csignal>
 #include <dlfcn.h>
 #include <execinfo.h>
+#ifndef __APPLE__
 #include <ucontext.h>
+#endif
 #include <unistd.h>
+#ifdef __APPLE__
+#include "../../mac/context_registers.h"
+#endif
 
 // --profile is a Windows sampling profiler (it suspends the simulation thread and reads its
 // registers). On Linux, use perf: `perf record -g ./melee_source ...` gives the same picture.
@@ -60,7 +65,11 @@ static void linux_crash_signal(int sig, siginfo_t* si, void* uc_void) {
   if (g_linux_crash_entered) { signal(sig, SIG_DFL); raise(sig); return; }
   g_linux_crash_entered = 1;
   const ucontext_t* uc = static_cast<const ucontext_t*>(uc_void);
+#ifdef __APPLE__
+  const uintptr_t rip = uc ? (uintptr_t)mac_or_linux_rip(uc) : 0;
+#else
   const uintptr_t rip = uc ? (uintptr_t)uc->uc_mcontext.gregs[REG_RIP] : 0;
+#endif
   Dl_info info{};
   const char* module = "?";
   uintptr_t offset = rip;
@@ -83,6 +92,12 @@ static void linux_crash_signal(int sig, siginfo_t* si, void* uc_void) {
   }
   host::log_flush();
   linux_crash_dialog(head, false);
+  if (yougame::active()) {   // the app's "stopped" notice reads this line (yougame_mode_policy.h crash_line)
+    char reason[160];
+    std::snprintf(reason, sizeof reason, "signal %d (%s) in %s", sig, strsignal(sig), module);
+    std::fprintf(stderr, "%s\n", yougame::mode_policy::crash_line(reason).c_str());
+    std::fflush(stderr);
+  }
   signal(sig, SIG_DFL);
   raise(sig);
 }
@@ -116,4 +131,8 @@ static void die_report(const char* message) {
     std::fclose(f);
   }
   linux_crash_dialog(head, true);
+  if (yougame::active()) {   // the app's "stopped" notice reads this line (yougame_mode_policy.h crash_line)
+    std::fprintf(stderr, "%s\n", yougame::mode_policy::crash_line(message).c_str());
+    std::fflush(stderr);
+  }
 }

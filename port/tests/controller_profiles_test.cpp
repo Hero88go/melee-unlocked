@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 namespace {
 int g_failures = 0;
@@ -37,10 +38,49 @@ int main() {
 
   // Round trip, including values only a HID pad or the keyboard would use.
   host::ProfileBindings box{};
-  for (int i = 0; i < host::kProfileActions; ++i) box[i] = 1u << (i % 20 + 12);
+  for (int i = 0; i < host::kProfileActions; ++i) box[i] = (1u << (i % 20 + 12)) | static_cast<uint32_t>(i);
   box[4] = 0;   // an unbound action stays unbound
   CHECK(host::profile_save(host::ProfileDevice::Hid, "B0XX tournament", box));
   host::ProfileBindings read{};
+  CHECK(host::profile_load(host::ProfileDevice::Hid, "B0XX tournament", read));
+  CHECK(read == box);
+
+  // A pre-modifier file has exactly the original 22 named entries. Its bindings keep their
+  // meanings and the five missing actions keep defaults supplied by the caller.
+  constexpr const char* legacy_actions[] = {
+      "A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
+      "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight", "LAnalog", "RAnalog"};
+  static_assert(std::size(legacy_actions) == static_cast<size_t>(host::BindAction::ModX));
+  {
+    std::ofstream f(root / "ControllerProfiles" / "legacy.profile");
+    f << "# Melee Unlocked controller profile\ndevice keyboard\n";
+    for (size_t i = 0; i < std::size(legacy_actions); ++i) f << legacy_actions[i] << " " << 40 + i << "\n";
+  }
+  for (uint32_t default_binding : {0u, 123u}) {
+    host::ProfileBindings defaults{};
+    for (size_t i = std::size(legacy_actions); i < defaults.size(); ++i) defaults[i] = default_binding;
+    read = defaults;
+    CHECK(host::profile_load(host::ProfileDevice::Keyboard, "legacy", read));
+    for (size_t i = 0; i < read.size(); ++i)
+      CHECK(read[i] == (i < std::size(legacy_actions) ? 40 + i : defaults[i]));
+  }
+  CHECK(host::profile_delete(host::ProfileDevice::Keyboard, "legacy"));
+
+  // Still older profiles leave the stick keys and trigger migration sentinels untouched.
+  { std::ofstream f(root / "ControllerProfiles" / "pre-trigger.profile"); f << "device keyboard\nA 88\nL 65\n"; }
+  read.fill(7);
+  read[static_cast<int>(host::BindAction::LAnalog)] = host::kProfileActionAbsent;
+  read[static_cast<int>(host::BindAction::RAnalog)] = host::kProfileActionAbsent;
+  CHECK(host::profile_load(host::ProfileDevice::Keyboard, "pre-trigger", read));
+  CHECK(read[0] == 88 && read[1] == 0 && read[static_cast<int>(host::BindAction::L)] == 65);
+  CHECK(read[static_cast<int>(host::BindAction::SUp)] == 7);
+  CHECK(read[static_cast<int>(host::BindAction::LAnalog)] == host::kProfileActionAbsent);
+  CHECK(read[static_cast<int>(host::BindAction::RAnalog)] == host::kProfileActionAbsent);
+  CHECK(host::profile_delete(host::ProfileDevice::Keyboard, "pre-trigger"));
+
+  // Extra named actions from a future build are ignored, just as a 22-action reader ignores
+  // ModX/ModY/LightShield/MidShield/StickMod in the current format.
+  { std::ofstream f(root / "ControllerProfiles" / "B0XX tournament.profile", std::ios::app); f << "FutureAction 12345\n"; }
   CHECK(host::profile_load(host::ProfileDevice::Hid, "B0XX tournament", read));
   CHECK(read == box);
 

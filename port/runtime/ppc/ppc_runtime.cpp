@@ -4,6 +4,7 @@
 #include "ram_translator.h"
 #include "guest_registry.h"
 #include "host.h"
+#include "host_stub_policy.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -395,14 +396,36 @@ static size_t host_code_size(Fn fn) {
   return next == entries.end() ? 0 : (size_t)std::min<uintptr_t>(*next - lo, 8u << 20);
 }
 
+// The function the recompiler built for `addr` (guest_table.cpp), whatever set_hook has put in
+// front of it in the dispatch table since.
+static Fn recompiled_at(uint32_t addr) {
+  static const std::vector<std::pair<uint32_t, Fn>> table = [] {
+    std::vector<std::pair<uint32_t, Fn>> out;
+    out.reserve(guest::fn_table_count);
+    for (size_t i = 0; i < guest::fn_table_count; ++i) out.push_back({guest::fn_table[i].addr, guest::fn_table[i].fn});
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    return out;
+  }();
+  auto at = std::lower_bound(table.begin(), table.end(), addr, [](const auto& e, uint32_t a) { return e.first < a; });
+  return at != table.end() && at->first == addr ? at->second : nullptr;
+}
+
 // True when the compiled function at `addr` is a host implementation standing in for the guest
 // function (the recompiler emits a short stub that calls it), not a translation of its code: far
-// less machine code than a translation of that many instructions could be.
+// less machine code than a translation of that many instructions could be. Never a Gecko function
+// (host_stub_policy.h: their name-table extent is not their size).
+//
+// Measured on the recompiled function, not on the dispatch entry: a host wrapper installed with
+// set_hook (the fight scene entries' voice banks, audio pacing, low-poly parts) calls the translation
+// behind it and is no implementation of the game function. Measured on the wrapper, Beyond Melee's
+// change to gm_Scene_Vs_OnEnter (its VS-mode code at 8016E980) was "kept" out: host_code_size of a
+// host wrapper measures nothing about the guest function, and the voice-bank one read as a stub.
 bool compiled_as_host_function(uint32_t addr) {
   uint32_t lo = 0, hi = 0;
-  Fn fn = lookup(addr);
-  if (!fn || !function_bounds(addr, &lo, &hi) || lo != addr || hi - lo < 0x20u) return false;
-  return host_code_size(fn) < (hi - lo) / 2;   // under two bytes per guest instruction
+  if (!lookup(addr) || !function_bounds(addr, &lo, &hi) || lo != addr) return false;
+  Fn fn = recompiled_at(addr);
+  if (!fn) fn = lookup(addr);
+  return looks_like_host_stub(host::symbol_name(addr), hi - lo, host_code_size(fn));
 }
 
 size_t redirect_inlined_callers(const uint8_t* m) {

@@ -316,7 +316,14 @@ void set_flash_mode(int mode) {
 }
 int flash_mode() { return g_indicator.load(std::memory_order_relaxed); }
 void set_native_view(void (*fill)(MuLcancelView* out)) { g_native_view = fill; }
-void set_automatic(bool on) { g_automatic.store(on, std::memory_order_relaxed); }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+void agent_test_view(MuLcancelView* out) { gather(*out); }
+#endif
+void set_automatic(bool on) {
+  g_automatic.store(policy::automatic_after_toggle(slippi::online::session_mode(), automatic_enabled(), on),
+                    std::memory_order_relaxed);
+}
+bool automatic_setting_locked() { return policy::automatic_setting_locked(slippi::online::session_mode()); }
 bool indicator_enabled() { return flash_mode() != MU_LCFLASH_OFF; }
 bool automatic_enabled() { return g_automatic.load(std::memory_order_relaxed); }
 
@@ -329,15 +336,7 @@ void set_log_path(const std::string& path) {
 }
 
 const char* auto_suppressed_mode() {
-  const int mode = slippi::online::session_mode();
-  if (mode < 0) return nullptr;                                  // offline
-  if (mode == slippi::Matchmaking::DIRECT) return nullptr;        // the one allowed online mode
-  switch (mode) {
-    case slippi::Matchmaking::UNRANKED: return "Unranked";
-    case slippi::Matchmaking::TEAMS: return "Teams";
-    case slippi::Matchmaking::PARTY: return "Party";
-    default: return "this online mode";
-  }
+  return policy::auto_suppressed_mode(slippi::online::session_mode());
 }
 
 bool online_session_pending() {
@@ -369,7 +368,7 @@ void apply(host::PadState pads[4]) {
   const uint8_t press = inject_value(cal);
   const int window = lcancel_window_of(view);
   const char* suppressed = auto_suppressed_mode();
-  const bool auto_allowed = want_auto && suppressed == nullptr;
+  const bool auto_allowed = policy::automatic_allowed(slippi::online::session_mode(), want_auto);
   // With the automatic press actually doing the L-cancel there is nothing to report, so the flash
   // is off entirely rather than merely never firing. It comes back the moment the press is
   // suppressed (a matchmaking mode), which is exactly when the player wants the feedback again.

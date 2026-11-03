@@ -9,6 +9,7 @@
 // 32x32 I4 at 0x8040CD40, their margins at 0x8040CB00, the Shift-JIS table at 0x8040C8C0, the
 // glyph codes at 0x8040C680). Nothing of the game is stored here.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "practice_menu.h"
 
 #include "host.h"
@@ -1832,7 +1833,7 @@ Result frame(int style, const Frame& f) {
   static bool test_done = false;
   if (!test_done && f.open) {
     test_done = true;
-    if (const char* v = std::getenv("MELEE_TEST_PRACTICE_MENU")) {
+    if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_MENU")) {
       int page = 0, cursor = 0;
       if (std::sscanf(v, "%d,%d", &page, &cursor) >= 1 && page > 0 && page < (int)Page::Count) {
         g_stack.assign(1, Level{});

@@ -1,5 +1,6 @@
 // OS-level HLE: console output, thread waits, contexts, exit.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "hle.h"
 #include <cstdlib>
 #include <cstring>
@@ -51,7 +52,7 @@ HLE(OSPanic) {
 // that still lies in the console's memory is used up, so everything the game allocates from then on
 // comes from the space above it: models, textures and a mod's code all run from there.
 static void test_fill_console_part(ppc::Context& c, uint8_t* m, uint32_t heap) {
-  static const bool on = std::getenv("MELEE_TEST_HEAP_FILL") && host::options.no_gc_adapter;
+  static const bool on = host::test_env::getenv("MELEE_TEST_HEAP_FILL") && host::options.no_gc_adapter;
   if (!on) return;
   constexpr uint32_t kAllocFromHeap = 0x80343EF0u, kConsoleEnd = ppc::RAM_BASE + ppc::CONSOLE_RAM_SIZE;
   const uint32_t heaps = host::rd32(0x804D7360u);

@@ -3,11 +3,15 @@
 // between 60 Hz simulation frames from re-posed geometry (see subframe.h); the simulation is never
 // touched. The bounded source queue can back-pressure simulation when rendering is slow.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include "threaded_backend.h"
 #include "frame_queue.h"
 #include "gx_backend.h"
 #include "render_options.h"
 #include "host.h"
+#include "rollback_perf.h"
 #include "subframe.h"
 #include "authored_pose.h"
 #include "window.h"
@@ -70,14 +74,19 @@ class ThreadedBackend final : public Backend {
       FILE* file = nullptr;
       explicit Trace(const std::string& path) {
         if (!path.empty()) {
+          #ifdef YOUGAME_AGENT_TEST_HOOK
+          file = yougame::agent_paths::output(path, false, false, "w");
+#else
           file = std::fopen(path.c_str(), "w");
+#endif
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned,posed,posed_skinned\n", file);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned,posed,posed_skinned,source_retrace,source_scene_major,source_scene_minor,source_match_frame\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
     } trace(options_.frame_times);
+    host::rollback::PresentObserver rollback_present;
     double last_submission = 0; uint64_t drained = 0, discontinuities = 0;
     double next_present = host::now_seconds();
     double idle_repaint = 0.0;   // when a standing picture is next submitted again (replay_control::repaint_wanted)
@@ -487,19 +496,23 @@ class ThreadedBackend final : public Backend {
         submit_seconds += host::now_seconds() - t1; ++cost_presented;
       }
       const double render_end = host::now_seconds();
+      // CPU-side intervals between presentation returns, including repeated/subframes.
+      // A sequence change catches an entire catch-up between two presents.
+      rollback_present.present(host::rollback::presentation, host::rollback::now_ns());
       reflex_slept = false;
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
       { const double s = std::min(render_end - render_start - present_wait, 0.010);
         if (current.sequence != rendered_sequence) submit_first_typical = submit_first_typical > 0.0 ? submit_first_typical + 0.05 * (s - submit_first_typical) : s;
         else submit_typical = submit_typical > 0.0 ? submit_typical + 0.02 * (s - submit_typical) : s; }
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
           solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms(),
           solver.stats().draws, solver.stats().missing, solver.stats().hud, solver.stats().state, solver.stats().geometry,
           solver.stats().projection, solver.stats().state_register, solver.stats().skinned,
-          solver.stats().posed, solver.stats().posed_skinned);
+          solver.stats().posed, solver.stats().posed_skinned, current.source_retrace,
+          (unsigned)current.scene_major, (unsigned)current.scene_minor, current.source_match_frame);
       if (latency_trace && current.sequence != latency_sequence && current.tick.pad > 0) {
         latency_sequence = current.sequence;
         const host::TickTiming& k = current.tick;

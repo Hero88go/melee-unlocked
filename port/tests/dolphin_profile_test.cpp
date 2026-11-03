@@ -26,6 +26,9 @@ int main() {
   // The analog stick axes are this project's to read: neither bound nor counted as not understood.
   CHECK(pad.bindings[SUp] == 0 && pad.bindings[CUp] == 0 && pad.skipped == 0);
   CHECK(pad.bound == 12);
+  // Appending native profile actions must not make Dolphin look up null/missing key names.
+  for (int i = static_cast<int>(host::BindAction::ModX); i < host::kProfileActions; ++i)
+    CHECK(pad.bindings[i] == 0);
 
   // The keyboard: plain key names, a qualified name, and bindings that are left alone.
   const host::DolphinProfile keys = host::dolphin_profile_read(

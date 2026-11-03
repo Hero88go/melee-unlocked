@@ -49,6 +49,7 @@ void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame) {
   if (linux_host::state_snapshot(&state)) { *major = state.scene_major; *minor = state.scene; *match_frame = state.match_frame; }
   else { *major = 0; *minor = 0; *match_frame = 0; }
 }
+uint32_t retrace_count() { return linux_host::counters().retraces; }
 void input_last_pads(PadState out[4]) { std::memset(out, 0, sizeof(PadState) * 4); }
 } // namespace host
 

@@ -19,6 +19,7 @@
  *
  * Nothing here runs in an online match, a pending online match or replay playback. No Training
  * Mode mod code runs: these are C reimplementations of the tools. */
+#include "mu_test_env.h"
 #include <dolphin/os.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/types.h>
@@ -589,7 +590,7 @@ int mu_lab_input(void* fighter, MuLabInput* out)
      * moved below the blast zone, so a hidden Classic run wins its stage and reaches STAGE CLEAR. */
     static int cpu_fall = -2;
     if (cpu_fall == -2) {
-        const char* v = getenv("MELEE_TEST_CPU_FALL");
+        const char* v = mu_test_getenv("MELEE_TEST_CPU_FALL");
         cpu_fall = -1;
         if (v != NULL && *v >= '0' && *v <= '9') {
             cpu_fall = 0;
@@ -738,7 +739,7 @@ MU_EXCLUSIONS(lab,
  * so a hidden run can reach a later stage. Unset for players: -1, the normal start. */
 int mu_test_classic_stage(void)
 {
-    const char* v = getenv("MELEE_TEST_CLASSIC_STAGE");
+    const char* v = mu_test_getenv("MELEE_TEST_CLASSIC_STAGE");
     int n = 0;
     if (v == NULL || *v < '0' || *v > '9') {
         return -1;
@@ -756,7 +757,7 @@ int mu_test_classic_stage(void)
  * (stage * 8 + part: 33 is the Kirby team, 34 Giant Kirby, 25 the Zelda fight). Unset: -1. */
 int mu_test_adventure_scene(void)
 {
-    const char* v = getenv("MELEE_TEST_ADVENTURE_SCENE");
+    const char* v = mu_test_getenv("MELEE_TEST_ADVENTURE_SCENE");
     int n = 0;
     if (v == NULL || *v < '0' || *v > '9') {
         return -1;

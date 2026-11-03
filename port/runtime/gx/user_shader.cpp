@@ -1,5 +1,9 @@
 // Player-chosen shader presets through librashader. See user_shader.h.
+#include "test_env.h"
 #include "user_shader.h"
+#ifdef __APPLE__
+#include "../../mac/platform_paths.h"
+#endif
 #include "../host/host.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -28,7 +32,19 @@ std::filesystem::path shader_root() {
   wchar_t path[32768]{};
   const DWORD n = GetModuleFileNameW(nullptr, path, (DWORD)std::size(path));
   const std::filesystem::path exe = (!n || n >= std::size(path)) ? std::filesystem::current_path() : std::filesystem::path(path).parent_path();
+#ifdef __APPLE__
+  static const auto writable = [] {
+    auto folder = std::filesystem::current_path() / "Shaders";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    std::filesystem::copy_file(mac_host::resources() / "Shaders/crt-shaders.pak", folder / "crt-shaders.pak",
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    return folder;
+  }();
+  return writable;
+#else
   return exe / "Shaders";
+#endif
 }
 
 // Windows refuses a path of 260 characters or more unless it is written in the long form. A shader
@@ -280,7 +296,7 @@ void test_scan() {
   static bool done = false;
   if (done) return;
   done = true;
-  if (!std::getenv("MELEE_TEST_SHADER_SCAN") || !std::getenv("MELEE_NO_GC_ADAPTER")) return;
+  if (!host::test_env::getenv("MELEE_TEST_SHADER_SCAN") || !std::getenv("MELEE_NO_GC_ADAPTER")) return;
   size_t flagged = 0;
   const std::vector<std::string> all = presets();
   for (const std::string& name : all) {

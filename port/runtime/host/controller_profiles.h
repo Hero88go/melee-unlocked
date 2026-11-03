@@ -1,4 +1,4 @@
-// Named controller profiles: a saved set of the twelve GameCube action bindings for one kind of
+// Named controller profiles: a saved set of all GameCube action bindings for one kind of
 // device, so a player can keep one layout for a box controller and another for a pad, or share one,
 // and switch without rebinding every button.
 //
@@ -16,6 +16,7 @@
 // number is a different button on a different kind of controller.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "input_binding_types.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -25,8 +26,10 @@ namespace host {
 
 enum class ProfileDevice : uint8_t { Keyboard, XInput, PlayStation, GCAdapter, SwitchPro, Hid, Count };
 
-constexpr int kProfileActions = 27;   // BindAction::Count, in BindAction order (C-stick, control stick directions, trigger travel)
+constexpr int kProfileActions = static_cast<int>(BindAction::Count);
 using ProfileBindings = std::array<uint32_t, kProfileActions>;
+static_assert(ProfileBindings{}.size() == static_cast<std::size_t>(BindAction::Count),
+              "Profiles must cover every binding action");
 // A profile saved before L and R were split has no LAnalog / RAnalog lines. A caller that needs to
 // know passes this in those two slots: profile_load leaves a slot the file does not mention as it was.
 constexpr uint32_t kProfileActionAbsent = 0xFFFFFFFFu;
@@ -42,6 +45,8 @@ std::string profile_clean_name(const std::string& name);
 // Profile names saved for this kind of device, sorted.
 std::vector<std::string> profile_list(ProfileDevice device);
 bool profile_save(ProfileDevice device, const std::string& name, const ProfileBindings& bindings);
+// Missing stick, trigger-travel and modifier actions retain the caller's bindings (defaults on a
+// fresh device). Other missing actions are unbound. Unknown action names are ignored.
 // False, with `bindings` untouched, if the file is missing, unreadable or for another kind of device.
 bool profile_load(ProfileDevice device, const std::string& name, ProfileBindings& bindings);
 bool profile_delete(ProfileDevice device, const std::string& name);

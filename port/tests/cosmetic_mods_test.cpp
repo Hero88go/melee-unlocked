@@ -1194,6 +1194,28 @@ int main(int argc, char** argv) {
   check(longer_import.ok && host::cosmetics::select_variant("PlFxNr.dat", longer_import.asset_id, &error),
         "a costume with an extra joint imports and can be selected");
   g_disc_bytes = three_joints;   // the disc's own PlFxNr.dat, at offset 0
+  g_disc_target = "PlFxNr.dat";
+  check(host::cosmetics::online_status_column(longer_import.asset_id, false) ==
+            " | online unknown (pass --iso)", "an import has no online verdict without a disc");
+  check(host::cosmetics::online_status_column(longer_import.asset_id, true) ==
+            " | online off: bone count differs (4 instead of 3)",
+        "status compares a selected import before runtime initialization");
+  check(host::cosmetics::disable_target("PlFxNr.dat", &error) &&
+            host::cosmetics::online_status_column(longer_import.asset_id, true) ==
+                " | online off: bone count differs (4 instead of 3)",
+        "status also compares an unselected import");
+  const auto safe_path = length_folder / L"safe.dat";
+  write_file(safe_path, three_joints);
+  const auto safe_import = host::cosmetics::import_file(safe_path.string());
+  check(safe_import.ok && host::cosmetics::online_status_column(safe_import.asset_id, true) ==
+            " | online ok", "status accepts an import with the clean disc's skeleton");
+  g_disc_target.clear();
+  check(host::cosmetics::online_status_column(safe_import.asset_id, true) ==
+            " | online off: the standard file could not be read", "status explains a missing disc target");
+  check(host::cosmetics::online_status_column(safe_import.asset_id, false) ==
+            " | online unknown (pass --iso)", "status comparison does not persist a verdict");
+  check(host::cosmetics::select_variant("PlFxNr.dat", longer_import.asset_id, &error),
+        "restore longer costume selection after status checks");
   auto longer_fst = one_file_fst(0, (uint32_t)three_joints.size(), "PlFxNr.dat");
   host::cosmetics::apply_to_fst(longer_fst.data(), (uint32_t)longer_fst.size());
   uint32_t file_length = read_be32(longer_fst.data() + 20);
@@ -1432,6 +1454,19 @@ int main(int argc, char** argv) {
       ++fox_portraits; own_wins = item.path.find("portrait-PlFxGr") != std::string::npos;
     }
   check(fox_portraits == 1 && !own_wins, "with the portrait entry off the skin's own portrait is used again");
+  check(host::cosmetics::cli::known_slot(host::cosmetics::assets(), "PlFxGr.dat#portrait") &&
+            !host::cosmetics::cli::known_slot(host::cosmetics::assets(), "PlFxGr.dat#unknown"),
+        "slot validation recognizes exact catalog keys");
+  check(host::cosmetics::online_status_column(portrait_import.asset_id, true).empty(),
+        "portrait status has no online column");
+  host::cosmetics::configure((picture_folder / L"port-settings.ini").string());
+  bool skin_selected = false, portrait_selected = false;
+  for (const auto& item : host::cosmetics::assets()) {
+    if (item.id == skin_import.asset_id) skin_selected = item.selected;
+    if (item.id == portrait_import.asset_id) portrait_selected = item.selected;
+  }
+  check(skin_selected && !portrait_selected && host::cosmetics::profile_enabled(),
+        "deselecting one slot persists and preserves another selection and the enabled profile");
   // A ZIP of pictures and no costume file.
   fs::path pack_path = picture_folder / L"pack.zip";
   write_file(pack_path, stored_zip({{"Fox Orange.png", png(136, 188)}, {"csp/PlMsWh csp.png", png(136, 188)},
@@ -1656,6 +1691,11 @@ int main(int argc, char** argv) {
     check(plain && !plain->online_allowed && plain->online_message == "bone 1: rest pose differs (moved)" &&
               left && left->online_allowed && left->online_message == "3 joints match",
           "the online verdict is known from the scan, before any skin is applied");
+    check(plain && left &&
+              host::cosmetics::online_status_column(plain->id, false) ==
+                  " | online off: bone 1: rest pose differs (moved)" &&
+              host::cosmetics::online_status_column(left->id, false) == " | online ok",
+          "status uses known scan verdicts without a disc, even for unselected costumes");
     // The pack view and its set buttons.
     auto packs = host::cosmetics::packs();
     check(packs.size() == 1 && packs[0].name == "Hack disc" && packs[0].skins == 2 && packs[0].slots == 1 &&

@@ -8,6 +8,8 @@
 #include "enet/utility.h"
 #include "enet/time.h"
 #include "enet/enet.h"
+#include "enet/yg_enet_socket.h"
+#include <stddef.h>
 
 static size_t commandSizes [ENET_PROTOCOL_COMMAND_COUNT] =
 {
@@ -364,7 +366,7 @@ enet_protocol_handle_connect (ENetHost * host, ENetProtocolHeader * header, ENet
     if (mtu > ENET_PROTOCOL_MAXIMUM_MTU)
       mtu = ENET_PROTOCOL_MAXIMUM_MTU;
 
-    peer -> mtu = mtu;
+    peer -> mtu = yg_enet_mtu (host -> socket, mtu);
 
     if (host -> outgoingBandwidth == 0 &&
         peer -> incomingBandwidth == 0)
@@ -953,6 +955,7 @@ enet_protocol_handle_verify_connect (ENetHost * host, ENetEvent * event, ENetPee
     if (mtu > ENET_PROTOCOL_MAXIMUM_MTU)
       mtu = ENET_PROTOCOL_MAXIMUM_MTU;
 
+    mtu = yg_enet_mtu (host -> socket, mtu);
     if (mtu < peer -> mtu)
       peer -> mtu = mtu;
 
@@ -985,7 +988,7 @@ enet_protocol_handle_incoming_commands (ENetHost * host, ENetEvent * event)
     enet_uint16 peerID, flags;
     enet_uint8 sessionID;
 
-    if (host -> receivedDataLength < (size_t) & ((ENetProtocolHeader *) 0) -> sentTime)
+    if (host -> receivedDataLength < offsetof (ENetProtocolHeader, sentTime))
       return 0;
 
     header = (ENetProtocolHeader *) host -> receivedData;
@@ -995,7 +998,7 @@ enet_protocol_handle_incoming_commands (ENetHost * host, ENetEvent * event)
     flags = peerID & ENET_PROTOCOL_HEADER_FLAG_MASK;
     peerID &= ~ (ENET_PROTOCOL_HEADER_FLAG_MASK | ENET_PROTOCOL_HEADER_SESSION_MASK);
 
-    headerSize = (flags & ENET_PROTOCOL_HEADER_FLAG_SENT_TIME ? sizeof (ENetProtocolHeader) : (size_t) & ((ENetProtocolHeader *) 0) -> sentTime);
+    headerSize = (flags & ENET_PROTOCOL_HEADER_FLAG_SENT_TIME ? sizeof (ENetProtocolHeader) : offsetof (ENetProtocolHeader, sentTime));
     if (host -> checksum != NULL)
       headerSize += sizeof (enet_uint32);
 
@@ -1681,7 +1684,7 @@ enet_protocol_send_outgoing_commands (ENetHost * host, ENetEvent * event, int ch
             host -> buffers -> dataLength = sizeof (ENetProtocolHeader);
         }
         else
-          host -> buffers -> dataLength = (size_t) & ((ENetProtocolHeader *) 0) -> sentTime;
+          host -> buffers -> dataLength = offsetof (ENetProtocolHeader, sentTime);
 
         shouldCompress = 0;
         if (host -> compressor.context != NULL && host -> compressor.compress != NULL)

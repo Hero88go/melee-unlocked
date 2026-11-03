@@ -1,18 +1,29 @@
 // Slippi Online networking (see slippi_net.h). Wire-compatible port of Dolphin's
 // SlippiNetplayClient, SlippiMatchmaking and the user record.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "slippi_net.h"
+#include "slippi_netplay_receive.h"
 #include "slippi_online.h"
 #include "slippi_report.h"
 #include "slippi_account.h"
+#include "yougame_link.h"
+#include "yougame_friends.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_script.h"
+#include "yougame_net_test.h"
+#endif
 #include "host.h"
 #include "gx_core.h"   // the player's own shield colour for the build message
 #include "early_input.h"
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <enet/enet.h>
+#include <enet/yg_enet_socket.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
@@ -173,20 +184,13 @@ Packet& Packet::operator>>(std::string& s) {
   return *this;
 }
 
-// ---------------------------------------------------------------- selections
-void PlayerSelections::Merge(const PlayerSelections& s) {
-  rng_offset = s.rng_offset;
-  if (s.is_stage_selected) { stage_id = s.stage_id; is_stage_selected = true; alt_stage_mode = s.alt_stage_mode; }
-  if (s.is_character_selected) { character_id = s.character_id; character_color = s.character_color; team_id = s.team_id; is_character_selected = true; }
-}
-void PlayerSelections::Reset() { character_id = character_color = team_id = 0; is_character_selected = false; stage_id = 0; is_stage_selected = false; rng_offset = 0; }
-
 // ---------------------------------------------------------------- user
 User::User(std::string user_dir) : dir_(std::move(user_dir)) { if (AttemptLogin()) RefreshFromServer(); }
 void User::RefreshFromServer() {
   if (refresh_.valid() && refresh_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
   UserInfo me = GetUserInfo();
   if (me.uid.empty()) return;
+  if (yougame::active()) return;                 // a YouGame session never asks Slippi's servers
   if (Matchmaking::local_peer.enabled) return;   // local test peering stays off Slippi's servers
   std::shared_ptr<std::atomic<bool>> alive = alive_;
   refresh_ = std::async(std::launch::async, [this, me, alive] {
@@ -326,6 +330,23 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
 }
 
 bool User::AttemptLogin(bool rediscover) {
+  // Launched by YouGame: the signed-in YouGame player is the account, and the online menus always
+  // show the online modes, never Slippi's "log in" (signing in is YouGame's job; a search without a
+  // YouGame player says so). Slippi's account files are not looked up or read.
+  if (yougame::active()) {
+    const yougame::Identity id = yougame::identity();
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool had = !info_.uid.empty();
+    info_ = UserInfo();
+    info_.uid = id.player_id;
+    info_.play_key = "yougame";
+    info_.display_name = id.ok ? id.name : "YouGame";
+    info_.connect_code = id.code;
+    info_.chat_messages = GetDefaultChatMessages();
+    logged_in_ = true;
+    if (id.ok && !had) host::log("slippi: YouGame player %s (%s)", info_.display_name.c_str(), info_.connect_code.c_str());
+    return true;
+  }
   account::Profile profile;
   if (rediscover || !account_discovered_) {
     profile = account::resolve(dir_);
@@ -397,7 +418,7 @@ void DirectCodes::AddOrUpdateCode(const std::string& code) {
 // ---------------------------------------------------------------- netplay client
 NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_t> ports, uint8_t remote_player_count, uint16_t local_port,
                              bool is_decider, uint8_t player_idx) {
-  host::log("slippi: netplay client: local port %u, decider %d, player index %u, %u remote players", local_port, is_decider, player_idx, remote_player_count);
+  host::log("slippi: netplay client: decider %d, player index %u, %u remote players", is_decider, player_idx, remote_player_count);
   is_decider_ = is_decider;
   // Every per-remote array here has REMOTE_PLAYER_MAX entries and every per-player one
   // PLAYER_COUNT_MAX; a count or index past them (or past the address lists) is never used.
@@ -428,7 +449,7 @@ NetplayClient::NetplayClient(std::vector<std::string> addrs, std::vector<uint16_
     addr.port = ports[i];
     ENetPeer* peer = enet_host_connect(client_, &addr, 3, 0);
     server_.push_back(peer);
-    if (!peer) { host::log("slippi: cannot create peer for %s:%u", addrs[i].c_str(), ports[i]); continue; }
+    if (!peer) { host::log("slippi: cannot create peer"); continue; }
     ActiveConnectionInfo info;
     info.player_idx = match_info_.remote[i].player_idx;
     active_connections_[peer_key(peer)][peer] = info;
@@ -457,7 +478,6 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       if (!(packet >> frame) || !(packet >> packet_player_port) || !(packet >> checksum_frame) || !(packet >> checksum)) { host::log("slippi: pad packet too small"); break; }
       uint8_t pidx = PlayerIdxFromPort(packet_player_port);
       if (pidx >= remote_player_count_) { host::log("slippi: pad packet with invalid player idx %u", pidx); break; }
-      const int pad_data_offset = 14;
       int conn_idx = 0;
       for (int i = 0; i < (int)server_.size(); ++i)
         if (peer->address.host == server_[i]->address.host && peer->address.port == server_[i]->address.port) { conn_idx = i; break; }
@@ -489,13 +509,10 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       int64_t inputs_to_copy;
       {
         std::lock_guard<std::mutex> lk(pad_mutex_);
-        const uint8_t* data = packet.data();
-        int32_t head_frame = remote_pad_queue_[pidx].empty() ? 0 : remote_pad_queue_[pidx].front()->frame;
-        inputs_to_copy = (int64_t)frame - head_frame;
-        if (pad_data_offset + inputs_to_copy * PAD_DATA_SIZE > (int64_t)packet.size()) { host::log("slippi: pad packet too small for %lld inputs", (long long)inputs_to_copy); break; }
-        if (inputs_to_copy > 128) { host::log("slippi: pad packet with too many frames (%lld)", (long long)inputs_to_copy); break; }
-        for (int64_t i = inputs_to_copy - 1; i >= 0; --i)
-          remote_pad_queue_[pidx].push_front(std::make_unique<Pad>((int32_t)(frame - i), &data[pad_data_offset + i * PAD_DATA_SIZE]));
+        const auto received = receive::PadInputs(frame, packet.data(), packet.size(), remote_pad_queue_[pidx]);
+        inputs_to_copy = received.inputs;
+        if (received.error == receive::PadError::TooSmall) { host::log("slippi: pad packet too small for %lld inputs", (long long)inputs_to_copy); break; }
+        if (received.error == receive::PadError::TooMany) { host::log("slippi: pad packet with too many frames (%lld)", (long long)inputs_to_copy); break; }
         remote_checksums_[pidx] = {checksum_frame, checksum};
       }
       if (inputs_to_copy > 0) {
@@ -533,9 +550,11 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         uint8_t idx = PlayerIdxFromPort(s->player_idx);
         if (idx >= remote_player_count_) break;
         host::log("slippi: received selections from player %u (char %u color %u stage %u)", s->player_idx, s->character_id, s->character_color, s->stage_id);
-        { std::lock_guard<std::mutex> lk(selection_mutex_); match_info_.remote[idx].Merge(*s); }
-        { std::lock_guard<std::mutex> lk(timing_mutex_); has_game_started_ = false; }
-        { std::lock_guard<std::mutex> lk(pad_mutex_); remote_pad_queue_[idx].clear(); early_pads_[idx].clear(); }
+        {
+          std::scoped_lock lock(selection_mutex_, timing_mutex_, pad_mutex_);
+          receive::Selections(*s, match_info_.remote[idx], has_game_started_,
+            remote_pad_queue_[idx], early_pads_[idx]);
+        }
       }
       break;
     }
@@ -563,11 +582,17 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       uint32_t shield = 0;
       if ((packet >> has_shield) && has_shield == 1 && (packet >> sr >> sg >> sb))
         shield = 0x1000000u | ((uint32_t)sr << 16) | ((uint32_t)sg << 8) | sb;
+      // Bit 3: a ranked rules digest follows the shield colour (YouGame Ranked with rules only).
+      std::string rules_digest;
+      if (caps & 8) {
+        for (int i = 0; i < 64; ++i) { uint8_t ch; if (!(packet >> ch)) break; rules_digest.push_back((char)ch); }
+        if (!online::native_mod_fingerprint_valid(rules_digest)) rules_digest = "invalid";
+      }
       const uint8_t pidx = PlayerIdxFromPort(port);
       if (pidx >= remote_player_count_) { host::log("slippi: build message with invalid player idx %u", pidx); break; }
       {
         std::lock_guard<std::mutex> lk(build_mutex_);
-        remote_build_[pidx] = {true, mod_view != 0, fp, name, (caps & 1) != 0, (caps & 2) != 0, shield, port};
+        remote_build_[pidx] = {true, mod_view != 0, fp, name, (caps & 1) != 0, (caps & 2) != 0, (caps & 4) != 0, shield, port, rules_digest};
       }
       host::log("slippi: opponent %u build: %s%s%s%s, shield colour %s%06X", port, mod_view ? "mod " : "retail game",
                 mod_view ? name.c_str() : "", mod_view ? (" " + fp.substr(0, 16)).c_str() : "",
@@ -625,15 +650,31 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       break;
     }
     case NP_MSG_SLIPPI_CONN_SELECTED: break;
-    case NP_MSG_SLIPPI_COMPLETE_STEP: break;   // Ranked game preparation: no Ranked in Melee Unlocked
+    case NP_MSG_SLIPPI_COMPLETE_STEP: {
+      if (!yougame::active()) break;
+      GamePrepStep step{};
+      bool valid = true;
+      for (auto& b : step) if (!(packet >> b)) { valid = false; break; }
+      if (valid) game_prep_.receive(step);
+      else host::log("slippi: incomplete GamePrep step");
+      break;
+    }
     case NP_MSG_SLIPPI_SYNCED_STATE: break;    // Ranked tiebreak recovery: no Ranked in Melee Unlocked
     default: host::log("slippi: unknown netplay message %u", mid); break;
   }
 }
 
+void NetplayClient::SendGamePrepStep(const GamePrepStep& step) {
+  if (!yougame::active()) return;
+  auto p = std::make_unique<Packet>();
+  *p << (uint8_t)NP_MSG_SLIPPI_COMPLETE_STEP;
+  for (uint8_t b : step) *p << b;
+  SendAsync(std::move(p)); // reliable, ordered channel 0, like Slippi
+}
+
 void NetplayClient::SendBuild() {
   // Tests only: behave like Slippi Dolphin, which never sends a build.
-  if (std::getenv("MELEE_TEST_NO_BUILD_MESSAGE")) { host::log("slippi: build message suppressed (test)"); return; }
+  if (host::test_env::getenv("MELEE_TEST_NO_BUILD_MESSAGE")) { host::log("slippi: build message suppressed (test)"); return; }
   const auto& me = slippi::online::local_build();
   auto p = std::make_unique<Packet>();
   *p << (uint8_t)NP_MSG_MU_BUILD << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'B' << (uint8_t)1 << player_idx_
@@ -646,13 +687,17 @@ void NetplayClient::SendBuild() {
   for (char ch : name) *p << (uint8_t)ch;
   // Capabilities: bit 0, this side takes early inputs. Older builds stop reading before this byte.
   const bool early = online::early_inputs_accept();
-  // Bit 1: this side answers pre-match pings (always).
-  *p << (uint8_t)((early ? 1 : 0) | 2);
+  // Bit 1: this side answers pre-match pings (always). Bit 2: Static engine. Bit 3: a full ranked
+  // rules digest follows the shield colour (absent outside verified remix Ranked). Older peers mask
+  // only the bits they know and stop reading after the shield colour, so the layout stays compatible.
+  const std::string rules_digest = online::ranked_rules_digest(online::session_mode());
+  *p << (uint8_t)((early ? 1 : 0) | 2 | (me.static_engine ? 4 : 0) | (rules_digest.empty() ? 0 : 8));
   // Then the player's own shield colour ("Shield colours", Online): a byte 1 and the three RGB bytes, or
   // a byte 0. Builds before it stop reading at the capabilities byte.
   const uint32_t shield = gx::shield_color_online();
   if (shield) *p << (uint8_t)1 << (uint8_t)(shield >> 16) << (uint8_t)(shield >> 8) << (uint8_t)shield;
   else *p << (uint8_t)0;
+  for (char ch : rules_digest) *p << (uint8_t)ch;
   host::log("slippi: sending build: %s%s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "",
             early ? " (takes early inputs)" : "");
   SendAsync(std::move(p));
@@ -757,6 +802,12 @@ void NetplayClient::Send(Packet& packet) {
 }
 
 void NetplayClient::Disconnect() {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (yougame::net_test::config().enabled()) {
+    std::lock_guard<std::mutex> generation_lock(net_test_generation_mutex_);
+    ++net_test_generation_;
+  }
+#endif
   status_.store(ConnectStatus::DISCONNECTED, std::memory_order_release);
   if (active_connections_.empty()) return;
   for (auto& conn : active_connections_)
@@ -764,7 +815,7 @@ void NetplayClient::Disconnect() {
   ENetEvent ev;
   while (enet_host_service(client_, &ev, 3000) > 0) {
     if (ev.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(ev.packet);
-    else if (ev.type == ENET_EVENT_TYPE_DISCONNECT) host::log("slippi: got disconnect from peer %u", ev.peer->address.port);
+    else if (ev.type == ENET_EVENT_TYPE_DISCONNECT) host::log("slippi: got peer disconnect");
   }
   for (auto& conn : active_connections_) for (auto& peer : conn.second) enet_peer_reset(peer.first);
   active_connections_.clear();
@@ -774,7 +825,15 @@ void NetplayClient::Disconnect() {
 
 void NetplayClient::SendAsync(std::unique_ptr<Packet> packet) {
   if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) return;
-  { std::lock_guard<std::mutex> lk(async_mutex_); async_queue_.push_back(std::move(packet)); }
+  { std::lock_guard<std::mutex> lk(async_mutex_);
+#ifdef YOUGAME_AGENT_TEST_HOOK
+    const bool delayed = yougame::net_test::config().enabled();
+    async_queue_.push_back({std::move(packet), delayed ? time_ms() : 0,
+                           delayed ? net_test_generation_.load() : 0});
+#else
+    async_queue_.push_back(std::move(packet));
+#endif
+  }
   wakeup_thread(client_);
 }
 
@@ -787,6 +846,7 @@ void NetplayClient::ThreadFunc() {
 
   while (status_.load(std::memory_order_acquire) == ConnectStatus::INITIATED) {
     ENetEvent ev;
+    if (yg_enet_is_socket(client_->socket) && !yg_enet_enabled()) { status_.store(ConnectStatus::FAILED, std::memory_order_release); return; }
     int net = enet_host_service(client_, &ev, 500);
     if (net > 0) {
       switch (ev.type) {
@@ -798,7 +858,7 @@ void NetplayClient::ThreadFunc() {
           break;
         }
         case ENET_EVENT_TYPE_DISCONNECT:
-          if (ev.peer) host::log("slippi: disconnect event from %x:%u while connecting", ev.peer->address.host, ev.peer->address.port);
+          if (ev.peer) host::log("slippi: peer disconnected while connecting");
           break;
         case ENET_EVENT_TYPE_CONNECT: {
           if (!ev.peer) break;
@@ -822,7 +882,7 @@ void NetplayClient::ThreadFunc() {
           for (size_t i = 0; i < server_.size() && slot < 0; ++i)
             if (!connections[i] && remote_addrs[i].host == ev.peer->address.host) slot = (int)i;
           if (slot >= 0) {
-            host::log("slippi: connected to %x:%u", ev.peer->address.host, ev.peer->address.port);
+            host::log("slippi: connected to peer");
             server_[slot] = ev.peer;
             connections[slot] = true;
           }
@@ -877,6 +937,34 @@ void NetplayClient::ThreadFunc() {
     }
   };
 
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  const auto& net_config = yougame::net_test::config();
+  yougame::net_test::DelayQueue<std::unique_ptr<Packet>> delayed(net_config);
+  // All queue mutations and Send calls here belong to this network thread. The
+  // generation lock prevents an old due packet crossing StartSlippiGame/reset.
+  auto drain_outgoing = [&] {
+    for (;;) {
+      AsyncPacket entry;
+      { std::lock_guard<std::mutex> lk(async_mutex_);
+        if (async_queue_.empty()) break;
+        entry = std::move(async_queue_.front()); async_queue_.pop_front(); }
+      if (!net_config.enabled()) { Send(*entry.packet); continue; }
+      std::lock_guard<std::mutex> generation_lock(net_test_generation_mutex_);
+      delayed.reset(net_test_generation_.load());
+      if ((status_.load() == ConnectStatus::DISCONNECTED || !do_loop_.load()) &&
+          yougame::net_test::input_message(entry.packet->data()[0])) continue;
+      if (!delayed.push(entry.packet->data()[0], entry.enqueued_ms, entry.generation,
+                        std::move(entry.packet))) Send(*entry.packet);
+    }
+    if (net_config.enabled()) {
+      std::lock_guard<std::mutex> generation_lock(net_test_generation_mutex_);
+      delayed.reset(net_test_generation_.load());
+      if (status_.load() == ConnectStatus::DISCONNECTED || !do_loop_.load()) return;
+      if (delayed.drain(time_ms(), [&](auto& packet) { Send(*packet); }))
+        enet_host_flush(client_); // Due packets must leave even without another wake/event.
+    }
+  };
+#endif
   uint64_t next_ping_ms = 0;
   while (do_loop_.load()) {
     if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) break;
@@ -893,12 +981,28 @@ void NetplayClient::ThreadFunc() {
       }
     }
     ENetEvent ev;
+    if (yg_enet_is_socket(client_->socket) && !yg_enet_enabled()) {
+      status_.store(ConnectStatus::DISCONNECTED, std::memory_order_release); break;
+    }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+    // Preserve the old service/drain path exactly when the keys are absent.
+    if (net_config.enabled()) drain_outgoing();
+    const uint32_t normal_wait = held.empty() ? 250 : 1;
+    const uint32_t service_wait = net_config.enabled() ? delayed.wait_ms(time_ms(), normal_wait) : normal_wait;
+    int net = enet_host_service(client_, &ev, service_wait);
+    if (net_config.enabled() && net > 0 && ev.type == ENET_EVENT_TYPE_DISCONNECT) {
+      std::lock_guard<std::mutex> generation_lock(net_test_generation_mutex_);
+      delayed.reset(++net_test_generation_);
+    }
+    drain_outgoing();
+#else
     int net = enet_host_service(client_, &ev, held.empty() ? 250 : 1);
     for (;;) {
       std::unique_ptr<Packet> p;
       { std::lock_guard<std::mutex> lk(async_mutex_); if (async_queue_.empty()) break; p = std::move(async_queue_.front()); async_queue_.pop_front(); }
       Send(*p);
     }
+#endif
     if (net <= 0) continue;
     switch (ev.type) {
       case ENET_EVENT_TYPE_RECEIVE: {
@@ -929,7 +1033,7 @@ void NetplayClient::ThreadFunc() {
         for (size_t i = 0; i < server_.size(); ++i)
           if (ev.peer->address.host == server_[i]->address.host && ev.peer->address.port == server_[i]->address.port) connected_client = true;
         if (connected_client && ev.data != 0) disconnect_reason_.store(ev.data, std::memory_order_release);
-        host::log("slippi: disconnect from %x:%u (all peers gone: %d, connected client: %d)", ev.peer->address.host, ev.peer->address.port, all_peers_gone, connected_client);
+        host::log("slippi: disconnect (all peers gone: %d, connected client: %d)", all_peers_gone, connected_client);
         if (connected_client && all_peers_gone && AreAllConnectionsDisconnected()) do_loop_.store(false);
         break;
       }
@@ -950,6 +1054,13 @@ void NetplayClient::ThreadFunc() {
 }
 
 void NetplayClient::StartSlippiGame() {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (yougame::net_test::config().enabled()) {
+    { std::lock_guard<std::mutex> generation_lock(net_test_generation_mutex_); ++net_test_generation_; }
+    if (client_) wakeup_thread(client_);
+  }
+#endif
+  if (yougame::active()) game_prep_.clear();
   local_pad_queue_.clear();
   { std::lock_guard<std::mutex> lk(pad_mutex_); for (auto& b : early_pads_) b.clear(); }
   {
@@ -1085,6 +1196,12 @@ void NetplayClient::ForceDisconnectPlayer(uint8_t player_idx) {
   if (client_) wakeup_thread(client_);
 }
 void NetplayClient::ForceDisconnect(DisconnectReason reason) {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (yougame::net_test::config().enabled()) {
+    std::lock_guard<std::mutex> generation_lock(net_test_generation_mutex_);
+    ++net_test_generation_;
+  }
+#endif
   pending_disconnect_reason_.store((uint32_t)reason, std::memory_order_release);
   disconnect_reason_.store((uint32_t)reason, std::memory_order_release);
   for (uint8_t i = 0; i < remote_player_count_; ++i) ForceDisconnectPlayer(match_info_.remote[i].player_idx);
@@ -1164,11 +1281,29 @@ void Matchmaking::FindMatch(MatchSearchSettings settings) {
       if (!code.empty()) settings.blocked_codes.push_back(code);
   search_settings_ = settings;
   { std::lock_guard<std::mutex> lk(result_mutex_); error_msg_.clear(); }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (!yougame::agent_test::matchmaking_allowed(
+          local_peer.enabled, server_allowed, yougame::agent_test::agent_script, yougame::active(), settings.mode)) {
+#else
   if (!local_peer.enabled && !server_allowed) {
+#endif
+#ifdef YOUGAME_AGENT_TEST_HOOK
+    if (yougame::agent_test::agent_script)
+      yougame::agent_test::input_policy.allowed(
+          yougame::agent_test::live_input_state(settings.mode), yougame::agent_test::InputKey::Script,
+          [](const char* line) { host::log("%s", line); });
+#endif
     fail("Matchmaking is off in automated runs");
     host::log("slippi: matchmaking blocked: hidden or scripted run without --allow-matchmaking");
     return;
   }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  if (!yougame::net_test::mode_allowed(yougame::net_test::config(), settings.mode)) {
+    host::log("AGENT TEST: net delay refuses %s; Direct only", yougame::net_test::mode_name(settings.mode));
+    fail("AGENT TEST net delay requires Direct");
+    return;
+  }
+#endif
   // Version gate (slippi_version.h): Slippi's servers have named a newer version than the one this
   // build speaks, so it stays out of every online mode until it is updated. Local test peering has
   // no server and is not gated.
@@ -1222,6 +1357,9 @@ void Matchmaking::terminateMmConnection() {
 }
 
 static std::string local_address_string(ENetAddress* mm_address) {
+#ifndef _WIN32
+  if (yg_enet_selected()) return ""; // a YouGame broker launch: no native local-address probe
+#endif
   ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (s == ENET_SOCKET_NULL) return "";
   ENetAddress a;
@@ -1250,7 +1388,7 @@ static int mm_receive(ENetHost* client, json& msg, int timeout_ms) {
     if (ev.type == ENET_EVENT_TYPE_RECEIVE) {
       std::string s((const char*)ev.packet->data, ev.packet->dataLength);
       enet_packet_destroy(ev.packet);
-      try { msg = json::parse(s); } catch (const std::exception& e) { host::log("slippi: bad matchmaking JSON: %s", e.what()); return -3; }
+      try { msg = json::parse(s); } catch (const std::exception& e) { host::log("slippi: bad matchmaking JSON"); return -3; }
       return 0;
     }
     if (ev.type == ENET_EVENT_TYPE_DISCONNECT) return -2;
@@ -1301,7 +1439,7 @@ static json local_peer_ticket(const UserInfo& me, Matchmaking::OnlinePlayMode mo
 }
 
 void Matchmaking::startMatchmaking() {
-  if (!local_peer.enabled) {
+  if (!yougame::active() && !local_peer.enabled) {
     std::string error;
     if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
       fail(error.empty() ? "Could not check Slippi version. Try again." : error);
@@ -1310,8 +1448,27 @@ void Matchmaking::startMatchmaking() {
     if (is_mm_terminated_ || state_ != INITIALIZING) return;
   }
   client_ = nullptr;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  // Recheck at the routing boundary: an agent search must never fall through to Slippi.
+  if (yougame::agent_test::agent_script) {
+    if (!yougame::agent_test::matchmaking_allowed(local_peer.enabled, server_allowed, true, yougame::active(), search_settings_.mode)) {
+      yougame::agent_test::input_policy.allowed(
+          yougame::agent_test::live_input_state(search_settings_.mode), yougame::agent_test::InputKey::Script,
+          [](const char* line) { host::log("%s", line); });
+      fail("Matchmaking is off in automated runs");
+      return;
+    }
+    startYouGameMatchmaking();
+    return;
+  }
+#endif
   UserInfo me = user_->GetUserInfo();
   static std::mt19937 rng((uint32_t)time_ms());
+
+  if (yougame::active() && !local_peer.enabled) {
+    startYouGameMatchmaking();
+    return;
+  }
 
   if (local_peer.enabled) {
     // 2-4 local instances peer directly. The match is the get-ticket-resp the server would send,
@@ -1320,10 +1477,8 @@ void Matchmaking::startMatchmaking() {
     json resp = local_peer_ticket(me, search_settings_.mode);
     if (!ingest_ticket(Ticket{resp})) return;
     state_ = OPPONENT_CONNECTING;
-    std::string peers;
-    for (auto& ip : remote_ips_) peers += (peers.empty() ? "" : ", ") + ip;
-    host::log("slippi: local peer test: %s, player %d of %zu on port %d (decider %d), peers %s", mm_result_.id.c_str(),
-              local_player_index_, player_info_.size(), host_port_, is_host_, peers.c_str());
+    host::log("slippi: local peer test: %s, player %d of %zu (decider %d)", mm_result_.id.c_str(),
+              local_player_index_, player_info_.size(), is_host_);
     return;
   }
 
@@ -1371,6 +1526,51 @@ void Matchmaking::startMatchmaking() {
   if (!err.empty()) { fail(err); host::log("slippi: mm error: %s", err.c_str()); return; }
   state_ = MATCHMAKING;
   host::log("slippi: matchmaking ticket created");
+}
+
+// Launched by YouGame: the search runs through YouGame (yougame_link.h), which hands back the same
+// facts a get-ticket-resp carries. They go through ingest_ticket like a Slippi ticket, so the
+// netplay client connects exactly as before; the address is the one that answered YouGame's punch.
+void Matchmaking::startYouGameMatchmaking() {
+  static std::mt19937 rng((uint32_t)time_ms());
+  host_port_ = forced_port ? forced_port : 41000 + (int)(rng() % 10000);
+  yougame::Search search;
+  search.mode = (int)search_settings_.mode;
+  // Only Direct sends the code; the other modes just ask whether the field is empty.
+  std::string code;
+  const bool folded = yougame::friends::direct_code_from_game(search_settings_.connect_code, &code);
+  if (search.mode == 2 && !folded) {
+    host::log("slippi: YouGame search refused a Direct code with characters outside A-Z, 0-9 and #");
+    fail("Enter a code like NAME#123");
+    return;
+  }
+  search.direct_code = folded ? code : search_settings_.connect_code;
+  search.friend_room = search_settings_.friend_room;
+  search.udp_port = (uint16_t)host_port_;
+  state_ = MATCHMAKING;
+  yougame::Match match = yougame::find_match(search, [this] { return is_mm_terminated_ || state_ != MATCHMAKING; });
+  if (is_mm_terminated_ || state_ != MATCHMAKING) return;
+  if (!match.ok) {
+    if (match.retry) { host::log("slippi: YouGame match not reachable (%s), searching again", match.error.c_str()); state_ = INITIALIZING; return; }
+    fail(match.error);
+    return;
+  }
+  json resp;
+  resp["type"] = "get-ticket-resp";
+  resp["matchId"] = match.match_id;
+  resp["isHost"] = match.host;
+  json players = json::array();
+  for (const auto& p : match.players) {
+    // The local player's address only has to differ from everyone else's external one, so
+    // ingest_ticket takes the address that answered the punch for each remote.
+    const std::string addr = p.local ? "0.0.0.0:" + std::to_string(host_port_) : p.address;
+    players.push_back({{"uid", p.id}, {"displayName", p.name}, {"connectCode", p.code}, {"port", p.port}, {"isLocalPlayer", p.local},
+                       {"ipAddress", addr}, {"ipAddressLan", addr}});
+  }
+  resp["players"] = players;
+  ingest_ticket(Ticket{resp});
+  state_ = OPPONENT_CONNECTING;
+  host::log("slippi: YouGame opponent found (decider: %d)", is_host_);
 }
 
 void Matchmaking::handleMatchmaking() {
@@ -1509,7 +1709,7 @@ bool Matchmaking::ingest_ticket(const Ticket& ticket) {
 
 
 void Matchmaking::handleConnecting() {
-  if (!local_peer.enabled) {
+  if (!yougame::active() && !local_peer.enabled) {
     std::string error;
     if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
       fail(error.empty() ? "Could not check Slippi version. Try again." : error);

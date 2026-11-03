@@ -1,3 +1,24 @@
+#ifdef __APPLE__
+#include "linux_media.h"
+namespace linux_media {
+bool decode_audio(const std::filesystem::path&, int, size_t, std::vector<int16_t>& out, bool* too_long) {
+  out.clear(); if (too_long) *too_long = false; return false;
+}
+bool load_picture(const std::filesystem::path&, uint32_t, uint32_t, uint32_t* w, uint32_t* h, std::vector<uint8_t>& out) {
+  if (w) *w = 0; if (h) *h = 0; out.clear(); return false;
+}
+struct VideoReader::Impl {};
+VideoReader::VideoReader() : impl_(std::make_unique<Impl>()) {}
+VideoReader::~VideoReader() = default;
+bool VideoReader::open(const std::filesystem::path&, std::string* error) {
+  if (error) *error = "Video backgrounds are unavailable on macOS"; return false;
+}
+uint32_t VideoReader::width() const { return 0; }
+uint32_t VideoReader::height() const { return 0; }
+int VideoReader::read(std::vector<uint8_t>&, int64_t*, std::string*) { return 0; }
+bool VideoReader::rewind() { return false; }
+}
+#else
 // Linux media decoding through FFmpeg (libavformat, libavcodec, libswscale, libswresample).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "linux_media.h"
@@ -196,3 +217,4 @@ bool VideoReader::rewind() {
 }
 
 }  // namespace linux_media
+#endif

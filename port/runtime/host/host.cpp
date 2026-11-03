@@ -1,6 +1,11 @@
 // Host services: memory, disc, boot, event delivery, time, MMIO, logging.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
+#ifdef YOUGAME_AGENT_TEST_HOOK
+#include "yougame_agent_paths.h"
+#endif
 #include "host.h"
+#include "sim_work.h"
 #include "audio.h"
 #include "cosmetic_mods.h"
 #include "gameplay_policy.h"
@@ -28,6 +33,7 @@
 #include "jukebox.h"
 #include "slippi_online.h"
 #endif
+#include "yougame_link.h"
 #include "gecko_data.h"
 #include "render_options.h"
 #include <algorithm>
@@ -164,8 +170,10 @@ static void log_drain(bool wait_for_io) {
   std::string batch;
   { std::lock_guard<std::mutex> lock(g_log_mutex); batch.swap(g_log_pending); }
   if (batch.empty()) return;
-  std::fwrite(batch.data(), 1, batch.size(), stdout);
-  std::fflush(stdout);
+  // Under the YouGame app's stdio bridge stdout carries only the bridge's lines: the log goes to stderr.
+  FILE* out = yougame::stdio_bridge() ? stderr : stdout;
+  std::fwrite(batch.data(), 1, batch.size(), out);
+  std::fflush(out);
   if (g_log_file) { std::fwrite(batch.data(), 1, batch.size(), g_log_file); std::fflush(g_log_file); }
 }
 static void log_enqueue(const char* data, size_t len) {
@@ -248,7 +256,7 @@ void set_die_hook(void (*hook)(const char*)) { g_die_hook = hook; }
   std::fflush(stdout);
   // MELEE_TEST_RAM_DUMP=<file> (tests): the guest memory as it was when the game stopped, so a stop
   // inside a mod's own code can be read afterwards (the code a mod writes at run time is in no file).
-  if (const char* path = std::getenv("MELEE_TEST_RAM_DUMP"); path && *path && ram && ram_size) {
+  if (const char* path = host::test_env::getenv("MELEE_TEST_RAM_DUMP"); path && *path && ram && ram_size) {
     if (FILE* f = std::fopen(path, "wb")) { std::fwrite(ram, 1, ram_size, f); std::fclose(f); }
   }
   if (void (*hook)(const char*) = g_die_hook) {
@@ -420,8 +428,10 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
       if (so >= fst.size()) continue;
       const char* n = (const char*)&fst[so];
       size_t maxlen = fst.size() - so;
-      bool match = pass == 0 ? (std::strncmp(n, name.c_str(), maxlen) == 0) : (_strnicmp(n, name.c_str(), maxlen) == 0);
-      if (match && std::strlen(n) == name.size()) {
+      const char* end = static_cast<const char*>(std::memchr(n, 0, maxlen));
+      if (!end || size_t(end - n) != name.size()) continue;
+      bool match = pass == 0 ? (std::strncmp(n, name.c_str(), name.size()) == 0) : (_strnicmp(n, name.c_str(), name.size()) == 0);
+      if (match) {
         if (offset) *offset = be32(i * 12 + 4);
         if (size) *size = be32(i * 12 + 8);
         return true;
@@ -768,6 +778,7 @@ static void apply_mod_code() {
     char title[0x41] = {};
     disc_read(0x20, title, 0x40);
     slippi::online::LocalBuild build;
+    build.static_engine = true;
     build.mod_view = true;
     build.name = title[0] ? std::string(title) : std::string("a modded disc");
     slippi::online::set_local_build(build);
@@ -798,13 +809,14 @@ static void apply_mod_code() {
     char title[0x41] = {};
     disc_read(0x20, title, 0x40);
     slippi::online::LocalBuild build;
+    build.static_engine = true;
     build.mod_view = true;
     build.extended_content = true;   // the Static engine executes the mod's own code
     build.fingerprint = hex;
     build.name = title[0] ? std::string(title) : std::string("a modded disc");
     slippi::online::set_local_build(build);
     slippi::online::set_native_gameplay_profile(slippi::online::NativeGameplayProfile::OtherMod);
-    log("mods: online plays Direct and Teams against the same mod (%s, %s)", build.name.c_str(), hex.substr(0, 16).c_str());
+    log(yougame::active() ? "mods: online plays Unranked, Direct and Teams against the same verified build (%s, %s)" : "mods: online plays Direct and Teams against the same mod (%s, %s)", build.name.c_str(), hex.substr(0, 16).c_str());
   }
 }
 // At each retrace: code blocks written since the last look are compared again. A 64 KB block can
@@ -878,7 +890,7 @@ static uint64_t ram_hash() {
 static void test_peek_and_dump() {
   static const auto peek = [] {
     std::pair<std::vector<uint32_t>, uint32_t> out{{}, 0};
-    const char* v = std::getenv("MELEE_TEST_PEEK");
+    const char* v = host::test_env::getenv("MELEE_TEST_PEEK");
     if (!v) return out;
     const char* at = std::strchr(v, '@');
     if (!at) return out;
@@ -908,7 +920,7 @@ static void test_peek_and_dump() {
   // as the settings panel would (a switch during a session, in hidden test runs).
   static const std::vector<uint32_t> toggles = [] {
     std::vector<uint32_t> out;
-    if (const char* v = std::getenv("MELEE_TEST_WIDESCREEN_TOGGLES"))
+    if (const char* v = host::test_env::getenv("MELEE_TEST_WIDESCREEN_TOGGLES"))
       for (const char* p = v; *p;) { char* end = nullptr; out.push_back((uint32_t)std::strtoul(p, &end, 0)); if (end == p) break; p = (*end == ',') ? end + 1 : end; }
     return out;
   }();
@@ -1071,10 +1083,13 @@ void boot_setup() {
       gecko_bytes ? gecko_address : fst_addr);
   install_gecko_boot();
   if (g_mod_disc) apply_mod_code();
+#ifndef MELEE_NO_SLIPPI
+  slippi::online::load_ranked_rules();
+#endif
   // MELEE_TEST_INTERPRET=<addr>[,<addr>...]: run those functions in the interpreter on any disc, so
   // interpreted and compiled behaviour can be compared on the vanilla game. Test runs only (hidden
   // and headless runs never open the GameCube adapter, which is what marks them here).
-  if (const char* v = std::getenv("MELEE_TEST_INTERPRET"); v && options.no_gc_adapter) {
+  if (const char* v = host::test_env::getenv("MELEE_TEST_INTERPRET"); v && options.no_gc_adapter) {
     for (const char* p = v; *p;) {
       char* end = nullptr;
       const uint32_t a = (uint32_t)std::strtoul(p, &end, 16);
@@ -1217,7 +1232,7 @@ static void note_guest_stack_overrun() {
   const uint32_t thread = rd32(kCurrentThread);
   if (thread - ppc::RAM_BASE >= ram_size - 0x310u) return;
   // MELEE_TEST_GUEST_STACK_KB=<n> (tests): the stack counts as n KB, so ordinary calls run past it.
-  static const uint32_t test_kb = [] { const char* v = std::getenv("MELEE_TEST_GUEST_STACK_KB"); return v ? (uint32_t)std::atoi(v) : 0u; }();
+  static const uint32_t test_kb = [] { const char* v = host::test_env::getenv("MELEE_TEST_GUEST_STACK_KB"); return v ? (uint32_t)std::atoi(v) : 0u; }();
   const uint32_t base = rd32(thread + kStackBase), sp = cpu->r[1];
   const uint32_t end = test_kb ? base - test_kb * 1024u : rd32(thread + kStackEnd);
   if (end - ppc::RAM_BASE >= ram_size || base <= end || sp >= end || sp - ppc::RAM_BASE >= ram_size) return;
@@ -1432,7 +1447,7 @@ static void title_demo_store_stage(ppc::Context& c, uint8_t*) {
   // MELEE_TEST_DEMO_GROWTH=<bytes>: test runs only (hidden runs never open the GameCube adapter),
   // stands in for installed skins that much larger than their originals.
   static const uint32_t test_growth = [] {
-    const char* v = std::getenv("MELEE_TEST_DEMO_GROWTH");
+    const char* v = host::test_env::getenv("MELEE_TEST_DEMO_GROWTH");
     return v && options.no_gc_adapter ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u;
   }();
   const uint64_t fighters = (uint64_t)kOriginalFighters + cosmetics::largest_fighter_growth() + test_growth;
@@ -1550,7 +1565,7 @@ static void apply_test_adventure_scene() {
   static bool tried = false;
   if (tried || !ram) return;
   tried = true;
-  const char* v = std::getenv("MELEE_TEST_ADVENTURE_SCENE");
+  const char* v = host::test_env::getenv("MELEE_TEST_ADVENTURE_SCENE");
   if (!v || !*v) return;
   g_set_next_scene_original = ppc::set_hook(kSetNextScene, set_next_scene_test);
   if (!g_set_next_scene_original) { ppc::set_hook(kSetNextScene, nullptr); log("test: the scene function has no dispatch entry"); return; }
@@ -1754,7 +1769,7 @@ void apply_final_destination_guard() {
   if (done || !ram || calls++ % 60) return;
   // MELEE_TEST_FD_NO_ANIMATION (tests only, hidden and headless runs): the lookup finds nothing, as
   // with such a skin. MELEE_TEST_FD_NO_GUARD with it: the stop is left in, to show the report.
-  const bool test = options.no_gc_adapter && std::getenv("MELEE_TEST_FD_NO_ANIMATION");
+  const bool test = options.no_gc_adapter && host::test_env::getenv("MELEE_TEST_FD_NO_ANIMATION");
   if (!test && !cosmetics::stage_skin_active("GrNLa")) return;
   done = true;
   for (uint32_t i = 0; i < 4; ++i)
@@ -1763,10 +1778,10 @@ void apply_final_destination_guard() {
       return;
     }
   if (!ppc::redirect_to_interpreter(kPhase)) { log("mods: Final Destination's background code could not be run from RAM; a skin without its animations can stop the game"); return; }
-  const bool guard = !(test && std::getenv("MELEE_TEST_FD_NO_GUARD"));
+  const bool guard = !(test && host::test_env::getenv("MELEE_TEST_FD_NO_GUARD"));
   if (guard) wr32(kStop, 0x4800012Cu);        // b 8021B8FC: return 0, the phase stays
   if (test) {
-    if (std::strcmp(std::getenv("MELEE_TEST_FD_NO_ANIMATION"), "0")) wr32(kLookup, 0x38600000u);   // li r3, 0 ("0": the stage's own animation, guard in place)
+    if (std::strcmp(host::test_env::getenv("MELEE_TEST_FD_NO_ANIMATION"), "0")) wr32(kLookup, 0x38600000u);   // li r3, 0 ("0": the stage's own animation, guard in place)
     // The test's match is played on Final Destination whatever the stage select picked (Stage_802251E8).
     ppc::add_entry_hook(0x802251E8u, [](ppc::Context& c) { if (c.r[3] >= 2 && c.r[3] <= 32) c.r[3] = 32; });
     ppc::add_entry_hook(kPhase, [](ppc::Context& c) {
@@ -2023,7 +2038,7 @@ void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   note_file_asked(path);
   // MELEE_TEST_HEAP_REPORT (tests only, hidden and headless runs): the heap stop's lines once, after
   // that many files, without the stop.
-  if (static const char* test = options.no_gc_adapter ? std::getenv("MELEE_TEST_HEAP_REPORT") : nullptr; test && g_recent_file_count == (uint32_t)std::atoi(test))
+  if (static const char* test = options.no_gc_adapter ? host::test_env::getenv("MELEE_TEST_HEAP_REPORT") : nullptr; test && g_recent_file_count == (uint32_t)std::atoi(test))
     { report_heap_stop_lines(0x80431F28u, 0, 0); report_object_memory(); }
   {
     // The results screen asks for its own file before any fighter's (see clear_result_rows_without_file).
@@ -2109,7 +2124,7 @@ void clean_mode_music_frame() {
     constexpr uint32_t kVolumeList = 0x804D774Cu;
     wr32(node + 0x28, 0); wr32(node + 0x2C, 0); wr32(node + 0x34, 0);
     // MELEE_TEST_CLEAN_MUSIC_OLD (tests only): the byte alone, as before, to show the slot leak.
-    static const bool old_way = std::getenv("MELEE_TEST_CLEAN_MUSIC_OLD") != nullptr;
+    static const bool old_way = host::test_env::getenv("MELEE_TEST_CLEAN_MUSIC_OLD") != nullptr;
     if (old_way) wr8(node + 0x26, 1);
     else if (rd8(node + 0x26) == 0 && (rd8(node + 0x09) & 8) == 0) {
       wr32(node + 0x20, rd32(kVolumeList)); wr32(kVolumeList, node); wr8(node + 0x26, 1);
@@ -2167,7 +2182,7 @@ static void preload_make_room(ppc::Context& c) {
   if (!snap.complete) return;
   // MELEE_TEST_PRELOAD_SQUEEZE (tests only, hidden runs): act as though the heap were full, to show
   // the release working on a real session.
-  static int squeeze = (std::getenv("MELEE_TEST_PRELOAD_SQUEEZE") && options.no_gc_adapter) ? 8 : 0;
+  static int squeeze = (host::test_env::getenv("MELEE_TEST_PRELOAD_SQUEEZE") && options.no_gc_adapter) ? 8 : 0;
   const bool test_full = squeeze > 0 && snap.largest_gap >= need;
   if (snap.largest_gap >= need && !test_full) return;
   auto in_heap = [&](uint32_t e) {
@@ -2399,7 +2414,7 @@ void install_mod_disc_guards() {
   if (!ppc::redirect_to_host(0x8033796Cu, dvd_convert_path_checked)) log("mods: the file name search keeps the game's own code");
   // MELEE_TEST_NO_DEMO_FIT (tests only, hidden and headless runs): the draw is left as the disc made
   // it, to show the stop and its report.
-  if (!(std::getenv("MELEE_TEST_NO_DEMO_FIT") && options.no_gc_adapter)) ppc::add_entry_hook(0x801BF3F8u, title_demo_fit);
+  if (!(host::test_env::getenv("MELEE_TEST_NO_DEMO_FIT") && options.no_gc_adapter)) ppc::add_entry_hook(0x801BF3F8u, title_demo_fit);
   ppc::add_entry_hook(0x80388220u, report_heap_stop);
 }
 // Every disc: the preloader's full heap (preload_make_room).
@@ -2517,9 +2532,7 @@ void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame) {
   }
 }
 
-static void digest_state() {
-  if (!g_state_digest) return;
-  MuStatePod state{};
+static void read_digest_state(MuStatePod& state) {
   if (native_state_snapshot) {
     native_state_snapshot(&state);
   } else {
@@ -2548,6 +2561,19 @@ static void digest_state() {
       f.facing = rd32(fp + 0x2Cu);
     }
   }
+}
+
+#ifdef YOUGAME_AGENT_TEST_HOOK
+void agent_test_digest_state(MuStatePod* out) {
+  *out = {};
+  read_digest_state(*out);
+}
+#endif
+
+static void digest_state() {
+  if (!g_state_digest) return;
+  MuStatePod state{};
+  read_digest_state(state);
   std::fprintf(g_state_digest, "%u,%08X,%08X", g_retraces, state.rng, state.scene);
   for (const auto& f : state.player) {
     const uint32_t* words = &f.present;
@@ -2623,7 +2649,25 @@ static void publish_lobby_status() {
   }
 }
 
-void publish_lobby_result(int winner_index, int end_method) {
+void publish_lobby_result(int winner_index, int end_method, int lras, const uint8_t* placements) {
+  if (yougame::active() && slippi::online::session_mode() >= 0) {
+    yougame::GameEnd end;
+    end.winner = winner_index;
+    end.end_method = end_method;
+    end.lras = lras;
+    if (placements) {
+      end.has_placements = true;
+      for (int i = 0; i < 4; ++i) end.placements[i] = placements[i];
+    }
+    const auto facts = slippi::online::last_game_facts();
+    end.stage = facts.stage;
+    end.frames = facts.frames;
+    end.characters[0] = facts.characters[0];
+    end.characters[1] = facts.characters[1];
+    end.rng = facts.rng;
+    for (int i = 0; i < 4; ++i) end.teams[i] = facts.teams[i];
+    yougame::game_ended(end);
+  }
   const auto& cfg = slippi::online::config();
   if (cfg.lobby_code.empty() || cfg.lobby_status_file.empty()) return;
   const int local = slippi::online::local_player_index();
@@ -2655,7 +2699,7 @@ static TickTiming g_tick_timing;
 TickTiming& tick_timing() { return g_tick_timing; }
 
 // Simulation-thread cost accounting: HLE entry points add their time to a slot; at the next
-// retrace the frame's work time (sleep excluded) is logged when it exceeds 20 ms, with the
+// retrace the frame's wall time (including in-frame waits) is logged when it exceeds 20 ms, with the
 // slots that explain it, so a hitch is attributed instead of guessed.
 // Seconds per time stamp counter tick, measured against the performance counter over 20 ms at startup.
 const double tsc_seconds = [] {
@@ -2671,6 +2715,7 @@ static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
 static ULONG64 g_slow_frame_cycles = 0;   // this thread's cycle count at the start of the frame, for the slow-frame line
 static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode", "input", "wait", "late"};   // record includes texsnap and observe; gxdecode includes record and queue
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0, g_last_sim_work_ms = 0.0;
+static FILE* g_sim_times = nullptr;
 static bool g_last_sim_late = false;   // the most recent frame missed its place on the 60 Hz schedule
 static ULONG64 g_sim_frame_start_cycles = 0;   // this thread's cycle count at g_sim_frame_start (MELEE_SIM_TIMES)
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
@@ -2700,6 +2745,16 @@ static std::string sim_cost_line(uint32_t frames) {
   return buf;
 }
 double last_sim_frame_ms() { return g_last_sim_ms; }
+void report_sim_work() {
+  static std::atomic<bool> reported{false};
+  if (reported.exchange(true)) return;
+  if (g_sim_times) std::fflush(g_sim_times);
+  const auto& t = perf::sim_timer;
+  log("perf: sim work mean %.2f ms p99 %.2f ms max %.2f ms over %llu frames (excluding pacing waits); game step mean %.2f p99 %.2f, gxdecode mean %.2f, submit mean %.2f, input mean %.2f; waits mean %.2f ms; resim frames %llu",
+      t.work.mean(), t.work.p99(), t.work.maximum, (unsigned long long)t.work.count,
+      t.step.mean(), t.step.p99(), t.mean(perf::Stage::Decode), t.mean(perf::Stage::Submit),
+      t.mean(perf::Stage::Input), t.mean(perf::Stage::Wait), (unsigned long long)t.resim_frames);
+}
 double last_sim_frame_work_ms() { return g_last_sim_work_ms; }
 bool last_sim_frame_late() { return g_last_sim_late; }
 
@@ -2712,7 +2767,7 @@ static void apply_early_rng_seed() {
   static uint32_t seed = 0, at = 0;
   if (!parsed) {
     parsed = true;
-    if (const char* text = std::getenv("MELEE_TEST_EARLY_RNG_SEED")) {
+    if (const char* text = host::test_env::getenv("MELEE_TEST_EARLY_RNG_SEED")) {
       char* end = nullptr;
       seed = (uint32_t)std::strtoul(text, &end, 0);
       if (end && *end == '@') {
@@ -2742,7 +2797,7 @@ static void apply_early_rng_seed() {
 // for such a system; =2 does the same with the measurement ignored, which is the old behaviour.
 static std::atomic<double> g_sleep_slack{0.0};   // seconds a timed sleep wakes late by, as last measured
 static int coarse_sleep_test() {
-  static const int mode = [] { const char* v = std::getenv("MELEE_TEST_COARSE_SLEEP"); return v ? std::atoi(v) : 0; }();
+  static const int mode = [] { const char* v = host::test_env::getenv("MELEE_TEST_COARSE_SLEEP"); return v ? std::atoi(v) : 0; }();
   return mode;
 }
 // One timed sleep of about `seconds`: the high resolution timer, or a millisecond sleep before
@@ -2849,7 +2904,7 @@ static void log_stack_peak(bool at_exit) {
 // so a number that climbs from scene to scene is host frames that never returned. Each new high by
 // 4 KB is followed by the host return addresses at that point (offsets into this program, for the map).
 static void test_stack_depth(bool at_exit) {
-  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_STACK_DEPTH"); return v && *v == '1'; }();
+  static const bool on = [] { const char* v = host::test_env::getenv("MELEE_TEST_STACK_DEPTH"); return v && *v == '1'; }();
   if (!on) return;
   static uint32_t scene = ~0u;
   static size_t least = SIZE_MAX, high = 0;
@@ -2886,6 +2941,7 @@ static void test_stack_depth(bool at_exit) {
 
 bool wait_until_console_time(uint64_t tb) {
   if (options.fast || tb >= g_next_retrace_tb || g_next_retrace_tb - tb > TB_PER_FRAME) return false;
+  perf::Scope wait_cost(perf::Stage::Wait);
   // Position of `tb` inside the frame, as a fraction, mapped onto the frame's real-time period.
   const double into_frame = 1.0 - (double)(g_next_retrace_tb - tb) / (double)TB_PER_FRAME;
   const auto deadline = g_next_frame + std::chrono::microseconds((long long)(into_frame * 16667.0 / g_emulation_speed));
@@ -2901,6 +2957,7 @@ bool wait_until_console_time(uint64_t tb) {
 }
 
 void retrace() {
+  if (!perf::active) perf::active = &perf::sim_timer;
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   g_frame_submitted = false;
   ++g_retraces;
@@ -2912,6 +2969,7 @@ void retrace() {
   g_profiler_frame.store(g_retraces, std::memory_order_relaxed);
   {
     double now = now_seconds();
+    const auto work_frame = perf::active->finish();
     if (g_sim_frame_start > 0.0) {
       g_last_sim_ms = (now - g_sim_frame_start) * 1000.0;
       g_last_sim_work_ms = g_last_sim_ms - g_sim_costs[SIM_WAIT] * 1000.0;
@@ -2925,7 +2983,10 @@ void retrace() {
         // was waiting or pushed aside, close to it means the work itself was slow.
         ULONG64 cycles = 0; QueryThreadCycleTime(GetCurrentThread(), &cycles);
         const double ran_ms = g_slow_frame_cycles ? (double)(cycles - g_slow_frame_cycles) * tsc_seconds * 1000.0 : 0.0;
-        log("sim frame %u took %.1f ms, thread ran %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, ran_ms, detail, n ? "" : " guest code");
+        log("sim frame %u took %.1f ms, thread ran %.1f ms (ms:%s%s); exclusive decode %.3f submit %.3f step %.3f wait %.3f",
+            g_retraces, g_last_sim_ms, ran_ms, detail, n ? "" : " guest code",
+            work_frame.get(perf::Stage::Decode), work_frame.get(perf::Stage::Submit),
+            work_frame.get(perf::Stage::Step), work_frame.get(perf::Stage::Wait));
         // This is end-of-frame context rather than attribution. With --profile, the sampling
         // report below also names routines sampled during this exact slow frame.
         if (cpu) {
@@ -2937,17 +2998,22 @@ void retrace() {
           }
         }
       }
-      // MELEE_SIM_TIMES=<csv>: every simulation frame's work time and its cost slots, for
+      // MELEE_SIM_TIMES=<csv>: every simulation interval's wall time and its cost slots, for
       // percentile comparisons between the engines (the log above only names frames over 20 ms).
       static FILE* sim_times = [] {
         const char* path = std::getenv("MELEE_SIM_TIMES");
-        FILE* f = path && *path ? std::fopen(path, "w") : nullptr;
+        #ifdef YOUGAME_AGENT_TEST_HOOK
+          FILE* f = path && *path ? yougame::agent_paths::output(path, false, false, "w") : nullptr;
+#else
+          FILE* f = path && *path ? std::fopen(path, "w") : nullptr;
+#endif
         if (f) {
           std::setvbuf(f, nullptr, _IOFBF, 1 << 20);
           std::fputs("retrace,scene_major,scene_minor,match_frame,sim_ms,cpu_ms", f);
           for (int i = 0; i < SIM_COST_COUNT; ++i) std::fprintf(f, ",%s", g_sim_cost_names[i]);
-          std::fputc('\n', f);
+          std::fputs(",work_ms,step_ms,decode_excl_ms,submit_ms,wait_excl_ms\n", f);
         }
+        g_sim_times = f;
         return f;
       }();
       if (sim_times) {
@@ -2959,7 +3025,8 @@ void retrace() {
         const double cpu_ms = g_sim_frame_start_cycles ? (double)(cycles - g_sim_frame_start_cycles) * tsc_seconds * 1000.0 : 0.0;
         std::fprintf(sim_times, "%u,%u,%u,%u,%.3f,%.3f", completed_frame, major, minor, match_frame, g_last_sim_ms, cpu_ms);
         for (int i = 0; i < SIM_COST_COUNT; ++i) std::fprintf(sim_times, ",%.3f", g_sim_costs[i] * 1000.0);
-        std::fputc('\n', sim_times);
+        std::fprintf(sim_times, ",%.3f,%.3f,%.3f,%.3f,%.3f\n", work_frame.work_ms(), work_frame.get(perf::Stage::Step),
+                     work_frame.get(perf::Stage::Decode), work_frame.get(perf::Stage::Submit), work_frame.get(perf::Stage::Wait));
         if (g_retraces % 600 == 0) std::fflush(sim_times);
       }
     }
@@ -3002,6 +3069,7 @@ void retrace() {
   } else {
     g_frame_time = now_seconds();
   }
+  perf::active->begin();
   g_sim_frame_start = now_seconds();
   QueryThreadCycleTime(GetCurrentThread(), &g_slow_frame_cycles);
   static const bool sim_times_wanted = [] { const char* v = std::getenv("MELEE_SIM_TIMES"); return v && *v; }();
@@ -3047,14 +3115,14 @@ void retrace() {
   // way a maximized or fullscreen window does shortly after start.
   static const struct ResizeAt {
     uint32_t at = 0; int w = 0, h = 0;
-    ResizeAt() { if (const char* v = std::getenv("MELEE_TEST_RESIZE_AT")) std::sscanf(v, "%u:%dx%d", &at, &w, &h); }
+    ResizeAt() { if (const char* v = host::test_env::getenv("MELEE_TEST_RESIZE_AT")) std::sscanf(v, "%u:%dx%d", &at, &w, &h); }
   } resize_at;
   if (resize_at.at && g_retraces == resize_at.at) window_set_client_size(resize_at.w, resize_at.h);
   // MELEE_TEST_RESIZE_EVERY=<retraces>:<w1>x<h1>,<w2>x<h2> (tests): the window switches between the
   // two sizes over and over, a stress run for what a resize does to the renderer and its upscalers.
   static const struct ResizeEvery {
     uint32_t every = 0; int w1 = 0, h1 = 0, w2 = 0, h2 = 0;
-    ResizeEvery() { if (const char* v = std::getenv("MELEE_TEST_RESIZE_EVERY")) std::sscanf(v, "%u:%dx%d,%dx%d", &every, &w1, &h1, &w2, &h2); }
+    ResizeEvery() { if (const char* v = host::test_env::getenv("MELEE_TEST_RESIZE_EVERY")) std::sscanf(v, "%u:%dx%d,%dx%d", &every, &w1, &h1, &w2, &h2); }
   } resize_every;
   if (resize_every.every && g_retraces > 0 && g_retraces % resize_every.every == 0) {
     const bool second = (g_retraces / resize_every.every) % 2 == 1;

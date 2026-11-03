@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include "ax_ucode.h"
+#ifdef __APPLE__
+#include "../../mac/platform_paths.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -334,7 +337,11 @@ const int16_t* polyphase_coefs() {
   std::string paths[6];
   if (const char* p = std::getenv("MELEE_DSP_COEF")) paths[0] = p;
   paths[1] = "User\\GC\\dsp_coef.bin";
+#ifdef __APPLE__
+  paths[2] = (mac_host::resources() / "Sys/GC/dsp_coef.bin").string();
+#else
   paths[2] = "Sys\\GC\\dsp_coef.bin";
+#endif
 #ifndef MELEE_NO_SLIPPI
   // The build without the Slippi layer reads nothing from another program's folders: it stops at
   // the game folder's own table.

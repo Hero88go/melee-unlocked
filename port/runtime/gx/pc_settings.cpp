@@ -1,5 +1,10 @@
 ﻿// SPDX-License-Identifier: GPL-2.0-or-later
+#include "test_env.h"
 #include "pc_settings.h"
+#include "settings_imgui_input.h"
+#ifdef __APPLE__
+#include "../../mac/platform_paths.h"
+#endif
 #include <mutex>
 #include <thread>
 #include "gx_streamline.h"
@@ -48,6 +53,11 @@
 namespace gecko { int option_screen_shake_percent = 100; }
 #include "lag_test_codes.h"
 #include "gecko_data.h"
+#include "yougame_link.h"
+#include "yougame_parity.h"
+#include "yougame_friends.h"
+#include <chrono>
+#include "yougame_mode_policy.h"
 #include "hid_pad.h"
 #include "phob_menu.h"
 #include "updater.h"
@@ -56,6 +66,7 @@ namespace gecko { int option_screen_shake_percent = 100; }
 // "Faster sound effects" (Audio): shown since its timing was measured.
 static constexpr bool kShowFasterSoundEffects = true;
 #include "controller_profiles.h"
+#include "settings_profile_bindings.h"
 #include "dolphin_profile.h"
 #include "cosmetic_mods.h"
 #include "skin_thumbnail.h"
@@ -139,7 +150,11 @@ std::string ui_source_asset_path_uncached(const char* source, const char* filena
   const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
   if (length > 0 && length < MAX_PATH) {
     const std::filesystem::path packaged =
+#ifdef __APPLE__
+        mac_host::resources() / "ui_sources" / source / filename;
+#else
         std::filesystem::path(module).parent_path() / "ui_sources" / source / filename;
+#endif
     if (std::filesystem::exists(packaged)) return packaged.string();
   }
   return source_asset.string();
@@ -262,7 +277,7 @@ void combo_track(uint64_t sequence) {
   if (sequence == g_combo_sequence) return;
   g_combo_sequence = sequence;
   const double now = ImGui::GetTime();
-  static const bool log = [] { const char* v = std::getenv("MELEE_TEST_COMBO_LOG"); return v && *v == '1'; }();
+  static const bool log = [] { const char* v = host::test_env::getenv("MELEE_TEST_COMBO_LOG"); return v && *v == '1'; }();
   if (log && sequence % 120 == 0) host::log("combo: frame %llu match %d P1 %.0f%% stun %d link %d, P2 %.0f%% stun %d link %d", (unsigned long long)sequence, g_hud_match ? 1 : 0, g_hud_players[0].percent, g_hud_players[0].stunned ? 1 : 0, g_hud_players[0].combo_link, g_hud_players[1].percent, g_hud_players[1].stunned ? 1 : 0, g_hud_players[1].combo_link);
   for (int slot = 0; slot < 4; ++slot) {   // `slot` is the player hit
     const HudPlayerSnapshot& p = g_hud_players[slot];
@@ -392,6 +407,20 @@ static void draw_player_nicknames() {
     draw->AddText(ImGui::GetFont(), font_size, ImVec2(x, y), IM_COL32(255, 255, 255, 255), label.c_str());
   }
   draw->PopClipRect();
+}
+
+// Under the YouGame app, between matches: how to get back to YouGame. The game keeps running after an
+// online result (Melee Unlocked's own rematch menu), and the app's page is right behind it.
+static void draw_back_to_yougame_hint() {
+  const OverlayBounds bounds = overlay_bounds();
+  const float font_size = std::clamp((bounds.bottom - bounds.top) / 38.0f, 12.0f, 18.0f);
+  const char* label = yougame::parity::kMenuHint;
+  const ImVec2 size = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label);
+  const ImVec2 at(bounds.right - size.x - 14.0f, bounds.top + 10.0f);
+  ImDrawList* draw = ImGui::GetForegroundDrawList();
+  draw->AddRectFilled(ImVec2(at.x - 7, at.y - 3), ImVec2(at.x + size.x + 7, at.y + font_size + 4),
+                      IM_COL32(9, 11, 22, 190), 5.0f);
+  draw->AddText(ImGui::GetFont(), font_size, at, IM_COL32(236, 238, 246, 235), label);
 }
 
 // Names used both when drawing the Controls list and when saving/loading bindings
@@ -751,34 +780,6 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
   ImGui::PopStyleVar(2);
 }
 
-// ---- Controls: one device's bindings, read and written the same way whatever the device ----
-// The binding tables differ per family (a key code for the keyboard, a button mask of one width or
-// another for each pad), so every place that touched them used to repeat the same six-way branch.
-
-static uint32_t binding_get(host::CaptureDevice kind, int index, int action) {
-  switch (kind) {
-    case host::CaptureDevice::Keyboard:  return (uint32_t)host::g_key_bindings.vk[action];
-    case host::CaptureDevice::XInputPad: return host::g_pad_bindings[index].mask[action];
-    case host::CaptureDevice::DS4Pad:    return host::g_ds4_bindings[index].mask[action];
-    case host::CaptureDevice::SwitchPro: return host::g_swpro_bindings[index].mask[action];
-    case host::CaptureDevice::HidPad:    return host::g_hid_bindings[index].mask[action];
-    case host::CaptureDevice::GCAdapter: return host::g_gc_bindings[index].mask[action];
-    default: return 0;
-  }
-}
-
-static void binding_set(host::CaptureDevice kind, int index, int action, uint32_t value) {
-  switch (kind) {
-    case host::CaptureDevice::Keyboard:  host::g_key_bindings.vk[action] = (int)value; break;
-    case host::CaptureDevice::XInputPad: host::g_pad_bindings[index].mask[action] = (unsigned short)value; break;
-    case host::CaptureDevice::DS4Pad:    host::g_ds4_bindings[index].mask[action] = (unsigned short)value; break;
-    case host::CaptureDevice::SwitchPro: host::g_swpro_bindings[index].mask[action] = (unsigned short)value; break;
-    case host::CaptureDevice::HidPad:    host::g_hid_bindings[index].mask[action] = value; break;
-    case host::CaptureDevice::GCAdapter: host::g_gc_bindings[index].mask[action] = (unsigned short)value; break;
-    default: break;
-  }
-}
-
 // ---- per-binding analog level (input_bindings.h), saved as "<the binding's key>_level" ----
 static uint8_t* binding_level(host::CaptureDevice kind, int index, int action) {
   switch (kind) {
@@ -940,7 +941,6 @@ static const std::vector<std::string>& cached_profiles(host::ProfileDevice devic
 // kept in a profile ("Profile 1" unless the player loaded or saved another one), and "Default" in the
 // profile list puts the defaults back without touching that profile. Device numbers are the panel's
 // (0 keyboard, 1-4 Xbox, 5-8 PlayStation, 9-12 adapter, 13-16 Switch, 17-20 box/HID).
-constexpr int kDeviceTabs = 21;
 static host::ProfileBindings g_default_bindings[kDeviceTabs];   // captured before the settings file is read
 static bool g_defaults_captured = false;
 static std::string g_active_profile[kDeviceTabs];
@@ -951,25 +951,6 @@ static std::string g_active_profile[kDeviceTabs];
 // is correct at first boot: nothing has been picked yet, so "Default" is what is showing.
 static bool g_named_profile_active[kDeviceTabs];
 
-static host::CaptureDevice tab_kind_of(int tab, int* index) {
-  *index = 0;
-  if (tab == 0) return host::CaptureDevice::Keyboard;
-  if (tab <= 4) { *index = tab - 1; return host::CaptureDevice::XInputPad; }
-  if (tab <= 8) { *index = tab - 5; return host::CaptureDevice::DS4Pad; }
-  if (tab <= 12) { *index = tab - 9; return host::CaptureDevice::GCAdapter; }
-  if (tab <= 16) { *index = tab - 13; return host::CaptureDevice::SwitchPro; }
-  *index = tab - 17; return host::CaptureDevice::HidPad;
-}
-static host::ProfileBindings bindings_of(int tab) {
-  int index; const host::CaptureDevice kind = tab_kind_of(tab, &index);
-  host::ProfileBindings b{};
-  for (int i = 0; i < (int)host::BindAction::Count; ++i) b[i] = binding_get(kind, index, i);
-  return b;
-}
-static void set_bindings_of(int tab, const host::ProfileBindings& b) {
-  int index; const host::CaptureDevice kind = tab_kind_of(tab, &index);
-  for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, b[i]);
-}
 // ---- bindings saved before L and R were split into the click and the travel ----
 // One table (the settings file's, or a profile's) carried over so it plays exactly as it did; the
 // rule is in input_bindings.h (migrate_trigger_bindings). Levels live in the device's own table.
@@ -1156,6 +1137,8 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     for (const std::string& name : list) {
       if (ImGui::Selectable(name.c_str(), !is_default && name == current)) {
         host::ProfileBindings pb = bindings_of(tab);   // an older profile keeps the current stick keys
+        // Pre-modifier profiles keep the factory defaults for the five appended actions.
+        for (int i = (int)host::BindAction::ModX; i < host::kProfileActions; ++i) pb[i] = g_default_bindings[tab][i];
         const int la = (int)host::BindAction::LAnalog, ra = (int)host::BindAction::RAnalog;
         pb[la] = pb[ra] = host::kProfileActionAbsent;
         if (host::profile_load(device, name, pb)) {
@@ -1164,7 +1147,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
             pb[la] = pb[ra] = 0;
             split_old_trigger_bindings(kind, index, pb);
           }
-          for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
+          set_bindings_of(tab, pb);
           g_active_profile[tab] = name;
           g_named_profile_active[tab] = true;
           status[tab] = "Loaded " + name + ".";
@@ -1217,7 +1200,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
           for (int i = 0; i < (int)host::BindAction::Count; ++i)
             if (pb[i] == 0 && (host::is_stick_action(i) || host::is_cstick_action(i))) pb[i] = now[i];
           if (host::profile_save(device, name, pb)) {
-            for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
+            set_bindings_of(tab, pb);
             g_active_profile[tab] = name;
             g_named_profile_active[tab] = true;
             cached_profiles(device, true);
@@ -1490,7 +1473,7 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
   if (!analog_c) dl->AddRectFilled(P(206, 342), P(762, 432), group, 8 * k);   // both direction rows
 
   int hovered = -1;
-  if (const char* force = std::getenv("MELEE_TEST_HOVER")) hovered = std::atoi(force);   // screenshot hook
+  if (const char* force = host::test_env::getenv("MELEE_TEST_HOVER")) hovered = std::atoi(force);   // screenshot hook
   if (canvas_hovered) {
     for (const GcCallout& b : boxes)
       if (mouse.x >= P(b.x, 0).x && mouse.x <= P(b.x + b.w, 0).x && mouse.y >= P(0, b.y).y && mouse.y <= P(0, b.y + kBoxH).y) { hovered = b.action; break; }
@@ -1956,8 +1939,8 @@ static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVe
 // red flash players already know from the Gecko code. What is left here is the notice that says
 // the automatic press is switched off because this is a matchmaking mode.
 static void draw_lcancel_overlays() {
-  // Character select of a matchmaking mode, with the setting on: say plainly that it is off here.
-  if (lcancel::automatic_enabled() && lcancel::online_session_pending()) {
+  // Ranked always shows its rule; other matchmaking modes warn when the saved assist is on.
+  if ((lcancel::automatic_enabled() || lcancel::automatic_setting_locked()) && lcancel::online_session_pending()) {
     if (const char* mode = lcancel::auto_suppressed_mode()) {
       std::string lower = mode;
       for (char& c : lower) c = (char)std::tolower((unsigned char)c);
@@ -1967,8 +1950,11 @@ static void draw_lcancel_overlays() {
       ImGui::Begin("LCancelModeNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
       clamp_overlay_window();
-      ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
-                         "You currently have auto L-cancel on, but we have disabled it for %s mode", lower.c_str());
+      if (lcancel::automatic_setting_locked())
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", lcancel::policy::ranked_hint);
+      else
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                           "You currently have auto L-cancel on, but we have disabled it for %s mode", lower.c_str());
       ImGui::End();
     }
   }
@@ -2599,7 +2585,7 @@ void settings_set_window_scale(float scale) {
 // small hidden run can show the scaled layout.
 static float game_ui_scale(float client_height) {
   static const float forced = [] {
-    const char* v = std::getenv("MELEE_TEST_UI_SCALE");
+    const char* v = host::test_env::getenv("MELEE_TEST_UI_SCALE");
     return v ? std::clamp((float)std::atof(v), 1.0f, 3.0f) : 0.0f;
   }();
   if (forced > 0.0f) return forced;
@@ -2610,7 +2596,7 @@ static float game_ui_scale(float client_height) {
 // MELEE_TEST_SETTINGS_SHOT run can capture any style. -1 when the variable is not set.
 static int test_menu_style() {
   static const int forced = [] {
-    const char* v = std::getenv("MELEE_TEST_MENU_STYLE");
+    const char* v = host::test_env::getenv("MELEE_TEST_MENU_STYLE");
     return v ? std::clamp(std::atoi(v), 0, 5) : -1;
   }();
   return forced;
@@ -3298,11 +3284,7 @@ void settings_context_create(void* window, bool open_at_startup) {
   // ImGui's outline version of the old font, for scaled frames (see settings_old_font). Added last,
   // so the fonts above keep their places, and nothing is rasterised from it until it is used.
   g_settings_old_vector_font = io.Fonts->AddFontDefaultVector();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-  // Every input change is handled in the frame it arrives. ImGui otherwise takes one change per key
-  // per frame, and with two sources feeding the same gamepad keys (our GameCube pad and ImGui's own
-  // XInput polling) the queue grew faster than it drained: holding a stick froze the panel for a while.
-  io.ConfigInputTrickleEventQueue = false;
+  settings_input::configure(io);
   ImGui::StyleColorsDark();
   auto& style = ImGui::GetStyle();
   style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.063f, 0.14f, 0.97f);
@@ -3329,6 +3311,7 @@ void settings_context_create(void* window, bool open_at_startup) {
 #ifndef _WIN32
   if (SDL_GetWindowFlags(static_cast<SDL_Window*>(window)) & SDL_WINDOW_VULKAN) ImGui_ImplSDL2_InitForVulkan(static_cast<SDL_Window*>(window));
   else ImGui_ImplSDL2_InitForOpenGL(static_cast<SDL_Window*>(window), SDL_GL_GetCurrentContext());
+  ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_Manual, nullptr, 0);
   // The window code decides when the pointer shows (window_sdl.inl show_cursor). Without this the
   // SDL backend turned it back on every frame, so it never hid on Linux.
   io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
@@ -4060,6 +4043,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     ImGui::End();
     return;
   }
+  if (yougame::stdio_bridge()) { ImGui::TextUnformatted(yougame::parity::kMenuHint); ImGui::Separator(); }
   practice_ui::heading("Search while you practice", "The match starts as soon as one is found.");
 
   ImGui::BeginDisabled(!practice.can_start);
@@ -4630,6 +4614,10 @@ static bool binding_press_at_slider(host::CaptureDevice kind, int index, int act
 }
 
 static void game_mods_panel(const RenderOptions& options) {
+  if (!yougame::mode_policy::mod_sources(yougame::active()).folders) {
+    ImGui::TextWrapped("Game mods come from the YouGame listing. Launch a remix to play its mods.");
+    return;
+  }
   namespace mods = source_port::mods;
   auto view = mods::panel_view();
   if (!view.scanned && !view.scanning && !view.importing && mods::auto_detect()) mods::rescan_async();
@@ -4711,6 +4699,17 @@ static void game_mods_panel(const RenderOptions& options) {
 }
 
 bool settings_frame(SettingsState& state, RenderOptions& options) {
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  ImGuiID agent_menu_focus = 0;
+  const char* agent_menu_label = "none";
+  const auto agent_menu_state = [&state] {
+    static bool was_open = false;
+    if (state.menu_open != was_open) {
+      host::log("[yougame] agent test: menu %s", state.menu_open ? "opened" : "closed");
+      was_open = state.menu_open;
+    }
+  };
+#endif
   slippi::native_practice::Snapshot practice = slippi::native_practice::snapshot();
   const bool practice_forced = practice.phase == slippi::native_practice::Phase::Handoff ||
                                practice.phase == slippi::native_practice::Phase::Failure ||
@@ -4718,11 +4717,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   const bool practice_force_capture =
       slippi::native_practice::phase_forces_input_capture(practice.phase);
   const bool practice_nav = state.practice_open || practice.phase == slippi::native_practice::Phase::Failure;
-  // Dear ImGui's Win32 backend polls XInput itself whenever gamepad navigation is enabled, and maps
-  // the Xbox X button to its "menu" key, which pops up ImGui's window switcher for as long as the
-  // button is held. Players pressing X mid-match got a little window they could not get rid of.
-  // Native practice must follow the controller port selected in Training. Disable the backend's
-  // hard-wired XInput-pad-1 poll and feed the already-routed GameCube-format port below instead.
+  // Platform gamepad polling is disabled (Win32 at build time, SDL in settings_context_create).
+  // ImGui 1.92.8 polls even with NavEnableGamepad off: clearing that flag alone did not stop
+  // XInput's X/menu key or its competing events. Keep the window-switcher fix and practice's
+  // selected port by feeding only the routed GameCube-format pad below. Clear stale pad state
+  // through HasGamepad when navigation is closed, disconnected or waiting for neutral.
   {
     auto& io = ImGui::GetIO();
     io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
@@ -4775,7 +4774,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (!state.practice_release_capture) state.practice_release_seconds = 0.0f;
   const int shortcut_port = host::window_take_settings_controller_port();
   if (shortcut_port >= 0 && shortcut_port < 4) state.settings_controller_port = shortcut_port;
-  const bool nav_active = state.open || practice_nav;
+  const bool nav_active = state.open || state.menu_open || practice_nav;
   // The panel follows the pad that was last picked up, not the first one that reads as active.
   const int followed = host::settings_nav::follow(nav_pads, state.settings_pad_was_at_rest.data(),
                                                   state.settings_controller_port, nav_active && !practice_nav);
@@ -4813,7 +4812,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // ("panel": only the Controls tab on that socket, with its Controller test and PhobGCC entries).
   {
     static bool phob_test_opened = false;
-    const char* phob_test = std::getenv("MELEE_TEST_PHOB");
+    const char* phob_test = host::test_env::getenv("MELEE_TEST_PHOB");
     if (!phob_test_opened && state.open && phob_test && std::strcmp(phob_test, "panel") != 0) { phob_test_opened = true; phob_native_request(0); }  }
   if (!state.open && phob_native_open()) phob_native_close();
   // The PhobGCC menu reads the controller itself: the panel gets none of it.
@@ -4836,6 +4835,52 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.button & 2) || pad.stick_x > 40);
   }
   ImGui::NewFrame();
+  if (yougame::active()) {
+    const auto now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto toast = yougame::friends::events.toast(now);
+    const auto status = yougame::status_line();
+    const auto screen = ImGui::GetIO().DisplaySize;
+    const auto passive_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!toast.empty()) {
+      ImGui::SetNextWindowPos(ImVec2(screen.x - 16, 16), ImGuiCond_Always, ImVec2(1, 0));
+      ImGui::SetNextWindowBgAlpha(0.85f);
+      ImGui::Begin("##yougame_invite_notice", nullptr, passive_flags);
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::min(380.0f, screen.x - 64));
+      ImGui::TextUnformatted(toast.c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::End();
+    }
+    if (status == yougame::friends::kWaiting) {
+      ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y - 60), ImGuiCond_Always, ImVec2(0.5f, 1));
+      ImGui::Begin("##yougame_friend_waiting", nullptr, passive_flags);
+      ImGui::TextUnformatted(yougame::friends::kWaiting);
+      ImGui::TextDisabled("Z: cancel");
+      ImGui::End();
+    }
+    // The game-drawn name entry refuses an empty name. Supply its Friends action in
+    // the existing host layer instead of changing the DOL/Gecko name-entry code.
+    static bool start_was_down = false;
+    host::PadState friend_pad{};
+    const bool start_down = host::window_ui_gamecube_pad(friend_pad) && (friend_pad.button & 0x1000);
+    if (yougame::friends::events.code_screen()) {
+      ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y - 16), ImGuiCond_Always, ImVec2(0.5f, 1));
+      ImGui::Begin("##yougame_code_friends", nullptr,
+          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+      ImGui::TextUnformatted("YouGame: Code / Friends");
+      ImGui::TextUnformatted(yougame::friends::kHint);
+      const auto picker_error = yougame::friends::events.picker_error();
+      if (!picker_error.empty()) ImGui::TextWrapped("%s", picker_error.c_str());
+      if (yougame::friends::events.code_empty()) {
+        if (ImGui::Button("Invite friend (Enter / START)") || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            (start_down && !start_was_down)) yougame::friends::events.request_host();
+      }
+      ImGui::End();
+    }
+    start_was_down = start_down;
+  }
   ImGuiStyle launcher_saved_style;
   const bool launcher_old_look = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
   if (launcher_old_look) {
@@ -4856,7 +4901,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // --settings-tab (the launcher's "Choose skins" opens the Mods tab), or the test hook.
     const int initial = g_initial_tab.load(std::memory_order_relaxed);
     if (initial >= 0) state.active_tab = std::clamp(initial, 0, 7);
-    else if (const char* tab = std::getenv("MELEE_TEST_SETTINGS_TAB"))
+    else if (const char* tab = host::test_env::getenv("MELEE_TEST_SETTINGS_TAB"))
       state.active_tab = std::clamp(std::atoi(tab), 0, 7);
     if (test_menu_style() >= 0) options.overlay_style = test_menu_style();
   }
@@ -4881,10 +4926,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       options.overlay_style = state.legacy_saved_appearance;
       state.legacy_presentation = false;
     }
-    state.open = !state.open;
-    if (state.open) {
-      state.practice_open = false;
-      reset_settings_home("F1 or controller chord");
+    if (yougame::stdio_bridge() && !state.open && !state.fill_window) {
+      // Under the YouGame app the chord opens and closes the small menu, as F1 does there.
+      state.menu_open = !state.menu_open;
+      state.menu_quit = false;
+    } else {
+      state.open = !state.open;
+      if (state.open) {
+        state.practice_open = false;
+        reset_settings_home("F1 or controller chord");
+      }
     }
   }
   if (host::window_take_legacy_settings_toggle() && options.legacy_menu_enabled) {
@@ -4921,7 +4972,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     static bool parsed = false;
     if (!parsed) {
       parsed = true;
-      if (const char* v = std::getenv("MELEE_TEST_PRACTICE_PAGE")) std::sscanf(v, "%d,%d", &test_page, &test_frame);
+      if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_PAGE")) std::sscanf(v, "%d,%d", &test_page, &test_frame);
     }
     if (test_page >= 0 && host::retrace_count() >= (uint32_t)test_frame) {
       practice_ui::g_tab_request = test_page;
@@ -4934,7 +4985,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     static bool tour_parsed = false;
     if (!tour_parsed) {
       tour_parsed = true;
-      if (const char* v = std::getenv("MELEE_TEST_PRACTICE_TOUR")) std::sscanf(v, "%d,%d", &tour_start, &tour_step);
+      if (const char* v = host::test_env::getenv("MELEE_TEST_PRACTICE_TOUR")) std::sscanf(v, "%d,%d", &tour_start, &tour_step);
     }
     if (tour_start >= 0 && tour_step > 0 && host::retrace_count() >= (uint32_t)tour_start) {
       const int page = (int)((host::retrace_count() - (uint32_t)tour_start) / (uint32_t)tour_step);
@@ -5105,9 +5156,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                          (style == 4 && state.wide_detail_open);
     if (state.open && (state.legacy_presentation || style >= 5 || launcher_window)) state.open = false;
     else if (state.open && on_page) settings_back_page(state, style);
-    else if (state.open) { state.open = false; state.menu_open = true; state.menu_quit = true; }
+    else if (state.open) { state.open = false; state.menu_open = true; state.menu_quit = true; state.menu_quit_focus_pending = true; }
     else if (state.practice_open) { state.practice_open = false; state.practice_release_capture = true; }
     else if (state.menu_open) { state.menu_open = false; state.menu_quit = false; }
+    // Under the YouGame app the small menu comes first (Back to game / Settings / Back to YouGame), so
+    // leaving for YouGame is one press away and Settings is its second button.
+    else if (!state.fill_window && yougame::stdio_bridge()) { state.menu_open = true; state.menu_quit = false; }
     else if (!state.fill_window) { state.open = true; reset_settings_home("Esc"); }
   }
   if (launcher_window && !state.open) {
@@ -5116,6 +5170,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   if (state.open) { state.menu_open = false; state.practice_open = false; }
   if (state.menu_open) state.practice_open = false;
+  if (!state.menu_open || !state.menu_quit) state.menu_quit_focus_pending = false;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  agent_menu_state();
+#endif
   if (practice_forced || practice.phase == slippi::native_practice::Phase::OnlineFlow ||
       practice.phase == slippi::native_practice::Phase::InMatch)
     state.practice_open = false;
@@ -5221,7 +5279,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Appearing);
       ImGui::Begin("PC settings###legacy_old_settings", &state.open, ImGuiWindowFlags_NoCollapse |
                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-      ImGui::TextUnformatted("F1 or Esc: return to game");
+      ImGui::TextUnformatted(yougame::stdio_bridge() ? yougame::parity::kMenuHint : "F1 or Esc: return to game");
     } else {
       const float width = options.overlay_style == 0 ? std::min(560.0f, std::max(390.0f, display.x * 0.38f)) :
                           options.overlay_style == 1 ? std::min(1040.0f, display.x - 24.0f) :
@@ -6078,7 +6136,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // the Lightweight ladder up front, the exact looks and the fine controls folded under them. Open by default.
     if (ImGui::CollapsingHeader("Low-Detail Modes##lightweight", ImGuiTreeNodeFlags_DefaultOpen)) {
     // Hidden capture hook: scroll to this section and optionally open its list for review.
-    if (const char* shot = std::getenv("MELEE_TEST_LOOK_MENU")) {
+    if (const char* shot = host::test_env::getenv("MELEE_TEST_LOOK_MENU")) {
       ImGui::SetScrollHereY(0.05f);
       if (std::strcmp(shot, "open") == 0 && ImGui::GetFrameCount() == 120)
         ImGui::OpenPopupEx(ImHashStr("##ComboPopup", 0, ImGui::GetID("Look")), ImGuiPopupFlags_None);
@@ -6265,7 +6323,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     // The look controls: what the presets set, one by one. Folded away; changing one makes Look read Custom.
     // Hidden capture hook (MELEE_TEST_LOOK_MENU=custom): this list open and in view.
-    if (const char* shot = std::getenv("MELEE_TEST_LOOK_MENU"); shot && std::strcmp(shot, "custom") == 0) {
+    if (const char* shot = host::test_env::getenv("MELEE_TEST_LOOK_MENU"); shot && std::strcmp(shot, "custom") == 0) {
       ImGui::SetNextItemOpen(true);
       ImGui::SetScrollHereY(0.0f);
     }
@@ -6327,7 +6385,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // Picture-only switches for a 2D-fighter look. The hitboxes widen the game's own debug draw tests
     // (MU_DISPLAY_OPTION_HITBOXES and the next two); the game ignores them in a network match.
     if (ImGui::CollapsingHeader("Arcade look##arcade")) {
-    if (std::getenv("MELEE_TEST_ARCADE_MENU")) ImGui::SetScrollHereY(0.05f);   // hidden capture hook
+    if (host::test_env::getenv("MELEE_TEST_ARCADE_MENU")) ImGui::SetScrollHereY(0.05f);   // hidden capture hook
     ImGui::Indent(8.0f);
     changed |= settings_toggle("Show attack hitboxes", &options.arcade_hitboxes);
     if (ImGui::IsItemHovered())
@@ -7641,7 +7699,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             }
           }
           static bool test_gallery_opened=false;
-          if (!test_gallery_opened && std::getenv("MELEE_TEST_STYLE_GALLERY")) {
+          if (!test_gallery_opened && host::test_env::getenv("MELEE_TEST_STYLE_GALLERY")) {
             ImGui::OpenPopup("Menu styles");
             g_menu_style_gallery_open=true;
             test_gallery_opened=true;
@@ -7861,7 +7919,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           const auto& mod_status = source_port::mods::status();
           // Command-line mods (no profile name) are a test setup: nothing to compare against.
           const bool from_command_line = !mod_status.detected && mod_status.profile.empty() && !mod_status.identity.empty();
-          if (!mod_status.detected && !from_command_line && options.mod_profile != mod_status.requested) {
+          if (!yougame::active() && !mod_status.detected && !from_command_line && options.mod_profile != mod_status.requested) {
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Profile changed. Restart to apply it.");
             if (!state.fill_window) {
               if (ImGui::Button("Restart to apply profile")) state.confirm = SettingsState::Confirm::Restart;
@@ -8637,7 +8695,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::TextUnformatted("In-game overlay");
     changed |= settings_toggle("Auto-open in-game overlay on startup", &options.settings_open);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Off starts directly in the game. Press F1 to open the overlay anytime.");
+      ImGui::SetTooltip("%s", yougame::stdio_bridge() ? yougame::parity::kMenuHint : "Off starts directly in the game. Press F1 to open the overlay anytime.");
 
     // ---- Input ----
     ImGui::TextUnformatted("Input");
@@ -8789,10 +8847,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::TextUnformatted("L-cancel");
     {
       if (settings_lcancel_flash(options)) changed = true;
-      bool automatic = lcancel::automatic_enabled();
-      ImGui::BeginDisabled(host::gameplay::vanilla_only());
+      const bool ranked = lcancel::automatic_setting_locked();
+      bool automatic = ranked ? false : lcancel::automatic_enabled();
+      ImGui::BeginDisabled(host::gameplay::vanilla_only() || ranked);
       if (settings_toggle("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::EndDisabled();
+      if (ranked) settings_hint(lcancel::policy::ranked_hint);
       if (host::gameplay::vanilla_only()) settings_hint("Disabled for this vanilla-only session.");
       ImGui::SameLine();
 #ifdef MELEE_NO_SLIPPI   // this build's matches are all the one kind, where it works
@@ -8802,7 +8862,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                            "network like any other, so it cannot desync. In an online match both players should agree "
                            "to use it: it is a fairness question, not a safety one.");
 #else
-      settings_hint("(NOTE: Works offline and in Direct, not in Unranked or Teams)");
+      settings_hint("(NOTE: Works offline and in Direct; disabled in Ranked, Unranked, Teams and Party)");
       if (automatic) {
         ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
                            "network like any other, so it cannot desync. In a Direct match both players should agree "
@@ -9005,6 +9065,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "the game goes to Training mode's character select instead of staying online.");
       // Slippi Dolphin's spectator server (its Slippi settings: Enable spectator, Spectator port),
       // read once at start as Dolphin does.
+      ImGui::BeginDisabled(yougame::active());
       if (settings_toggle("Spectator server (Slippi Launcher broadcast, overlays, experimental)", &options.slippi_spectator)) {
         RenderOptions::live_slippi_spectator() = options.slippi_spectator;
         changed = true;
@@ -9023,7 +9084,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         changed = true;
       }
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("51441 is Slippi Dolphin's port, the one the Slippi Launcher looks at.");
-      if (slippi::spectate::running())
+      ImGui::EndDisabled();
+      if (yougame::active())
+        settings_hint("Slippi spectator listener off (YouGame mode).");
+      else if (slippi::spectate::running())
         settings_hint(("Serving on port " + std::to_string(slippi::spectate::port()) + ".").c_str());
       else if (options.slippi_spectator)
         settings_hint("Not serving: starts with the game (see the log if the port is taken).");
@@ -9125,7 +9189,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
     };
     // Test runs (MELEE_TEST_PHOB): open on adapter socket 1, where the PhobGCC section is.
-    static const bool phob_test = std::getenv("MELEE_TEST_PHOB") != nullptr;
+    static const bool phob_test = host::test_env::getenv("MELEE_TEST_PHOB") != nullptr;
     if (phob_test) g_edit_follow_active = false;
     if (family_sel < 0 && phob_test)
       for (int f = 0; f < kFamilyCount; ++f)
@@ -9374,13 +9438,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       else settings_hint("Adapter polling rate: --");
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Incoming USB reports per second, shared by all four adapter sockets.\nThe game reads controller state once per frame.");
-      const bool resetting = host::gcadapter_reset_pending();
-      ImGui::BeginDisabled(resetting);
-      if (ImGui::Button(resetting ? "Resetting adapter..." : "Reset GameCube adapter"))
-        host::gcadapter_request_reset();
-      ImGui::EndDisabled();
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Reopens the USB connection and recalibrates all four sockets.\nRelease buttons, sticks and triggers first. Use if inputs stick or the polling rate drops.");
+      if (yougame::stdio_bridge()) {
+        settings_hint("Managed by the YouGame app");
+      } else {
+        const bool resetting = host::gcadapter_reset_pending();
+        ImGui::BeginDisabled(resetting);
+        if (ImGui::Button(resetting ? "Resetting adapter..." : "Reset GameCube adapter"))
+          host::gcadapter_request_reset();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("Reopens the USB connection and recalibrates all four sockets.\nRelease buttons, sticks and triggers first. Use if inputs stick or the polling rate drops.");
+      }
       ImGui::Spacing();
     }
 
@@ -9629,8 +9697,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "(H shows it; every key still works). For tournament VODs and clips.");
     changed |= settings_toggle("Show player nicknames above fighters", &options.show_player_nicknames);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows each online player's name at Melee's player-tag anchor. Local display only.");
-    changed |= settings_toggle("Show the \"Settings: F1\" reminder", &options.settings_hint);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1, or Start + D-pad Down + Z on a GameCube controller, opens settings.");
+    changed |= settings_toggle(yougame::stdio_bridge() ? "Show the YouGame menu reminder" : "Show the \"Settings: F1\" reminder", &options.settings_hint);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", yougame::stdio_bridge() ? yougame::parity::kMenuHint : "F1, or Start + D-pad Down + Z on a GameCube controller, opens settings.");
     changed |= settings_toggle("Show the note when skins are off online", &options.skin_online_notice);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("In an online mode, skins and stage mods that could change more than looks show as the\n"
@@ -10006,10 +10074,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImVec4(accent_f.x * .48f, accent_f.y * .48f, accent_f.z * .48f, 1.0f));
     draw->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(8, 10, 20, 226), 8.0f);
     draw->AddRectFilled(p, ImVec2(p.x + width, p.y + 4), accent);
+    // Under the YouGame app, quitting is going back to YouGame: its page is right behind this window.
+    const bool app = yougame::stdio_bridge();
     draw->AddText(ImVec2(p.x + 20, p.y + 17), IM_COL32(250, 244, 248, 255),
-                  state.menu_quit ? "QUIT MELEE UNLOCKED?" : "MELEE UNLOCKED");
+                  state.menu_quit ? (app ? "BACK TO YOUGAME?" : "QUIT MELEE UNLOCKED?") : "MELEE UNLOCKED");
     if (state.menu_quit)
-      draw->AddText(ImVec2(p.x + 20, p.y + 41), IM_COL32(183, 174, 190, 255), "The current match will end.");
+      draw->AddText(ImVec2(p.x + 20, p.y + 41), IM_COL32(183, 174, 190, 255),
+                    !app || g_hud_match ? "The current match will end." : "Melee closes and your YouGame page is right behind it.");
     const float gap = 10.0f;
     const int count = state.menu_quit ? 2 : 3;
     const float button_w = (width - 40.0f - gap * (count - 1)) / count;
@@ -10017,6 +10088,23 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       const float x = 20.0f + index * (button_w + gap), y = 66.0f;
       ImGui::SetCursorPos(ImVec2(x, y));
       const bool pressed = ImGui::InvisibleButton(id, ImVec2(button_w, 58.0f), ImGuiButtonFlags_EnableNav);
+      if (state.menu_quit && index == 0 && state.menu_quit_focus_pending) {
+        // The window stays open across views, so SetItemDefaultFocus cannot replace the old ID.
+        // Focus the submitted confirm item immediately, without activating it on the opening A.
+        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+        if (ImGui::GetCurrentContext()->NavInputSource == ImGuiInputSource_Gamepad)
+          ImGui::SetNavCursorVisible(true);
+        state.menu_quit_focus_pending = false;
+      }
+#ifdef YOUGAME_AGENT_TEST_HOOK
+      if (ImGui::IsItemFocused()) {
+        agent_menu_focus = ImGui::GetItemID();
+        agent_menu_label = label;
+      }
+      if (pressed || (state.menu_quit && index == 0 &&
+          (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))))
+        host::log("[yougame] agent test: menu activated %s (%s)", label, id);
+#endif
       const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
       const ImVec2 q(p.x + x, p.y + y - (hot ? 4.0f : 0.0f));
       const ImVec2 shadow[] = {ImVec2(q.x + 9, q.y + 7), ImVec2(q.x + button_w, q.y + 7),
@@ -10032,24 +10120,40 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     };
     if (!state.menu_quit) {
       if (action("##resume", "BACK TO GAME", 0)) state.menu_open = false;
+      ImGui::SetItemDefaultFocus();
       if (action("##settings", "SETTINGS", 1)) {
         state.menu_open = false;
         state.open = true;
         reset_settings_home("Esc menu SETTINGS");
       }
-      if (action("##quit", "QUIT GAME", 2)) state.menu_quit = true;
+      if (action("##quit", app ? "BACK TO YOUGAME" : "QUIT GAME", 2)) {
+        state.menu_quit = true;
+        state.menu_quit_focus_pending = true;
+      }
       draw->AddText(ImVec2(p.x + 20, p.y + 144), IM_COL32(167, 162, 178, 255),
-                    "ESC  BACK TO GAME     F1  SETTINGS");
+                    app ? yougame::parity::kMenuHint : "ESC  BACK TO GAME     F1  SETTINGS");
     } else {
       const bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
-      if (action("##confirm_quit", "QUIT", 0) || enter) { state.menu_open = false; host::request_user_exit(); }
+      if (action("##confirm_quit", app ? "BACK TO YOUGAME" : "QUIT", 0) || enter) { state.menu_open = false; host::request_user_exit(); }
+      ImGui::SetItemDefaultFocus();
       if (action("##cancel_quit", "CANCEL", 1)) { state.menu_open = false; state.menu_quit = false; }
       draw->AddText(ImVec2(p.x + 20, p.y + 144), IM_COL32(167, 162, 178, 255),
-                    "QUIT MELEE UNLOCKED?     ENTER  QUIT     ESC  CANCEL");
+                    app ? yougame::parity::kMenuHint : "QUIT MELEE UNLOCKED?     ENTER  QUIT     ESC  CANCEL");
     }
     ImGui::End();
   }
   const bool practice_was_open = state.practice_open;
+#ifdef YOUGAME_AGENT_TEST_HOOK
+  agent_menu_state();
+  {
+    static ImGuiID last_focus = 0;
+    if (!state.menu_open) { agent_menu_focus = 0; agent_menu_label = "none"; }
+    if (agent_menu_focus != last_focus) {
+      host::log("[yougame] agent test: menu focused %s", agent_menu_label);
+      last_focus = agent_menu_focus;
+    }
+  }
+#endif
   if (!state.fill_window && !state.open && !state.menu_open)
     draw_native_practice(state, options, practice, pad, have_pad);
   if (!state.fill_window && !state.open && !state.menu_open && replay_control::active() && !gx::clean_replay_active())
@@ -10089,13 +10193,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
       ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
       clamp_overlay_window();
-      ImGui::TextUnformatted("Settings: F1  /  START + DOWN + Z");
+      ImGui::TextUnformatted(yougame::stdio_bridge() ? yougame::parity::kMenuHint : "Settings: F1  /  START + DOWN + Z");
     ImGui::End();
     }
   }
   // Test hook for screenshots: MELEE_TEST_OVERLAY=1 shows the controller overlay with its values.
-  static const bool test_overlay = std::getenv("MELEE_TEST_OVERLAY") != nullptr;
-  if (test_overlay) { options.input_overlay = true; options.input_overlay_values = true; if (const char* k = std::getenv("MELEE_TEST_KNOB")) options.input_overlay_stick = std::atoi(k); }
+  static const bool test_overlay = host::test_env::getenv("MELEE_TEST_OVERLAY") != nullptr;
+  if (test_overlay) { options.input_overlay = true; options.input_overlay_values = true; if (const char* k = host::test_env::getenv("MELEE_TEST_KNOB")) options.input_overlay_stick = std::atoi(k); }
   if (options.input_overlay && !gx::clean_replay_active()) {
     const int mask = options.input_overlay_ports ? options.input_overlay_ports : 1;
     const bool lone = (mask & (mask - 1)) == 0;   // exactly one port selected
@@ -10152,7 +10256,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // The performance graph opens below them; if it is dragged over them, they move below it.
     static ImVec2 perf_min(0, 0), perf_max(0, 0);   // the graph's rectangle last frame, if shown
     // Test hook for screenshots: MELEE_TEST_READOUT=1 shows both lines and the graph.
-    static const bool test_readout = std::getenv("MELEE_TEST_READOUT") != nullptr;
+    static const bool test_readout = host::test_env::getenv("MELEE_TEST_READOUT") != nullptr;
     if (test_readout) { options.show_fps = true; options.show_ping = true; options.performance_overlay = true; }
     const bool ping_line = options.show_ping && (slippi::online::is_online_match() || test_readout);
     const float line_h = ImGui::GetTextLineHeight() + 2.0f;
@@ -10240,6 +10344,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (!state.fill_window && !state.open && !state.menu_open && options.show_player_nicknames)
     draw_player_nicknames();
   if (!state.fill_window && !state.open && !state.menu_open) draw_combo_counter();
+  if (!state.fill_window && !state.open && !state.menu_open && !g_hud_match && yougame::stdio_bridge())
+    draw_back_to_yougame_hint();
   {
     // Menu sounds: a tick when the highlighted category or control changes, a brighter one when
     // a page opens or the panel opens, a lower one when a page or the panel closes.

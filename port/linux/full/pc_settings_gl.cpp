@@ -6,6 +6,8 @@
 #include "host.h"
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
+#include "backends/imgui_impl_sdl2.h"
+#include "window.h"
 #include <memory>
 
 namespace gx {
@@ -24,7 +26,18 @@ PcSettingsUIGL::PcSettingsUIGL(void* window, const RenderOptions& options) : imp
   impl_->state.panel_slide_x = open ? 0.0f : -720.0f;
   impl_->state.panel_slide_start_x = impl_->state.panel_slide_x;
   settings_context_create(window, options.settings_open);
+#ifndef __APPLE__
+  if (host::window_embedded()) {
+    // The parent page owns all pointer input, including while the settings menu is open.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
+    ImGui_ImplSDL2_SetMouseCaptureMode(ImGui_ImplSDL2_MouseCaptureMode_Disabled);
+  }
+#endif
+#ifdef __APPLE__
+  impl_->ready = ImGui_ImplOpenGL3_Init("#version 410");
+#else
   impl_->ready = ImGui_ImplOpenGL3_Init("#version 450 core");
+#endif
   if (!impl_->ready) host::log("opengl: settings panel unavailable (its renderer could not start)");
 }
 

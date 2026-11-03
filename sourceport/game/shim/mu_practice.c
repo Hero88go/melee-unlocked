@@ -15,13 +15,14 @@
 #include <dolphin/os.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/types.h>
+#include "mu_yougame_pause.h"
 
 
 /* Same values as MU_PRACTICE_* in mu_host.h (checked in mu_entry.c). */
 enum { MU_PR_SCENE, MU_PR_GET_PLAYER, MU_PR_SET_PLAYER, MU_PR_GET_STAGE, MU_PR_SET_STAGE,
        MU_PR_SET_EVENT_BACKUP, MU_PR_REQUEST_MAJOR, MU_PR_SET_ONLINE_MODE, MU_PR_GET_ONLINE_MODE,
        MU_PR_DIRECT_FIRST_MATCH, MU_PR_FRAME_PAUSE, MU_PR_CPU_MOVE, MU_PR_TRAINING_PICK,
-       MU_PR_TRAINING_STAGE, MU_PR_UNLOCKED };
+       MU_PR_TRAINING_STAGE, MU_PR_UNLOCKED, MU_PR_PAGE_PAUSE };
 
 extern StaticPlayer player_slots[];
 struct gm_80479D58_t* mu_gm_engine_state(void);
@@ -52,6 +53,8 @@ int mu_practice_bridge(int op, int* a, int n)
 {
     MuSlippiMenuState* slp = mu_slippi_state();
     switch (op) {
+    case MU_PR_PAGE_PAUSE:
+        return mu_yougame_page_pause(a, n);
     case MU_PR_SCENE:
         if (n < 2) return -1;
         a[0] = gm_GetCurrentGameMode();
@@ -117,7 +120,9 @@ int mu_practice_bridge(int op, int* a, int n)
         a[0] = slp->mode;
         return 0;
     case MU_PR_DIRECT_FIRST_MATCH:
-        slp->is_winner = MU_SLP_WINNER_NULL;
+        /* Friends enters CSS before lock-in. Its first random stage is already selected by
+         * the host; use Direct's ordinary START-to-lock-in path. Existing practice calls pass n=0. */
+        slp->is_winner = n > 0 && a[0] == MU_SLP_WINNER_WON ? MU_SLP_WINNER_WON : MU_SLP_WINNER_NULL;
         slp->chose_stage = MU_SLP_STAGE_UNSET;
         return 0;
     case MU_PR_TRAINING_PICK: {

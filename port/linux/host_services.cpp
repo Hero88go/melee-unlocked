@@ -25,12 +25,19 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#ifdef __APPLE__
+#include "../mac/elf_loader.h"
+#include <csetjmp>
+#else
 #include <dlfcn.h>
 #include <elf.h>
+#endif
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
+#ifndef __APPLE__
 #include <link.h>
+#endif
 #include <memory>
 #include <stdexcept>
 #include <sys/mman.h>
@@ -57,6 +64,13 @@ FILE* log_file = nullptr;
 int disc_fd = -1;
 uint64_t disc_size = 0;
 std::array<uint8_t, 0x440> disc_header{};
+#ifdef __APPLE__
+mac_elf::Image mac_image;
+// SPIKE: Darwin cannot unwind exceptions across an unregistered ELF image.
+// The C game has no C++ destructors. Stop only at host callback boundaries.
+std::jmp_buf mac_stop_boundary;
+bool mac_running = false;
+#endif
 void* module = nullptr;
 bool memory_reserved = false;
 bool initialized = false;
@@ -231,7 +245,16 @@ bool load_disc(std::string* error) {
   return true;
 }
 
+#ifdef __APPLE__
+[[noreturn]] void stop_now(int code) {
+  stop_code=code;
+  if (mac_running) std::longjmp(mac_stop_boundary,1);
+  std::abort();
+}
+void check_stop() { if (stop_requested) stop_now(stop_code); }
+#else
 void check_stop() { if (stop_requested) throw Stop{stop_code}; }
+#endif
 uint64_t console_nanoseconds(uint64_t ticks) {
   return (ticks/MU_TB_HZ)*1000000000ull + (ticks%MU_TB_HZ)*1000000000ull/MU_TB_HZ;
 }
@@ -326,7 +349,11 @@ void h_log(const char* text) {
 }
 void h_panic(const char* file, int32_t line, const char* message) {
   log("game panic: %s:%d: %s", file ? file : "?", line, message ? message : "");
+#ifdef __APPLE__
+  stop_now(1);
+#else
   throw Stop{1};
+#endif
 }
 uint64_t h_ticks() { return count.ticks; }
 uint64_t h_boot_time() { return boot_ticks; }
@@ -405,7 +432,12 @@ void h_pad_read(MuPadStatus out[4]) {
       pad.trigger_r=uint8_t(std::max(0, int(SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT))) * 255 / 32767);
       if (pad.trigger_l >= 240) pad.button |= 0x0040;
       if (pad.trigger_r >= 240) pad.button |= 0x0020;
+#ifdef __APPLE__
+    }
+    if (port == 0 && !cfg.headless) {
+#else
     } else if (port == 0 && !cfg.headless) {
+#endif
       pad.err = 0;
       const uint8_t* key = SDL_GetKeyboardState(nullptr);
       if (key[SDL_SCANCODE_Z]) pad.button |= 0x0100;
@@ -416,10 +448,21 @@ void h_pad_read(MuPadStatus out[4]) {
       if (key[SDL_SCANCODE_Q]) { pad.button |= 0x0040; pad.trigger_l = 255; }
       if (key[SDL_SCANCODE_E]) { pad.button |= 0x0020; pad.trigger_r = 255; }
       if (key[SDL_SCANCODE_RETURN]) pad.button |= 0x1000;
+#ifdef __APPLE__
+      if (key[SDL_SCANCODE_RIGHT] || key[SDL_SCANCODE_LEFT])
+        pad.stick_x=int8_t(80 * (int(key[SDL_SCANCODE_RIGHT]) - int(key[SDL_SCANCODE_LEFT])));
+      if (key[SDL_SCANCODE_UP] || key[SDL_SCANCODE_DOWN])
+        pad.stick_y=int8_t(80 * (int(key[SDL_SCANCODE_UP]) - int(key[SDL_SCANCODE_DOWN])));
+      if (key[SDL_SCANCODE_L] || key[SDL_SCANCODE_J])
+        pad.sub_x=int8_t(80 * (int(key[SDL_SCANCODE_L]) - int(key[SDL_SCANCODE_J])));
+      if (key[SDL_SCANCODE_I] || key[SDL_SCANCODE_K])
+        pad.sub_y=int8_t(80 * (int(key[SDL_SCANCODE_I]) - int(key[SDL_SCANCODE_K])));
+#else
       pad.stick_x=int8_t(80 * (int(key[SDL_SCANCODE_RIGHT]) - int(key[SDL_SCANCODE_LEFT])));
       pad.stick_y=int8_t(80 * (int(key[SDL_SCANCODE_UP]) - int(key[SDL_SCANCODE_DOWN])));
       pad.sub_x=int8_t(80 * (int(key[SDL_SCANCODE_L]) - int(key[SDL_SCANCODE_J])));
       pad.sub_y=int8_t(80 * (int(key[SDL_SCANCODE_I]) - int(key[SDL_SCANCODE_K])));
+#endif
     }
 #endif
 #ifdef MELEE_LINUX_USB
@@ -768,7 +811,11 @@ int32_t h_sound() { return sound; }
 void h_set_sound(int32_t value) { sound = value != 0; }
 int32_t h_progressive() { return progressive; }
 void h_set_progressive(int32_t value) { progressive = value != 0; }
+#ifdef __APPLE__
+void h_stop(int32_t reason, int32_t code) { log("game stopped: reason=%d code=%d", reason, code); stop_now(reason == MU_STOP_PANIC ? 1 : code); }
+#else
 void h_stop(int32_t reason, int32_t code) { log("game stopped: reason=%d code=%d", reason, code); throw Stop{reason == MU_STOP_PANIC ? 1 : code}; }
+#endif
 const MuMatchOverride* h_match() { return cfg.has_match ? &cfg.match : nullptr; }
 void h_rng(uint32_t* seed, int32_t* has) {
   if (has) *has = cfg.has_rng_seed;
@@ -860,6 +907,13 @@ void ax_output(const int16_t* rl, uint32_t frames) {
 }
 
 bool inspect_image(std::string* error) {
+#ifdef __APPLE__
+  (void)error;
+  image_mappings=mac_image.mappings();
+  image_regions=mac_image.writable();
+  image_bytes=mac_image.size();
+  return !image_mappings.empty() && !image_regions.empty();
+#else
   struct link_map* map = nullptr;
   if (dlinfo(module, RTLD_DI_LINKMAP, &map) != 0 || !map) return fail(error, "cannot inspect game ELF mappings");
   struct Scan { uintptr_t bias; bool found; } scan{uintptr_t(map->l_addr), false};
@@ -891,6 +945,7 @@ bool inspect_image(std::string* error) {
     return fail(error, "game ELF extends past the 64 MiB GX physical address window");
   log("source game: ELF at %08lX, %u bytes, %zu writable load segments", (unsigned long)game_image_base, image_bytes, image_regions.size());
   return true;
+#endif
 }
 } // namespace
 
@@ -916,12 +971,21 @@ bool reserve_memory(std::string* error) {
     if (p != MAP_FAILED && uintptr_t(p) != address) { munmap(p, bytes); errno=EEXIST; return MAP_FAILED; }
     return p;
   };
+#ifdef __APPLE__
+  if (!mac_elf::activate_mem1(error)) return false;
+  void* mem=reinterpret_cast<void*>(mem1_base);
+#else
   void* mem = reserve(mem1_base, mem1_bytes);
+#endif
   if (mem == MAP_FAILED) return fail(error, "cannot reserve MEM1 at 0x80000000: " + std::string(std::strerror(errno)));
   void* cache = reserve(locked_cache_base, locked_cache_bytes);
   if (cache == MAP_FAILED) {
     const std::string message = "cannot reserve locked cache at 0xE0000000: " + std::string(std::strerror(errno));
+#ifdef __APPLE__
+    mac_elf::deactivate_mem1();
+#else
     munmap(mem, mem1_bytes);
+#endif
     return fail(error, message);
   }
   memory_reserved = true;
@@ -955,11 +1019,18 @@ bool initialize(const Config& config, std::string* error) {
   }
   aram.assign(aram_bytes, 0);
   api=make_api();
+#ifdef __APPLE__
+  if (!mac_image.load(cfg.game_path,error)) return startup_failed();
+  module=&mac_image;
+  if (!inspect_image(error)) return startup_failed();
+  auto entry=reinterpret_cast<MuGameEntry>(mac_image.symbol("mu_game_entry"));
+#else
   module=dlopen(cfg.game_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!module) { fail(error, "cannot load native game ELF: " + std::string(dlerror())); return startup_failed(); }
   if (!inspect_image(error)) return startup_failed();
   dlerror();
   auto entry=reinterpret_cast<MuGameEntry>(dlsym(module, "mu_game_entry"));
+#endif
   if (!entry || entry(&api, &game) != 0 || game.version != MU_GAME_API_VERSION ||
       !game.run || !game.retrace || !game.fire_alarms || !game.state_snapshot ||
       !game.state_regions || !game.state_exclusions || !game.snapshot_ranges || !game.practice) {
@@ -993,9 +1064,18 @@ bool initialize(const Config& config, std::string* error) {
 int run() {
   if (!initialized) { log("native Linux host is not initialized"); return 1; }
   wall_start=Clock::now();
+#ifdef __APPLE__
+  mac_running=true;
+  int result;
+  if (setjmp(mac_stop_boundary)==0) result=game.run();
+  else result=stop_code;
+  mac_running=false;
+  return result;
+#else
   try { return game.run(); }
   catch (const Stop& stopped) { return stopped.code; }
   catch (const std::exception& error) { log("native host failure: %s", error.what()); return 1; }
+#endif
 }
 
 void shutdown() {
@@ -1012,12 +1092,20 @@ void shutdown() {
   for (auto& controller : controllers) { if (controller) SDL_GameControllerClose(controller); controller=nullptr; }
   if (sdl_owned) { SDL_QuitSubSystem(sdl_owned); sdl_owned=0; }
 #endif
+#ifdef __APPLE__
+  if (module) { mac_image.unload(); module=nullptr; }
+#else
   if (module) { dlclose(module); module=nullptr; }
+#endif
   game={}; api={}; image_regions.clear(); image_mappings.clear(); image_bytes=0;
   if (disc_fd >= 0) { close(disc_fd); disc_fd=-1; }
   files.clear(); paths.clear(); completions.clear(); aram.clear();
   if (memory_reserved) {
+#ifdef __APPLE__
+    mac_elf::deactivate_mem1();
+#else
     munmap(reinterpret_cast<void*>(mem1_base), mem1_bytes);
+#endif
     munmap(reinterpret_cast<void*>(locked_cache_base), locked_cache_bytes);
     memory_reserved=false;
   }

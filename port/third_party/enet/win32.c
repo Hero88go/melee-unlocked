@@ -6,8 +6,25 @@
 
 #define ENET_BUILDING_LIB 1
 #include "enet/enet.h"
+#include "enet/yg_enet_socket.h"
 #include <windows.h>
 #include <mmsystem.h>
+
+/* YouGame wraps socket calls; all native implementations stay intact. */
+#define enet_socket_create yg_native_socket_create
+#define enet_socket_destroy yg_native_socket_destroy
+#define enet_socket_bind yg_native_socket_bind
+#define enet_socket_get_address yg_native_socket_get_address
+#define enet_socket_set_option yg_native_socket_set_option
+#define enet_socket_get_option yg_native_socket_get_option
+#define enet_socket_send yg_native_socket_send
+#define enet_socket_receive yg_native_socket_receive
+#define enet_socket_wait yg_native_socket_wait
+#define enet_socket_listen yg_native_socket_listen
+#define enet_socket_connect yg_native_socket_connect
+#define enet_socket_accept yg_native_socket_accept
+#define enet_socket_shutdown yg_native_socket_shutdown
+#define enet_socketset_select yg_native_socketset_select
 
 static enet_uint32 timeBase = 0;
 
@@ -64,6 +81,14 @@ enet_address_set_host (ENetAddress * address, const char * name)
 {
     struct hostent * hostEntry;
 
+    if (yg_enet_selected ())
+    {
+        unsigned long host = inet_addr (name); /* numeric virtual address, no DNS */
+        if (host == INADDR_NONE || (ENET_NET_TO_HOST_32 (host) & 0xFFFF0000u) != 0x0AFF0000u)
+            return -1;
+        address -> host = host;
+        return 0;
+    }
     hostEntry = gethostbyname (name);
     if (hostEntry == NULL ||
         hostEntry -> h_addrtype != AF_INET)
@@ -102,6 +127,9 @@ enet_address_get_host (const ENetAddress * address, char * name, size_t nameLeng
     struct in_addr in;
     struct hostent * hostEntry;
  
+    if (yg_enet_selected ())
+      return enet_address_get_host_ip (address, name, nameLength);
+
     in.s_addr = address -> host;
     
     hostEntry = gethostbyaddr ((char *) & in, sizeof (struct in_addr), AF_INET);

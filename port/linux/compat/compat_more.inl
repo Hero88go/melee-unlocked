@@ -8,7 +8,14 @@ BOOL CreatePipe(HANDLE* read_end, HANDLE* write_end, SECURITY_ATTRIBUTES* sa, DW
   int fds[2];
   // Windows inherits both ends when sa says so; the callers then clear inheritance on their own end
   // with SetHandleInformation. Close-on-exec plays that part here.
+#ifdef __APPLE__
+  if (pipe(fds) != 0) return fail_errno();
+  if (!(sa && sa->bInheritHandle)) {
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC); fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+  }
+#else
   if (pipe2(fds, (sa && sa->bInheritHandle) ? 0 : O_CLOEXEC) != 0) return fail_errno();
+#endif
   auto* r = new Handle{Handle::File}; r->fd = fds[0];
   auto* w = new Handle{Handle::File}; w->fd = fds[1];
   *read_end = r; *write_end = w;
@@ -67,7 +74,12 @@ int connect_discord(const std::string& pipe_name) {
     candidates.push_back(d + "/.flatpak/com.discordapp.Discord/xdg-run/" + tail);
   }
   for (const auto& path : candidates) {
+#ifdef __APPLE__
+    const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+#else
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#endif
     if (fd < 0) return -1;
     sockaddr_un addr{}; addr.sun_family = AF_UNIX;
     if (path.size() >= sizeof addr.sun_path) { close(fd); continue; }
@@ -134,7 +146,12 @@ BOOL QueryFullProcessImageNameW(HANDLE process, DWORD, LPWSTR name, LPDWORD size
   auto* h = static_cast<Handle*>(process);
   if (!h || h->kind != Handle::Process || !name || !size) return FALSE;
   std::error_code ec;
+#ifdef __APPLE__
+  if (h->pid != getpid()) return FALSE;  // do not inspect other apps in this spike
+  const fs::path exe = self_executable(ec);
+#else
   const fs::path exe = fs::read_symlink("/proc/" + std::to_string(h->pid) + "/exe", ec);
+#endif
   if (ec) return fail_errno();
   const std::wstring w = widen(exe.string().c_str());
   if (w.size() + 1 > *size) { g_last_error = 122; return FALSE; }
@@ -167,11 +184,16 @@ BOOL CancelWaitableTimer(HANDLE timer) {
 #include <x86intrin.h>
 void* NtCurrentTeb() {
   thread_local NT_TIB tib{};
+#ifdef __APPLE__
+  size_t size = pthread_get_stacksize_np(pthread_self());
+  void* base = (char*)pthread_get_stackaddr_np(pthread_self()) - size;
+#else
   pthread_attr_t attr; void* base = nullptr; size_t size = 0;
   if (pthread_getattr_np(pthread_self(), &attr) == 0) {
     pthread_attr_getstack(&attr, &base, &size);
     pthread_attr_destroy(&attr);
   }
+#endif
   // Windows' StackLimit is the lowest page committed so far; the nearest Linux has is where the
   // stack pointer is now, which the callers use the same way (how deep the thread has gone).
   volatile char here = 0;

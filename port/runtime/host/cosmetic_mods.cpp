@@ -1,9 +1,11 @@
 // Native cosmetic catalog, import, and file-aware disc overrides.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
+#include "test_env.h"
 #include "cosmetic_mods.h"
 #include "gameplay_policy.h"
 #include "stage_dat_safety.h"
+#include "stage_read_pin.h"
 #include "stage_graft.h"
 
 #include "host.h"
@@ -4827,6 +4829,40 @@ std::vector<CostumeSlot> costume_slots() {
   return out;
 }
 
+// One comparison for startup, live picks, and status, including the drawing safety check.
+static bool costume_online_matches(const std::vector<uint8_t>& clean,
+                                   const std::vector<uint8_t>& candidate, std::string* detail) {
+  return costume_skeleton_matches(clean, candidate, detail) && costume_draw_safe(candidate, detail);
+}
+
+static bool costume_online_with_open_disc(const AssetRecord& asset,
+                                          const std::vector<uint8_t>& candidate, std::string* detail) {
+  uint32_t offset = 0, size = 0;
+  if (!host::disc_find_file(asset.info.target_path, &offset, &size) || !size || size > kMaxAssetBytes) {
+    detail->clear(); return false;
+  }
+  std::vector<uint8_t> clean(size);
+  if (!host::disc_read(offset, clean.data(), size)) { detail->clear(); return false; }
+  return costume_online_matches(clean, candidate, detail);
+}
+
+std::string online_status_column(const std::string& asset_id, bool compare_with_open_disc) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == asset_id;
+  });
+  if (asset == g_assets.end() || asset->info.kind != "character_costume") return {};
+  bool known = asset->online_known, allowed = asset->online_ok;
+  std::string detail = asset->online_note;
+  if (!known && compare_with_open_disc) {
+    known = true;
+    const auto candidate = load_runtime_asset_locked(*asset, &detail);
+    allowed = !candidate.empty() && costume_online_with_open_disc(*asset, candidate, &detail);
+    detail = online_reason_short(detail);
+  }
+  return cli::online_column(asset->info.kind, known, allowed, detail);
+}
+
 std::vector<AssetInfo> assets() {
   std::lock_guard<std::mutex> lock(g_mutex);
   std::vector<AssetInfo> out;
@@ -5665,7 +5701,7 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         std::vector<uint8_t> clean(disc_file.size);
         std::string validation_error;
         online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
-                         costume_skeleton_matches(clean, served, &validation_error);
+                         costume_online_matches(clean, served, &validation_error);
         host::log("cosmetics: costume %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
         online_reason = online_reason_short(validation_error);
@@ -5945,11 +5981,8 @@ std::string costume_slot_file(int css_character, int costume) {
 // scanned; an import is compared with the standard costume here, the way startup does it.
 static bool live_online_ok_locked(const AssetRecord& asset, const std::vector<uint8_t>& candidate) {
   if (asset.online_known) return asset.online_ok;
-  uint32_t offset = 0, size = 0;
-  if (!host::disc_find_file(asset.info.target_path, &offset, &size) || !size || size > kMaxAssetBytes) return false;
-  std::vector<uint8_t> clean(size);
   std::string detail;
-  return host::disc_read(offset, clean.data(), size) && costume_skeleton_matches(clean, candidate, &detail);
+  return costume_online_with_open_disc(asset, candidate, &detail);
 }
 
 static bool select_live_locked(const std::string& slot, const std::string& asset_id, std::string* error) {
@@ -6481,7 +6514,8 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
     if (disc_size < size) std::memset((uint8_t*)dst + disc_size, 0, size - disc_size);
     return OverrideRead::Success;
   }
-  if (!found->second.online_allowed && online_active()) {
+  const bool online_now = online_active();
+  if (!found->second.online_allowed && online_now) {
     const uint32_t vanilla_size = found->second.vanilla_size;
     const uint64_t exposed_size = std::max<size_t>(vanilla_size, found->second.bytes->size());
     if (file_offset > exposed_size || (uint64_t)file_offset + size > exposed_size + 31)
@@ -6493,26 +6527,28 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
     // The archive's length field (its first four bytes) says the length the game was given for
     // this file, which is the override's when that is the longer one (apply_to_fst).
     uint8_t length_field[4]; put_be32(length_field, (uint32_t)exposed_size);
-    for (uint32_t at = file_offset; at < 4 && at - file_offset < size; ++at)
-      ((uint8_t*)dst)[at - file_offset] = length_field[at];
+    // The exact-look announcer bank is an SSM, not an archive; keep its disc header intact.
+    if (found->second.kind != kLookFileKind || found->second.target_path != "nr_name.ssm")
+      for (uint32_t at = file_offset; at < 4 && at - file_offset < size; ++at)
+        ((uint8_t*)dst)[at - file_offset] = length_field[at];
     return OverrideRead::Success;
   }
   std::shared_ptr<const std::vector<uint8_t>> form =
-      found->second.online_bytes && online_active() ? found->second.online_bytes : found->second.bytes;
+      found->second.online_bytes && online_now ? found->second.online_bytes : found->second.bytes;
   if (found->second.kind == "stage_visual" || found->second.kind == kStageLengthKind) {
     // One read of a file is one form of it. The game reads a large file in pieces (512 KB at a time),
     // and a random stage pick can be published between two of them: the pieces then came from two
     // different files (the standard stage's header with a skin's body), the archive's offsets pointed
     // into the wrong data, and the game stopped on a missing symbol or wrote over the file next to
     // it (lbarchive.c:112, "Cannot find symbol ftDataNess"). A read from the start takes the form
-    // served now; later pieces keep it while it has the same length. Stage files only: a sound
-    // bank is streamed from any offset and must follow its new pick at once.
+    // served now; later pieces keep it while it has the same length and online state. An online
+    // state change takes the current form immediately, so an online read never keeps offline bytes.
+    // Stage files only: a sound bank is streamed from any offset and must follow its new pick at once.
     static std::mutex pin_mutex;
-    static std::unordered_map<uint32_t, std::shared_ptr<const std::vector<uint8_t>>> pinned;
+    static std::unordered_map<uint32_t, stage_read_pin::PinState<std::shared_ptr<const std::vector<uint8_t>>>> pinned;
     std::lock_guard<std::mutex> lock(pin_mutex);
     auto& pin = pinned[vanilla_file_start];
-    if (file_offset == 0 || !pin) pin = form;
-    else if (pin != form && pin->size() == form->size()) form = pin;
+    form = stage_read_pin::pick(pin, form, online_now, file_offset, form->size());
   }
   const auto& bytes = *form;
   uint64_t begin = file_offset, end = begin + size;
@@ -6535,7 +6571,7 @@ bool online_active() {
   if (g_online_freezes.load(std::memory_order_relaxed)) return true;
   // MELEE_TEST_ONLINE_FORMS (tests only, hidden runs): stage skins are served in their online form
   // offline too, so a capture shows what an online opponent's game draws.
-  static const bool test_forms = std::getenv("MELEE_TEST_ONLINE_FORMS") && std::getenv("MELEE_NO_GC_ADAPTER");
+  static const bool test_forms = host::test_env::getenv("MELEE_TEST_ONLINE_FORMS") && std::getenv("MELEE_NO_GC_ADAPTER");
   if (test_forms) return true;
   const OnlineProbe probe = g_online_probe.load();
   return probe && probe();
@@ -6767,7 +6803,7 @@ std::vector<LookPackStatus> look_packs() {
 }
 
 // At startup, with the game disc open: every built look disc is scanned as its pack (unchanged discs are
-// skipped by scan_disc_skins itself). Discs that fail their hash are left alone.
+// skipped by scan_disc_skins itself). Discovery checks name and size, not the whole-disc hash.
 void scan_look_packs() {
   fs::path dir;
   { std::lock_guard<std::mutex> lock(g_mutex); if (!g_configured) return; dir = looks_dir_locked(); }

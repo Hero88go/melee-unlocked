@@ -1,4 +1,5 @@
 /* Bounded, opt-in M7 diagnostic. No RNG state or simulation control is changed. */
+#include "mu_test_env.h"
 #include "mu_shim.h"
 
 char* getenv(const char* name);
@@ -530,7 +531,7 @@ int mu_experiment_defer_native_sound(int sound_id)
 {
     static int initialized, enabled;
     if (!initialized) {
-        const char* text = getenv("MELEE_TEST_DEFER_NATIVE_AX_RETRACE");
+        const char* text = mu_test_getenv("MELEE_TEST_DEFER_NATIVE_AX_RETRACE");
         enabled = text && text[0] == '1' && text[1] == '\0';
         initialized = 1;
     }

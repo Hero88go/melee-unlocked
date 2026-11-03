@@ -101,6 +101,8 @@ void static_memory_start(uint32_t address, uint32_t bytes);
 
 // Reads the file (missing is fine: no codes). `enabled_names` are the codes saved as on in the
 // settings file; until the panel has saved a choice (`chosen`), the file's [Gecko_Enabled] is used.
+// Set once at process startup, before settings or CLI files are read. Also covers live edits.
+void set_sources_allowed(bool allowed);
 void load(const std::string& path, const std::vector<std::string>& enabled_names, bool chosen);
 const std::string& path();
 std::vector<Code>& codes();

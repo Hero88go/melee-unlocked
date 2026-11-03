@@ -18,7 +18,18 @@ int main() {
     const char* reason = native_profile_mode_error(profile, 0);
     CHECK(reason != nullptr && std::strstr(reason, "Ranked") != nullptr && std::strlen(reason) <= 120);
   }
+  // Full YouGame matrix: Ranked/Unranked mods are allowed; Party stays vanilla-only.
+  for (int mode = 0; mode <= 4; ++mode) {
+    CHECK(native_profile_mode_error(NativeGameplayProfile::Vanilla, mode, true) == nullptr);
+    for (auto profile : {NativeGameplayProfile::Akaneia, NativeGameplayProfile::OtherMod}) {
+      CHECK((native_profile_mode_error(profile, mode, true) == nullptr) == (mode == 0 || mode == 1 || mode == 2 || mode == 3));
+    }
+  }
+  CHECK(native_profile_mode_error(NativeGameplayProfile::Vanilla, 0, true) == nullptr);
+  CHECK(native_profile_mode_error(NativeGameplayProfile::Akaneia, 0, true) == nullptr);
+  CHECK(native_profile_mode_error(NativeGameplayProfile::OtherMod, 0, true) == nullptr);
   CHECK(native_profile_mode_error(NativeGameplayProfile::Vanilla, 5) != nullptr);
   CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::Akaneia, 1), "Direct") != nullptr);
   CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::OtherMod, 1), "Direct") != nullptr);
+  std::puts("native_online_policy: ok");
 }
