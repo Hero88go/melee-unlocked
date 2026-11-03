@@ -557,6 +557,9 @@ class VulkanBackend final : public Backend {
     VkPhysicalDeviceFeatures features{};
     features.samplerAnisotropy = available.samplerAnisotropy; features.fillModeNonSolid = available.fillModeNonSolid;
     anisotropy_supported_ = available.samplerAnisotropy; wire_supported_ = available.fillModeNonSolid;
+    // Reads past the end of a buffer return zeros instead of faulting: on AMD's Linux driver such a
+    // read lost the device ("GPUVM fault", then "submit failed") as a Training stage loaded.
+    features.robustBufferAccess = available.robustBufferAccess;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.dynamicRendering = VK_TRUE;
     const float priority = 1.0f;
