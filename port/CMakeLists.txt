@@ -379,6 +379,13 @@ add_test(NAME port_yougame_0962_merge COMMAND "${Python3_EXECUTABLE}" "${CMAKE_C
 add_test(NAME port_yougame_0963_merge COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/yougame_0963_merge_test.py")
 add_test(NAME port_yougame_0968_merge COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/yougame_0968_merge_test.py")
 add_test(NAME port_yougame_0969_merge COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/yougame_0969_merge_test.py")
+add_test(NAME port_yougame_1000_merge COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/yougame_1000_merge_test.py")
+# The online menu's split rows on a synthetic menu archive (no game data).
+add_executable(port_online_rows_test tests/online_rows_test.cpp runtime/hle/online_rows.cpp)
+target_include_directories(port_online_rows_test PRIVATE runtime/hle)
+target_compile_features(port_online_rows_test PRIVATE cxx_std_17)
+add_test(NAME port_online_rows COMMAND port_online_rows_test)
+set_tests_properties(port_online_rows PROPERTIES TIMEOUT 10)
 add_executable(port_yougame_mod_online_test tests/yougame_mod_online_test.cpp)
 target_include_directories(port_yougame_mod_online_test PRIVATE runtime/hle)
 target_compile_features(port_yougame_mod_online_test PRIVATE cxx_std_17)

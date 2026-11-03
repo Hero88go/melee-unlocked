@@ -20,6 +20,8 @@ def source(path):
     return (ROOT / path).read_text(encoding="utf-8-sig")
 
 
+# Melee Unlocked 1.0: these sites follow yougame::session() (an app session, or a YouGame row
+# picked under the launcher), not the app-only yougame::active().
 class YouGame0965MergeTest(unittest.TestCase):
     def test_merge_boundaries_have_no_markers(self):
         for path in CONFLICTED:
@@ -31,7 +33,7 @@ class YouGame0965MergeTest(unittest.TestCase):
         prepare = function(online, "prepare_online_match_state")
         gate = re.search(r"if\s*\(([^{};]*?)\)\s*\{\s*std::string version_error;", prepare)
         self.assertIsNotNone(gate)
-        for condition in ("local_ready", "remote_ready", "!yougame::active()",
+        for condition in ("local_ready", "remote_ready", "!yougame::session()",
                           "!Matchmaking::local_peer.enabled"):
             self.assertIn(condition, gate.group(1))
         version = prepare[gate.end():].split("if (remote_count == 1)", 1)[0]
@@ -43,7 +45,7 @@ class YouGame0965MergeTest(unittest.TestCase):
         self.assertIn("if (version == 0) remote_ready = 0;", version)
         self.assertIn("g_user->ResetOnlineCompatibility();", function(online, "cleanup_connection"))
         self.assertIn("g_user->ResetOnlineCompatibility();", function(online, "handle_online_inputs"))
-        ranked = prepare.split("if (yougame::active() && g_last_search.mode == Matchmaking::RANKED)", 1)[1]
+        ranked = prepare.split("if (yougame::session() && g_last_search.mode == Matchmaking::RANKED)", 1)[1]
         self.assertLess(ranked.index("if (yougame::ranked_set_over())"),
                         ranked.index("g_user->PollOnlineCompatibility("))
         self.assertIn("cleanup_connection(yougame::Leave::Over);", ranked)
@@ -55,7 +57,7 @@ class YouGame0965MergeTest(unittest.TestCase):
                             ("handleConnecting", "OPPONENT_CONNECTING")):
             with self.subTest(name=name):
                 body = function(net, name)
-                self.assertRegex(body, r"^\s*if \(!yougame::active\(\) && !local_peer.enabled\) \{")
+                self.assertRegex(body, r"^\s*if \(!yougame::session\(\) && !local_peer.enabled\) \{")
                 check = body.split("if (!user_ || !user_->CheckOnlineCompatibility(&error)) {", 1)[1]
                 self.assertIn("fail(", check.split("}", 1)[0])
                 self.assertIn("return;", check.split("}", 1)[0])

@@ -16,7 +16,7 @@ enum Cmd : uint8_t {
   CMD_GET_RANK = 0xE3, CMD_FETCH_RANK = 0xE4, CMD_GET_RANK_VISIBILITY = 0xE5,
   // This fork's own (the Source Port host owns 0xF0-0xF9): is Ranked offered (YouGame mode), and the
   // Ranked character select's header (slippi_online.cpp, shim/mu_slippi_menu.c).
-  CMD_YOUGAME_RANKED = 0xFA,
+  CMD_YOUGAME_RANKED = 0xE7,   // was 0xFA, which the Hack Pack, replay gate and voice mods use
 };
 
 // Results of a native command call, mirrored by the host ABI comment in mu_host.h.
@@ -49,7 +49,9 @@ inline bool command_payload_valid(uint8_t cmd, const uint8_t* payload, uint32_t 
     case CMD_GET_MATCH_STATE: case CMD_OPEN_LOGIN: case CMD_LOGOUT: case CMD_UPDATE:
     case CMD_GET_ONLINE_STATUS: case CMD_CLEANUP_CONNECTION: case CMD_GET_NEW_SEED:
     case CMD_GET_PLAYER_SETTINGS: case CMD_GET_DELAY: case CMD_GET_RANK:
-    case CMD_FETCH_RANK: case CMD_GET_RANK_VISIBILITY: case CMD_YOUGAME_RANKED: expected = 0; break;
+    case CMD_FETCH_RANK: case CMD_GET_RANK_VISIBILITY: expected = 0; break;
+    // The online menu's YouGame query; one byte when the menu reports its pick (slippi_online.cpp).
+    case CMD_YOUGAME_RANKED: return payload_len == 0 || (payload_len == 1 && payload);
     default: return true;
   }
   if (payload_len != expected || (expected && !payload)) return false;

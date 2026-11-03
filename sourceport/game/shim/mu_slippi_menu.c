@@ -53,7 +53,7 @@ enum {
     CMD_SEND_CHAT = 0xBB,
     CMD_GET_NEW_SEED = 0xBC,
     CMD_NAME_ENTRY_INDEX = 0xBE,
-    CMD_YOUGAME_RANKED = 0xFA,   /* this fork's: flags (bit 0: Ranked offered), then the header text */
+    CMD_YOUGAME_RANKED = 0xE7,   /* YouGame flags, then the Ranked header (0xFA is the Hack Pack's) */
     REPLY_CAPACITY = 4096,   /* the bridge refuses a smaller reply buffer */
     MSRB_SIZE = 962,
     OSB_SIZE = 42,
@@ -86,6 +86,21 @@ static int zelda_sheik;       /* between the online major's OnLoad and OnUnload 
 static unsigned online_loads;  /* OnLoad count: the chat shim's Sheik selector keeps its icon until the next one */
 static int boot_oneshot;      /* boot.asm's one-shot "first menu = online submenu" */
 static int ranked_offered;    /* FA bit 0 at the last app-state fetch: the host runs Ranked (YouGame) */
+/* FA byte 0 at the last app-state fetch (mu_slippi_yougame_flags). Bit 1: the split layout of the
+ * GitHub build: YouGame Ranked, YouGame Direct, Slippi Unranked, Slippi Direct, Teams, Party,
+ * Log in, Update. Bit 2: its YouGame rows are open (the launcher is signed in to YouGame). */
+static int yg_flags;
+static int yg_pick;           /* the last row picked was a YouGame row (split layout) */
+static int last_slot = -1;    /* the last row picked (split layout): the cursor goes back to it */
+enum { YG_APP_RANKED = 1, YG_SPLIT = 2, YG_ROWS_OPEN = 4, YG_HEADER = 8 };
+enum { SPLIT_LOGIN = 6, SPLIT_UPDATE = 7 };
+/* The split layout's rows 0-5 as Slippi mode ids (rows 0 and 1 are YouGame's). */
+static const signed char split_mode[6] = { MU_SLP_MODE_RANKED, MU_SLP_MODE_DIRECT, MU_SLP_MODE_UNRANKED,
+                                           MU_SLP_MODE_DIRECT, MU_SLP_MODE_TEAMS, MU_SLP_MODE_PARTY };
+static int split_layout(void) { return (yg_flags & YG_SPLIT) != 0; }
+/* Slippi Direct's row: the P2P session menu confirms it by itself. */
+static int direct_slot(void) { return split_layout() ? 3 : MU_SLP_MODE_DIRECT; }
+static int yougame_query(int pick, char* out, unsigned int cap);
 static int first_boot = 1;    /* OnMenuLoad's DOFST_IS_FIRST_BOOT */
 /* A peer-to-peer session with menus (mu_online_p2p_menus): the first online submenu confirms Direct
  * by itself. Set in the boot menu entry and cleared by that menu's think a few frames later, both
@@ -133,7 +148,8 @@ int mu_slippi_fetch_app_state(void)
     user_name[31] = 0;
     memcpy(user_code, osb + 32, 10);
     user_code[10] = 0;
-    ranked_offered = mu_slippi_ranked_header(NULL, 0);
+    yg_flags = yougame_query(-1, NULL, 0);
+    ranked_offered = (yg_flags & YG_APP_RANKED) != 0;
     return slp.app_state;
 }
 
@@ -141,27 +157,36 @@ int mu_slippi_fetch_app_state(void)
  * the command answers nothing: Ranked stays hidden and the header stays "Ranked Mode". */
 int mu_slippi_ranked_header(char* out, unsigned int cap)
 {
+    return (yougame_query(-1, out, cap) & YG_HEADER) != 0;
+}
+
+/* FA: the host's YouGame byte (YG_*), then the Ranked header when YG_HEADER is set. `pick` 1 or 0
+ * first tells the host the menu chose a YouGame or a Slippi row (split layout); -1 only asks. */
+static int yougame_query(int pick, char* out, unsigned int cap)
+{
     u8 r[64];
+    u8 p = (u8) (pick > 0);
     unsigned int got = 0, n;
     memset(r, 0, sizeof r);
     if (out != NULL && cap > 0) {
         out[0] = 0;
     }
-    if (mu_slippi_cmd(CMD_YOUGAME_RANKED, NULL, 0, r, sizeof r, &got) != 0 || got < 1 || !(r[0] & 1)) {
+    if (mu_slippi_cmd(CMD_YOUGAME_RANKED, pick >= 0 ? &p : NULL, pick >= 0 ? 1u : 0u, r, sizeof r, &got) != 0 || got < 1) {
         return 0;
     }
     if (got > sizeof r) {
         got = sizeof r;
     }
-    if (out != NULL && cap > 0) {
+    if (out != NULL && cap > 0 && (r[0] & YG_HEADER) && got > 1) {
         n = got - 1 < cap - 1 ? got - 1 : cap - 1;
         memcpy(out, r + 1, n);
         out[n] = 0;
     }
-    return 1;
+    return r[0];
 }
 
-int mu_slippi_ranked_available(void) { return ranked_offered; }
+int mu_slippi_ranked_available(void) { return ranked_offered || (split_layout() && yg_pick); }
+int mu_slippi_yougame_pick(void) { return split_layout() && yg_pick; }
 
 int mu_slippi_app_state(void) { return slp.app_state; }
 const char* mu_slippi_user_name(void) { return (const char*) user_name; }
@@ -342,6 +367,18 @@ unsigned char mu_slippi_team_costume(int team, int ckind)
  * Direct, Teams, Party (and Ranked under YouGame). Update required: only Update. */
 int mu_slippi_option_unlocked(int sel)
 {
+    if (split_layout()) {
+        if (sel == 0 || sel == 1) {
+            return (yg_flags & YG_ROWS_OPEN) != 0;   /* YouGame: the launcher's account */
+        }
+        if (sel >= 2 && sel <= 5) {
+            return slp.app_state == MU_SLP_APP_LOGGED_IN;   /* Slippi's rows, as before */
+        }
+        if (sel == SPLIT_LOGIN) {
+            return slp.app_state != MU_SLP_APP_LOGGED_IN && slp.app_state != MU_SLP_APP_UPDATE;
+        }
+        return sel == SPLIT_UPDATE && slp.app_state == MU_SLP_APP_UPDATE;
+    }
     switch (slp.app_state) {
     case MU_SLP_APP_LOGGED_IN:
         return (sel >= MU_SLP_MODE_UNRANKED && sel <= MU_SLP_MODE_PARTY) ||
@@ -362,7 +399,8 @@ int mu_slippi_first_unlocked(void)
 {
     int i;
     int count = mn_803EB6B0[MENU_KIND_8].selection_count;
-    for (i = MU_SLP_MODE_UNRANKED; i < count; i++) {
+    /* The split layout starts at YouGame Ranked (locked without the launcher's account). */
+    for (i = split_layout() ? 0 : MU_SLP_MODE_UNRANKED; i < count; i++) {
         if (mn_80229938(MENU_KIND_8, i)) {
             break;
         }
@@ -391,8 +429,13 @@ void mu_slippi_menu_prep(void)
     if (!mu_slippi_menus_enabled()) {
         return;
     }
+    static u16 split_descriptions[8] = { 0x645, 0x647, 0x646, 0x647, 0x64B, 0x64C, 0x648, 0x64A };
     mu_mnmain_install_online_menu();
     mu_slippi_fetch_app_state();
+    if (split_layout()) {
+        /* Play ranked matches / Play a specific person / Play unranked matches / ... */
+        mn_803EB6B0[MENU_KIND_8].description_indices = split_descriptions;
+    }
 }
 
 /* The jump-table entries OnMenuPrep and boot.asm replace: previous mode 8 (OnReturnFromOnline)
@@ -405,7 +448,12 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
     if (previous_mode == GM_HANYU_CSS) {
         mu_content_mode(-1);   /* back from online: the offline view again */
         *menu_kind = MENU_KIND_8;
-        *hovered = mn_80229938(MENU_KIND_8, slp.mode) ? slp.mode : (u8) mu_slippi_first_unlocked();
+        if (split_layout()) {
+            *hovered = last_slot >= 0 && mn_80229938(MENU_KIND_8, last_slot) ? (u8) last_slot
+                                                                             : (u8) mu_slippi_first_unlocked();
+        } else {
+            *hovered = mn_80229938(MENU_KIND_8, slp.mode) ? slp.mode : (u8) mu_slippi_first_unlocked();
+        }
         return 1;
     }
     if (previous_mode == GM_BOOT && boot_oneshot) {
@@ -416,8 +464,8 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
         if (mu_online_p2p_menus()) {
             /* The session's players are already known: no choice of mode, straight to Direct's
              * character select. The row is only open when the host reports a signed-in state. */
-            if (mn_80229938(MENU_KIND_8, MU_SLP_MODE_DIRECT)) {
-                *hovered = MU_SLP_MODE_DIRECT;
+            if (mn_80229938(MENU_KIND_8, direct_slot())) {
+                *hovered = (u8) direct_slot();
                 p2p_auto_direct = 1;
             } else {
                 OSReport("[p2p] menus: Direct is locked (app state %d); staying on the online menu\n",
@@ -497,10 +545,10 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         /* Once per run: confirm Direct as a press on this frame would, whatever the pads hold. */
         p2p_auto_direct = 0;
         if (mu_online_p2p_menus() && mn_804A04F0.cur_menu == MENU_KIND_8 &&
-            mn_80229938(MENU_KIND_8, MU_SLP_MODE_DIRECT))
+            mn_80229938(MENU_KIND_8, direct_slot()))
         {
             auto_direct = 1;
-            mn_804A04F0.hovered_selection = MU_SLP_MODE_DIRECT;
+            mn_804A04F0.hovered_selection = (u8) direct_slot();
             buttons = MenuInput_Confirm;
             OSReport("[p2p] menus: entering the Direct character select (pad port %d)\n",
                      mu_online_p2p_port());
@@ -511,13 +559,25 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         mn_804D6BC8.cooldown = 5;
         mn_804A04F0.entering_menu = 1;
         gm_801677E8(auto_direct ? (s8) mu_online_p2p_port() : (s8) confirm_port());
-        switch (mn_804A04F0.hovered_selection) {
+        {
+        int sel = mn_804A04F0.hovered_selection;
+        int act = sel;
+        if (split_layout()) {
+            act = sel < 6 ? split_mode[sel] : sel == SPLIT_LOGIN ? MU_SLP_OPT_LOGIN : MU_SLP_OPT_UPDATE;
+        }
+        switch (act) {
         case MU_SLP_MODE_RANKED:
         case MU_SLP_MODE_UNRANKED:
         case MU_SLP_MODE_DIRECT:
         case MU_SLP_MODE_TEAMS:
         case MU_SLP_MODE_PARTY:
-            slp.mode = (u8) mn_804A04F0.hovered_selection;
+            slp.mode = (u8) act;
+            if (split_layout()) {
+                /* The host learns which service the next search uses before its character select. */
+                yg_pick = sel < 2;
+                last_slot = sel;
+                yougame_query(yg_pick, NULL, 0);
+            }
             if (mu_online_p2p_menus()) {
                 /* No game was played yet: neither winner nor loser. The character select gives the
                  * first game's stage pick to one player once the two are connected and their
@@ -541,6 +601,7 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
             sfxForward();
             mu_slippi_cmd(CMD_UPDATE_APP, NULL, 0, NULL, 0, NULL);
             break;
+        }
         }
     } else if (buttons & MenuInput_Back) {
         sfxBack();

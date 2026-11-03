@@ -527,7 +527,13 @@ static void text_think(HSD_GObj* gobj)
     } else {
         switch (st->mode) {
         case MU_SLP_MODE_UNRANKED: set_text_fmt(ST_HEADER, "%s Mode", "Unranked"); break;
-        case MU_SLP_MODE_DIRECT: set_text_fmt(ST_HEADER, "%s Mode", p2p ? "P2P" : "Direct"); break;
+        case MU_SLP_MODE_DIRECT:
+            if (!p2p && mu_slippi_yougame_pick()) {
+                set_text(ST_HEADER, "YouGame Direct");
+            } else {
+                set_text_fmt(ST_HEADER, "%s Mode", p2p ? "P2P" : "Direct");
+            }
+            break;
         case MU_SLP_MODE_RANKED: ranked_header(); break;
         case MU_SLP_MODE_TEAMS: set_text_fmt(ST_HEADER, "%s Mode", "Teams"); break;
         case MU_SLP_MODE_PARTY: set_text_fmt(ST_HEADER, "%s Mode", "Party"); break;

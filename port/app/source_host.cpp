@@ -73,6 +73,7 @@
 // Slippi names; in the normal build a peer-to-peer session (--p2p-*) is found through it.
 #include "netplay_state.h"
 #include "yougame_link.h"
+#include "online_rows.h"
 #include "yougame_mode_policy.h"
 #include "yougame_memcard.h"
 #ifdef YOUGAME_AGENT_TEST_HOOK
@@ -879,6 +880,18 @@ void load_system_files(const char* forced_off_by) {
     if (modded) host::log("slippi menus: Slippi's %s replaces the pack's copy", name);
     std::vector<uint8_t> data = slippi::system_game_file(name);
     if (data.empty()) { host::log("slippi menus: off (cannot build %s)", name); return; }
+    // The GitHub build's online menu: YouGame Ranked and YouGame Direct above Slippi's rows. The
+    // YouGame app keeps Slippi's labels (its rows are all YouGame). A file that is not the expected
+    // menu is left as it is, and the menu then keeps the old layout too (online_rows::applied).
+    if (!yougame::active() && (std::strcmp(name, "MnMaAll.usd") == 0 || std::strcmp(name, "MnMaAll.dat") == 0)) {
+      std::string why;
+      if (online_rows::apply(data, &why)) {
+        if (std::strcmp(name, "MnMaAll.usd") == 0) online_rows::set_applied(true);
+        host::log("online menu: %s shows the YouGame and Slippi rows", name);
+      } else {
+        host::log("online menu: %s keeps its rows (%s)", name, why.c_str());
+      }
+    }
     const uint32_t size = (uint32_t)data.size();
     if (uint64_t(next) + size > ModOverlay::base) { host::log("slippi menus: off (system files exceed their range)"); return; }
     files.push_back({path, next, std::move(data)});

@@ -673,6 +673,7 @@ int mu_slippi_fetch_app_state(void);                      /* B9 (and FA: is Rank
  * Unranked screens). mu_slippi_ranked_header also copies the Ranked character select's header
  * (game text, NUL-terminated) into `out`; it returns 0 and leaves `out` empty otherwise. */
 int mu_slippi_ranked_available(void);
+int mu_slippi_yougame_pick(void);   /* the online mode was picked from a YouGame row (split menu) */
 int mu_slippi_ranked_header(char* out, unsigned int cap);
 int mu_slippi_app_state(void);
 const char* mu_slippi_user_name(void);

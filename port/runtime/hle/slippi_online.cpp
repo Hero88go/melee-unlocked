@@ -7,6 +7,7 @@
 #include "slippi_online.h"
 #include "yougame_net_test.h"
 #include "yougame_link.h"
+#include "online_rows.h"
 #include "yougame_ranked_rules.h"
 #include "yougame_friends.h"
 #include "native_slippi_bridge.h"
@@ -54,7 +55,7 @@ LocalBuild g_local_build;   // retail Source by default; each engine sets its bu
 yougame::ranked_rules::Rules g_ranked_rules;
 bool g_ranked_rules_loaded = false, g_ranked_rules_valid = false;
 bool remix_ranked(int mode) {
-  return yougame::ranked_rules::applies(yougame::active(), mode, g_local_build.mod_view, g_local_build.fingerprint);
+  return yougame::ranked_rules::applies(yougame::session(), mode, g_local_build.mod_view, g_local_build.fingerprint);
 }
 bool use_ranked_rules(int mode) { return g_ranked_rules_valid && remix_ranked(mode); }
 // The profile the online rules see: the mod's only while its files are what the game shows.
@@ -68,18 +69,18 @@ const char* local_matchmaking_error(int mode) {
     return "AGENT TEST net delay requires Direct";
   }
 #endif
-  if (const char* reason = native_profile_mode_error(effective_profile(), mode, yougame::active())) return reason;
-  if (yougame::active() && mode == 0 && !g_config.ranked_rules_path.empty() && !g_ranked_rules_valid)
+  if (const char* reason = native_profile_mode_error(effective_profile(), mode, yougame::session())) return reason;
+  if (yougame::session() && mode == 0 && !g_config.ranked_rules_path.empty() && !g_ranked_rules_valid)
     return yougame::ranked_rules::kInvalid;
   if (g_local_build.mod_view && !native_mod_fingerprint_valid(g_local_build.fingerprint)) {
-    if (yougame::active() && (mode == 0 || mode == 1))
+    if (yougame::session() && (mode == 0 || mode == 1))
       return "Could not verify this mod's content. Restart the game before playing Ranked or Unranked.";
     return "Could not verify this mod's content. Restart the game before playing Direct.";
   }
   return nullptr;
 }
 bool yougame_online_mod_content(int mode) {
-  return native_yougame_online_mod_content(yougame::active(), mode, g_local_build.mod_view,
+  return native_yougame_online_mod_content(yougame::session(), mode, g_local_build.mod_view,
                                            g_local_build.extended_content, g_local_build.fingerprint);
 }
 // Vanilla character select kinds are 0-25 and the stage kinds end with the heal stage (0x55); an id
@@ -328,7 +329,7 @@ uint16_t random_stage(int mode) {
 // owns one thread of its own and these only hand it a small struct.
 const char* mode_name(Matchmaking::OnlinePlayMode mode) {
   switch (mode) {
-    case Matchmaking::RANKED: return yougame::active() ? "Ranked" : "Online";
+    case Matchmaking::RANKED: return yougame::session() ? "Ranked" : "Online";
     case Matchmaking::UNRANKED: return "Unranked";
     case Matchmaking::DIRECT: return "Direct match";
     case Matchmaking::TEAMS: return "Teams";
@@ -375,7 +376,7 @@ const char* offline_mode_name() {
 }
 
 void update_discord_presence(bool force = false) {
-  if (!host::discord::enabled() || yougame::active()) return;   // YouGame shows what its players are doing
+  if (!host::discord::enabled() || yougame::session()) return;   // YouGame shows what its players are doing
   // prepare_online_match_state runs this every frame the online menus are up. Rebuilding twice a
   // second is already far more often than Discord accepts an update. Every caller is on the
   // simulation thread (all of them are reached through handle()), so the static needs no guard.
@@ -422,7 +423,7 @@ void update_discord_presence(bool force = false) {
 }
 
 void consume_discord_join() {
-  if (!host::discord::enabled() || yougame::active()) return;   // YouGame invites come through YouGame
+  if (!host::discord::enabled() || yougame::session()) return;   // YouGame invites come through YouGame
   const std::string code = host::discord::take_join_code();
   if (code.empty() || !g_direct_codes) return;
   // Queue it for the Direct screen and remember it for the next Direct matchmaking command. The
@@ -454,7 +455,7 @@ void cleanup_connection(yougame::Leave why = yougame::Leave::Lost) {
   }
   g_matchmaking = std::make_unique<Matchmaking>(g_user.get());
   g_netplay = nullptr;
-  if (yougame::active()) yougame::end_session(why);
+  if (yougame::session()) yougame::end_session(why);
   g_local_selections.Reset();
   g_stage_pool.clear();
   g_forced_error.clear();
@@ -767,7 +768,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
       else if (slippi::recording()) net_trace::file_begin(slippi::replay_directory().c_str(), slippi::last_replay_path().c_str());
     }
     if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
-    if (yougame::active()) yougame::game_started();   // the room records this game's result
+    if (yougame::session()) yougame::game_started();   // the room records this game's result
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_latched_delay = (int)delay;   // the delay the game took: every later answer this match agrees with it
     g_in_online_match = true;
@@ -988,7 +989,7 @@ void handle_name_entry_load(const uint8_t* payload, std::vector<uint8_t>& q) {
 // The CSS toggle is left visible; room teams own both the outgoing selection and match.
 // Also used on first connection, since a character may have been locked before matchmaking.
 bool lock_room_team_selection() {
-  if (!yougame::active() || g_last_search.mode != Matchmaking::TEAMS || !g_matchmaking) return false;
+  if (!yougame::session() || g_last_search.mode != Matchmaking::TEAMS || !g_matchmaking) return false;
   const int team = yougame::seat_team(g_matchmaking->LocalPlayerIndex());
   if (team < 0) return false;
   const bool changed = g_local_selections.team_id != team;
@@ -1034,12 +1035,12 @@ int build_verdict(uint8_t remote_count, std::string* why) {
   const bool direct = g_last_search.mode == Matchmaking::DIRECT || g_last_search.mode == Matchmaking::TEAMS;
   // A local mod session only: vanilla YouGame Ranked/Unranked keeps the checks below unchanged.
   // The room key and the mod side's own verdict keep a mod build out of a vanilla match.
-  const bool yougame_mod = yougame::active() &&
+  const bool yougame_mod = yougame::session() &&
       (g_last_search.mode == Matchmaking::RANKED || g_last_search.mode == Matchmaking::UNRANKED) && g_local_build.mod_view;
   bool waiting = false;
   for (int i = 0; i < remote_count; ++i) {
     const auto rb = g_netplay->GetRemoteBuild(i);
-    if (yougame::active() && g_last_search.mode == Matchmaking::RANKED) {
+    if (yougame::session() && g_last_search.mode == Matchmaking::RANKED) {
       const uint64_t since = g_netplay->ConnectedAtMs();
       const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1183,7 +1184,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
         return;
       }
       if (verdict == 0) remote_ready = 0;   // the opponent's build is not known yet
-      if (yougame::active() && g_last_search.mode == Matchmaking::RANKED) {
+      if (yougame::session() && g_last_search.mode == Matchmaking::RANKED) {
         // YouGame Ranked v1: one best-of-3 set per room on the Unranked screens. Once the set is
         // decided (or its room is gone) the pair breaks up, as an Unranked pair does, and the
         // player is back at the search; until the last game's result is in, no next game starts.
@@ -1195,7 +1196,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
         }
         if (yougame::ranked_hold()) remote_ready = 0;
       }
-      if (local_ready && remote_ready && !yougame::active() && !Matchmaking::local_peer.enabled) {
+      if (local_ready && remote_ready && !yougame::session() && !Matchmaking::local_peer.enabled) {
         std::string version_error;
         const int version = g_user->PollOnlineCompatibility(&version_error);
         if (version < 0) {
@@ -1242,7 +1243,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       chat_message_player_idx = g_local_player_index;
     }
     if (single || !g_matchmaking) chat_message_player_idx = sent_chat_message_id > 0 ? g_local_player_index : g_remote_player_index;
-    local_name = me.display_name;
+    local_name = yougame::session() && yougame::launcher() ? yougame::identity().name : me.display_name;
   }
   if (local_ready && remote_ready) {
     bool decider = g_netplay->IsDecider();
@@ -1329,7 +1330,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     bool teams = g_last_search.mode == Matchmaking::TEAMS;
     std::array<int, PLAYER_COUNT_MAX> room_teams;
     room_teams.fill(-1);
-    bool room_teams_known = teams && yougame::active();
+    bool room_teams_known = teams && yougame::session();
     if (room_teams_known) for (auto* s : ordered) {
       if (!s->is_character_selected) continue;
       const int team = yougame::seat_team(s->player_idx);
@@ -1408,7 +1409,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   q.push_back(chat_message_id);
   q.push_back(chat_message_player_idx);
   std::array<uint8_t, 2> ranks{};
-  if (yougame::active() && g_last_search.mode == Matchmaking::RANKED) {
+  if (yougame::session() && g_last_search.mode == Matchmaking::RANKED) {
     ranks.fill(0xFF); // Slippi's hidden-rank sentinel; the opponent's rank is not known
     if (g_local_player_index < 2 && yougame::rank_visibility()) ranks[g_local_player_index] = yougame::local_rank();
   }
@@ -1492,7 +1493,7 @@ void handle_report_game(const uint8_t* p) {
   // Static YouGame Teams uses that record in exi_slippi too: ReportGameQuery has no placements and
   // must not void it first.
   if ((!host::game_image || end_method == 1 || end_method == 7) &&
-      !(yougame::active() && g_last_search.mode == Matchmaking::TEAMS))
+      !(yougame::session() && g_last_search.mode == Matchmaking::TEAMS))
     host::publish_lobby_result(winner, end_method, lras);
   {
     // Exactly CEXISlippi::handleReportGame: one report per game with every slot's result.
@@ -1513,11 +1514,11 @@ void handle_report_game(const uint8_t* p) {
     // A local two-instance test peering never went through Slippi's matchmaking, so there is no
     // server-side match: reporting it would file a fake game under the signed-in account.
     if (Matchmaking::local_peer.enabled) host::log("slippi: local test peering, game report not sent");
-    else if (!yougame::active()) report::log_game(r);   // YouGame records results through its room
+    else if (!yougame::session()) report::log_game(r);   // YouGame records results through its room
   }
 #ifdef YOUGAME_AGENT_TEST_HOOK
   yougame::agent_test::static_match.event(yougame::agent_test::StaticEvent::Report,
-      !host::game_image && yougame::active() && !slippi::playback::enabled(), [] {
+      !host::game_image && yougame::session() && !slippi::playback::enabled(), [] {
         host::log("yougame: test quit after game %d", yougame::agent_test::static_match.finished());
         yougame::agent_test::static_quit_requested.store(true);
         native_cleanup_match();
@@ -1840,8 +1841,8 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       return true;
     }
     case CMD_GP_COMPLETE_STEP:
-      if (yougame::active()) yougame::ranked_game_setup();   // a GameSetup flow: its C2 decides the set
-      if (yougame::active() && g_netplay) {
+      if (yougame::session()) yougame::ranked_game_setup();   // a GameSetup flow: its C2 decides the set
+      if (yougame::session() && g_netplay) {
         GamePrepStep step{};
         std::copy_n(payload, step.size(), step.begin());
         g_netplay->SendGamePrepStep(step);
@@ -1849,17 +1850,17 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       return true;
     case CMD_GP_FETCH_STEP: {
       q.assign(6, 0);
-      if (yougame::active() && g_netplay) {
+      if (yougame::session() && g_netplay) {
         const auto reply = g_netplay->FetchGamePrepStep(payload[0]);
         q.assign(reply.begin(), reply.end());
       }
       return true;
     }
     case CMD_REPORT_SET_COMPLETE:
-      if (yougame::active()) yougame::ranked_set_complete(payload[0]);
+      if (yougame::session()) yougame::ranked_set_complete(payload[0]);
       return true;
     case CMD_REPORT_MATCH_STATUS_UPDATE:
-      if (yougame::active()) yougame::ranked_match_status(payload[0]);
+      if (yougame::session()) yougame::ranked_match_status(payload[0]);
       return true;
     case CMD_GET_PLAYER_SETTINGS: handle_get_player_settings(q); return true;
     // Offline input now passes through the same host queue on both engines.
@@ -1869,22 +1870,32 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
     // Ranks: YouGame mode answers with its ladder rank; standalone never shows one (visibility 0
     // hides every rank display; the rest reads as unranked).
     case CMD_GET_RANK:
-      if (yougame::active()) q = yougame::rank_response();
+      if (yougame::session()) q = yougame::rank_response();
       else { q.assign(16, 0); q[1] = 1; }
       return true;
     case CMD_FETCH_RANK: return true; // room pump receives the authoritative result asynchronously
-    case CMD_GET_RANK_VISIBILITY: q.assign(1, yougame::active() ? yougame::rank_visibility() : 0); return true;
-    case CMD_YOUGAME_RANKED:
-      // This fork's own query (native_slippi_bridge.h): byte 0 bit 0 = Ranked is offered (YouGame
-      // mode), then the Ranked character select's header in the game's text encoding. Standalone
-      // Melee Unlocked answers 0: Ranked stays hidden there.
+    case CMD_GET_RANK_VISIBILITY: q.assign(1, yougame::session() ? yougame::rank_visibility() : 0); return true;
+    case CMD_YOUGAME_RANKED: {
+      // The online menu's YouGame query (native_slippi_bridge.h). A 1-byte payload is the menu's
+      // pick before its character select: 1 a YouGame row, 0 a Slippi row (launcher only).
+      // Reply byte 0: bit 0 the app's layout with Ranked offered (the YouGame app started the game);
+      // bit 1 the split layout (YouGame Ranked, YouGame Direct, then Slippi's rows); bit 2 the
+      // YouGame rows are open (the launcher's bridge is up and its account signed in); bit 3 the
+      // Ranked header follows, in the game's text encoding.
+      if (payload_len == 1) yougame::set_launcher_session(payload[0] == 1);
       q.assign(1, 0);
-      if (yougame::active()) {
-        q[0] = 1;
-        const std::string header = convert_string_for_game(yougame::ranked_header(), 30);
+      if (yougame::active()) q[0] |= 1;
+      else if (online_rows::applied()) q[0] |= 2;   // the labels were rewritten (Source Port)
+      if (yougame::launcher() && yougame::wait_identity(500).ok) q[0] |= 4;
+      if (yougame::session()) {
+        q[0] |= 8;
+        std::string text = yougame::ranked_header();
+        if (yougame::launcher() && text == "Ranked Mode") text = "YouGame Ranked";   // beside Slippi's rows
+        const std::string header = convert_string_for_game(text, 30);
         q.insert(q.end(), header.begin(), header.end());
       }
       return true;
+    }
     default: return false;
   }
 }

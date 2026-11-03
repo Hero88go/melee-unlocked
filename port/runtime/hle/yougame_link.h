@@ -42,6 +42,18 @@ void start();
 
 // Launched by the YouGame desktop app: online play goes through YouGame, never Slippi.
 bool active();
+// Melee Unlocked's own launcher holds the YouGame account and serves the same loopback bridge
+// (YOUGAME_BRIDGE + YOUGAME_TOKEN + MELEE_YOUGAME_LAUNCHER=1). The game keeps all its normal
+// GitHub behaviour (Slippi, mods, spectator, settings); only the YouGame rows of the online menu
+// use the bridge, one search at a time.
+bool launcher();
+// YouGame's online rows can be offered: the app started the game, or the launcher's bridge is up.
+bool available();
+// The current search or match is a YouGame one: always in the app, and under the launcher from the
+// moment a YouGame row is picked until a Slippi row is picked.
+bool session();
+// The online menu's choice, before its character select: true for a YouGame row. Ignored in the app.
+void set_launcher_session(bool yougame);
 // The bridge is this process's stdin/stdout (the app's sandboxed launch): stdout carries only
 // bridge lines (the log goes to stderr), and the GameCube adapter comes from the app's pad mirror.
 bool stdio_bridge();

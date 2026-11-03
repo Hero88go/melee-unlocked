@@ -151,6 +151,8 @@ pad_mirror::Attachment g_pad_mirror_attachment;
 #endif
 transport::Events g_net_events;
 std::atomic<bool> g_broker{false}, g_direct{false};
+bool g_launcher = false;                        // MELEE_YOUGAME_LAUNCHER=1: Melee Unlocked's launcher serves the bridge
+std::atomic<bool> g_launcher_session{false};    // under the launcher: the online menu's last pick was a YouGame row
 std::mutex g_link_mutex;
 std::map<unsigned, int> g_link_events;
 int direct_state(unsigned id) {
@@ -903,6 +905,7 @@ void start() {
   g_bridge_url = take("YOUGAME_BRIDGE");
   g_bridge_token = take("YOUGAME_TOKEN");
   g_stdio = take("YOUGAME_STDIO") == "1";
+  g_launcher = take("MELEE_YOUGAME_LAUNCHER") == "1" && !g_stdio;
   host::test_env::yougame_session = active();
 #ifdef MELEE_LINUX_X11_EMBED
   // The shared X11 helper checks this non-secret flag at window attachment.
@@ -919,7 +922,15 @@ void start() {
   // whole log to stdout, which in stdio mode is the bridge. fetch_identity says which mode this is.
 }
 
-bool active() { return g_stdio || (!g_bridge_url.empty() && !g_bridge_token.empty()); }
+bool active() { return g_stdio || (!g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty()); }
+bool launcher() { return g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty(); }
+bool available() { return active() || launcher(); }
+bool session() { return active() || (launcher() && g_launcher_session.load()); }
+void set_launcher_session(bool yougame) {
+  if (!launcher()) return;
+  if (g_launcher_session.exchange(yougame) != yougame)
+    host::log("yougame: %s row chosen", yougame ? "a YouGame" : "a Slippi");
+}
 uintptr_t pad_mirror_handle() { return g_pad_mirror.load(); }
 #ifndef _WIN32
 pad_mirror::Attachment pad_mirror_attachment() {

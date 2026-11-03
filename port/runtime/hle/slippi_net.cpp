@@ -651,7 +651,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
     }
     case NP_MSG_SLIPPI_CONN_SELECTED: break;
     case NP_MSG_SLIPPI_COMPLETE_STEP: {
-      if (!yougame::active()) break;
+      if (!yougame::session()) break;
       GamePrepStep step{};
       bool valid = true;
       for (auto& b : step) if (!(packet >> b)) { valid = false; break; }
@@ -665,7 +665,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
 }
 
 void NetplayClient::SendGamePrepStep(const GamePrepStep& step) {
-  if (!yougame::active()) return;
+  if (!yougame::session()) return;
   auto p = std::make_unique<Packet>();
   *p << (uint8_t)NP_MSG_SLIPPI_COMPLETE_STEP;
   for (uint8_t b : step) *p << b;
@@ -1060,7 +1060,7 @@ void NetplayClient::StartSlippiGame() {
     if (client_) wakeup_thread(client_);
   }
 #endif
-  if (yougame::active()) game_prep_.clear();
+  if (yougame::session()) game_prep_.clear();
   local_pad_queue_.clear();
   { std::lock_guard<std::mutex> lk(pad_mutex_); for (auto& b : early_pads_) b.clear(); }
   {
@@ -1283,7 +1283,7 @@ void Matchmaking::FindMatch(MatchSearchSettings settings) {
   { std::lock_guard<std::mutex> lk(result_mutex_); error_msg_.clear(); }
 #ifdef YOUGAME_AGENT_TEST_HOOK
   if (!yougame::agent_test::matchmaking_allowed(
-          local_peer.enabled, server_allowed, yougame::agent_test::agent_script, yougame::active(), settings.mode)) {
+          local_peer.enabled, server_allowed, yougame::agent_test::agent_script, yougame::session(), settings.mode)) {
 #else
   if (!local_peer.enabled && !server_allowed) {
 #endif
@@ -1439,7 +1439,7 @@ static json local_peer_ticket(const UserInfo& me, Matchmaking::OnlinePlayMode mo
 }
 
 void Matchmaking::startMatchmaking() {
-  if (!yougame::active() && !local_peer.enabled) {
+  if (!yougame::session() && !local_peer.enabled) {
     std::string error;
     if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
       fail(error.empty() ? "Could not check Slippi version. Try again." : error);
@@ -1451,7 +1451,7 @@ void Matchmaking::startMatchmaking() {
 #ifdef YOUGAME_AGENT_TEST_HOOK
   // Recheck at the routing boundary: an agent search must never fall through to Slippi.
   if (yougame::agent_test::agent_script) {
-    if (!yougame::agent_test::matchmaking_allowed(local_peer.enabled, server_allowed, true, yougame::active(), search_settings_.mode)) {
+    if (!yougame::agent_test::matchmaking_allowed(local_peer.enabled, server_allowed, true, yougame::session(), search_settings_.mode)) {
       yougame::agent_test::input_policy.allowed(
           yougame::agent_test::live_input_state(search_settings_.mode), yougame::agent_test::InputKey::Script,
           [](const char* line) { host::log("%s", line); });
@@ -1465,7 +1465,7 @@ void Matchmaking::startMatchmaking() {
   UserInfo me = user_->GetUserInfo();
   static std::mt19937 rng((uint32_t)time_ms());
 
-  if (yougame::active() && !local_peer.enabled) {
+  if (yougame::session() && !local_peer.enabled) {
     startYouGameMatchmaking();
     return;
   }
@@ -1709,7 +1709,7 @@ bool Matchmaking::ingest_ticket(const Ticket& ticket) {
 
 
 void Matchmaking::handleConnecting() {
-  if (!yougame::active() && !local_peer.enabled) {
+  if (!yougame::session() && !local_peer.enabled) {
     std::string error;
     if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
       fail(error.empty() ? "Could not check Slippi version. Try again." : error);
