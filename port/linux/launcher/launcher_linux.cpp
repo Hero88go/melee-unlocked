@@ -14,6 +14,8 @@
 #include "launcher_lobby_p2p.h"
 #include "slippi_account.h"
 #include "updater.h"
+#include "launcher_yougame.h"
+#include <sys/stat.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -86,6 +88,7 @@ void load_ini() {
   std::ifstream f(ini_path());
   for (std::string line; std::getline(f, line);) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (launcher::yougame::load_line(line)) continue;
     if (line.rfind("iso=", 0) == 0) g_iso = line.substr(4);
     else if (line == "savereplays=0") g_save_replays = false;
     else if (line.rfind("replaydir=", 0) == 0) g_replay_folder = line.substr(10);
@@ -104,6 +107,9 @@ void save_ini() {
   if (g_replay_as_played) f << "replayasplayed=1\n";
   if (g_replay_hide_short) f << "replayhideshort=1\n";
   if (g_replay_sort) f << "replaysort=" << g_replay_sort << "\n";
+  f << launcher::yougame::ini_lines();   // YouGame: the environment and the saved session
+  f.close();
+  chmod(ini_path().c_str(), 0600);       // the session is in it: readable by this user only
 }
 
 // The same check as the Windows launcher's: Melee NTSC 1.02 and a full image (not an NKit one).
@@ -204,7 +210,21 @@ bool start_process(const std::vector<std::string>& argv) {
   posix_spawn_file_actions_init(&actions);
   posix_spawn_file_actions_addchdir_np(&actions, g_dir.c_str());
   pid_t pid = 0;
-  const int rc = posix_spawn(&pid, args[0], &actions, nullptr, args.data(), environ);
+  // The game's YouGame rows ask this launcher (launcher_yougame.h): its address and a launch token.
+  std::vector<std::string> env_store;
+  for (char** e = environ; *e; ++e)
+    if (std::strncmp(*e, "YOUGAME_", 8) != 0 && std::strncmp(*e, "MELEE_YOUGAME_", 14) != 0) env_store.push_back(*e);
+  if (const std::string bridge = launcher::yougame::bridge_url(); !bridge.empty()) {
+    launcher::yougame::set_build(MELEE_PORT_VERSION, std::wstring(argv[0].begin(), argv[0].end()),
+                                 std::wstring(g_dir.begin(), g_dir.end()) + L"/melee_game.so");
+    env_store.push_back("YOUGAME_BRIDGE=" + bridge);
+    env_store.push_back("YOUGAME_TOKEN=" + launcher::yougame::new_launch_token());
+    env_store.push_back("MELEE_YOUGAME_LAUNCHER=1");
+  }
+  std::vector<char*> env;
+  for (auto& s : env_store) env.push_back(s.data());
+  env.push_back(nullptr);
+  const int rc = posix_spawn(&pid, args[0], &actions, nullptr, args.data(), env.data());
   posix_spawn_file_actions_destroy(&actions);
   if (rc != 0) { status(std::string("The game could not be started: ") + std::strerror(rc)); return false; }
   g_launch_time = std::chrono::system_clock::now();
@@ -468,6 +488,51 @@ void style() {
   c[ImGuiCol_CheckMark] = ImVec4(0.85f, 0.57f, 0.98f, 1);
 }
 
+// YouGame: the account line, Connect (email sign-in, sent only to YouGame) or Disconnect, and Open
+// YouGame (the Melee Unlocked page on the YouGame site, in the browser).
+std::atomic<bool> g_yg_save{false};
+std::atomic<bool> g_yg_busy{false};
+std::mutex g_yg_mutex;
+std::string g_yg_status;
+void yougame_line() {
+  const launcher::yougame::Account a = launcher::yougame::account();
+  const std::string text = a.signed_in ? "YouGame: " + a.name + (a.code.empty() ? "" : " (" + a.code + ")") : "YouGame: not connected";
+  ImGui::TextColored(a.signed_in ? ImVec4(0.75f, 0.8f, 1, 1) : ImVec4(0.6f, 0.62f, 0.7f, 1), "%s", text.c_str());
+  ImGui::SameLine();
+  if (a.signed_in) {
+    if (ImGui::SmallButton("Disconnect##yg")) launcher::yougame::sign_out();
+  } else if (ImGui::SmallButton("Connect##yg")) {
+    ImGui::OpenPopup("Connect YouGame");
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Open YouGame")) open_path(launcher::yougame::game_page());
+  if (ImGui::BeginPopupModal("Connect YouGame", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    static char email[256], pass[256];
+    ImGui::TextUnformatted("Sign in with your YouGame account. Your password goes only to YouGame.");
+    ImGui::InputText("Email", email, sizeof email);
+    ImGui::InputText("Password", pass, sizeof pass, ImGuiInputTextFlags_Password);
+    { std::lock_guard<std::mutex> lock(g_yg_mutex); if (!g_yg_status.empty()) ImGui::TextWrapped("%s", g_yg_status.c_str()); }
+    ImGui::BeginDisabled(g_yg_busy.load());
+    if (ImGui::Button("Sign in") && email[0] && pass[0]) {
+      g_yg_busy = true;
+      { std::lock_guard<std::mutex> lock(g_yg_mutex); g_yg_status = "Signing in..."; }
+      std::thread([e = std::string(email), p = std::string(pass)] {
+        std::string why;
+        const bool ok = launcher::yougame::sign_in(e, p, &why);
+        std::lock_guard<std::mutex> lock(g_yg_mutex);
+        g_yg_status = ok ? "" : why;
+        g_yg_busy = false;
+      }).detach();
+      std::memset(pass, 0, sizeof pass);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Close") || launcher::yougame::account().signed_in) { std::memset(pass, 0, sizeof pass); ImGui::CloseCurrentPopup(); }
+    ImGui::EndPopup();
+  }
+  if (g_yg_save.exchange(false)) save_ini();
+}
+
 void page_play() {
   ImGui::TextColored(ImVec4(0.85f, 0.7f, 1, 1), "MELEE UNLOCKED %s", MELEE_PORT_VERSION);
   ImGui::Separator();
@@ -490,6 +555,7 @@ void page_play() {
   bool account = false;
   const auto line = account_line(&account);
   ImGui::TextColored(account ? ImVec4(0.75f, 0.8f, 1, 1) : ImVec4(1, 0.8f, 0.5f, 1), "%s", line.c_str());
+  yougame_line();
   ImGui::Spacing();
   ImGui::BeginDisabled(playing());
   if (ImGui::Button(playing() ? "RUNNING" : "PLAY", ImVec2(260, 64))) play();
@@ -705,6 +771,13 @@ int main(int argc, char** argv) {
   g_dir = exe_dir();
   host::g_log = std::fopen((g_dir + "/launcher.log").c_str(), "w");
   load_ini();
+  // YouGame: the bridge for the game's YouGame rows, up for the whole run. On Linux the release YouGame
+  // is on cannot be fetched beside this one yet: the game says where to get it instead.
+  launcher::yougame::set_on_session_change([] { g_yg_save = true; });
+  if (std::string why; !launcher::yougame::start_bridge(&why)) std::fprintf(stderr, "yougame: bridge did not start (%s)\n", why.c_str());
+  launcher::yougame::set_restart_older([](const launcher::yougame::Allowed& older, const std::string&) {
+    return "YouGame uses Melee Unlocked " + older.version + ". Get it from GitHub to play YouGame until it updates.";
+  });
   refresh_replays();
   refresh_mods();
   host::updater::check(MELEE_PORT_VERSION);

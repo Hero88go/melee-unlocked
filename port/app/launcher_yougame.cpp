@@ -5,10 +5,12 @@
 #define NOMINMAX
 #endif
 #include <winsock2.h>
+#ifdef _WIN32
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <bcrypt.h>
 #include <wincrypt.h>
+#endif
+#include <bcrypt.h>
 #include <winhttp.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -17,16 +19,19 @@
 #include <cstdlib>
 #include <cctype>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <random>
 #include <stdexcept>
 #include <thread>
 
+#ifdef _WIN32
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "crypt32.lib")
+#endif
 
 using json = nlohmann::json;
 
@@ -110,6 +115,12 @@ std::string unb64(const std::string& in) {
   }
   return out;
 }
+#ifndef _WIN32
+// Linux has no per-user encryption service here: the session is kept as text in launcher.ini, which
+// the launcher writes readable by its owner only (0600).
+std::string protect(const std::string& plain) { return "p:" + b64(plain, false); }
+std::string unprotect(const std::string& text) { return text.rfind("p:", 0) == 0 ? unb64(text.substr(2)) : std::string(); }
+#else
 std::string protect(const std::string& plain) {
   DATA_BLOB in{(DWORD)plain.size(), (BYTE*)plain.data()}, out{};
   if (!CryptProtectData(&in, L"Melee Unlocked YouGame", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) return {};
@@ -126,6 +137,7 @@ std::string unprotect(const std::string& text) {
   LocalFree(out.pbData);
   return s;
 }
+#endif
 
 // ---- HTTP client (WinHTTP)
 
@@ -133,7 +145,11 @@ struct Reply { int status = 0; std::string body; };
 
 Reply http(const std::string& method, const std::string& url, const std::vector<std::string>& headers,
            const std::string& body, int timeout_ms = 15000) {
+#ifdef _WIN32
   URL_COMPONENTSW c{};
+#else
+  URL_COMPONENTS c{};   // the Linux WinHTTP stand-in's name
+#endif
   c.dwStructSize = sizeof c;
   c.dwHostNameLength = c.dwUrlPathLength = c.dwExtraInfoLength = (DWORD)-1;
   std::wstring w = wide(url);
@@ -276,7 +292,7 @@ std::string hex(const uint8_t* p, size_t n) {
   return s;
 }
 std::string sha256_file(const std::wstring& path) {
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(std::filesystem::path(path), std::ios::binary);
   if (!f) return {};
   BCRYPT_ALG_HANDLE alg = nullptr;
   BCRYPT_HASH_HANDLE h = nullptr;
@@ -354,7 +370,11 @@ std::string http_response(const BridgeReply& r) {
 }
 
 void serve(SOCKET s) {
+#ifdef _WIN32
   DWORD timeout = 5000;
+#else
+  timeval timeout{5, 0};
+#endif
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof timeout);
   setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof timeout);
   std::string data;
@@ -513,9 +533,13 @@ bool start_bridge(std::string* error) {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;
+#ifdef _WIN32
   BOOL exclusive = TRUE;
   setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&exclusive, sizeof exclusive);
   int len = sizeof addr;
+#else
+  socklen_t len = sizeof addr;
+#endif
   if (bind(listener, (sockaddr*)&addr, sizeof addr) != 0 || listen(listener, 16) != 0 ||
       getsockname(listener, (sockaddr*)&addr, &len) != 0) {
     closesocket(listener);
