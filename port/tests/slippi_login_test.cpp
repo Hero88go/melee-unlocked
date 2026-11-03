@@ -162,11 +162,21 @@ int main() {
   version_reply = "{\"latestVersion\":\"99.0.0\"}";
   CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
   CHECK(compatibility_error.find("Update Melee Unlocked") != std::string::npos && version_requests == 2);
+  // That answer is kept: with the server unreadable afterwards, it still blocks.
+  const auto version_cache = fs::path(user.dir()) / "version-check.json";
+  CHECK(fs::exists(version_cache));
+  version_transport_ok = false;
+  user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
+  CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version) &&
+        compatibility_error.find("Update Melee Unlocked") != std::string::npos);
+  version_transport_ok = true;
+  fs::remove(version_cache);
   for (const auto* reply : {"{}", "null", "[]", "{broken", "{\"latestVersion\":123}",
                            "{\"latestVersion\":\"\"}", "{\"latestVersion\":\"garbage\"}",
                            "{\"latestVersion\":\"3.6.4-beta\"}", "{\"latestVersion\":\"3.6.4.0.1\"}"}) {
     user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
     version_reply = reply;
+    fs::remove(version_cache);
     CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version) && compatibility_error.empty());
     user.OverwriteLatestVersion("99.0.0");
     CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version) &&
@@ -176,6 +186,7 @@ int main() {
   }
   user.OverwriteLatestVersion(slippi::SLIPPI_SEMVER);
   version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
+  fs::remove(version_cache);
   version_http_status = 503;
   CHECK(user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
   version_http_status = 200; version_transport_ok = false;

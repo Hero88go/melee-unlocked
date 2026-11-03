@@ -265,8 +265,24 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
       const std::string v = str_or(reply, "latestVersion", "");
       if (release_version_valid(v)) latest = v;
     }
+    const std::filesystem::path cache = std::filesystem::u8path(dir_) / "version-check.json";
     if (latest.empty()) {
-      const std::string known = me.latest_version;
+      // The last answer the server gave this game (kept below, three days at most) and the
+      // account's own, whichever is newer.
+      std::string known = me.latest_version;
+      {
+        std::ifstream in(cache, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const json saved = json::parse(text, nullptr, false);
+        const std::string v = saved.is_object() ? str_or(saved, "latestVersion", "") : std::string();
+        const json* checked = json_member(saved, "checkedAt");
+        const int64_t at = checked && checked->is_number_integer() ? checked->get<int64_t>() : 0;
+        const int64_t now = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count();
+        if (release_version_valid(v) && now - at >= 0 && now - at < 3 * 24 * 3600 &&
+            (!release_version_valid(known) || version_newer(v, known)))
+          known = v;
+      }
       if (!release_version_valid(known)) {
         host::log("slippi: the version check did not answer (HTTP %d) and the account has no known version", status);
         return false;
@@ -284,6 +300,14 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (info_.uid != me.uid) return false;  // the player signed out or changed accounts
       info_.latest_version = latest;
+    }
+    {
+      std::error_code ec;
+      std::filesystem::create_directories(cache.parent_path(), ec);
+      std::ofstream out(cache, std::ios::trunc);
+      out << json{{"latestVersion", latest},
+                  {"checkedAt", (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                                    std::chrono::system_clock::now().time_since_epoch()).count()}}.dump();
     }
     if (version_newer(latest, SLIPPI_SEMVER)) {
       *error = "Slippi " + latest + " is out. Update Melee Unlocked";
