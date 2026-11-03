@@ -143498,7 +143498,7 @@ index 6d7000275..d67b9cf18 100644
  /* 2FC3BC */ void ifMagnify_802FC3BC(void);
  /* 2FC3C0 */ void ifMagnify_802FC3C0(s32 slot);
 diff --git a/src/melee/if/ifnametag.c b/src/melee/if/ifnametag.c
-index f8c4573e8..e94643691 100644
+index f8c4573e8..696062fb2 100644
 --- a/src/melee/if/ifnametag.c
 +++ b/src/melee/if/ifnametag.c
 @@ -100,8 +100,8 @@
@@ -143683,7 +143683,7 @@ index f8c4573e8..e94643691 100644
      lbVector_WorldToScreen(Camera_80030A50()->hsd_obj, &vec, &vec2, 0);
      HSD_JObjSetTranslateX(jobj, vec2.x);
      HSD_JObjSetTranslateY(jobj, -vec2.y);
-@@ -263,31 +304,40 @@ static inline float inlineA1(float var_f31)
+@@ -263,31 +304,58 @@ static inline float inlineA1(float var_f31)
      }
  }
  
@@ -143695,6 +143695,24 @@ index f8c4573e8..e94643691 100644
 +#else
 +#define NAMETAG_SCALE_X 10.0f
 +#define NAMETAG_TEXT_SCALE_X 0.4f
++#endif
++
++#ifdef MU_NATIVE
++/* The tag's plate is as wide as the game's four characters. A longer tag (mods and imported cards
++ * allow eight) ran past it: its text is narrowed to fit. Display only. */
++static float mu_nametag_fit(const char* text)
++{
++    int chars = 0;
++    const unsigned char* p = (const unsigned char*) text;
++    while (p != NULL && *p != 0) {
++        p += (*p >= 0x81 && *p <= 0x9F) || (*p >= 0xE0 && *p <= 0xEF) ? 2 : 1;   /* Shift JIS lead byte */
++        chars++;
++    }
++    return chars > 4 ? 4.0f / (float) chars : 1.0f;
++}
++#define NAMETAG_TEXT_FIT(text) (NAMETAG_TEXT_SCALE_X * mu_nametag_fit(text))
++#else
++#define NAMETAG_TEXT_FIT(text) NAMETAG_TEXT_SCALE_X
 +#endif
 +
  void NameTag_Create(int slot)
@@ -143729,11 +143747,11 @@ index f8c4573e8..e94643691 100644
 -                HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot], 0.4f,
 -                                    0.55f);
 +                HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot],
-+                                    NAMETAG_TEXT_SCALE_X, 0.55f);
++                                    NAMETAG_TEXT_FIT(GetNameText(Player_GetNametagSlotID(slot))), 0.55f);
              }
              HSD_JObjReqAnimAll(jobj, f);
          }
-@@ -301,20 +351,48 @@ void NameTag_Create(int slot)
+@@ -301,20 +369,48 @@ void NameTag_Create(int slot)
      HSD_GObj_SetupProc(gobj, fn_802FCC44, 17);
  }
  
@@ -143781,11 +143799,11 @@ index f8c4573e8..e94643691 100644
                                  GetNameText(Player_GetNametagSlotID(slot)));
 -        HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot], 0.4f, 0.55f);
 +        HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot],
-+                            NAMETAG_TEXT_SCALE_X, 0.55f);
++                            NAMETAG_TEXT_FIT(GetNameText(Player_GetNametagSlotID(slot))), 0.55f);
      }
      HSD_JObjReqAnimAll(jobj, f);
      HSD_JObjAnimAll(jobj);
-@@ -361,10 +439,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
+@@ -361,10 +457,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
      return GObj_Create(0xE, arg0, 0);
  }
  
@@ -143808,7 +143826,7 @@ index f8c4573e8..e94643691 100644
      int i;
      PAD_STACK(0x10);
      for (i = 0; i < Gm_Player_NumMax; i++) {
-@@ -374,18 +463,20 @@ void un_802FD4C8(void)
+@@ -374,18 +481,20 @@ void un_802FD4C8(void)
      un_804D6D6C = 0;
      memzero(un_804D6D70, i = sizeof(un_804D6D70));
      un_804D6D68 = (gobj = un_802FD4C8_inline(15));
