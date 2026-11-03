@@ -72,6 +72,8 @@ uint32_t remote_shield_color(int slot);
 std::array<std::string, 4> player_names_for_overlay();
 // Most recent measured round trip to the opponent, in milliseconds; 0 when not connected.
 int ping_ms();
+// Every other player's ping in a Slippi match (Teams: up to three), empty when there is none.
+std::vector<int> remote_pings_ms();
 // The online mode of the session that is running or being set up, as a Matchmaking::OnlinePlayMode
 // value (UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4; 0 is Slippi's Ranked, never used). -1 when there is no online session at
 // all, which is what "offline" means to the rest of the port. Covers matchmaking, the online

@@ -203,6 +203,11 @@ class NetplayClient {
   int32_t CalcTimeOffsetUs();
   double GetAndResetAvgPingMs();
   int LastPingMs() const { return (int)(last_ping_ms_.load(std::memory_order_relaxed)); }
+  // Each remote player's last ping (Teams has up to three), and how many there are. UI thread safe.
+  int RemotePingMs(int index) const {
+    return index >= 0 && index < REMOTE_PLAYER_MAX ? (int)remote_ping_ms_[index].load(std::memory_order_relaxed) : 0;
+  }
+  int RemoteCount() const { return (int)remote_count_seen_.load(std::memory_order_relaxed); }
   // The median of the last pre-match pings (NP_MSG_MU_PING) to the first opponent, 0 if none yet.
   int PreMatchPingMs() const { return (int)(prematch_ping_ms_.load(std::memory_order_relaxed)); }
   void SendChatMessage(int message_id);
@@ -264,6 +269,8 @@ class NetplayClient {
   uint64_t ping_us_[REMOTE_PLAYER_MAX] = {};
   std::atomic<uint64_t> ping_sample_sum_us_{0}, ping_sample_count_{0};
   std::atomic<uint32_t> last_ping_ms_{0};
+  std::atomic<uint32_t> remote_ping_ms_[REMOTE_PLAYER_MAX] = {};
+  std::atomic<uint8_t> remote_count_seen_{0};
   std::atomic<uint32_t> prematch_ping_ms_{0};
   std::deque<uint32_t> prematch_samples_;   // network thread only
   void SendPrematchPing();

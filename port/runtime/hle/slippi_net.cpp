@@ -522,6 +522,8 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       ping_sample_sum_us_.fetch_add(ping_us_[pidx], std::memory_order_relaxed);
       ping_sample_count_.fetch_add(1, std::memory_order_relaxed);
       if (pidx == 0) last_ping_ms_.store((uint32_t)(ping_us_[pidx] / 1000), std::memory_order_relaxed);
+      remote_ping_ms_[pidx].store((uint32_t)(ping_us_[pidx] / 1000), std::memory_order_relaxed);
+      remote_count_seen_.store(remote_player_count_, std::memory_order_relaxed);
       if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping_us_[0] / 1000));
       break;
     }

@@ -281,6 +281,7 @@ inline int local_player_index() { return host::netplay::local_player_slot(); }
 inline uint32_t remote_shield_color(int) { return 0; }
 inline std::array<std::string, 4> player_names_for_overlay() { return host::netplay::player_names(); }
 inline int ping_ms() { return host::netplay::ping_ms(); }
+inline std::vector<int> remote_pings_ms() { return {}; }
 inline int session_mode() { return host::netplay::session_mode(); }
 inline bool in_online_menus() { return host::netplay::in_online_menus(); }
 }  // namespace online

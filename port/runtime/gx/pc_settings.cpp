@@ -10145,7 +10145,19 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       char lines[4][40];
       int n = 0;
       if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
-      if (ping_line) std::snprintf(lines[n++], sizeof lines[0], "Ping: %d ms", slippi::online::ping_ms());
+      if (ping_line) {
+        // Teams: each other player's ping, in port order, as Slippi shows them.
+        const std::vector<int> pings = slippi::online::remote_pings_ms();
+        if (pings.size() > 1) {
+          int used = std::snprintf(lines[n], sizeof lines[0], "Ping:");
+          for (size_t i = 0; i < pings.size() && used > 0 && used < (int)sizeof lines[0]; ++i)
+            used += std::snprintf(lines[n] + used, sizeof lines[0] - used, i ? " | %d" : " %d", pings[i]);
+          if (used > 0 && used < (int)sizeof lines[0]) std::snprintf(lines[n] + used, sizeof lines[0] - used, " ms");
+          ++n;
+        } else {
+          std::snprintf(lines[n++], sizeof lines[0], "Ping: %d ms", slippi::online::ping_ms());
+        }
+      }
       if (options.reflex_stats && streamline::reflex_latency_ms() > 0.0f && n < 3)
         std::snprintf(lines[n++], sizeof lines[0], "Render latency: %.1f ms", streamline::reflex_latency_ms());
       if (vram_line) std::snprintf(lines[n++], sizeof lines[0], "VRAM: %.1f / %.1f GB", vram_used, vram_total);

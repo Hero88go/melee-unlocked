@@ -1403,6 +1403,12 @@ std::array<std::string, 4> player_names_for_overlay() {
     names[g_local_player_index] = g_user->GetUserInfo().display_name;
   return names;
 }
+std::vector<int> remote_pings_ms() {
+  std::vector<int> out;
+  if (p2p_session_up() || !g_netplay) return out;
+  for (int i = 0; i < g_netplay->RemoteCount(); ++i) out.push_back(g_netplay->RemotePingMs(i));
+  return out;
+}
 int ping_ms() { return p2p_session_up() ? host::netplay::ping_ms() : (g_netplay ? g_netplay->LastPingMs() : 0); }
 
 // g_last_search keeps the mode of the last search for the whole session, so it only means anything
