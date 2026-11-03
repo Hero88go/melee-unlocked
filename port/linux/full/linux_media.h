@@ -12,12 +12,12 @@
 
 namespace linux_media {
 
-// The file as interleaved signed 16-bit stereo at `rate`, handed to `sink` piece by piece as it is
+// The file as interleaved normalized float32 stereo at its native rate (returned in *rate), handed to `sink` as it is
 // decoded (frames, not samples); the sink returns false to stop early. *expected_frames gets the
 // length the file states (0 when it states none). False when it cannot be decoded or is longer than
 // `max_frames` (then *too_long is set; a stated length over it is refused before anything decodes).
-using AudioSink = std::function<bool(const int16_t* pcm, size_t frames)>;
-bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames, const AudioSink& sink,
+using AudioSink = std::function<bool(const float* pcm, size_t frames)>;
+bool decode_audio(const std::filesystem::path& path, uint32_t* rate, size_t max_frames, const AudioSink& sink,
                   size_t* expected_frames, bool* too_long);
 
 // A picture (PNG, JPG, BMP, WebP) as BGRA rows from the top, scaled down to fit max_w x max_h.

@@ -32,12 +32,17 @@ void set_next_song_gain(float gain);
 int user_volume();
 // A replay viewer that is paused or seeking: the music stops where it is and goes on from there.
 void set_paused(bool paused);
-// Mixes `frames` stereo 32 kHz samples into `out` (adds to what is there). Audio-thread safe.
+// Called while device callbacks are stopped, before starting a new output stream.
+void set_output_rate(uint32_t rate);
+// Mixes `frames` stereo device-rate samples into `out` (adds to what is there). Audio-thread safe.
 // `master` is the Volume setting as a fraction, applied on top of Melee's own music volume and the
 // Music slider. Without it the master volume only ever gated the music on or off, because the
 // caller scaled its own PCM and then had the music added underneath at full level: turning Volume
 // down quietened the game and left the music where it was.
 // output_rate: the device's sample rate divided by the clock-tracking ratio, so music follows the
 // same clock correction as the game's sound.
-void mix(int16_t* out, size_t frames, double master, double output_rate = 32000.0);
+// device_rate is the nominal rate, kept separate so clock tracking does not rebuild the filter.
+void mix(int16_t* out, size_t frames, double master, double output_rate = 32000.0, uint32_t device_rate = 0);
+// Float output uses 16-bit sample units (32768 = full scale), preserving fractional samples and mix headroom.
+void mix(float* out, size_t frames, double master, double output_rate = 32000.0, uint32_t device_rate = 0);
 }  // namespace slippi::jukebox

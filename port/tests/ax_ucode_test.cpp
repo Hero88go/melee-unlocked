@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 // ax_ucode.cpp writes a few lines to the port log; this test has no host, so they go to stdout.
 namespace host {
@@ -160,6 +162,47 @@ int main() {
     check(undelayed, "ITD off: a flagged voice mixes undelayed");
     check(untouched && rd16(PB + 0x3C) == 4 && rd16(PB + 0x3E) == 0, "ITD off: history buffer and PB shifts untouched");
     ax::set_itd_enabled(true);
+  }
+
+  // A coefficient file being present must not silently roll off treble in ordinary playback.
+  // Supply a valid smoothing table that would cancel this alternating full-rate PCM voice.
+  {
+    const auto path = std::filesystem::current_path() / "ax-default-coefficients.bin";
+    std::vector<uint8_t> table(4096);
+    for (size_t row = 0; row < 3 * 128; ++row) {
+      const uint16_t taps[] = {8192, 16384, 8192, 0};
+      for (size_t tap = 0; tap < 4; ++tap) {
+        table[row * 8 + tap * 2] = (uint8_t)(taps[tap] >> 8);
+        table[row * 8 + tap * 2 + 1] = (uint8_t)taps[tap];
+      }
+    }
+    { std::ofstream file(path, std::ios::binary); file.write((const char*)table.data(), table.size()); }
+#ifdef _WIN32
+    _putenv_s("MELEE_DSP_COEF", path.string().c_str());
+    _putenv_s("MELEE_AUDIO_POLYPHASE", "");
+#else
+    setenv("MELEE_DSP_COEF", path.string().c_str(), 1);
+    unsetenv("MELEE_AUDIO_POLYPHASE");
+#endif
+    using namespace itd;
+    ax::reset();
+    std::memset(g_ram.data(), 0, g_ram.size());
+    setup(0);
+    for (int n = 0; n < 480; ++n) {
+      const int16_t value = n % 2 ? -12000 : 12000;
+      g_aram[0x2000 + n * 2] = (uint8_t)(value >> 8);
+      g_aram[0x2000 + n * 2 + 1] = (uint8_t)value;
+    }
+    voice(PB, true, HISTORY, 0);
+    wr16(PB + 0x08, 0);                    // the game's nominal polyphase voice selection
+    wr16(PB + 0x36, 0);                    // no stereo delay
+    wr16(PB + AUDIO_ADDR + 16 + 40, 1);    // SRC ratio 1.0
+    ax::setup_processing(ZERO);
+    ax::process_pb_list(PB);
+    ax::output_samples(MIXED, MIXED + 0x1000);
+    const bool preserved = std::abs((int)out_left(40)) == 12000 && std::abs((int)out_right(40)) == 12000;
+    std::error_code ec; std::filesystem::remove(path, ec);
+    check(preserved, "default voice conversion preserves treble even with a console coefficient file present");
   }
 
   ax::set_memory({rd16le, rd32le, wr16le, wr32le, g_aram.data(), (uint32_t)g_aram.size()});

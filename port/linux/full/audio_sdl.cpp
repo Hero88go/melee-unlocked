@@ -1,11 +1,13 @@
 // Linux audio output: the game's 32 kHz stereo AI blocks through SDL2 (PipeWire, PulseAudio or ALSA,
 // whichever the desktop runs). The same design as the Windows WASAPI path (runtime/host/audio.cpp):
-// a lock-free ring written by the simulation, read by the device callback through a 48-tap Kaiser
+// a lock-free ring written by the simulation, read by the device callback through the shared Kaiser
 // sinc resampler whose ratio follows the ring's fill to track the sound card's clock, with the music
 // pack (jukebox) and the settings menu ticks mixed in after it.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "audio.h"
 #include "host.h"
+#include "audio_sinc.h"
+#include "audio_sample_conversion.h"
 #ifndef MELEE_NO_SLIPPI
 #include "jukebox.h"
 #endif
@@ -54,7 +56,7 @@ uint16_t g_device_samples = 0;
 // Callback state (audio thread only).
 double g_phase = 0.0, g_rate = 1.0, g_fill_average = 0.0, g_skew = 0.0;
 bool g_priming = true;
-int16_t g_last_output[2] = {0, 0};
+float g_last_output[2] = {0, 0};
 size_t g_target_frames = SAMPLE_RATE * 40 / 1000;
 std::vector<int16_t> g_mix;
 
@@ -75,36 +77,13 @@ void wav_header(FILE* f, uint32_t data_bytes, uint32_t rate = SAMPLE_RATE) {
   std::fwrite("data", 1, 4, f); u32(data_bytes);
 }
 
-// The Windows path's band-limited converter: 48 taps, 512 phases, Kaiser beta 6, cut at 96% of the
-// lower Nyquist.
-constexpr int SINC_TAPS = 48, SINC_PHASES = 512;
-struct SincTable {
-  std::vector<float> k;
-  void build(uint32_t rate) {
-    k.assign((SINC_PHASES + 1) * SINC_TAPS, 0.0f);
-    const double cutoff = 0.5 * 0.96 * std::min(1.0, (double)rate / SAMPLE_RATE);
-    const double beta = 6.0;
-    auto bessel0 = [](double x) { double s = 1, t = 1; for (int i = 1; i < 30; ++i) { t *= (x / (2 * i)) * (x / (2 * i)); s += t; } return s; };
-    const double denom = bessel0(beta);
-    for (int p = 0; p <= SINC_PHASES; ++p) {
-      const double frac = (double)p / SINC_PHASES;
-      double sum = 0;
-      for (int j = 0; j < SINC_TAPS; ++j) {
-        const double x = (double)(j - (SINC_TAPS / 2 - 1)) - frac;
-        const double r = x / (SINC_TAPS / 2);
-        const double w = std::abs(r) >= 1.0 ? 0.0 : bessel0(beta * std::sqrt(1.0 - r * r)) / denom;
-        const double s = x == 0.0 ? 2 * cutoff : std::sin(2 * M_PI * cutoff * x) / (M_PI * x);
-        k[p * SINC_TAPS + j] = (float)(s * w);
-        sum += s * w;
-      }
-      for (int j = 0; j < SINC_TAPS; ++j) k[p * SINC_TAPS + j] = (float)(k[p * SINC_TAPS + j] / sum);
-    }
-  }
-} g_sinc;
+// The same band-limited converter as the Windows output and the music player.
+using audio_resampling::SINC_TAPS;
+audio_resampling::SincTable g_sinc;
 
 std::atomic<int> g_ui_sound_request{0};
 struct UiTick { int remaining = 0, total = 0; double step = 0, phase = 0, level = 0; } g_ui_tick;
-void mix_ui_sound(int16_t* out, size_t frames, int volume, uint32_t rate) {
+void mix_ui_sound(float* out, size_t frames, int volume, uint32_t rate) {
   if (const int kind = g_ui_sound_request.exchange(0)) {
     const double freq = kind == 1 ? 740.0 : kind == 2 ? 990.0 : 590.0;
     const double seconds = kind == 1 ? 0.030 : 0.055;
@@ -117,20 +96,20 @@ void mix_ui_sound(int16_t* out, size_t frames, int volume, uint32_t rate) {
   const double gain = g_ui_tick.level * volume / 100.0;
   for (size_t i = 0; i < frames && g_ui_tick.remaining > 0; ++i, --g_ui_tick.remaining) {
     const double env = (double)g_ui_tick.remaining / g_ui_tick.total;
-    const int v = (int)(std::sin(g_ui_tick.phase) * env * env * gain);
+    const double v = std::sin(g_ui_tick.phase) * env * env * gain;
     g_ui_tick.phase += g_ui_tick.step;
-    for (int c = 0; c < 2; ++c) out[i * 2 + c] = (int16_t)std::clamp((int)out[i * 2 + c] + v, -32768, 32767);
+    for (int c = 0; c < 2; ++c) out[i * 2 + c] += (float)v;
   }
 }
 
 // One device period: resample the ring into `frames` stereo frames at the device rate.
-void render(int16_t* out, size_t frames) {
+void render(float* out, size_t frames) {
   const uint64_t write = g_ring_write.load(std::memory_order_acquire);
   uint64_t read = g_ring_read.load(std::memory_order_relaxed);
   const size_t fill = (size_t)(write - read);
   if (g_priming) {
-    if (fill < g_target_frames + SINC_TAPS) {   // not enough queued yet: silence, no underrun counted
-      std::memset(out, 0, frames * 4);
+    if (fill < g_target_frames + (size_t)g_sinc.taps) {   // not enough queued yet: silence, no underrun counted
+      std::memset(out, 0, frames * 2 * sizeof(float));
       return;
     }
     g_priming = false;
@@ -149,23 +128,16 @@ void render(int16_t* out, size_t frames) {
   uint64_t starved = 0;
   for (size_t i = 0; i < frames; ++i) {
     const uint64_t base = read;
-    if (base + SINC_TAPS / 2 + 1 >= write) {   // ran dry: hold the last sample
+    if (base + g_sinc.taps / 2 + 1 >= write) {   // ran dry: hold the last sample
       out[i * 2] = g_last_output[0]; out[i * 2 + 1] = g_last_output[1];
       ++starved;
       continue;
     }
-    const int phase = std::clamp((int)(g_phase * SINC_PHASES), 0, SINC_PHASES);
-    const float* k = &g_sinc.k[(size_t)phase * SINC_TAPS];
-    double l = 0, r = 0;
-    for (int j = 0; j < SINC_TAPS; ++j) {
-      const uint64_t at = base + j - (SINC_TAPS / 2 - 1);
-      const int16_t* s = g_ring[at & RING_MASK];
-      l += s[0] * k[j]; r += s[1] * k[j];
+    const auto filtered = g_sinc.stereo(g_phase, [&](int offset) { return g_ring[(base + offset) & RING_MASK]; });
+    for (int ch = 0; ch < 2; ++ch) {
+      out[i * 2 + ch] = (float)(filtered[ch] * volume / 100.0);
+      g_last_output[ch] = out[i * 2 + ch];
     }
-    const int sl = std::clamp((int)std::lround(l * volume / 100.0), -32768, 32767);
-    const int sr = std::clamp((int)std::lround(r * volume / 100.0), -32768, 32767);
-    out[i * 2] = (int16_t)sl; out[i * 2 + 1] = (int16_t)sr;
-    g_last_output[0] = (int16_t)sl; g_last_output[1] = (int16_t)sr;
     g_phase += step;
     const double whole = std::floor(g_phase);
     read += (uint64_t)whole;
@@ -180,13 +152,14 @@ void render(int16_t* out, size_t frames) {
 }
 
 void callback(void*, Uint8* stream, int len) {
-  int16_t* out = reinterpret_cast<int16_t*>(stream);
-  const size_t frames = (size_t)len / 4;
+  float* out = reinterpret_cast<float*>(stream);
+  const size_t frames = (size_t)len / (2 * sizeof(float));
   render(out, frames);
 #ifndef MELEE_NO_SLIPPI
-  slippi::jukebox::mix(out, frames, g_volume.load() / 100.0, (double)g_device_rate / g_rate);
+  slippi::jukebox::mix(out, frames, g_volume.load() / 100.0, (double)g_device_rate / g_rate, g_device_rate);
 #endif
   mix_ui_sound(out, frames, g_volume.load(), g_device_rate);
+  for (size_t i = 0; i < frames * 2; ++i) out[i] = audio_pcm_float(out[i]);
 }
 
 bool open_device() {
@@ -197,7 +170,7 @@ bool open_device() {
   SDL_AudioSpec want{}, have{};
   // The device's own rate, so the desktop's mixer does no second conversion; 48 kHz when unknown.
   want.freq = 48000;
-  want.format = AUDIO_S16SYS;
+  want.format = AUDIO_F32SYS;
   want.channels = 2;
   // Low latency asks for 5 ms periods; Auto starts safe at 10 ms.
   const int mode = g_requested_mode.load();
@@ -219,6 +192,9 @@ bool open_device() {
   g_engine_period_us.store((uint32_t)((uint64_t)have.samples * 1000000 / std::max<uint32_t>(g_device_rate, 1)));
   g_device_queue_ms.store((uint32_t)((uint64_t)have.samples * 1000 / std::max<uint32_t>(g_device_rate, 1)));
   g_priming = true;
+#ifndef MELEE_NO_SLIPPI
+  slippi::jukebox::set_output_rate(g_device_rate);
+#endif
   SDL_PauseAudioDevice(g_device, 0);
   log("audio: %s (%s), %u Hz, %u-frame periods, buffer %d ms", SDL_GetCurrentAudioDriver(),
       name ? name : "default device", g_device_rate, (unsigned)have.samples, target_ms);
@@ -293,7 +269,7 @@ static void push_ordered(const uint8_t* samples, size_t bytes, bool little_endia
     constexpr size_t frames = BLOCK_BYTES / 4;
     if (!g_device) { g_frames += frames; continue; }
     const uint64_t write = g_ring_write.load(std::memory_order_relaxed);
-    if (write + frames - g_ring_read.load(std::memory_order_acquire) > RING_FRAMES - 4) { ++g_dropped; continue; }
+    if (write + frames - g_ring_read.load(std::memory_order_acquire) > RING_FRAMES - SINC_TAPS * 4) { ++g_dropped; continue; }
     for (size_t i = 0; i < frames; ++i) {
       g_ring[(write + i) & RING_MASK][0] = converted[i * 2];
       g_ring[(write + i) & RING_MASK][1] = converted[i * 2 + 1];

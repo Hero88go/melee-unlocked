@@ -60,12 +60,16 @@ struct Input {
 };
 }  // namespace
 
-bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames, const AudioSink& sink,
+bool decode_audio(const std::filesystem::path& path, uint32_t* native_rate, size_t max_frames, const AudioSink& sink,
                   size_t* expected_frames, bool* too_long) {
   if (too_long) *too_long = false;
   if (expected_frames) *expected_frames = 0;
   Input in;
   if (!in.open(path, AVMEDIA_TYPE_AUDIO, nullptr)) return false;
+  const int rate = in.codec->sample_rate;
+  if (rate < 8000 || rate > 384000) return false;
+  *native_rate = (uint32_t)rate;
+  max_frames = std::min(max_frames, (size_t)rate * 600u);
   if (in.format->duration > 0) {
     const double frames = (double)in.format->duration / AV_TIME_BASE * rate;
     if (frames > (double)max_frames) { if (too_long) *too_long = true; return false; }
@@ -76,7 +80,7 @@ bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames
   AVChannelLayout source_layout{};
   if (in.codec->ch_layout.nb_channels > 0) av_channel_layout_copy(&source_layout, &in.codec->ch_layout);
   else av_channel_layout_default(&source_layout, 2);
-  if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, rate, &source_layout, in.codec->sample_fmt, in.codec->sample_rate, 0, nullptr) < 0 ||
+  if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_FLT, rate, &source_layout, in.codec->sample_fmt, in.codec->sample_rate, 0, nullptr) < 0 ||
       swr_init(swr) < 0) {
     av_channel_layout_uninit(&source_layout);
     swr_free(&swr);
@@ -87,7 +91,7 @@ bool decode_audio(const std::filesystem::path& path, int rate, size_t max_frames
   AVPacket* packet = av_packet_alloc();
   bool draining = false, ok = true;
   size_t written = 0;
-  std::vector<int16_t> chunk;
+  std::vector<float> chunk;
   for (;;) {
     const int got = in.next(frame, packet, &draining);
     if (got < 0) { ok = false; break; }

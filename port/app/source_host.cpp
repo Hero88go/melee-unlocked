@@ -33,6 +33,7 @@
 #include <vector>
 #include "host.h"
 #include "audio.h"
+#include "console_sound_mode.h"
 #include "audio_core.h"
 #include "ax_ucode.h"
 #include "gx_core.h"
@@ -2621,8 +2622,14 @@ uint32_t h_mod_flags() {
   return (g_mod_overlay.files().empty() ? 0 : MU_MOD_ASSETS_PRESENT) | (hackpack::loaded() ? MU_MOD_HACKPACK : 0u) |
          (mods::status().rogue ? MU_MOD_ROGUE : 0u) | (mods::status().maker ? MU_MOD_MAKER : 0u);
 }
-int32_t h_sound_mode() { return 1; }
-void h_set_sound_mode(int32_t) {}
+host::ConsoleSoundMode& console_sound_mode() {
+  static host::ConsoleSoundMode mode(std::filesystem::u8path(host::options.card_dir));
+  return mode;
+}
+int32_t h_sound_mode() { return console_sound_mode().get(); }
+void h_set_sound_mode(int32_t mode) {
+  if (!console_sound_mode().set(mode)) host::log("audio: could not save the console sound mode");
+}
 int32_t h_progressive_mode() { return 0; }
 void h_set_progressive_mode(int32_t) {}
 int32_t h_reset_code() { return 0; }

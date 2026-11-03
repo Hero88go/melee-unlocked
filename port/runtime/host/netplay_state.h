@@ -231,7 +231,9 @@ inline bool music_packs_enabled() { return false; }
 inline void set_melee_volume(uint8_t) {}
 inline void set_next_song_gain(float) {}
 inline void set_paused(bool) {}
-inline void mix(int16_t*, size_t, double, double = 32000.0) {}
+inline void set_output_rate(uint32_t) {}
+inline void mix(int16_t*, size_t, double, double = 32000.0, uint32_t = 0) {}
+inline void mix(float*, size_t, double, double = 32000.0, uint32_t = 0) {}
 inline void set_user_volume(int percent) { host::netplay::set_music_volume(percent); }
 inline int user_volume() { return host::netplay::music_volume(); }
 }  // namespace jukebox

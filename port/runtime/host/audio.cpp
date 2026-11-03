@@ -30,6 +30,7 @@
 #endif
 #include "audio_buffer_policy.h"
 #include "audio_sample_conversion.h"
+#include "audio_sinc.h"
 #include <future>
 #include "asio/asiosys.h"
 #include "asio/asio.h"
@@ -79,7 +80,7 @@ std::atomic<uint64_t> g_ring_write{0}, g_ring_read{0};          // frame counter
 double g_ring_phase = 0.0;                                      // consumer only: position inside the current frame
 double g_rate = 1.0;                                            // consumer only: input frames consumed per output frame
 double g_fill_average = 0.0;                                    // consumer only: slow average of the fill level
-int16_t g_last_output[2] = {0, 0};                              // held through a starved moment instead of silence
+double g_last_output[2] = {0, 0};                              // fractional samples survive gain and resampling
 std::atomic<uint64_t> g_underruns{0}, g_underrun_frames{0};
 std::atomic<double> g_rate_min{1.0}, g_rate_max{1.0};
 IAudioClient* g_client = nullptr;
@@ -97,6 +98,7 @@ uint16_t g_device_channels = 2;
 bool g_device_float = false;
 bool g_device_int32 = false;   // 24-bit (in 32) or 32-bit integer endpoint samples
 bool g_device_int24 = false;   // packed 24-bit endpoint samples
+uint16_t g_device_valid_bits = 16;
 // Low latency: the device is kept about one and a half engine periods ahead (not its whole buffer),
 // and the ring holds one simulation frame of audio (the game mixes a frame's worth in one burst)
 // plus a small margin. A starved moment grows the margin a little, once per gap, up to a cap: a PC
@@ -214,11 +216,12 @@ void auto_memory_save(const std::string& device, int ms) {
   }
 }
 
-void wav_header(FILE* f, uint32_t data_bytes, uint32_t rate = SAMPLE_RATE) {
+void wav_header(FILE* f, uint32_t data_bytes, uint32_t rate = SAMPLE_RATE, bool floating = false) {
   auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
   auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
   std::fwrite("RIFF", 1, 4, f); u32(36 + data_bytes); std::fwrite("WAVE", 1, 4, f);
-  std::fwrite("fmt ", 1, 4, f); u32(16); u16(1); u16(2); u32(rate); u32(rate * 4); u16(4); u16(16);
+  const uint16_t align = floating ? 8 : 4;
+  std::fwrite("fmt ", 1, 4, f); u32(16); u16(floating ? 3 : 1); u16(2); u32(rate); u32(rate * align); u16(align); u16(floating ? 32 : 16);
   std::fwrite("data", 1, 4, f); u32(data_bytes);
 }
 
@@ -228,43 +231,17 @@ inline double cubic(double a, double b, double c, double d, double t) {
   return b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
 }
 
-// Band-limited output conversion: a 48-tap Kaiser-windowed sinc (beta 6) with 512 phases, cut at 96%
-// of the lower Nyquist. Measured on the continuous kernel: flat to 14 kHz (0.00 dB), -2.5 dB at
-// 15 kHz, images above 16.5 kHz at -44 dB and above 17 kHz at -65 dB. Catmull-Rom (the previous
-// stage, and Dolphin's) is -3.9 dB at 14 kHz with images at -7 dB. Delay: 24 input samples
-// (0.75 ms). MELEE_AUDIO_CUBIC=1 switches back for comparison.
-constexpr int SINC_TAPS = 48, SINC_PHASES = 512;
-struct SincTable {
-  uint32_t device_rate = 0;
-  std::vector<float> k;   // (SINC_PHASES + 1) x SINC_TAPS
-  void build(uint32_t rate) {
-    device_rate = rate;
-    k.assign((SINC_PHASES + 1) * SINC_TAPS, 0.0f);
-    const double cutoff = 0.5 * 0.96 * std::min(1.0, (double)rate / SAMPLE_RATE);   // cycles per input sample
-    const double beta = 6.0;
-    auto bessel0 = [](double x) { double s = 1, t = 1; for (int i = 1; i < 30; ++i) { t *= (x / (2 * i)) * (x / (2 * i)); s += t; } return s; };
-    const double denom = bessel0(beta);
-    for (int p = 0; p <= SINC_PHASES; ++p) {
-      const double frac = (double)p / SINC_PHASES;
-      double sum = 0;
-      for (int j = 0; j < SINC_TAPS; ++j) {
-        const double x = (double)(j - (SINC_TAPS / 2 - 1)) - frac;   // taps at read-23 .. read+24
-        const double r = x / (SINC_TAPS / 2);
-        const double w = std::abs(r) >= 1.0 ? 0.0 : bessel0(beta * std::sqrt(1.0 - r * r)) / denom;
-        const double s = x == 0.0 ? 2 * cutoff : std::sin(2 * 3.14159265358979323846 * cutoff * x) / (3.14159265358979323846 * x);
-        k[p * SINC_TAPS + j] = (float)(s * w);
-        sum += s * w;
-      }
-      for (int j = 0; j < SINC_TAPS; ++j) k[p * SINC_TAPS + j] = (float)(k[p * SINC_TAPS + j] / sum);   // unity DC gain
-    }
-  }
-} g_sinc;   // output thread only
+// Band-limited output conversion shared with native-rate music. MELEE_AUDIO_CUBIC=1 is the A/B path.
+using audio_resampling::SINC_TAPS;
+using audio_resampling::SINC_PHASES;
+audio_resampling::SincTable g_sinc;   // output thread only
 
 // ---- settings menu ticks ----
 // A decaying sine: short and quiet so it reads as UI feedback, never over the game's own sound.
 std::atomic<int> g_ui_sound_request{0};
 struct UiTick { int remaining = 0, total = 0; double step = 0, phase = 0, level = 0; } g_ui_tick;  // output thread only
-void mix_ui_sound(int16_t* out, size_t frames, int volume, uint32_t rate = SAMPLE_RATE) {
+template<class Sample>
+void mix_ui_sound(Sample* out, size_t frames, int volume, uint32_t rate = SAMPLE_RATE) {
   if (const int kind = g_ui_sound_request.exchange(0)) {
     const double freq = kind == 1 ? 740.0 : kind == 2 ? 990.0 : 590.0;
     const double seconds = kind == 1 ? 0.030 : 0.055;
@@ -277,9 +254,9 @@ void mix_ui_sound(int16_t* out, size_t frames, int volume, uint32_t rate = SAMPL
   const double gain = g_ui_tick.level * volume / 100.0;
   for (size_t i = 0; i < frames && g_ui_tick.remaining > 0; ++i, --g_ui_tick.remaining) {
     const double env = (double)g_ui_tick.remaining / g_ui_tick.total;
-    const int v = (int)(std::sin(g_ui_tick.phase) * env * env * gain);
+    const double v = std::sin(g_ui_tick.phase) * env * env * gain;
     g_ui_tick.phase += g_ui_tick.step;
-    for (int c = 0; c < 2; ++c) out[i * 2 + c] = (int16_t)std::clamp((int)out[i * 2 + c] + v, -32768, 32767);
+    for (int c = 0; c < 2; ++c) out[i * 2 + c] = (Sample)std::clamp(out[i * 2 + c] + v, -32768.0, 32767.0);
   }
 }
 
@@ -302,7 +279,7 @@ void wasapi_thread() {
   double recovery_offset[2] = {};
   bool interrupted = false;
   bool started = false;
-  std::vector<int16_t> samples((size_t)g_buffer_frames * 2);
+  std::vector<float> samples((size_t)g_buffer_frames * 2);
   // The device-dump log's time column: QPC, so callbacks 5-10 ms apart are not rounded to the
   // 15.6 ms system tick.
   LARGE_INTEGER qpc_freq{}, qpc_start{};
@@ -351,8 +328,9 @@ void wasapi_thread() {
     // Two-stage path: top the device up to its queue target at each engine event.
     const UINT32 top_up = fill_to > padding ? fill_to - padding : 0;
     if (!g_direct && !top_up) continue;
-    int16_t* out = samples.data();
-    const int volume = g_device_dump ? 100 : g_volume.load();
+    float* out = samples.data();
+    const char* dump_volume = g_device_dump ? std::getenv("MELEE_AUDIO_DUMP_VOLUME") : nullptr;
+    const int volume = g_device_dump ? (dump_volume ? std::clamp(std::atoi(dump_volume), 0, 100) : 100) : g_volume.load();
     uint64_t read = g_ring_read.load(std::memory_order_relaxed);
 
     // Rate control: steer the ring towards the target fill instead of letting it drift into an
@@ -447,7 +425,7 @@ void wasapi_thread() {
     const double fade = std::pow(0.98, (double)SAMPLE_RATE / g_device_rate);
     static const bool use_cubic = [] { const char* v = std::getenv("MELEE_AUDIO_CUBIC"); return v && *v == '1'; }();
     if (!use_cubic && g_sinc.device_rate != g_device_rate) g_sinc.build(g_device_rate);
-    const uint64_t lookahead = use_cubic ? 4 : SINC_TAPS / 2 + 1;
+    const uint64_t lookahead = use_cubic ? 4 : g_sinc.taps / 2 + 1;
 
     // How much to write. Two-stage: the top-up, whatever the ring holds. Direct: every output frame
     // the ring can supply now, but no more than the target plus one block in the device, so a burst
@@ -485,10 +463,10 @@ void wasapi_thread() {
       if (i >= produce || g_priming || write - read < lookahead) {
         // Fade an interrupted stream towards silence, then crossfade its return. Holding a
         // nonzero sample indefinitely produces a step (a click) when the stream returns.
-        g_last_output[0] = (int16_t)(g_last_output[0] * fade);
-        g_last_output[1] = (int16_t)(g_last_output[1] * fade);
-        out[i * 2] = (int16_t)(g_last_output[0] * vg);
-        out[i * 2 + 1] = (int16_t)(g_last_output[1] * vg);
+        g_last_output[0] *= fade;
+        g_last_output[1] *= fade;
+        out[i * 2] = (float)(g_last_output[0] * vg);
+        out[i * 2 + 1] = (float)(g_last_output[1] * vg);
         interrupted = true;
         if (started && !host::exit_requested()) ++starved;
         continue;
@@ -496,17 +474,12 @@ void wasapi_thread() {
       const bool resuming = interrupted;
       started = true;
       if (resuming) { recovery_left = g_device_rate * 5 / 1000; interrupted = false; }
-      const float* kern = nullptr;
-      if (!use_cubic) {
-        const double pos = g_ring_phase * SINC_PHASES;
-        kern = &g_sinc.k[std::min((int)(pos + 0.5), SINC_PHASES) * SINC_TAPS];
-      }
+      const auto filtered = use_cubic ? std::array<double, 2>{} :
+          g_sinc.stereo(g_ring_phase, [&](int offset) { return g_ring[(read + offset) & RING_MASK]; });
       for (int channel = 0; channel < 2; ++channel) {
         double v;
-        if (kern) {
-          v = 0.0;
-          for (int j = 0; j < SINC_TAPS; ++j)
-            v += kern[j] * g_ring[(read + j - (SINC_TAPS / 2 - 1)) & RING_MASK][channel];
+        if (!use_cubic) {
+          v = filtered[channel];
         } else {
           const double a = g_ring[(read - 1) & RING_MASK][channel];
           const double b = g_ring[read & RING_MASK][channel];
@@ -516,8 +489,8 @@ void wasapi_thread() {
         }
         if (resuming) recovery_offset[channel] = g_last_output[channel] - v;
         if (recovery_left) v += recovery_offset[channel] * recovery_left / (g_device_rate * 5.0 / 1000);
-        g_last_output[channel] = (int16_t)std::clamp(v, -32768.0, 32767.0);
-        out[i * 2 + channel] = (int16_t)(g_last_output[channel] * vg);
+        g_last_output[channel] = v;
+        out[i * 2 + channel] = (float)(v * vg);
       }
       if (recovery_left) --recovery_left;
       g_ring_phase += g_rate * SAMPLE_RATE / g_device_rate;
@@ -567,11 +540,14 @@ void wasapi_thread() {
     g_target_ms.store(g_buffer_policy.target_ms);
     // Music follows the same clock as the game's sound: the device consumes the stream g_rate times
     // faster than nominal, so both stay in step instead of drifting against each other.
-    slippi::jukebox::mix(out, want, volume / 100.0, (double)g_device_rate / g_rate);
+    slippi::jukebox::mix(out, want, volume / 100.0, (double)g_device_rate / g_rate, g_device_rate);
     mix_ui_sound(out, want, volume, g_device_rate);
     if (g_device_dump) {
-      std::fwrite(out, 4, want, g_device_dump);
-      g_device_dump_bytes += want * 4;
+      for (size_t i = 0; i < want * 2; ++i) {
+        const float value = audio_pcm_float(out[i]);
+        std::fwrite(&value, sizeof value, 1, g_device_dump);
+      }
+      g_device_dump_bytes += want * 8;
       if (g_device_rate_log) {
         LARGE_INTEGER qpc_now{}; QueryPerformanceCounter(&qpc_now);
         const double ms = qpc_freq.QuadPart ? (double)(qpc_now.QuadPart - qpc_start.QuadPart) * 1000.0 / (double)qpc_freq.QuadPart : 0.0;
@@ -583,12 +559,13 @@ void wasapi_thread() {
       continue;
     }
     for (UINT32 i = 0; i < want; ++i) for (uint16_t ch = 0; ch < g_device_channels; ++ch) {
-      const int16_t value = ch < 2 ? out[i * 2 + ch] : 0;
+      const float value = ch < 2 ? out[i * 2 + ch] : 0.0f;
       const size_t index = (size_t)i * g_device_channels + ch;
-      if (g_device_float) ((float*)dst)[index] = value / 32768.0f;
-      else if (g_device_int32) ((int32_t*)dst)[index] = (int32_t)((uint32_t)(uint16_t)value << 16);
+      if (g_device_float) ((float*)dst)[index] = audio_pcm_float(value);
+      else if (g_device_int32) ((int32_t*)dst)[index] = g_device_valid_bits == 24
+          ? (int32_t)((int64_t)audio_quantize_pcm(value, 24) * 256) : audio_quantize_pcm(value, 32);
       else if (g_device_int24) audio_store_pcm24_le(dst + index * 3, value);
-      else ((int16_t*)dst)[index] = value;
+      else ((int16_t*)dst)[index] = (int16_t)audio_quantize_pcm(value, 16);
     }
     g_render->ReleaseBuffer(want, 0);
   }
@@ -708,18 +685,22 @@ bool wasapi_open() {
   const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
   UINT32 low_period = 0;
   g_device_rate = SAMPLE_RATE; g_device_channels = 2; g_device_float = false; g_device_int32 = false; g_device_int24 = false;
+  g_device_valid_bits = 16;
   g_exclusive = false;
   hr = E_FAIL;
   // Exclusive (opt-in): the game owns the device, event driven at its minimum period. Other apps
   // (and routing tools such as virtual cables) cannot play through it while the game runs.
   g_excl_push = false;
-  if (g_requested_mode.load() == 2 && !std::getenv("MELEE_AUDIO_DEVICE_DUMP")) {
+  if (g_requested_mode.load() == 2) {
     // Push feeds the device on the game's own audio tick (measured sooner than the event stream);
     // MELEE_AUDIO_EXCL_PUSH=0 keeps the event-driven stream.
     { const char* v = std::getenv("MELEE_AUDIO_EXCL_PUSH"); g_excl_push = !(v && *v == '0'); }
     REFERENCE_TIME def_period = 0, min_period = 0;
     g_client->GetDevicePeriod(&def_period, &min_period);
-    const DWORD rates[] = {48000, 44100, 96000, 32000};
+    WAVEFORMATEX* mix = nullptr;
+    DWORD preferred_rate = 48000;
+    if (SUCCEEDED(g_client->GetMixFormat(&mix))) { preferred_rate = mix->nSamplesPerSec; CoTaskMemFree(mix); }
+    const DWORD rates[] = {preferred_rate, 48000, 44100, 96000, 192000, 88200, 176400, 352800, 384000, 32000};
     HRESULT refused = S_OK;   // the last answer Windows gave, for the log
     for (int pass = 0; pass < 2 && !g_exclusive && g_client; ++pass) {
     if (pass == 1) {   // no format took the push stream: the event-driven one, as before
@@ -729,7 +710,7 @@ bool wasapi_open() {
     }
     for (DWORD rate : rates) {
       // PCM16, 24-bit in 32, 32-bit integer, float32: audio interfaces often take only the wider ones.
-      for (int kind = 0; kind < 4; ++kind) {
+      for (int kind : {3, 2, 1, 0}) {
         const int bits = kind == 0 ? 16 : kind == 1 ? 24 : 32;
         WAVEFORMATEXTENSIBLE x{};
         x.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE; x.Format.nChannels = 2; x.Format.nSamplesPerSec = rate;
@@ -753,6 +734,7 @@ bool wasapi_open() {
         }
         if (SUCCEEDED(hr)) {
           g_exclusive = true; g_device_rate = rate; g_device_channels = 2; g_device_float = kind == 3; g_device_int32 = kind == 1 || kind == 2;
+          g_device_valid_bits = (uint16_t)bits;
           low_period = (UINT32)(period * rate / 10000000);
           break;
         }
@@ -774,10 +756,12 @@ bool wasapi_open() {
   if (!g_exclusive && g_client) {
     // Ask every supported format before choosing a stream: a driver's shortest shared period
     // can differ for float32, PCM16 and PCM24. Keep the mix format first on equal periods.
-    struct SharedFormat { WAVEFORMATEXTENSIBLE format{}; UINT32 minimum = 0; bool floating = false, integer32 = false, packed24 = false; };
+    struct SharedFormat { WAVEFORMATEXTENSIBLE format{}; UINT32 minimum = 0; bool floating = false, integer32 = false, packed24 = false; uint16_t valid_bits = 16; };
     std::vector<SharedFormat> formats;
     WAVEFORMATEX* mix = nullptr;
+    uint32_t native_rate = 48000;
     if (SUCCEEDED(g_client->GetMixFormat(&mix))) {
+      native_rate = mix->nSamplesPerSec;
       auto add = [&](const WAVEFORMATEX* f) {
         if (f->nChannels < 2 || f->nChannels > 8 || f->nSamplesPerSec < 32000 ||
             f->nBlockAlign != f->nChannels * (f->wBitsPerSample / 8)) return;
@@ -793,6 +777,7 @@ bool wasapi_open() {
         candidate.format.Format.cbSize = extended ? 22 : 0;
         candidate.floating = floating; candidate.integer32 = pcm && f->wBitsPerSample == 32;
         candidate.packed24 = pcm && f->wBitsPerSample == 24;
+        candidate.valid_bits = extended ? ((const WAVEFORMATEXTENSIBLE*)f)->Samples.wValidBitsPerSample : f->wBitsPerSample;
         formats.push_back(candidate);
       };
       add(mix);
@@ -833,7 +818,13 @@ bool wasapi_open() {
       query->Release();
     }
     formats.erase(std::remove_if(formats.begin(), formats.end(), [](const SharedFormat& f) { return !f.minimum; }), formats.end());
-    std::stable_sort(formats.begin(), formats.end(), [](const SharedFormat& a, const SharedFormat& b) {
+    std::stable_sort(formats.begin(), formats.end(), [native_rate](const SharedFormat& a, const SharedFormat& b) {
+      // Keep wide samples and the endpoint's selected rate ahead of smaller period savings.
+      const bool wide_a = a.floating || a.valid_bits >= 24, wide_b = b.floating || b.valid_bits >= 24;
+      if (wide_a != wide_b) return wide_a;
+      const bool native_a = a.format.Format.nSamplesPerSec == native_rate, native_b = b.format.Format.nSamplesPerSec == native_rate;
+      if (native_a != native_b) return native_a;
+      if (a.floating != b.floating) return a.floating;
       return (uint64_t)a.minimum * b.format.Format.nSamplesPerSec < (uint64_t)b.minimum * a.format.Format.nSamplesPerSec;
     });
     // Failed Initialize can leave a client unusable. Every attempted format gets a fresh client.
@@ -852,6 +843,7 @@ bool wasapi_open() {
         low_period = candidate.minimum; g_device_rate = candidate.format.Format.nSamplesPerSec;
         g_device_channels = candidate.format.Format.nChannels; g_device_float = candidate.floating;
         g_device_int32 = candidate.integer32; g_device_int24 = candidate.packed24;
+        g_device_valid_bits = candidate.valid_bits;
         break;
       }
       log("audio: shared minimum-period stream refused format (%08X); trying the next supported format", (unsigned)hr);
@@ -861,6 +853,38 @@ bool wasapi_open() {
       if (g_client) g_client->Release(); g_client = nullptr;
       hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&g_client);
       if (SUCCEEDED(hr)) hr = E_FAIL; // a fresh client still needs Initialize below
+    }
+  }
+  // A driver without IAudioClient3 still gets its native wide format. Do not force it through
+  // a 16-bit, 32 kHz intermediate merely because minimum-period negotiation was unavailable.
+  if (!g_exclusive && !low_period) {
+    WAVEFORMATEX* native = nullptr;
+    if (g_client) { g_client->Release(); g_client = nullptr; }
+    hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&g_client);
+    if (SUCCEEDED(hr)) hr = g_client->GetMixFormat(&native);
+    if (SUCCEEDED(hr)) {
+      const bool extended = native->wFormatTag == WAVE_FORMAT_EXTENSIBLE && native->cbSize >= 22;
+      const auto* ex = (const WAVEFORMATEXTENSIBLE*)native;
+      const bool floating = native->wFormatTag == WAVE_FORMAT_IEEE_FLOAT || (extended && ex->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+      const bool pcm = native->wFormatTag == WAVE_FORMAT_PCM || (extended && ex->SubFormat == KSDATAFORMAT_SUBTYPE_PCM);
+      const bool supported = native->nChannels >= 2 && native->nChannels <= 8 && native->nSamplesPerSec >= 32000 &&
+          native->nBlockAlign == native->nChannels * (native->wBitsPerSample / 8) &&
+          ((floating && native->wBitsPerSample == 32) || (pcm && (native->wBitsPerSample == 16 || native->wBitsPerSample == 24 || native->wBitsPerSample == 32)));
+      if (supported) {
+        tag_game_stream(g_client);
+        hr = g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0, 0, native, nullptr);
+        if (SUCCEEDED(hr)) {
+          g_device_rate = native->nSamplesPerSec; g_device_channels = native->nChannels;
+          g_device_float = floating; g_device_int32 = pcm && native->wBitsPerSample == 32; g_device_int24 = pcm && native->wBitsPerSample == 24;
+          g_device_valid_bits = extended ? ex->Samples.wValidBitsPerSample : native->wBitsPerSample;
+          log("audio: native endpoint format at the default shared period");
+        }
+      } else hr = E_FAIL;
+    }
+    if (native) CoTaskMemFree(native);
+    if (FAILED(hr)) {
+      if (g_client) { g_client->Release(); g_client = nullptr; }
+      device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&g_client);
     }
   }
   device->Release();
@@ -940,7 +964,7 @@ bool wasapi_open() {
     std::string dump = dump_env;
     if (const size_t at = dump.find("{pid}"); at != std::string::npos) dump.replace(at, 5, std::to_string(GetCurrentProcessId()));
     if ((g_device_dump = std::fopen(dump.c_str(), "wb")) != nullptr) {
-      wav_header(g_device_dump, 0, g_device_rate);
+      wav_header(g_device_dump, 0, g_device_rate, true);
       g_device_dump_bytes = 0;
       g_device_rate_log = std::fopen((dump + ".rate.csv").c_str(), "w");
       if (g_device_rate_log) std::fprintf(g_device_rate_log, "ms,frames,rate,buffered,starved,ring,padding,target,trims,why\n");
@@ -948,6 +972,7 @@ bool wasapi_open() {
     }
   }
   g_running.store(true);
+  slippi::jukebox::set_output_rate(g_device_rate);
   g_thread = std::thread(wasapi_thread);
   if (FAILED(g_client->Start())) { log("audio: IAudioClient start failed"); g_running.store(false); g_thread.join(); g_render->Release(); g_render = nullptr; g_client->Release(); g_client = nullptr; return false; }
   return true;
@@ -963,7 +988,7 @@ void wasapi_close() {
       g_margin_grows.load());
   if (g_device_dump) {
     std::fseek(g_device_dump, 0, SEEK_SET);
-    wav_header(g_device_dump, g_device_dump_bytes, g_device_rate);
+    wav_header(g_device_dump, g_device_dump_bytes, g_device_rate, true);
     std::fclose(g_device_dump); g_device_dump = nullptr;
   }
   if (g_device_rate_log) { std::fclose(g_device_rate_log); g_device_rate_log = nullptr; }
@@ -1011,14 +1036,14 @@ std::atomic<long> g_asio_ui_buffer{0}, g_asio_ui_in{0}, g_asio_ui_out{0};
 ASIOSampleType g_asio_type = ASIOSTInt32LSB;
 ASIOBufferInfo g_asio_buffers[2];
 bool g_asio_output_ready = false;
-std::vector<int16_t> g_asio_mix;
+std::vector<float> g_asio_mix;
 std::string g_asio_driver_name;
 // Render state (driver callback thread only).
 struct AsioRender { bool interrupted = false, started = false; uint32_t recovery_left = 0; double recovery_offset[2] = {}; double vol_now = -1.0; } g_ar;
 
 void asio_render(long index) {
   const long n = g_asio_buffer;
-  int16_t* out = g_asio_mix.data();
+  float* out = g_asio_mix.data();
   const int volume = g_volume.load();
   uint64_t read = g_ring_read.load(std::memory_order_relaxed);
   const uint64_t buffered = g_ring_write.load(std::memory_order_acquire) - read;
@@ -1051,7 +1076,7 @@ void asio_render(long index) {
     }
   }
   // The control thread builds this kernel before buffers start. No allocation on the callback.
-  const uint64_t lookahead = SINC_TAPS / 2 + 1;
+  const uint64_t lookahead = g_sinc.taps / 2 + 1;
   const double fade = std::pow(0.98, (double)SAMPLE_RATE / g_device_rate);
   const bool priming_at_start = g_priming;
   if (g_ar.vol_now < 0.0) g_ar.vol_now = volume;
@@ -1062,10 +1087,10 @@ void asio_render(long index) {
     g_ar.vol_now += (volume - g_ar.vol_now) * vol_glide;
     const double vg = g_ar.vol_now / 100.0;
     if (g_priming || g_ring_write.load(std::memory_order_acquire) - read < lookahead) {
-      g_last_output[0] = (int16_t)(g_last_output[0] * fade);
-      g_last_output[1] = (int16_t)(g_last_output[1] * fade);
-      out[i * 2] = (int16_t)(g_last_output[0] * vg);
-      out[i * 2 + 1] = (int16_t)(g_last_output[1] * vg);
+      g_last_output[0] *= fade;
+      g_last_output[1] *= fade;
+      out[i * 2] = (float)(g_last_output[0] * vg);
+      out[i * 2 + 1] = (float)(g_last_output[1] * vg);
       g_ar.interrupted = true;
       if (g_ar.started && !host::exit_requested()) ++starved;
       continue;
@@ -1073,14 +1098,13 @@ void asio_render(long index) {
     const bool resuming = g_ar.interrupted;
     g_ar.started = true;
     if (resuming) { g_ar.recovery_left = g_device_rate * 5 / 1000; g_ar.interrupted = false; }
-    const float* kern = &g_sinc.k[std::min((int)(g_ring_phase * SINC_PHASES + 0.5), SINC_PHASES) * SINC_TAPS];
+    const auto filtered = g_sinc.stereo(g_ring_phase, [&](int offset) { return g_ring[(read + offset) & RING_MASK]; });
     for (int channel = 0; channel < 2; ++channel) {
-      double v = 0.0;
-      for (int j = 0; j < SINC_TAPS; ++j) v += kern[j] * g_ring[(read + j - (SINC_TAPS / 2 - 1)) & RING_MASK][channel];
+      double v = filtered[channel];
       if (resuming) g_ar.recovery_offset[channel] = g_last_output[channel] - v;
       if (g_ar.recovery_left) v += g_ar.recovery_offset[channel] * g_ar.recovery_left / (g_device_rate * 5.0 / 1000);
-      g_last_output[channel] = (int16_t)std::clamp(v, -32768.0, 32767.0);
-      out[i * 2 + channel] = (int16_t)(g_last_output[channel] * vg);
+      g_last_output[channel] = v;
+      out[i * 2 + channel] = (float)(v * vg);
     }
     if (g_ar.recovery_left) --g_ar.recovery_left;
     g_ring_phase += g_rate * SAMPLE_RATE / g_device_rate;
@@ -1109,17 +1133,17 @@ void asio_render(long index) {
     g_target_frames = SAMPLE_RATE * g_buffer_policy.target_ms / 1000;
   }
   g_target_ms.store(g_buffer_policy.target_ms);
-  slippi::jukebox::mix(out, (size_t)n, volume / 100.0, (double)g_device_rate / g_rate);
+  slippi::jukebox::mix(out, (size_t)n, volume / 100.0, (double)g_device_rate / g_rate, g_device_rate);
   mix_ui_sound(out, (size_t)n, volume, g_device_rate);
   for (int ch = 0; ch < 2; ++ch) {
     uint8_t* dst = (uint8_t*)g_asio_buffers[ch].buffers[index];
     for (long i = 0; i < n; ++i) {
-      const int16_t s = out[i * 2 + ch];
+      const float s = out[i * 2 + ch];
       switch (g_asio_type) {
-        case ASIOSTInt16LSB: ((int16_t*)dst)[i] = s; break;
+        case ASIOSTInt16LSB: ((int16_t*)dst)[i] = (int16_t)audio_quantize_pcm(s, 16); break;
         case ASIOSTInt24LSB: audio_store_pcm24_le(dst + i * 3, s); break;
-        case ASIOSTFloat32LSB: ((float*)dst)[i] = s / 32768.0f; break;
-        default: ((int32_t*)dst)[i] = (int32_t)((uint32_t)(uint16_t)s << 16); break;   // Int32LSB
+        case ASIOSTFloat32LSB: ((float*)dst)[i] = audio_pcm_float(s); break;
+        default: ((int32_t*)dst)[i] = audio_quantize_pcm(s, 32); break;   // Int32LSB
       }
     }
   }
@@ -1162,9 +1186,15 @@ std::string asio_start_session() {
   g_asio_driver_name = info.name;
   long in_ch = 0, out_ch = 0;
   if (ASIOGetChannels(&in_ch, &out_ch) != ASE_OK || out_ch < 2) { ASIOExit(); return "fewer than two outputs"; }
-  if (ASIOCanSampleRate(48000.0) == ASE_OK) ASIOSetSampleRate(48000.0);
   ASIOSampleRate rate = 0;
-  if (ASIOGetSampleRate(&rate) != ASE_OK || rate < 8000) { ASIOExit(); return "no sample rate"; }
+  // Preserve the interface's configured rate. Forcing 48 kHz here needlessly discarded the
+  // player's high-rate setup even though our converter can render at that rate directly.
+  if (ASIOGetSampleRate(&rate) != ASE_OK || !std::isfinite(rate) || rate < 8000) {
+    if (ASIOCanSampleRate(48000.0) != ASE_OK || ASIOSetSampleRate(48000.0) != ASE_OK ||
+        ASIOGetSampleRate(&rate) != ASE_OK || !std::isfinite(rate) || rate < 8000) {
+      ASIOExit(); return "no sample rate";
+    }
+  }
   long minimum = 0, maximum = 0, preferred = 0, granularity = 0;
   if (ASIOGetBufferSize(&minimum, &maximum, &preferred, &granularity) != ASE_OK) { ASIOExit(); return "no buffer size"; }
   long size = preferred;
@@ -1205,6 +1235,7 @@ std::string asio_start_session() {
   g_asio_ui_buffer.store(size); g_asio_ui_in.store(g_asio_latency_in); g_asio_ui_out.store(g_asio_latency_out);
   g_priming = true; g_fill_average = 0.0; g_ar = AsioRender{};
   g_asio_running.store(true, std::memory_order_release);
+  slippi::jukebox::set_output_rate(g_device_rate);
   if (ASIOStart() != ASE_OK) { g_asio_running.store(false); ASIODisposeBuffers(); ASIOExit(); return "start failed"; }
   log("audio: ASIO %s buffer %ld frames, latency in/out %ld/%ld samples (%u Hz, %s, outputs 1-2, queue %u ms; driver min %ld max %ld preferred %ld)",
       g_asio_driver_name.c_str(), size, g_asio_latency_in, g_asio_latency_out, g_device_rate, asio_type_name(g_asio_type),
@@ -1417,7 +1448,9 @@ static void audio_push_ordered(const uint8_t* samples, size_t bytes,
     if (ring) {
       constexpr size_t frames = BLOCK_BYTES / 4;
       uint64_t write = g_ring_write.load(std::memory_order_relaxed);
-      if (write + frames - g_ring_read.load(std::memory_order_acquire) > RING_FRAMES - 4) { ++g_dropped; continue; }
+      // Reserve history for the widest game-output kernel (32 kHz -> 8 kHz), independently of
+      // the consumer's table so the producer never reads state the output thread can rebuild.
+      if (write + frames - g_ring_read.load(std::memory_order_acquire) > RING_FRAMES - SINC_TAPS * 4) { ++g_dropped; continue; }
       for (size_t i = 0; i < frames; ++i) {
         g_ring[(write + i) & RING_MASK][0] = converted[i * 2];
         g_ring[(write + i) & RING_MASK][1] = converted[i * 2 + 1];

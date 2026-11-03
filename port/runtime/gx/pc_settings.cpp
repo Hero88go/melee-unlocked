@@ -7242,6 +7242,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto and Low latency share the Windows output with other apps.\nAuto adjusts buffering and remembers it per device; Low latency keeps your selected software buffer fixed.\nWASAPI exclusive takes over the Windows output while the game runs.\nASIO uses an installed interface driver and its outputs 1 and 2; if it cannot start, Auto is used.\nThe fastest stable choice depends on the device and driver.");
     if (options.audio_mode != mode_at_start) { ImGui::TextDisabled("Applies after restart."); restart_now_button("audio_mode"); }
+    if (options.audio_mode >= 2)
+      ImGui::TextWrapped("Exclusive and ASIO bypass the Windows app volume. Lower the game volume and your amp before switching.");
     // This dialog can enable the manually selected interface mode, so its official logo is
     // shown with the picker even before that mode is selected. Preserve the artwork's alpha
     // and aspect ratio; the same asset is packaged in ui_sources/vendor beside the game.

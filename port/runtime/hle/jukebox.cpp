@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "jukebox.h"
 #include "host.h"
+#include "audio_sinc.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -31,6 +32,7 @@
 namespace slippi::jukebox {
 namespace {
 constexpr uint32_t OUTPUT_RATE = 32000;
+std::atomic<uint32_t> g_output_rate{OUTPUT_RATE};
 // The console's own level for a streamed song (synth.c, lbaudio_ax.c): stream volume 254/255 x music
 // group volume 254/255 (32510 of 32768) x the centre-pan level each of the stereo stream's two voices
 // gets (23124 left, 23215 right, of 32768). Measured against our AX path and the real DSP (LLE) within
@@ -44,17 +46,20 @@ constexpr double CONSOLE_GAIN[2] = {32510.0 / 32768.0 * 23124.0 / 32768.0,    //
 // those. A buffer that has to grow is copied into a larger one on the decoder thread and swapped in,
 // so the audio thread never waits on a lock or an allocation.
 struct StreamBuffer {
-  std::unique_ptr<int16_t[]> data;   // interleaved stereo at OUTPUT_RATE
+  std::unique_ptr<float[]> data;   // interleaved stereo at the song's native rate, in 16-bit sample units
   size_t capacity = 0;               // frames
 };
 struct Song {
-  std::vector<int16_t> samples;   // interleaved stereo at OUTPUT_RATE (a song decoded whole)
+  std::vector<float> samples;   // native-rate PCM in 16-bit sample units; no integer rounding after decode
+  uint32_t rate = OUTPUT_RATE;
+  host::audio_resampling::SincTable filter;   // prepared by the decoder before publication
   std::shared_ptr<StreamBuffer> stream;   // a song decoded while it plays; std::atomic_load/store
   std::atomic<size_t> ready{0};           // frames of `stream` written; read before `stream`
   std::atomic<bool> complete{true};       // false while `stream` is still being written
   size_t loop_frame = SIZE_MAX;   // frame index the song restarts at, or SIZE_MAX for one-shot
   size_t position = 0;            // frames played
   double phase = 0.0;            // fractional input sample when the endpoint runs above 32 kHz
+  bool looped = false;
   float gain = 1.0f;             // per-song gain, set when the song is started
   double level = 0.0;            // smoothed fade level, 0 to 1
 };
@@ -101,9 +106,8 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
   if (file.size() < 0x80 || std::memcmp(file.data(), " HALPST\0", 8) != 0) { host::log("jukebox: not an HPS file"); return nullptr; }
   uint32_t rate = be32(file.data() + 8), channels = be32(file.data() + 12);
   if (channels != 2) { host::log("jukebox: %u channels unsupported", channels); return nullptr; }
-  // The resampler below makes 32000 / rate output frames per input frame: a rate of a few Hz would
-  // ask for gigabytes. No song is recorded under 8 kHz (0 plays as 32 kHz).
-  if (rate != 0 && rate < 8000) { host::log("jukebox: %u Hz unsupported", rate); return nullptr; }
+  // Refuse damaged rates, including ones that would require an unbounded filter. 0 means 32 kHz.
+  if (rate != 0 && (rate < 8000 || rate > 384000)) { host::log("jukebox: %u Hz unsupported", rate); return nullptr; }
   int16_t coef[2][16];
   for (int ch = 0; ch < 2; ++ch) {
     const uint8_t* info = file.data() + 0x10 + ch * 0x38;
@@ -147,40 +151,27 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
     if (blk.offset == loop_target) loop_frame = frame_index;
     frame_index += blk.pcm.size() / 2;
   }
-  // Resample to the mixer rate if the track is not 32 kHz (Melee's are).
-  if (rate == OUTPUT_RATE || rate == 0) {
-    for (auto& blk : blocks) song->samples.insert(song->samples.end(), blk.pcm.begin(), blk.pcm.end());
-    song->loop_frame = loop_frame;
-  } else {
-    std::vector<int16_t> all;
-    for (auto& blk : blocks) all.insert(all.end(), blk.pcm.begin(), blk.pcm.end());
-    size_t in_frames = all.size() / 2, out_frames = (size_t)((uint64_t)in_frames * OUTPUT_RATE / rate);
-    song->samples.resize(out_frames * 2);
-    for (size_t i = 0; i < out_frames; ++i) {
-      double src = (double)i * rate / OUTPUT_RATE;
-      size_t a = std::min((size_t)src, in_frames - 1), bb = std::min(a + 1, in_frames - 1);
-      double t = src - (double)a;
-      for (int ch = 0; ch < 2; ++ch) song->samples[i * 2 + ch] = (int16_t)(all[a * 2 + ch] * (1.0 - t) + all[bb * 2 + ch] * t);
-    }
-    song->loop_frame = loop_frame == SIZE_MAX ? SIZE_MAX : (size_t)((uint64_t)loop_frame * OUTPUT_RATE / rate);
-  }
+  song->rate = rate ? rate : OUTPUT_RATE;
+  for (auto& blk : blocks) song->samples.insert(song->samples.end(), blk.pcm.begin(), blk.pcm.end());
+  song->loop_frame = loop_frame;
+  song->filter.build(g_output_rate.load(), song->rate);
   host::log("jukebox: song %u Hz, %zu frames, %s", rate, song->samples.size() / 2, song->loop_frame == SIZE_MAX ? "no loop" : "loops");
   return song;
 }
 
-// Ten minutes of decoded stereo is about 77 MB held in memory; longer files use the disc track.
+// Ten minutes at 32 kHz, or the same 154 MB memory budget at higher native rates.
 constexpr size_t MAX_CUSTOM_FRAMES = OUTPUT_RATE * 60u * 10u;
-using PcmSink = std::function<bool(const int16_t* pcm, size_t frames)>;
+using PcmSink = std::function<bool(const float* pcm, size_t frames)>;
 
 // A player's file in any format the system decodes (all but HPS), to `sink` piece by piece as
-// interleaved stereo at OUTPUT_RATE. *expected_frames is set to the length the file states before
+// interleaved stereo at its native rate. *rate and *expected_frames are set before
 // the first piece. False when nothing could be decoded, or the file is over ten minutes.
-bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, size_t* expected_frames, bool* too_long) {
+bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, uint32_t* rate, size_t* expected_frames, bool* too_long) {
   *expected_frames = 0;
   *too_long = false;
 #ifndef _WIN32
   // Linux: FFmpeg decodes the player formats (WAV, MP3, M4A/AAC, OGG, FLAC, Opus).
-  return linux_media::decode_audio(path, (int)OUTPUT_RATE, MAX_CUSTOM_FRAMES, sink, expected_frames, too_long);
+  return linux_media::decode_audio(path, rate, MAX_CUSTOM_FRAMES, sink, expected_frames, too_long);
 #else
   // Windows Media Foundation decodes common player formats (WAV, MP3, M4A/AAC and installed codecs).
   const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -194,14 +185,22 @@ bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, 
   IMFSourceReader* reader = nullptr;
   IMFMediaType* output_type = nullptr;
   HRESULT hr = MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader);
+  IMFMediaType* native_type = nullptr;
+  UINT32 native_rate = 0;
+  if (SUCCEEDED(hr)) hr = reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &native_type);
+  if (SUCCEEDED(hr)) hr = native_type->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &native_rate);
+  if (native_type) native_type->Release();
+  if (native_rate < 8000 || native_rate > 384000) hr = E_FAIL;
+  *rate = native_rate;
+  const size_t max_frames = std::min(MAX_CUSTOM_FRAMES, (size_t)native_rate * 600u);
   if (SUCCEEDED(hr)) hr = MFCreateMediaType(&output_type);
   if (SUCCEEDED(hr)) hr = output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-  if (SUCCEEDED(hr)) hr = output_type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+  if (SUCCEEDED(hr)) hr = output_type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
   if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
-  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, OUTPUT_RATE);
-  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
-  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4);
-  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, OUTPUT_RATE * 4);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, native_rate);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 8);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, native_rate * 8);
   if (SUCCEEDED(hr)) hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, output_type);
   if (output_type) output_type->Release();
   if (SUCCEEDED(hr)) {
@@ -210,8 +209,8 @@ bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, 
     PropVariantInit(&duration);
     if (SUCCEEDED(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &duration)) &&
         duration.vt == VT_UI8) {
-      const double frames = (double)duration.uhVal.QuadPart / 1e7 * OUTPUT_RATE;
-      if (frames > (double)MAX_CUSTOM_FRAMES) { *too_long = true; hr = E_FAIL; }
+      const double frames = (double)duration.uhVal.QuadPart / 1e7 * native_rate;
+      if (frames > (double)max_frames) { *too_long = true; hr = E_FAIL; }
       else *expected_frames = (size_t)frames;
     }
     PropVariantClear(&duration);
@@ -224,6 +223,11 @@ bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, 
     IMFSample* sample = nullptr;
     hr = reader->ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &stream, &flags, &timestamp, &sample);
     if (FAILED(hr)) { ok = false; break; }
+    // Never play a changed stream format using the old rate and frame layout.
+    if (flags & (MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED | MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED)) {
+      if (sample) sample->Release();
+      ok = false; break;
+    }
     if (flags & MF_SOURCE_READERF_ENDOFSTREAM) finished = true;
     if (sample) {
       IMFMediaBuffer* buffer = nullptr;
@@ -233,10 +237,10 @@ bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, 
         DWORD maximum = 0, length = 0;
         hr = buffer->Lock(&data, &maximum, &length);
         if (SUCCEEDED(hr)) {
-          if ((length & 3u) != 0) ok = false;
-          else if (written + length / 4 > MAX_CUSTOM_FRAMES) { *too_long = true; ok = false; }
-          else if (length && !sink(reinterpret_cast<const int16_t*>(data), length / 4)) finished = true;   // the caller stopped it
-          else written += length / 4;
+          if ((length & 7u) != 0) ok = false;
+          else if (written + length / 8 > max_frames) { *too_long = true; ok = false; }
+          else if (length && !sink(reinterpret_cast<const float*>(data), length / 8)) finished = true;   // the caller stopped it
+          else written += length / 8;
           buffer->Unlock();
         } else ok = false;
         buffer->Release();
@@ -254,6 +258,7 @@ bool decode_player_file(const std::filesystem::path& path, const PcmSink& sink, 
 void publish_song(const std::shared_ptr<Song>& song, uint32_t generation) {
   std::lock_guard<std::mutex> lk(g_mutex);
   if (g_song_generation.load() != generation) return;
+  if (song) song->filter.build(g_output_rate.load(), song->rate);
   if (g_song) g_fading = g_song;   // the old song fades out while the new one fades in
   else if (song) song->level = 1.0;   // nothing playing: start as the console does, at full level
   g_song = song;
@@ -271,44 +276,46 @@ bool stream_custom_file(const std::filesystem::path& path, uint32_t generation, 
   std::shared_ptr<StreamBuffer> buffer;
   size_t written = 0, expected = 0;
   bool started = false, out_of_memory = false;
-  const auto sink = [&](const int16_t* pcm, size_t frames) {
+  const auto sink = [&](const float* pcm, size_t frames) {
     if (g_song_generation.load() != generation) return false;   // another song was asked for
+    if (!buffer) song->filter.build(g_output_rate.load(), song->rate);
     if (!buffer || written + frames > buffer->capacity) {
       // Sized from the stated length plus a second, so a file that states it is copied at most once.
-      const size_t want = std::max({written + frames, expected + OUTPUT_RATE,
-                                    buffer ? buffer->capacity * 2 : (size_t)OUTPUT_RATE * 60});
+      const size_t want = std::min(MAX_CUSTOM_FRAMES, std::max({written + frames, expected + song->rate,
+                                    buffer ? buffer->capacity * 2 : (size_t)song->rate * 60}));
       auto next = std::make_shared<StreamBuffer>();
-      next->data.reset(new (std::nothrow) int16_t[want * 2]);
+      next->data.reset(new (std::nothrow) float[want * 2]);
       if (!next->data) { out_of_memory = true; return false; }
       next->capacity = want;
-      if (written) std::memcpy(next->data.get(), buffer->data.get(), written * 4);
+      if (written) std::memcpy(next->data.get(), buffer->data.get(), written * 2 * sizeof(float));
       std::atomic_store(&song->stream, next);   // swapped in before more frames are counted
       buffer = std::move(next);
     }
-    std::memcpy(buffer->data.get() + written * 2, pcm, frames * 4);
+    for (size_t i = 0; i < frames * 2; ++i)
+      buffer->data[written * 2 + i] = std::isfinite(pcm[i]) ? pcm[i] * 32768.0f : 0.0f;
     written += frames;
     song->ready.store(written, std::memory_order_release);
-    if (!started && written >= OUTPUT_RATE) { started = true; publish_song(song, generation); }
+    if (!started && written >= song->rate) { started = true; publish_song(song, generation); }
     return true;
   };
   bool too_long = false;
-  const bool ok = decode_player_file(path, sink, &expected, &too_long);
+  const bool ok = decode_player_file(path, sink, &song->rate, &expected, &too_long);
   song->complete.store(true, std::memory_order_release);
   const std::string name = path.filename().u8string();
   if (g_song_generation.load() != generation) return true;   // replaced meanwhile: nothing to play
   if (!started) {
     if (!ok || !written) {
       host::log("jukebox: custom audio %s %s, using the disc track", name.c_str(),
-                too_long ? "is longer than 10 minutes" : out_of_memory ? "did not fit in memory" : "could not be decoded");
+                too_long ? "exceeds the music length or memory limit" : out_of_memory ? "did not fit in memory" : "could not be decoded");
       return false;
     }
     publish_song(song, generation);   // shorter than a second
   }
   if (!ok || out_of_memory)
     host::log("jukebox: custom audio %s stopped decoding after %zu frames (%s); it ends there", name.c_str(), written,
-              too_long ? "longer than 10 minutes" : out_of_memory ? "out of memory" : "decode error");
+              too_long ? "music length or memory limit" : out_of_memory ? "out of memory" : "decode error");
   else
-    host::log("jukebox: custom audio %s, %zu frames", name.c_str(), written);
+    host::log("jukebox: custom audio %s, %u Hz, %zu frames", name.c_str(), song->rate, written);
   return true;
 }
 
@@ -534,48 +541,80 @@ int user_volume() { return g_user_volume.load(); }
 namespace {
 // Adds one song into out[] (float accumulator). The fade level moves toward target at FADE_STEP per
 // 32 kHz frame. Returns false when the song has ended or faded out.
-bool render(Song& song, float* acc, size_t frames, double step, double target, const double* gains) {
+bool render(Song& song, float* acc, size_t frames, double output_rate, uint32_t device_rate, double target, const double* gains) {
   // `complete` and `ready` before `stream`: a count that is read is never more than the buffer that
   // is then loaded holds (the decoder swaps in a grown buffer before it counts frames written to it).
   const bool complete = song.complete.load(std::memory_order_acquire);
   const size_t ready = song.ready.load(std::memory_order_acquire);
   const std::shared_ptr<StreamBuffer> stream = std::atomic_load(&song.stream);
-  const int16_t* samples = stream ? stream->data.get() : song.samples.data();
+  const float* samples = stream ? stream->data.get() : song.samples.data();
   const size_t total = stream ? ready : song.samples.size() / 2;
   if (total == 0 && complete) return false;
-  const double fade = FADE_STEP * step;
+  song.filter.build(device_rate, song.rate);
+  const double step = (double)song.rate / output_rate;
+  const double fade = FADE_STEP * OUTPUT_RATE / output_rate;
+  const int half = song.filter.taps / 2;
+  const size_t loop = song.loop_frame == SIZE_MAX ? total : std::min(song.loop_frame, total - 1);
+  // Kernel taps see the loop as a continuous stream. Before the first loop, retain the intro;
+  // after it, taps to the left of the loop point come from the tail, never from the intro again.
+  const auto sample_at = [&](int64_t frame, int ch) -> double {
+    if (complete && loop < total && (frame >= (int64_t)total || (song.looped && frame < (int64_t)loop))) {
+      const int64_t length = (int64_t)(total - loop);
+      frame = (int64_t)loop + ((frame - (int64_t)loop) % length + length) % length;
+    }
+    if (frame < 0 || frame >= (int64_t)total) return 0.0;
+    return samples[(size_t)frame * 2 + ch];
+  };
   for (size_t i = 0; i < frames; ++i) {
     song.level += song.level < target ? std::min(fade, target - song.level) : -std::min(fade, song.level - target);
     // Decoding has not reached this point yet (it runs far faster than playback, so only a computer
     // under heavy load gets here): hold the place in silence rather than loop or end early.
-    if (!complete && song.position + 1 >= total) continue;
+    if (!complete && song.position + half >= total) continue;
     if (song.position >= total) {
       if (song.loop_frame == SIZE_MAX) return false;
-      song.position = std::min(song.loop_frame, total - 1);
+      song.position = loop + (song.position - total) % (total - loop);
+      song.looped = true;
     }
-    const size_t next = song.position + 1 < total ? song.position + 1 :
-        song.loop_frame == SIZE_MAX ? song.position : std::min(song.loop_frame, total - 1);
     const double g = gains[i] * song.gain * song.level;
+    std::array<double, 2> value{};
+    if (song.position >= (size_t)(half - 1) && song.position + half < total &&
+        (!song.looped || song.position >= loop + half - 1)) {
+      const float* base = samples + song.position * 2;
+      value = song.filter.stereo(song.phase, [&](int offset) { return base + (ptrdiff_t)offset * 2; });
+    } else {
+      for (int ch = 0; ch < 2; ++ch)
+        value[ch] = song.filter.sample(song.phase, [&](int offset) { return sample_at((int64_t)song.position + offset, ch); });
+    }
     for (int ch = 0; ch < 2; ++ch) {
-      const double sample = samples[song.position * 2 + ch] * (1.0 - song.phase) + samples[next * 2 + ch] * song.phase;
-      acc[i * 2 + ch] += (float)(sample * g * CONSOLE_GAIN[ch]);
+      acc[i * 2 + ch] += (float)(value[ch] * g * CONSOLE_GAIN[ch]);
     }
     song.phase += step;
-    while (song.phase >= 1.0) { song.phase -= 1.0; ++song.position; }
+    const size_t advance = (size_t)song.phase;
+    song.phase -= advance;
+    song.position += advance;
   }
   return target > 0.0 || song.level > 0.0;
 }
 }  // namespace
 
 void set_paused(bool paused) { g_paused.store(paused, std::memory_order_relaxed); }
+void set_output_rate(uint32_t rate) {
+  g_output_rate.store(rate, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_song) g_song->filter.build(rate, g_song->rate);
+  if (g_fading) g_fading->filter.build(rate, g_fading->rate);
+}
 
-void mix(int16_t* out, size_t frames, double master, double output_rate) {
+void mix(float* out, size_t frames, double master, double output_rate, uint32_t device_rate) {
+  output_rate = std::max(1.0, output_rate);
+  if (!device_rate) device_rate = (uint32_t)std::lround(output_rate);
+  g_output_rate.store(device_rate, std::memory_order_relaxed);
   if (g_paused.load(std::memory_order_relaxed)) return;   // the song keeps its place and goes on from it
   std::shared_ptr<Song> song, fading;
   { std::lock_guard<std::mutex> lk(g_mutex); song = g_song; fading = g_fading; }
   if (!song && !fading) { g_gain_now = -1.0; return; }
   const double target = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * master;
-  const double step = (double)OUTPUT_RATE / std::max(1.0, output_rate);
+  const double step = (double)OUTPUT_RATE / output_rate;
   if (g_gain_now < 0.0) g_gain_now = target;
   static thread_local std::vector<double> gains;
   static thread_local std::vector<float> acc;
@@ -587,14 +626,22 @@ void mix(int16_t* out, size_t frames, double master, double output_rate) {
     gains[i] = g_gain_now;
   }
   bool song_alive = true, fading_alive = true;
-  if (song) song_alive = render(*song, acc.data(), frames, step, 1.0, gains.data());
-  if (fading) fading_alive = render(*fading, acc.data(), frames, step, 0.0, gains.data());
+  if (song) song_alive = render(*song, acc.data(), frames, output_rate, device_rate, 1.0, gains.data());
+  if (fading) fading_alive = render(*fading, acc.data(), frames, output_rate, device_rate, 0.0, gains.data());
   for (size_t i = 0; i < frames * 2; ++i)
-    out[i] = (int16_t)std::clamp((int32_t)out[i] + (int32_t)std::lround(acc[i]), -32768, 32767);
+    out[i] += acc[i];   // retain headroom and fractional samples until the final device conversion
   if (!song_alive || !fading_alive) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!song_alive && g_song == song) g_song.reset();
     if (!fading_alive && g_fading == fading) g_fading.reset();
   }
+}
+// Legacy 16-bit output (WinMM and callers that explicitly request integer PCM).
+void mix(int16_t* out, size_t frames, double master, double output_rate, uint32_t device_rate) {
+  static thread_local std::vector<float> pcm;
+  pcm.assign(out, out + frames * 2);
+  mix(pcm.data(), frames, master, output_rate, device_rate);
+  for (size_t i = 0; i < frames * 2; ++i)
+    out[i] = (int16_t)std::lround(std::clamp((double)pcm[i], -32768.0, 32767.0));
 }
 }  // namespace slippi::jukebox

@@ -288,15 +288,11 @@ uint16_t accelerator_get_sample() {
   return ret;
 }
 
-// The DSP's polyphase filter: 3 sets x 128 phases x 4 taps (Q15), as in the DSP coefficient ROM.
-// On whenever a coefficient table is found (MELEE_AUDIO_POLYPHASE=0 turns it off; without a table
-// voices render linear, as Dolphin HLE does). Measured 09-29 against Slippi Dolphin's LLE DSP dump
-// of the same replay: its tone matches the hardware within 0.6 dB in every octave band (linear is
-// 5 dB bright at 8-14 kHz), and with the accelerator stopping at a one-shot's end (acc_stop_at_end)
-// it flags 6 clicks where the LLE dump flags 10 (before that fix: 41, all on 1 ms voice block edges:
-// this filter passes the newest samples sooner than linear, so it showed the defect more). The math
-// below matches the ucode's routine at IMEM 0x05a8, output rounding included: the ucode keeps the
-// middle word of the doubled sum with a saturating store, which is sum >> 15 clamped (09-30).
+// Voices use the same interpolation as Slippi HLE by default. The console's four-tap low-pass
+// dulls voices and effects: measured 8.6 dB less energy at 8-14 kHz on the same replay. Retain it
+// only for explicit DSP-reference comparisons (MELEE_AUDIO_POLYPHASE=1). Final conversion to the
+// output device remains band-limited and preserves fractional samples.
+// The reference path uses 3 sets x 128 phases x 4 Q15 taps and matches the DSP's saturating store.
 //
 // Where the table comes from, first found wins (paths relative to the game's folder, the launcher's
 // working folder): MELEE_DSP_COEF (a test override); User\GC\dsp_coef.bin, a player's own dump of a
@@ -330,8 +326,9 @@ const int16_t* polyphase_coefs() {
   static bool ok = false;
   if (loaded) return ok ? table.data() : nullptr;
   loaded = true;
-  if (const char* on = std::getenv("MELEE_AUDIO_POLYPHASE"); on && on[0] == '0') {
-    host::log("audio: DSP polyphase filter off (MELEE_AUDIO_POLYPHASE=0), voices use linear interpolation");
+  const char* on = std::getenv("MELEE_AUDIO_POLYPHASE");
+  if (!on || on[0] != '1') {
+    host::log("audio: Slippi-compatible voice conversion; console low-pass disabled");
     return nullptr;
   }
   std::string paths[6];

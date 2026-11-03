@@ -56,7 +56,7 @@ int main() {
     auto once = decode_hps(valid_song(32000, 0xFFFFFFFFu));
     check(once && once->samples.size() == 224 && once->loop_frame == SIZE_MAX, "one-shot song");
     auto resampled = decode_hps(valid_song(48000));
-    check(resampled && resampled->samples.size() == 148 && resampled->loop_frame == 0, "48 kHz song resampled");
+    check(resampled && resampled->rate == 48000 && resampled->samples.size() == 224 && resampled->loop_frame == 0, "48 kHz song keeps its native rate");
     auto unstated = decode_hps(valid_song(0));
     check(unstated && unstated->samples.size() == 224, "rate 0 plays as 32 kHz");
   }
@@ -107,7 +107,8 @@ int main() {
     check(!decode_hps(valid_song(1)), "1 Hz song");
     check(!decode_hps(valid_song(7999)), "7999 Hz song");
     auto low = decode_hps(valid_song(8000));
-    check(low && low->samples.size() == 896, "8 kHz song resampled");
+    check(low && low->rate == 8000 && low->samples.size() == 224, "8 kHz song keeps its native rate");
+    check(!decode_hps(valid_song(0xFFFFFFFFu)), "damaged high rate");
   }
   if (failures) return 1;
   std::printf("HPS bound test passed\n");
