@@ -50,6 +50,7 @@
 #include "launcher_engine.h"
 #include "launcher_lobby.h"
 #include "launcher_lobby_p2p.h"
+#include "launcher_yougame.h"
 #include "launcher_theme.h"
 #include "launcher_replay_data.h"
 #include "launcher_trace_view.h"
@@ -89,6 +90,7 @@ const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append 
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
 const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
+const UINT WM_APP_YOUGAME = WM_APP + 52;   // the YouGame session changed: save launcher.ini, repaint
 
 // Client area in layout units; S() turns these into pixels for the current DPI.
 const int WIN_W = 720, WIN_H = 480;
@@ -257,6 +259,7 @@ void load_ini() {
     std::string line;
     while (std::getline(f, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (launcher::yougame::load_line(line)) continue;
       if (line.rfind("engine=", 0) == 0) { g_engine = launcher::parse_engine_line(line, g_engine); continue; }
       if (launcher::parse_vanilla_line(line, g_vanilla)) continue;
       if (line.rfind("cpubuild=", 0) == 0) {
@@ -316,6 +319,7 @@ void save_ini() {
     // The lobby: which versions this player takes match requests for, and their custom ISO.
     if (!g_lobby_prefs.open_to.empty() && g_lobby_prefs.open_to != "vanilla") f << "lobbyopen=" << g_lobby_prefs.open_to << "\n";
     if (!g_lobby_prefs.custom_iso.empty()) f << "lobbyiso=" << g_lobby_prefs.custom_iso << "\nlobbyisoname=" << g_lobby_prefs.custom_name << "\n";
+    f << launcher::yougame::ini_lines();   // YouGame: the environment and the protected session
     char color[16]; std::snprintf(color,sizeof color,"accent=#%02X%02X%02X",GetRValue(launcher::theme::accent),GetGValue(launcher::theme::accent),GetBValue(launcher::theme::accent));
     f << color << "\n";
   }
@@ -804,6 +808,35 @@ void paint_rail(HDC dc) {
   }
 }
 
+// The YouGame line on the Play page: the account, then Connect or Disconnect, then Open YouGame (the
+// Melee Unlocked page on the YouGame site, in the browser). The two links' rectangles are kept for clicks.
+RECT g_yg_link[2] = {};
+bool g_yg_hot = false;
+void paint_yougame_line(HDC dc) {
+  const launcher::yougame::Account a = launcher::yougame::account();
+  std::wstring base = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
+                                  : launcher::lang::txw(L"YouGame: not connected");
+  if (launcher::yougame::env().id == "staging") base += L" [staging]";
+  dot(dc, CX, 287, a.signed_in ? C_OK : C_FAINT);
+  const RECT line = LR(CX + 15, 284, CW - 15, 17);
+  HGDIOBJ old = SelectObject(dc, g_font);
+  int x = line.left;
+  auto put = [&](const std::wstring& s, COLORREF c) {
+    SIZE z{};
+    GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &z);
+    RECT r{x, line.top, std::min<LONG>(x + z.cx, line.right), line.bottom};
+    draw_text(dc, s, r, g_font, c, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    x = r.right;
+    return r;
+  };
+  put(base, C_DIM);
+  put(L"  |  ", C_FAINT);
+  g_yg_link[0] = put(launcher::lang::txw(a.signed_in ? L"Disconnect" : L"Connect"), C_TEXT);
+  put(L"  |  ", C_FAINT);
+  g_yg_link[1] = put(launcher::lang::txw(L"Open YouGame"), C_TEXT);
+  SelectObject(dc, old);
+}
+
 void paint_play(HDC dc) {
   draw_text(dc, L"MELEE NTSC 1.02 DISC IMAGE", LR(CX, 32, CW, 18), g_font_label, C_FAINT,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
@@ -863,9 +896,10 @@ void paint_play(HDC dc) {
   const std::string mods_line = mod_manager::summary();
   dot(dc, CX, 263, mods_line == launcher::lang::tx("Mods: none active") ? C_FAINT : C_OK);
   draw_text(dc, widen(mods_line + " | " + launcher::lang::tx("Open Mods folder")), LR(CX + 15, 260, CW - 15, 17), g_font, C_DIM, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-  RECT sep = LR(CX, 282, CW, 1);
+  if (!vanilla_active()) paint_yougame_line(dc);
+  RECT sep = LR(CX, 306, CW, 1);
   fill(dc, sep, C_SEP);
-  draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+  draw_text(dc, HINT_TEXT, LR(CX, 314, CW, 32), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
   std::string version_status = g_active_version.empty() ? "" : launcher::lang::fill(launcher::lang::tx("Playing {version}"), launcher::lang::Args{{"version", g_active_version}});
   if (!version_status.empty() && !vanilla_supported()) version_status += ". " + launcher::lang::tx("Vanilla needs 0.9.17 or newer");
   bool status_bad = host::updater::rollback_state() == host::updater::RollbackState::Failed;
@@ -944,6 +978,91 @@ void capture_test_client(HWND window, const char* name) {
   if (bitmap) DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(nullptr, screen);
 }
 void open_settings(const std::string& tab);   // below; the Mods page's "Choose skins" opens the Mods tab
+
+// ---- YouGame sign-in: email and password, sent only to YouGame's sign-in service ----
+HWND g_yg_signin = nullptr, g_yg_email = nullptr, g_yg_pass = nullptr, g_yg_status = nullptr, g_yg_ok = nullptr;
+bool g_yg_busy = false;
+LRESULT CALLBACK yougame_signin_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  switch (m) {
+    case WM_COMMAND:
+      if (LOWORD(w) == IDOK && !g_yg_busy) {
+        wchar_t email[256]{}, pass[256]{};
+        GetWindowTextW(g_yg_email, email, 255);
+        GetWindowTextW(g_yg_pass, pass, 255);
+        if (!email[0] || !pass[0]) { SetWindowTextW(g_yg_status, launcher::lang::txw(L"Enter your YouGame email and password.").c_str()); return 0; }
+        g_yg_busy = true;
+        EnableWindow(g_yg_ok, FALSE);
+        SetWindowTextW(g_yg_status, launcher::lang::txw(L"Signing in...").c_str());
+        std::thread([h, e = narrow(email), p = narrow(pass)] {
+          std::string why;
+          const bool ok = launcher::yougame::sign_in(e, p, &why);
+          PostMessageW(h, WM_APP + 1, ok, (LPARAM)new std::string(why));
+        }).detach();
+        SecureZeroMemory(pass, sizeof pass);
+      } else if (LOWORD(w) == IDCANCEL) {
+        DestroyWindow(h);
+      }
+      return 0;
+    case WM_APP + 1: {
+      std::unique_ptr<std::string> why((std::string*)l);
+      g_yg_busy = false;
+      if (w) { DestroyWindow(h); return 0; }
+      SetWindowTextW(g_yg_status, widen(*why).c_str());
+      SetWindowTextW(g_yg_pass, L"");
+      EnableWindow(g_yg_ok, TRUE);
+      return 0;
+    }
+    case WM_CTLCOLORSTATIC: SetBkMode((HDC)w, TRANSPARENT); return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    case WM_CLOSE: DestroyWindow(h); return 0;
+    case WM_DESTROY:
+      EnableWindow(g_main, TRUE);
+      SetForegroundWindow(g_main);
+      g_yg_signin = nullptr;
+      return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
+}
+void yougame_connect() {
+  if (launcher::yougame::account().signed_in) {
+    if (MessageBoxW(g_main, launcher::lang::txw(L"Disconnect your YouGame account from this launcher?").c_str(), L"YouGame",
+                    MB_YESNO | MB_ICONQUESTION) == IDYES)
+      launcher::yougame::sign_out();
+    return;
+  }
+  if (g_yg_signin) { SetForegroundWindow(g_yg_signin); return; }
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSW c{};
+    c.lpfnWndProc = yougame_signin_proc;
+    c.hInstance = GetModuleHandleW(nullptr);
+    c.lpszClassName = L"MeleeUnlockedYouGameSignIn";
+    c.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    c.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    RegisterClassW(&c);
+    registered = true;
+  }
+  RECT mr; GetWindowRect(g_main, &mr);
+  const int w = S(380), h = S(250);
+  g_yg_signin = CreateWindowExW(WS_EX_DLGMODALFRAME, L"MeleeUnlockedYouGameSignIn", L"Connect YouGame", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                (mr.left + mr.right - w) / 2, (mr.top + mr.bottom - h) / 2, w, h, g_main, nullptr, GetModuleHandleW(nullptr), nullptr);
+  auto child = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int cw, int ch, int id) {
+    HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(cw), S(ch), g_yg_signin,
+                             (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+    return c;
+  };
+  child(L"STATIC", launcher::lang::txw(L"Sign in with your YouGame account. Your password goes only to YouGame.").c_str(), 0, 16, 12, 340, 34, 0);
+  child(L"STATIC", launcher::lang::txw(L"Email").c_str(), 0, 16, 52, 340, 18, 0);
+  g_yg_email = child(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 16, 72, 340, 24, 100);
+  child(L"STATIC", launcher::lang::txw(L"Password").c_str(), 0, 16, 104, 340, 18, 0);
+  g_yg_pass = child(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD, 16, 124, 340, 24, 101);
+  g_yg_status = child(L"STATIC", L"", 0, 16, 156, 340, 34, 0);
+  g_yg_ok = child(L"BUTTON", launcher::lang::txw(L"Sign in").c_str(), WS_TABSTOP | BS_DEFPUSHBUTTON, 176, 196, 88, 28, IDOK);
+  child(L"BUTTON", launcher::lang::txw(L"Cancel").c_str(), WS_TABSTOP, 270, 196, 88, 28, IDCANCEL);
+  EnableWindow(g_main, FALSE);
+  ShowWindow(g_yg_signin, SW_SHOW);
+  SetFocus(g_yg_email);
+}
 #include "launcher_mods.inl"
 
 // The Language button: a menu of the languages, each named in itself. Picking one saves it and
@@ -1468,8 +1587,24 @@ void launch_game_now() {
     if (const char* log_path = std::getenv("MELEE_LAUNCHER_TEST_LAUNCH_LOG"))
       if (FILE* f = std::fopen(log_path, "ab")) { std::fprintf(f, "%s\n", cmd.c_str()); std::fclose(f); }
   }
+  // The game's YouGame rows ask this launcher (launcher_yougame.h): its address, a token for this
+  // launch, and the build's hashes for the ticket's build check. Set only for this one start.
+  const std::string yougame_bridge = vanilla_active() ? std::string() : launcher::yougame::bridge_url();
+  if (!yougame_bridge.empty()) {
+    const std::string game_dir = exe.substr(0, exe.find_last_of("\\/"));
+    launcher::yougame::set_build(g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version,
+                                 widen(exe), widen(game_dir + "\\melee_game.dll"));
+    SetEnvironmentVariableW(L"YOUGAME_BRIDGE", widen(yougame_bridge).c_str());
+    SetEnvironmentVariableW(L"YOUGAME_TOKEN", widen(launcher::yougame::new_launch_token()).c_str());
+    SetEnvironmentVariableW(L"MELEE_YOUGAME_LAUNCHER", L"1");
+  }
   PROCESS_INFORMATION pi{};
   const DWORD error = launcher::start_process(widen(exe), widen(cmd), widen(cwd), 0, pi);
+  if (!yougame_bridge.empty()) {
+    SetEnvironmentVariableW(L"YOUGAME_BRIDGE", nullptr);
+    SetEnvironmentVariableW(L"YOUGAME_TOKEN", nullptr);
+    SetEnvironmentVariableW(L"MELEE_YOUGAME_LAUNCHER", nullptr);
+  }
   if (error != ERROR_SUCCESS) {
     launcher::lobby::game_running(false);
 #ifdef MELEE_NO_SLIPPI
@@ -1802,6 +1937,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 #endif
       refresh_account_line();
       ShowWindow(g_slippi_btn, g_slippi_missing && !vanilla_active() ? SW_SHOW : SW_HIDE);
+      // YouGame: the bridge the game's YouGame rows ask (launcher_yougame.h), up for the whole run.
+      launcher::yougame::set_on_session_change([] { PostMessageW(g_main, WM_APP_YOUGAME, 0, 0); });
+      if (std::string why; !launcher::yougame::start_bridge(&why)) log_line("yougame: the launcher's bridge did not start (%s)", why.c_str());
+      if (const char* ms = g_launcher_test ? std::getenv("MELEE_LAUNCHER_TEST_CAPTURE_MS") : nullptr)
+        std::thread([ms = std::atoi(ms)] { Sleep(ms); PostMessageW(g_main, WM_APP + 41, 0, 0); }).detach();
 #ifndef MELEE_NO_SLIPPI   // the public releases are the other build: this one must never install them over itself
       if (!g_launcher_test) { host::updater::check(MELEE_PORT_VERSION); refresh_updater(); }
       if (!g_launcher_test) PostMessageW(hwnd, WM_APP + 77, 0, 0);   // offer DLSS 5 once the window is up
@@ -1849,6 +1989,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       g_seg_hot = build_seg_at(p);   // only the cursor changes over a segment, so nothing to repaint
       g_dog_hot = PtInRect(&g_dog_rect, p) != 0;
+      g_yg_hot = g_tab == 0 && !vanilla_active() && (PtInRect(&g_yg_link[0], p) || PtInRect(&g_yg_link[1], p));
       if (!g_tracking) { TRACKMOUSEEVENT t{sizeof t, TME_LEAVE, hwnd, 0}; TrackMouseEvent(&t); g_tracking = true; }
       return 0;
     }
@@ -1858,13 +1999,18 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (g_nav_hot >= 0) { int was = g_nav_hot; g_nav_hot = -1; invalidate(nav_rect(was)); }
       return 0;
     case WM_SETCURSOR:
-      if (LOWORD(lp) == HTCLIENT && (g_nav_hot >= 0 || g_seg_hot >= 0 || g_dog_hot)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+      if (LOWORD(lp) == HTCLIENT && (g_nav_hot >= 0 || g_seg_hot >= 0 || g_dog_hot || g_yg_hot)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
       break;
     case WM_LBUTTONDOWN: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       RECT mods_line = LR(CX, 260, CW, 17);
       RECT version_line = version_text_rect();
       if (g_tab == 0 && PtInRect(&version_line, p)) { show_changelog(); return 0; }
+      if (g_tab == 0 && !vanilla_active() && PtInRect(&g_yg_link[0], p)) { yougame_connect(); return 0; }
+      if (g_tab == 0 && !vanilla_active() && PtInRect(&g_yg_link[1], p)) {
+        ShellExecuteW(nullptr, L"open", widen(launcher::yougame::game_page()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return 0;
+      }
       if (g_tab == 0 && PtInRect(&mods_line, p)) {
         std::error_code ec; std::filesystem::create_directories(widen(mod_manager::mods_dir()), ec);
         ShellExecuteW(nullptr, L"open", widen(mod_manager::mods_dir()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -2005,6 +2151,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_building = false;
       set_iso(g_iso);
       if (wp == 0) { select_tab(0); refresh_updater(); } else InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    case WM_APP_YOUGAME:
+      save_ini();
+      if (g_tab == 0) InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_APP_GAME_DONE:
       g_playing = false;
@@ -2275,6 +2425,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   ShowWindow(hwnd, g_launcher_test ? SW_SHOWNOACTIVATE : show);
   std::thread(mod_manager::rescan).detach();
   MSG m;
-  while (GetMessageW(&m, nullptr, 0, 0)) { if (!IsDialogMessageW(hwnd, &m)) { TranslateMessage(&m); DispatchMessageW(&m); } }
+  while (GetMessageW(&m, nullptr, 0, 0)) {
+    if (g_yg_signin && IsDialogMessageW(g_yg_signin, &m)) continue;   // Tab and Enter in YouGame's sign-in
+    if (!IsDialogMessageW(hwnd, &m)) { TranslateMessage(&m); DispatchMessageW(&m); }
+  }
   return 0;
 }

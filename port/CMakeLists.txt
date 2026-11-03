@@ -206,7 +206,7 @@ if(MELEE_NO_SLIPPI)
   # further down, plus MELEE_NO_SLIPPI. With it the lobby needs no Slippi account, an accepted match
   # starts melee_source with --p2p-* (a peer-to-peer session), and automatic pairing is offered.
   # When the normal target's sources or settings change below, change them here as well.
-  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
+  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
     third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
     runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
   set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
@@ -386,6 +386,13 @@ target_include_directories(port_online_rows_test PRIVATE runtime/hle)
 target_compile_features(port_online_rows_test PRIVATE cxx_std_17)
 add_test(NAME port_online_rows COMMAND port_online_rows_test)
 set_tests_properties(port_online_rows PROPERTIES TIMEOUT 10)
+# The launcher's YouGame bridge: parsing, checks and answers, with a stand-in for YouGame's site.
+add_executable(port_launcher_yougame_test tests/launcher_yougame_test.cpp app/launcher_yougame.cpp)
+target_include_directories(port_launcher_yougame_test PRIVATE app third_party)
+target_compile_features(port_launcher_yougame_test PRIVATE cxx_std_17)
+target_compile_options(port_launcher_yougame_test PRIVATE /EHsc)
+add_test(NAME port_launcher_yougame COMMAND port_launcher_yougame_test)
+set_tests_properties(port_launcher_yougame PROPERTIES TIMEOUT 10)
 add_executable(port_yougame_mod_online_test tests/yougame_mod_online_test.cpp)
 target_include_directories(port_yougame_mod_online_test PRIVATE runtime/hle)
 target_compile_features(port_yougame_mod_online_test PRIVATE cxx_std_17)
@@ -899,7 +906,7 @@ if(MELEE_CPU_BASELINE STREQUAL "AVX2")
 endif()
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
-add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
+add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
   third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
   runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
