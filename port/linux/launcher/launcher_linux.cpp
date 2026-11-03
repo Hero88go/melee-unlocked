@@ -195,6 +195,7 @@ void open_path(const std::string& path) {
 
 // ---------------------------------------------------------------------------- the game process
 std::atomic<pid_t> g_game_pid{0};
+std::string g_yg_start_version;   // set only while starting the release YouGame is on (Versions/<v>-legacy)
 std::atomic<bool> g_game_done{false};
 std::atomic<int> g_game_code{0};
 std::chrono::system_clock::time_point g_launch_time;
@@ -215,8 +216,10 @@ bool start_process(const std::vector<std::string>& argv) {
   for (char** e = environ; *e; ++e)
     if (std::strncmp(*e, "YOUGAME_", 8) != 0 && std::strncmp(*e, "MELEE_YOUGAME_", 14) != 0) env_store.push_back(*e);
   if (const std::string bridge = launcher::yougame::bridge_url(); !bridge.empty()) {
-    launcher::yougame::set_build(MELEE_PORT_VERSION, std::wstring(argv[0].begin(), argv[0].end()),
-                                 std::wstring(g_dir.begin(), g_dir.end()) + L"/melee_game.so");
+    const std::string game_dir = argv[0].substr(0, argv[0].find_last_of('/'));
+    launcher::yougame::set_build(g_yg_start_version.empty() ? std::string(MELEE_PORT_VERSION) : g_yg_start_version,
+                                 std::wstring(argv[0].begin(), argv[0].end()),
+                                 std::wstring(game_dir.begin(), game_dir.end()) + L"/melee_game.so");
     env_store.push_back("YOUGAME_BRIDGE=" + bridge);
     env_store.push_back("YOUGAME_TOKEN=" + launcher::yougame::new_launch_token());
     env_store.push_back("MELEE_YOUGAME_LAUNCHER=1");
@@ -273,6 +276,51 @@ void play(const std::vector<std::string>& extra = {}) {
   g_replay_active = false;
   if (start_process(a)) status("Melee Unlocked is running.");
 }
+// YouGame on an older release: the game asked to restart in it (bridge thread); the main loop starts
+// it once the game has closed. One start only: the next Play is this version again.
+std::mutex g_yg_restart_mutex;
+std::string g_yg_restart_version, g_yg_restart_mode;
+std::string yougame_older_dir(const std::string& version) { return g_dir + "/Versions/" + version + "-legacy"; }
+std::string yougame_restart_older(const launcher::yougame::Allowed& older, const std::string& mode) {
+  const std::string folder = yougame_older_dir(older.version);
+  const std::string exe = folder + "/melee_source", lib = folder + "/melee_game.so";
+  if (!file_exists(exe) || !file_exists(lib)) {
+    if (host::updater::rollback_state() != host::updater::RollbackState::Downloading)
+      host::updater::install_release(older.version, false, g_dir);
+    return "Getting Melee Unlocked " + older.version + " for YouGame. Try again in a minute.";
+  }
+  // YouGame's own hashes, when it lists them, must be what was installed.
+  if ((!older.exe_sha256.empty() && launcher::yougame::file_sha256(std::wstring(exe.begin(), exe.end())) != older.exe_sha256) ||
+      (!older.game_sha256.empty() && launcher::yougame::file_sha256(std::wstring(lib.begin(), lib.end())) != older.game_sha256))
+    return "Melee Unlocked " + older.version + " in the Versions folder is not the build YouGame uses.";
+  std::lock_guard<std::mutex> lock(g_yg_restart_mutex);
+  g_yg_restart_version = older.version;
+  g_yg_restart_mode = mode;
+  return std::string();
+}
+bool start_yougame_older() {
+  std::string version, mode;
+  {
+    std::lock_guard<std::mutex> lock(g_yg_restart_mutex);
+    if (g_yg_restart_version.empty()) return false;
+    version.swap(g_yg_restart_version); mode.swap(g_yg_restart_mode);
+    g_yg_restart_version.clear(); g_yg_restart_mode.clear();
+  }
+  const std::string folder = yougame_older_dir(version);
+  // That release's own game and Sys; this install's settings, saves, card and replays.
+  std::vector<std::string> a = base_args();
+  a[0] = folder + "/melee_source";
+  for (size_t i = 0; i + 1 < a.size(); ++i)
+    if (a[i] == "--sys-dir") a[i + 1] = folder + "/Sys";
+  a.insert(a.end(), {"--online-mode", mode});
+  g_replay_active = false;
+  g_yg_start_version = version;
+  const bool ok = start_process(a);
+  g_yg_start_version.clear();
+  status(ok ? "Melee Unlocked " + version + " is running for YouGame." : "Melee Unlocked " + version + " could not be started.");
+  return ok;
+}
+
 void open_settings(const std::string& tab = std::string()) {
   if (!file_exists(game_exe())) { status("The game is missing from this folder."); return; }
   std::vector<std::string> a{game_exe(), "--settings-window", "--settings-path", g_dir + "/port-settings.ini"};
@@ -775,9 +823,17 @@ int main(int argc, char** argv) {
   // is on cannot be fetched beside this one yet: the game says where to get it instead.
   launcher::yougame::set_on_session_change([] { g_yg_save = true; });
   if (std::string why; !launcher::yougame::start_bridge(&why)) std::fprintf(stderr, "yougame: bridge did not start (%s)\n", why.c_str());
-  launcher::yougame::set_restart_older([](const launcher::yougame::Allowed& older, const std::string&) {
-    return "YouGame uses Melee Unlocked " + older.version + ". Get it from GitHub to play YouGame until it updates.";
-  });
+  launcher::yougame::set_restart_older(yougame_restart_older);
+  // Which builds YouGame allows: when it is on an older release, get that one beside this version
+  // now, so the game's offer to restart in it is ready when a player takes it.
+  std::thread([exe = game_exe(), lib = g_dir + "/melee_game.so"] {
+    launcher::yougame::refresh_allowed(MELEE_PORT_VERSION, std::wstring(exe.begin(), exe.end()), std::wstring(lib.begin(), lib.end()));
+    const launcher::yougame::Allowed older = launcher::yougame::behind();
+    if (older.version.empty()) return;
+    for (int i = 0; i < 60 && host::updater::releases().empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    if (!file_exists(yougame_older_dir(older.version) + "/melee_source"))
+      host::updater::install_release(older.version, false, g_dir);
+  }).detach();
   refresh_replays();
   refresh_mods();
   host::updater::check(MELEE_PORT_VERSION);
@@ -847,7 +903,7 @@ int main(int argc, char** argv) {
       } while (SDL_PollEvent(&e));
     }
     // The game has ended: a queue's next replay, a crash report offer.
-    if (g_game_done.exchange(false)) {
+    if (g_game_done.exchange(false) && !start_yougame_older()) {
       const int code = g_game_code.load();
       if (crash_newer_than_launch()) g_crash_offer = "Melee Unlocked stopped with an error. Send the crash report to the developer?";
       if (g_replay_active) {

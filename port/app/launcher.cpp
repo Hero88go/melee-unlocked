@@ -994,8 +994,8 @@ bool take_yougame_restart(std::string& folder, std::string& mode) {
 }
 std::string yougame_restart_older(const launcher::yougame::Allowed& older, const std::string& mode) {
   const std::string folder_name = older.version + "-legacy";   // host::updater::install_release's folder
-  const std::string folder = g_dir + "\Versions\\" + folder_name;
-  const std::string exe = folder + "\melee_source.exe", dll = folder + "\melee_game.dll";
+  const std::string folder = g_dir + "\\Versions\\" + folder_name;
+  const std::string exe = folder + "\\melee_source.exe", dll = folder + "\\melee_game.dll";
   if (!file_exists(exe) || !file_exists(dll)) {
     if (host::updater::rollback_state() != host::updater::RollbackState::Downloading)
       host::updater::install_release(older.version, false, g_dir);
@@ -1974,13 +1974,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // version now, so the game's offer to restart in it is ready when a player takes it.
       launcher::yougame::set_restart_older(yougame_restart_older);
       if (!vanilla_active())
-        std::thread([exe = source_exe_dir() + "\melee_source.exe", dll = source_exe_dir() + "\melee_game.dll",
+        std::thread([exe = source_exe_dir() + "\\melee_source.exe", dll = source_exe_dir() + "\\melee_game.dll",
                      version = g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version.substr(0, g_active_version.find('-'))] {
           launcher::yougame::refresh_allowed(version, widen(exe), widen(dll));
           const launcher::yougame::Allowed older = launcher::yougame::behind();
           if (older.version.empty()) return;
           for (int i = 0; i < 60 && host::updater::releases().empty(); ++i) Sleep(500);   // the release list
-          if (!file_exists(g_dir + "\Versions\\" + older.version + "-legacy\melee_source.exe"))
+          if (!file_exists(g_dir + "\\Versions\\" + older.version + "-legacy\\melee_source.exe"))
             host::updater::install_release(older.version, false, g_dir);
         }).detach();
       // Test runs only: sign in to the stand-in site (MELEE_YOUGAME_SITE / _AUTH) as "email:password".
