@@ -26,12 +26,6 @@ def identity_matches(data, record, pro, replay_id):
     method = str(data['identity_method'].item())
     if method == 'exact_connect_code_v1':
         valid = str(data['identity_code'].item()) == PLAYERS[pro]['code']
-    elif method == 'linked_tournament_set_v1' and pro == 'hbox':
-        valid = (str(data['identity_code'].item()) == '' and
-                 str(data['identity_set_id'].item()) == str(record.get('set_id')) and
-                 str(data['identity_set_game_replay_id'].item()) == replay_id and
-                 str(data['identity_set_source'].item()) == 'startgg-export' and
-                 str(data['identity_replay_display_name'].item()).casefold() == 'hungrybox')
     else:
         return False
     return (valid and record.get('identity_method', 'exact_connect_code_v1') == method and

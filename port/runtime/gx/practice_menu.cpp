@@ -235,7 +235,7 @@ const char* const kPresetAbout[] = {
 constexpr int kGhostCount = (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]);
 
 // Fight a pro: on the Source Port the players whose own AI file loaded; elsewhere (or with no file) the
-// players with habit tables. Hungrybox is not offered yet (practice_ghosts::kReleased).
+// players with habit tables. Slot 2 is never offered (practice_ghosts::kReleased).
 bool neural_ghosts() {
   for (int i = 0; i < kGhostCount; ++i)
     if (practice_ghosts::kReleased[i] && ghost_ai::specialist_available((unsigned)i)) return true;

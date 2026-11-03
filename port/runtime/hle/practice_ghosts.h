@@ -24,9 +24,9 @@ inline const Ghost kGhosts[] = {
     {"Zain", "Marth", 18, 10000, 0,
      {2, 2, 40, 5, 3, 25, 6, 8, 8, 1}, {1, 0, 5, 6, 3, 0, 0, 1, 15, 0, 9, 21, 2, 9, 3, 7, 1, 0, 17, 0}, {27, 55, 4, 4, 4, 6}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0},
      {23, 11, 15, 51}, {12, 33, 26, 29, 0}, {3, 3, 4, 3, 83, 4}, {0, 0, 0, 0, 0}, 93, 79},
-    {"Hungrybox", "Jigglypuff", 15, 1316, 0,
-     {2, 2, 2, 6, 3, 50, 12, 11, 11, 1}, {1, 0, 1, 0, 1, 1, 0, 1, 6, 0, 6, 15, 33, 9, 4, 8, 1, 0, 13, 0}, {27, 55, 4, 4, 4, 6}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0},
-     {17, 7, 9, 67}, {25, 32, 29, 14, 0}, {1, 4, 26, 4, 60, 5}, {0, 0, 0, 0, 0}, 96, 95},
+    // Slot 2 has no player: it keeps its place for the saved index and is never offered.
+    {"Jigglypuff", "Jigglypuff", 15, 0, 0,
+     {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}, 0, 0},
     {"Cody Schwab", "Fox", 1, 10000, 0,
      {2, 2, 47, 5, 3, 22, 6, 6, 6, 1}, {4, 0, 5, 4, 1, 4, 0, 2, 7, 0, 11, 2, 19, 11, 10, 7, 0, 0, 13, 0}, {27, 48, 8, 5, 5, 7}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0},
      {26, 12, 13, 49}, {24, 19, 29, 28, 0}, {1, 2, 3, 5, 49, 40}, {0, 0, 0, 0, 0}, 92, 64},
@@ -37,7 +37,7 @@ inline const Ghost kGhosts[] = {
 };
 
 // The players Fight a pro offers. Every entry keeps its place (the index is saved in settings and sent to
-// the game); Hungrybox is not offered yet.
+// the game); slot 2 is never offered.
 inline constexpr bool kReleased[] = {true, true, false, true, true};
 static_assert(sizeof kReleased / sizeof kReleased[0] == sizeof kGhosts / sizeof kGhosts[0], "one flag per ghost");
 

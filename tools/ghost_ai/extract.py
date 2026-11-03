@@ -18,8 +18,8 @@ import peppi_py
 from players import PLAYERS, verified_port
 
 HERE = Path(os.environ.get('MELEE_GHOST_AI_HOME', Path(__file__).resolve().parent))
-PROS = ["mang0", "zain", "hbox", "cody"]
-CODES = {"mang0": "MANG#0", "zain": "ZAIN#0", "hbox": "HBOX#305", "cody": "IBDW#0"}
+PROS = ["mang0", "zain", "slot2", "cody"]
+CODES = {"mang0": "MANG#0", "zain": "ZAIN#0", "cody": "IBDW#0"}
 
 
 def a(x, dtype=np.float32):
@@ -130,7 +130,7 @@ def extract(path, pro, port_hint, tournament_link=None):
 def main():
     while True:
         did = 0
-        for pro in PROS:
+        for pro in (p for p in PROS if p in CODES):
             base = HERE / "data" / pro
             if not (base / "ids.json").exists():
                 continue
@@ -151,7 +151,7 @@ def main():
                     fh.write(rid + "\n")
                 did += 1
         if did == 0:
-            if all((HERE / f"fetch2-{p}.log").exists() and "all downloaded" in (HERE / f"fetch2-{p}.log").read_text() for p in PROS):
+            if all((HERE / f"fetch2-{p}.log").exists() and "all downloaded" in (HERE / f"fetch2-{p}.log").read_text() for p in PROS if p in CODES):
                 break
             time.sleep(20)
     print("extract done", flush=True)

@@ -112,7 +112,7 @@ class Data:
         pool = np.where(self.val == val)[0]
         if not len(pool):
             raise ValueError('No games in requested split; collect independent sessions before training/evaluation.')
-        # Each pro weighs the same whatever their game count (Hungrybox has far fewer games).
+        # Each pro weighs the same whatever their game count (some players have far fewer games).
         pros = self.cat[self.starts[pool], 5]
         w = (self.lens[pool] - L).astype(np.float64)
         for p in np.unique(pros):

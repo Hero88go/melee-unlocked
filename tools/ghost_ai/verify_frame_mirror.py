@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 
-PROS = ('mang0', 'zain', 'hbox', 'cody', 'amsa')
+PROS = ('mang0', 'zain', 'slot2', 'cody', 'amsa')
 
 
 def sha256(path):

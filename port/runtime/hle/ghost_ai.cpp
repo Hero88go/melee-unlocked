@@ -52,7 +52,7 @@ Model g_model;
 Model g_model_p1;    // tests: MELEE_GHOST_AI_FILE_P1 gives port 1 another network (old against new)
 bool g_has_p1 = false;
 constexpr unsigned kSpecialists = 5;
-const char* const kSpecialistNames[kSpecialists] = {"mang0", "zain", "hbox", "cody", "amsa"};
+const char* const kSpecialistNames[kSpecialists] = {"mang0", "zain", "slot2", "cody", "amsa"};
 Model g_specialists[kSpecialists];
 int g_specialist_status[kSpecialists] = {}; // tried only when selected: 0 unknown, 1 loaded, -1 absent/bad
 int g_loaded = 0;   // 0 not tried, 1 loaded, -1 missing or bad

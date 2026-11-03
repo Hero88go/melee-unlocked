@@ -322,7 +322,7 @@ static int ghost_pro(const Fighter* fp, const MuPcConfig* c)
         switch (fp->kind) {
         case Ft_Kind_Falco: return 0;   /* Mang0 */
         case Ft_Kind_Mars: return 1;    /* Zain */
-        case Ft_Kind_Purin: return 2;   /* Hungrybox */
+        case Ft_Kind_Purin: return 2;   /* slot 2 */
         case Ft_Kind_Fox: return 3;     /* Cody Schwab */
         case Ft_Kind_Yoshi: return 4;   /* aMSa */
         default: return -1;

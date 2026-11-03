@@ -33,17 +33,6 @@ def load_games(files, pro=None, records=None):
             if method == 'exact_connect_code_v1':
                 if str(game['identity_code'].item()) != PLAYERS[pro]['code']:
                     raise ValueError(f'{file.name}: replay identity differs from selected pro')
-            elif method == 'linked_tournament_set_v1' and pro == 'hbox':
-                checks = (
-                    str(game['identity_code'].item()) == '',
-                    str(game['identity_set_id'].item()) == str(record.get('set_id')),
-                    str(game['identity_set_game_replay_id'].item()) == file.stem,
-                    str(game['identity_set_source'].item()) == 'startgg-export',
-                    str(game['identity_replay_display_name'].item()).casefold() == 'hungrybox',
-                    int(record.get('set_port', 0)) == int(record.get('expected_player_index', -2)) + 1,
-                )
-                if not all(checks):
-                    raise ValueError(f'{file.name}: linked tournament attribution is inconsistent')
             else:
                 raise ValueError(f'{file.name}: unsupported or unverified identity method {method!r}')
             if record is not None and record.get('identity_method', method) != method:
@@ -95,12 +84,7 @@ def main():
         method = record.get('identity_method', 'exact_connect_code_v1')
         if method == 'exact_connect_code_v1' and record.get('expected_code') != PLAYERS[args.pro]['code']:
             continue
-        if method == 'linked_tournament_set_v1':
-            if (args.pro != 'hbox' or record.get('set_source') != 'startgg-export' or
-                    record.get('set_game_replay_id') != rid or record.get('replay_display_name', '').casefold() != 'hungrybox' or
-                    int(record.get('set_port', 0)) != int(record.get('expected_player_index', -2)) + 1):
-                continue
-        elif method != 'exact_connect_code_v1':
+        if method != 'exact_connect_code_v1':
             continue
         file = folder / 'frames' / (rid + '.npz')
         if file.exists():

@@ -23,7 +23,7 @@ def main():
     # Tail one starts before the initial newest-first bulk. Later tails begin before the oldest
     # accepted replay already on disk, so repeated bounded jobs continue backward without overlap.
     cutoffs = {'mang0': '2023-11-16', 'zain': '2022-01-23',
-               'cody': '2023-09-05', 'amsa': '2023-05-15', 'hbox': '2020-01-01'}
+               'cody': '2023-09-05', 'amsa': '2023-05-15'}
     for pro in args.pros:
         job_file = HERE / f'job-{pro}-tail{args.tail_number}.json'
         failed_job = None
@@ -42,7 +42,7 @@ def main():
                 print(json.dumps({'pro': pro, 'failed_job': failed_job,
                                   'status': status.get('status'), 'retry_requires_create': True}), flush=True)
                 continue
-        if args.tail_number > 1 or pro == 'hbox':
+        if args.tail_number > 1:
             manifest = HERE / 'data' / pro / 'verified' / 'manifest.jsonl'
             accepted_dates = []
             if manifest.is_file():

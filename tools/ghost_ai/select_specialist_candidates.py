@@ -17,7 +17,7 @@ def read(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--pros', nargs='*', choices=list(PLAYERS), default=list(PLAYERS))
+    parser.add_argument('--pros', nargs='*', choices=list(PLAYERS), default=[p for p in PLAYERS if PLAYERS[p]['code']])
     parser.add_argument('--seeds', nargs='+', type=int, required=True)
     args = parser.parse_args()
     audit = read(HOME / 'runs' / 'specialist-data-audit.json')

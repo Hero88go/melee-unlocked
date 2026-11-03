@@ -2,7 +2,7 @@
 PLAYERS = {
     'mang0': {'code': 'MANG#0', 'css_character': 20, 'internal_character': 22},
     'zain': {'code': 'ZAIN#0', 'css_character': 9, 'internal_character': 18},
-    'hbox': {'code': 'HBOX#305', 'css_character': 15, 'internal_character': 15},
+    'slot2': {'code': None, 'css_character': 15, 'internal_character': 15},  # array order only; no player
     'cody': {'code': 'IBDW#0', 'css_character': 2, 'internal_character': 1},
     # Owner excluded Ginger for popularity. aMSa adds Yoshi and ranked first among the surveyed
     # fifth-player candidates by main-character replay availability. The profile count is not an

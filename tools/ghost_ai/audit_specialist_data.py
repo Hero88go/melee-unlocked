@@ -28,12 +28,6 @@ def audit(pro):
             if method == 'exact_connect_code_v1':
                 if record.get('expected_code') != PLAYERS[pro]['code']:
                     raise ValueError('manifest_exact_code_mismatch')
-            elif method == 'linked_tournament_set_v1' and pro == 'hbox':
-                if (record.get('expected_code') is not None or record.get('set_source') != 'startgg-export' or
-                        record.get('set_game_replay_id') != rid or
-                        record.get('replay_display_name', '').casefold() != 'hungrybox' or
-                        int(record.get('set_port', 0)) != int(record.get('expected_player_index', -2)) + 1):
-                    raise ValueError('manifest_tournament_link_mismatch')
             else:
                 raise ValueError('unapproved_identity_method')
             if rid in seen:
@@ -52,12 +46,6 @@ def audit(pro):
                 if method == 'exact_connect_code_v1':
                     if code != PLAYERS[pro]['code']:
                         raise ValueError('array_exact_identity_mismatch')
-                elif method == 'linked_tournament_set_v1' and pro == 'hbox':
-                    if (code or str(data['identity_set_id'].item()) != record.get('set_id') or
-                            str(data['identity_set_game_replay_id'].item()) != str(rid) or
-                            str(data['identity_set_source'].item()) != 'startgg-export' or
-                            str(data['identity_replay_display_name'].item()).casefold() != 'hungrybox'):
-                        raise ValueError('array_tournament_link_mismatch')
                 if str(data['source_replay_id'].item()) != str(rid):
                     raise ValueError('replay_id_mismatch')
                 frames = data['frame'].astype(np.int64)
@@ -90,7 +78,7 @@ def audit(pro):
 def main():
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--pros', nargs='*', choices=list(PLAYERS), default=list(PLAYERS))
+    ap.add_argument('--pros', nargs='*', choices=list(PLAYERS), default=[p for p in PLAYERS if PLAYERS[p]['code']])
     ap.add_argument('--out', type=Path, default=None)
     args = ap.parse_args()
     reports = [audit(pro) for pro in args.pros]

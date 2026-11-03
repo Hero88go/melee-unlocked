@@ -59,12 +59,6 @@ def main():
             method = str(d['identity_method'].item())
             valid_identity = (method == 'exact_connect_code_v1' and
                               str(d['identity_code'].item()) == PLAYERS[args.pro]['code'])
-            if method == 'linked_tournament_set_v1' and args.pro == 'hbox':
-                valid_identity = (str(d['identity_code'].item()) == '' and
-                                  str(d['identity_set_id'].item()) == str(record.get('set_id')) and
-                                  str(d['identity_set_game_replay_id'].item()) == rid and
-                                  str(d['identity_set_source'].item()) == 'startgg-export' and
-                                  str(d['identity_replay_display_name'].item()).casefold() == 'hungrybox')
             if (not valid_identity or record.get('identity_method', 'exact_connect_code_v1') != method or
                     str(d['source_replay_id'].item()) != rid):
                 raise ValueError(f'{rid}: held-out replay identity differs from its manifest')

@@ -4,7 +4,7 @@ keep the two in step, and bump VERSION when anything here changes.
 import numpy as np
 
 VERSION = 1
-PROS = ["mang0", "zain", "hbox", "cody"]
+PROS = ["mang0", "zain", "slot2", "cody"]
 # Slippi stage ids of the legal stages; anything else is 0.
 STAGES = {2: 1, 3: 2, 8: 3, 28: 4, 31: 5, 32: 6}
 N_STATES = 512

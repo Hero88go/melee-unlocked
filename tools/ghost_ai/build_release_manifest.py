@@ -11,7 +11,7 @@ from players import PLAYERS
 
 ROOT = Path(__file__).resolve().parents[2]
 HOME = Path(os.environ.get('MELEE_GHOST_AI_HOME', Path(__file__).resolve().parent))
-# Released players. Hungrybox stays in the runtime roster (indices) but is not packaged yet.
+# Released players. Slot 2 stays in the runtime roster (indices) and has no player.
 ROSTER = ('mang0', 'zain', 'cody', 'amsa')
 
 
