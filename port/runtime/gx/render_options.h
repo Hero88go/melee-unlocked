@@ -52,7 +52,10 @@ struct RenderOptions {
   // loop holds at twice the display's refresh rate (MELEE_PRESENT_UNCAPPED=1 removes that limit for
   // tests). With a SubFrameMode other than Off the renderer presents new sub-frames between 60 Hz
   // simulation frames.
-  double fps_cap = 60; // -1 follows the active monitor
+  // The defaults are the port's whole point: the monitor's rate (a 144 Hz display gets 144; not
+  // uncapped, which spun fans up on the menus for frames nobody sees) with sub-frame animation
+  // predicting ahead. Automated runs set 60 Hz and Off (app/main.cpp); a saved setting wins.
+  double fps_cap = -1; // -1 follows the active monitor, 0 = uncapped
   bool fullscreen = false;
   bool exclusive_fullscreen = false;
   // Off by default: Slippi's Lagless FoD, as the Source Port always runs it. A player's report found
@@ -185,9 +188,9 @@ struct RenderOptions {
   // switch and the kept values are saved in port-settings.ini, so the state survives a restart.
   struct LowSpecPrevious {
     RenderApi api = RenderApi::D3D12;
-    double fps_cap = 60;
+    double fps_cap = -1;   // the defaults above: the monitor's rate, Predict ahead
     int efb_scale = 0, ssaa = 1, anisotropy = 16, effects_level = 0, dlss_mode = 0;
-    SubFrameMode subframe = SubFrameMode::AuthoredInterpolate;
+    SubFrameMode subframe = SubFrameMode::Authored;
   };
   bool low_spec = false;
   LowSpecPrevious low_spec_previous;
@@ -329,7 +332,7 @@ struct RenderOptions {
   double pin_phase = -1;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
-  SubFrameMode subframe = SubFrameMode::Off;
+  SubFrameMode subframe = SubFrameMode::Authored;   // Predict ahead
   // Online: protect match speed (slippi_online.cpp budget_watch). On by default.
   bool online_frame_protection = true;
   static std::atomic<bool>& live_online_frame_protection() { static std::atomic<bool> value{true}; return value; }

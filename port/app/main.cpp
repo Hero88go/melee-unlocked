@@ -1503,33 +1503,17 @@ static int melee_main(int argc, char** argv) {
   linux_install_crash_handlers();
 #endif
   host::set_die_hook(die_report);
+  // Automated runs: 60 Hz with sub-frame animation off (the defaults in gx/render_options.h are the
+  // monitor's rate with Predict ahead, for every launch a person makes). An explicit --fps or
+  // --frame-mode below still wins over either.
+  if (automated) { gfx.fps_cap = 60; if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::Off; }
   if (!automated) {
-    // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
-    // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
-    // Set before the settings file is read, so a saved "subframe" (Off in the Low spec preset) wins
-    // over this default and an explicit --frame-mode, parsed below, still wins over both.
-    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::Authored;   // Predict (the default since 0.5.5)
     // A person launching the game wants to hear it. The zero default is there for automated runs,
     // which never reach this branch, and it used to be hidden by the launcher passing --volume 70 on
     // every start; that override was removed because it also overwrote the player's saved settings,
     // which left anyone without a saved volume silent. Set before the file is read, so a saved
     // volume still wins, and an explicit --volume below wins over both.
     o.volume = 70;
-    // Unlocked is the whole point of the port, so a fresh install must not present at 60. The
-    // struct default is 60 for automated runs, which never reach this branch. The launcher used to
-    // pass --fps unlocked on every start, which also overrode what the player had saved (0.2.1 and
-    // 0.2.2), so it was removed from the launcher; without a default here a new player got a 60 Hz
-    // build with sub-frame animation on and no way to tell why it felt wrong. Set before the
-    // settings file is read, so a saved cap (60 in the Low spec preset) still wins, and an explicit
-    // --fps below wins over both.
-    //
-    // Monitor rate, not uncapped. 0.3.0 defaulted this to uncapped, which renders as fast as the
-    // hardware can and does it hardest on the menus, where there is almost nothing to draw: a
-    // player reported the fans winding up to a jet engine a minute after reaching the main menu and
-    // settling once a match loaded. Frames beyond the refresh rate are never shown, so all of that
-    // heat and power bought nothing, and free-running also paces worse than following the display.
-    // Following the monitor is still unlocked in the sense that matters: a 144 Hz display gets 144.
-    gfx.fps_cap = -1;   // -1 = follow the monitor, 0 = uncapped
     gx::load_pc_settings(gfx, o.volume);
     source_port::mods::set_auto_detect(true);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
