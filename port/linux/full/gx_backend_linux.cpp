@@ -73,6 +73,18 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
   try {
     renderer = linux_renderer::create(window, opts.shader_cache.empty() ? "shadercache" : opts.shader_cache, scale, opts.vsync);
   } catch (const std::exception& e) {
+    // No OpenGL 4.5 context at all (a 0.9.95 report: "GLXBadFBConfig"): an older GPU or driver. Say what
+    // is missing instead of a crash report.
+    if (std::string(e.what()).find("OpenGL context") != std::string::npos) {
+      host::log("opengl: no OpenGL 4.5 context (%s); the game needs OpenGL 4.5 on Linux", e.what());
+      host::log_flush();
+      if (!host::options.no_gc_adapter)   // set for hidden and headless runs: a test never waits on a dialog
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Melee Unlocked",
+            "Melee Unlocked cannot start OpenGL 4.5 on this graphics card or driver.\n\n"
+            "Update the graphics driver (Mesa on most systems) and start the game again. Graphics cards older "
+            "than about 2012 cannot run it.", window);
+      host::end_process(1);
+    }
     host::die("OpenGL renderer: %s", e.what());
   }
   // The driver in the log: a Linux graphics crash report is unreadable without knowing whose driver it

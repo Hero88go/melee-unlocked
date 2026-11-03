@@ -2046,6 +2046,13 @@ static int melee_main(int argc, char** argv) {
       host::log("vulkan: not usable on this system; starting on the default renderer");
       gfx.api = gx::RenderApi::D3D12;
     }
+    // Two starts in a row died inside the Vulkan driver, the second with a cleared shader cache (a
+    // Linux Intel driver segfaulted at every start): the default renderer, until Vulkan is picked again.
+    if (gfx.api == gx::RenderApi::Vulkan && gx::vulkan_failed_starts() >= 2) {
+      host::log("vulkan: the last %d starts did not finish; starting on the default renderer (pick Vulkan in the settings to try it again)",
+                gx::vulkan_failed_starts());
+      gfx.api = gx::RenderApi::D3D12;
+    }
     host::window_prefer_vulkan(gfx.api == gx::RenderApi::Vulkan);
   }
   if (!headless && threaded) {

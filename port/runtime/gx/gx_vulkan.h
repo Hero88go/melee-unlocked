@@ -25,6 +25,11 @@ struct VulkanWindow {
 // instance created once). The settings panel offers Vulkan only when this is true.
 bool vulkan_available();
 
+// Vulkan starts in a row that died before the renderer was up (a crash inside the driver leaves the
+// start marker behind; the cleared shader cache is tried once). Picking Vulkan again forgets them.
+int vulkan_failed_starts();
+void vulkan_forget_failed_starts();
+
 // nullptr (with the reason logged) when Vulkan cannot start; the caller falls back.
 Backend* create_vulkan_backend(const VulkanWindow& window, int client_w, int client_h, const RenderOptions& options);
 

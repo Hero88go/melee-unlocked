@@ -575,15 +575,17 @@ class VulkanBackend final : public Backend {
     // A start that died while building pipelines (a 0.9.86 Intel Mesa player segfaulted inside
     // vkCreateGraphicsPipelines, every start) left this marker behind: the cached pipelines, recipes
     // and SPIR-V are then cleared and built anew, so a bad cache costs one crash, not every start.
+    // The marker counts the unfinished starts: at two, main.cpp starts on the default renderer.
     {
       std::error_code ec;
       const auto marker = shader_cache_dir() / "startup.pending";
-      if (std::filesystem::exists(marker, ec)) {
+      const int failed = vulkan_failed_starts();
+      if (failed > 0) {
         host::log("vulkan: the last start did not finish; clearing the Vulkan shader cache");
         for (const auto& entry : std::filesystem::directory_iterator(shader_cache_dir(), ec))
           std::filesystem::remove(entry.path(), ec);
       }
-      std::ofstream(marker, std::ios::binary) << "1";
+      std::ofstream(marker, std::ios::binary) << (failed + 1);
     }
     VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     std::ifstream f(shader_cache_dir() / "pipelines.bin", std::ios::binary);
@@ -920,7 +922,15 @@ class VulkanBackend final : public Backend {
       submit.signalSemaphoreCount = 1; submit.pSignalSemaphores = &swap_done_[image_index_];
     }
     vkResetFences(device_, 1, &f.fence);
-    check(vkQueueSubmit(queue_, 1, &submit, f.fence), "submit");
+    const VkResult submitted = vkQueueSubmit(queue_, 1, &submit, f.fence);
+    if (submitted == VK_ERROR_DEVICE_LOST) {
+      // The driver lost the GPU (a Linux AMD player: "GPUVM fault" as every Training stage loaded, on
+      // 0.9.93 and 0.9.95; OpenGL drew it). Counted as two failed starts: the next launch starts on the
+      // default renderer (main.cpp) instead of losing the device again.
+      std::ofstream(shader_cache_dir() / "startup.pending", std::ios::binary) << 2;
+      host::log("vulkan: the GPU was lost; the next start uses the default renderer (pick Vulkan in the settings to try it again)");
+    }
+    check(submitted, "submit");
     if (presented && acquired_) {
       VkPresentInfoKHR p{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
       p.waitSemaphoreCount = 1; p.pWaitSemaphores = &swap_done_[image_index_];
@@ -1855,6 +1865,18 @@ class VulkanBackend final : public Backend {
 };
 
 }  // namespace
+
+int vulkan_failed_starts() {
+  std::ifstream f(shader_cache_dir() / "startup.pending", std::ios::binary);
+  if (!f) return 0;
+  int n = 0;
+  return (f >> n) && n > 0 ? n : 1;
+}
+
+void vulkan_forget_failed_starts() {
+  std::error_code ec;
+  std::filesystem::remove(shader_cache_dir() / "startup.pending", ec);
+}
 
 bool vulkan_available() {
   if (g_vulkan_running) return true;

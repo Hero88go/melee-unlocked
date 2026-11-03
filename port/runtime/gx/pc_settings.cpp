@@ -6398,7 +6398,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       const char* linux_backends[] = {"OpenGL (default)", "Vulkan (experimental)"};
       int linux_index = options.api == RenderApi::Vulkan ? 1 : 0;
       if (vulkan_available()) {
-        if (settings_combo("Graphics backend", &linux_index, linux_backends, 2)) { options.api = linux_index ? RenderApi::Vulkan : RenderApi::D3D12; changed = true; }
+        if (settings_combo("Graphics backend", &linux_index, linux_backends, 2)) {
+          options.api = linux_index ? RenderApi::Vulkan : RenderApi::D3D12; changed = true;
+          if (linux_index) vulkan_forget_failed_starts();
+        }
         settings_hint("Takes effect at the next launch: save settings, then restart.");
       } else ImGui::TextUnformatted("Graphics backend: OpenGL");
     }
@@ -6411,6 +6414,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     int api_index = options.api == RenderApi::D3D11 ? 1 : options.api == RenderApi::Vulkan ? 2 : 0;
     if (settings_combo("Graphics backend", &api_index, backends, vulkan_available() ? 3 : 2)) {
       options.api = api_index == 1 ? RenderApi::D3D11 : api_index == 2 ? RenderApi::Vulkan : RenderApi::D3D12; changed = true;
+      if (api_index == 2) vulkan_forget_failed_starts();
     }
     settings_hint("Takes effect at the next launch: save settings, then restart.");
     }

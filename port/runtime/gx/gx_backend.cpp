@@ -4,8 +4,11 @@
 #include "gx_d3d11.h"
 #include "gx_d3d12.h"
 #include "gx_vulkan.h"
+#include "gx_adapter.h"
 #include "host.h"
 #include <d3d11.h>
+#include <cstdlib>
+#include <string>
 
 // Laptops with two GPUs: both vendors' drivers read these from the program file and start it on the
 // dedicated GPU. The renderer also asks DXGI for the fastest adapter itself (gx_adapter.h).
@@ -31,6 +34,36 @@ bool d3d11_available() {
   }();
   return available;
 }
+
+namespace {
+[[noreturn]] void no_directx11_gpu(void* hwnd) {
+  std::string gpu;
+  IDXGIFactory1* factory = nullptr;
+  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) {
+    IDXGIAdapter1* adapter = nullptr;
+    if (enum_adapter_fastest_first(factory, 0, &adapter) == S_OK) {
+      DXGI_ADAPTER_DESC1 desc{};
+      if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+        char name[128]{};
+        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof name, nullptr, nullptr);
+        gpu = name;
+      }
+      adapter->Release();
+    }
+    factory->Release();
+  }
+  if (gpu.empty()) gpu = "this graphics card";
+  host::log("graphics: neither Direct3D 12 nor Direct3D 11 starts on %s; the game needs a DirectX 11 graphics card", gpu.c_str());
+  host::log_flush();
+  if (!host::options.no_gc_adapter) {   // set for hidden and headless runs: a test never waits on a dialog
+    const std::string text = "Melee Unlocked cannot draw on " + gpu + ".\n\n"
+        "The game needs a graphics card with DirectX 11 (most made since 2010) and its current driver. "
+        "If this PC has another graphics card, update its driver and start the game again.";
+    MessageBoxA((HWND)hwnd, text.c_str(), "Melee Unlocked", MB_OK | MB_ICONERROR);
+  }
+  host::end_process(1);
+}
+}  // namespace
 
 Backend* create_render_backend(void* hwnd, int client_w, int client_h, const RenderOptions& options) {
   if (options.api == RenderApi::Vulkan) {
@@ -59,7 +92,15 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
     host::log("d3d12: cannot start on this system; starting on Direct3D 11");
     RenderOptions d3d11_options = options;
     d3d11_options.dlss_mode = 0;
-    if (Backend* backend = create_d3d11_backend(hwnd, client_w, client_h, d3d11_options)) return backend;
+    // MELEE_TEST_DXGI_FAULT=3: Direct3D 11 does not start either (with 2, Direct3D 12 cannot).
+    const char* fault = std::getenv("MELEE_TEST_DXGI_FAULT");
+    const bool d3d11_fault = fault && std::atoi(fault) >= 3;
+    if (!d3d11_fault)
+      if (Backend* backend = create_d3d11_backend(hwnd, client_w, client_h, d3d11_options)) return backend;
+    // No hardware Direct3D 11 device either: a graphics card older than DirectX 11 (a 0.9.95 report
+    // ran an ATI Radeon 3000, a DirectX 10 part) or no driver for it. Direct3D 12 would only stop on
+    // "no adapter" with a crash report; say what is missing instead.
+    if (d3d11_fault || !d3d11_available()) no_directx11_gpu(hwnd);
     host::log("d3d11: did not start either; trying Direct3D 12 anyway");
   }
   return create_d3d12_backend(hwnd, client_w, client_h, options);
