@@ -52,7 +52,7 @@ namespace {
 
 using json = nlohmann::json;
 bool has(const json& j, const char* key) { return j.is_object() && j.find(key) != j.end(); }
-constexpr unsigned kPros = 5;   // ghost_ai's order: mang0, zain, hbox, cody, amsa
+constexpr unsigned kPros = 5;   // ghost_ai's order: mang0, zain, slot 2 (none), cody, amsa
 constexpr unsigned kSlots = 4;
 
 // ---- onnxruntime, loaded from beside the game only when a pro is played -------------------------
