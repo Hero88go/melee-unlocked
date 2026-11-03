@@ -489,7 +489,11 @@ bool sign_in(const std::string& email, const std::string& password, std::string*
     if (r.status != 200) {
       const json j = parse_or_empty(r.body);
       std::string why = j.value("error_description", j.value("msg", j.value("error", std::string())));
-      if (why.empty() || r.status == 400) why = "That email and password did not sign in to YouGame.";
+      const std::string code = j.value("error_code", std::string());
+      if (code == "email_not_confirmed")
+        why = "Confirm your email first: open the link YouGame emailed you, then sign in again.";
+      else if (why.empty() || r.status == 400)
+        why = "Wrong email or password. Signed up with Google or Apple? Use Forgot password to set one.";
       if (error) *error = why;
       return false;
     }
@@ -519,6 +523,9 @@ void sign_out() {
 }
 
 void set_on_session_change(std::function<void()> callback) { g_on_change = std::move(callback); }
+
+std::string signup_page() { return kProduction.site + "/login?mode=signup"; }
+std::string reset_page() { return kProduction.site + "/reset-password"; }
 
 std::string game_page() {
   std::lock_guard<std::mutex> lock(g_mutex);

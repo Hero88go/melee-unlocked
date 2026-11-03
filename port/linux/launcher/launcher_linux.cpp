@@ -576,6 +576,10 @@ void yougame_line() {
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Close") || launcher::yougame::account().signed_in) { std::memset(pass, 0, sizeof pass); ImGui::CloseCurrentPopup(); }
+    // yougame.co in the browser, never the app
+    if (ImGui::SmallButton("Create an account")) open_path(launcher::yougame::signup_page());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Forgot password")) open_path(launcher::yougame::reset_page());
     ImGui::EndPopup();
   }
   if (g_yg_save.exchange(false)) save_ini();

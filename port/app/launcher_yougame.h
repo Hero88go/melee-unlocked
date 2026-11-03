@@ -41,6 +41,10 @@ void set_on_session_change(std::function<void()> callback);
 
 // The Melee Unlocked page on the YouGame site (Open YouGame).
 std::string game_page();
+// YouGame accounts live on yougame.co (staging takes them from there): its sign-up and password reset
+// pages, opened in the browser from the Connect box.
+std::string signup_page();
+std::string reset_page();
 
 // The bridge: started once, it answers until the launcher exits. A new launch token per game start;
 // a token stays valid while that game may still be running.

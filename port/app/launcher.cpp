@@ -1031,6 +1031,9 @@ LRESULT CALLBACK yougame_signin_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SecureZeroMemory(pass, sizeof pass);
       } else if (LOWORD(w) == IDCANCEL) {
         DestroyWindow(h);
+      } else if (LOWORD(w) == 102 || LOWORD(w) == 103) {   // yougame.co in the browser, never the app
+        const std::string url = LOWORD(w) == 102 ? launcher::yougame::signup_page() : launcher::yougame::reset_page();
+        ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
       }
       return 0;
     case WM_APP + 1: {
@@ -1072,7 +1075,7 @@ void yougame_connect() {
     registered = true;
   }
   RECT mr; GetWindowRect(g_main, &mr);
-  const int w = S(380), h = S(250);
+  const int w = S(380), h = S(290);
   g_yg_signin = CreateWindowExW(WS_EX_DLGMODALFRAME, L"MeleeUnlockedYouGameSignIn", L"Connect YouGame", WS_POPUP | WS_CAPTION | WS_SYSMENU,
                                 (mr.left + mr.right - w) / 2, (mr.top + mr.bottom - h) / 2, w, h, g_main, nullptr, GetModuleHandleW(nullptr), nullptr);
   auto child = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int cw, int ch, int id) {
@@ -1087,8 +1090,10 @@ void yougame_connect() {
   child(L"STATIC", launcher::lang::txw(L"Password").c_str(), 0, 16, 104, 340, 18, 0);
   g_yg_pass = child(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD, 16, 124, 340, 24, 101);
   g_yg_status = child(L"STATIC", L"", 0, 16, 156, 340, 34, 0);
-  g_yg_ok = child(L"BUTTON", launcher::lang::txw(L"Sign in").c_str(), WS_TABSTOP | BS_DEFPUSHBUTTON, 176, 196, 88, 28, IDOK);
-  child(L"BUTTON", launcher::lang::txw(L"Cancel").c_str(), WS_TABSTOP, 270, 196, 88, 28, IDCANCEL);
+  child(L"BUTTON", launcher::lang::txw(L"Create an account").c_str(), WS_TABSTOP, 16, 196, 166, 28, 102);
+  child(L"BUTTON", launcher::lang::txw(L"Forgot password").c_str(), WS_TABSTOP, 190, 196, 168, 28, 103);
+  g_yg_ok = child(L"BUTTON", launcher::lang::txw(L"Sign in").c_str(), WS_TABSTOP | BS_DEFPUSHBUTTON, 176, 236, 88, 28, IDOK);
+  child(L"BUTTON", launcher::lang::txw(L"Cancel").c_str(), WS_TABSTOP, 270, 236, 88, 28, IDCANCEL);
   EnableWindow(g_main, FALSE);
   ShowWindow(g_yg_signin, SW_SHOW);
   SetFocus(g_yg_email);

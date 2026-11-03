@@ -6,6 +6,7 @@
 #include "gx_vulkan.h"
 #include "gx_adapter.h"
 #include "host.h"
+#include "test_env.h"
 #include <d3d11.h>
 #include <cstdlib>
 #include <string>
@@ -93,7 +94,7 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
     RenderOptions d3d11_options = options;
     d3d11_options.dlss_mode = 0;
     // MELEE_TEST_DXGI_FAULT=3: Direct3D 11 does not start either (with 2, Direct3D 12 cannot).
-    const char* fault = std::getenv("MELEE_TEST_DXGI_FAULT");
+    const char* fault = host::test_env::getenv("MELEE_TEST_DXGI_FAULT");
     const bool d3d11_fault = fault && std::atoi(fault) >= 3;
     if (!d3d11_fault)
       if (Backend* backend = create_d3d11_backend(hwnd, client_w, client_h, d3d11_options)) return backend;
