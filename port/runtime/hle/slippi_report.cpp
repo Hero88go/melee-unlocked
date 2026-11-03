@@ -47,7 +47,14 @@ bool http(const char* method, const std::string& url, const std::wstring& header
   wchar_t host[256]{}, path[2048]{};
   uc.lpszHostName = host; uc.dwHostNameLength = 256; uc.lpszUrlPath = path; uc.dwUrlPathLength = 2048;
   if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) return false;
-  HINTERNET session = WinHttpOpen(USER_AGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  // Windows' own proxy and auto-configuration, as browsers and the Slippi Launcher use them:
+  // WinHTTP's default ignores both, and behind such a network every request timed out (error
+  // 12002) while the launcher worked. Windows before 8.1 lacks the mode: the default there.
+  HINTERNET session = nullptr;
+#if defined(_WIN32) && defined(WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY)
+  session = WinHttpOpen(USER_AGENT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+#endif
+  if (!session) session = WinHttpOpen(USER_AGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!session) { host::log("slippi: http: cannot open a session (error %lu)", GetLastError()); return false; }
   WinHttpSetTimeouts(session, 5000, 5000, 15000, 15000);
   // TLS 1.2 and 1.3 asked for by name: on some Windows installs WinHTTP's default left them out,

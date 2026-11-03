@@ -252,9 +252,13 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
     // Launcher keeps current, or the profile refresh). One failed request used to block online
     // play outright for a player whose network or Windows refused this request. No known
     // version at all still blocks.
+    // A server that failed all three tries once this session gets one try after that: every search
+    // waited out three timeouts (up to a minute) before it could start.
+    static std::atomic<bool> unreachable{false};
     std::string latest;
     int status = 0;
-    for (int attempt = 0; attempt < 3 && latest.empty(); ++attempt) {
+    const int tries = unreachable.load() ? 1 : 3;
+    for (int attempt = 0; attempt < tries && latest.empty(); ++attempt) {
       if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(700));
       std::string response;
       status = 0;
@@ -265,6 +269,7 @@ bool User::CheckOnlineCompatibility(std::string* error, VersionFetch fetch) {
       const std::string v = str_or(reply, "latestVersion", "");
       if (release_version_valid(v)) latest = v;
     }
+    unreachable.store(latest.empty() && !fetch);   // tests pass their own transport: always three tries
     const std::filesystem::path cache = std::filesystem::u8path(dir_) / "version-check.json";
     if (latest.empty()) {
       // The last answer the server gave this game (kept below, three days at most) and the
