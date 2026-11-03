@@ -1031,6 +1031,7 @@ uint32_t h_display_options() {
          (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u) |
          (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u) |
          (host::g_hide_ko_explosions.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS : 0u) |
+         (host::g_hide_hud_emblems.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_HUD_EMBLEMS : 0u) |
          // The Arcade look's hitboxes: never in a network match (the game also checks). Its grid is a
          // picture like the rest of the background, so it stays.
          (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |

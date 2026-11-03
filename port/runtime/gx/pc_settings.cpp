@@ -2067,6 +2067,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.cpu_20xx = false;   // a file without the key: off
   options.freeze_fd = false;
   options.hide_ko_explosions = false;
+  options.hide_hud_emblems = false;
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
@@ -2282,6 +2283,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
       else if (key == "freeze_fd") options.freeze_fd = value == "1";
       else if (key == "hide_ko_explosions") options.hide_ko_explosions = value == "1";
+      else if (key == "hide_hud_emblems") options.hide_hud_emblems = value == "1";
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
 #ifndef MELEE_NO_SLIPPI
@@ -2511,6 +2513,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
   host::g_hide_ko_explosions.store(options.hide_ko_explosions, std::memory_order_relaxed);
+  host::g_hide_hud_emblems.store(options.hide_hud_emblems, std::memory_order_relaxed);
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
@@ -4307,6 +4310,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
        << "\nfreeze_fd " << (options.freeze_fd ? 1 : 0)
        << "\nhide_ko_explosions " << (options.hide_ko_explosions ? 1 : 0)
+       << "\nhide_hud_emblems " << (options.hide_hud_emblems ? 1 : 0)
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
 #ifndef MELEE_NO_SLIPPI
@@ -8884,6 +8888,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("No burst of colour when a fighter is KO'd off the side, top or bottom.\n"
                         "The match is exactly the same, so it also works online and in replays.\n"
                         "Picture only, yours alone. Both engines. Takes effect from the next KO.");
+    if (settings_toggle("Hide emblems behind percents", &options.hide_hud_emblems)) {
+      host::g_hide_hud_emblems.store(options.hide_hud_emblems, std::memory_order_relaxed);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("No character emblem behind each player's damage percent.\n"
+                        "Picture only, yours alone: the match is the same, online and in replays too. Both engines.");
 
 
     ImGui::TextUnformatted("Input delay");

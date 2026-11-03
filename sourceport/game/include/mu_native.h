@@ -144,6 +144,10 @@ int mu_arcade_camera(void);
 #define MU_DISPLAY_NO_KO_EXPLOSIONS 0x400u
 #define MU_KO_EXPLOSION_HIDDEN_Y (-1.0e7f)
 int mu_ko_explosions_hidden(void);
+/* "Hide emblems behind percents" (MU_DISPLAY_OPTION_NO_HUD_EMBLEMS): the character emblem behind
+ * each player's damage percent is not drawn (if/ifstatus.c ifStatus_802F5E50). Picture only. */
+#define MU_DISPLAY_NO_HUD_EMBLEMS 0x800u
+int mu_hud_emblems_hidden(void);
 /* "Shield colours" (MuHostApi.shield_color): this player's own colour for its shield bubble and KO
  * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
  * Team matches keep the team colours. */

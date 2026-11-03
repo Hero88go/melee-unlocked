@@ -410,6 +410,8 @@ typedef struct MuHostApi {
  * it still runs in full (its particles draw random numbers, some only as its model is drawn) and
  * the match is the same; it is only out of sight. Online and in replays too. */
 #define MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS 0x400u
+/* "Hide emblems behind percents": the character emblem behind each damage percent is not drawn. */
+#define MU_DISPLAY_OPTION_NO_HUD_EMBLEMS 0x800u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

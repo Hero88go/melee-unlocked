@@ -241,6 +241,9 @@ struct RenderOptions {
   // explosion runs out of sight, so the match is unchanged (host::g_hide_ko_explosions). The player's
   // own, online and in replays too.
   bool hide_ko_explosions = false;
+  // "Hide emblems behind percents" (Video tab, ini key hide_hud_emblems, both engines): the character
+  // emblem behind each damage percent is not drawn (host::g_hide_hud_emblems). Picture only.
+  bool hide_hud_emblems = false;
   // "Unlock everything" (Game tab, ini key unlock_all, on unless the file says 0): Slippi's "Unlock
   // All Characters and Stages". Off, the save file decides what is unlocked, offline only: a network
   // session always has everything. Static Recomp: gecko::option_unlock_all (host.cpp); Source Port:

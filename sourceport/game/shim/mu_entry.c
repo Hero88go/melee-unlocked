@@ -167,6 +167,12 @@ int mu_ko_explosions_hidden(void)
 }
 _Static_assert(MU_DISPLAY_NO_KO_EXPLOSIONS == MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS, "display option bits");
 
+int mu_hud_emblems_hidden(void)
+{
+    return (mu_display_options() & MU_DISPLAY_NO_HUD_EMBLEMS) != 0;
+}
+_Static_assert(MU_DISPLAY_NO_HUD_EMBLEMS == MU_DISPLAY_OPTION_NO_HUD_EMBLEMS, "display option bits");
+
 /* The Arcade look grid's colour (0 from a host before version 21: the default). */
 float mu_screen_shake_scale(void)
 {

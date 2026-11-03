@@ -229,6 +229,7 @@ void install_cobj_guard();        // Static Recomp: an unknown camera projection
 void install_sub_color_guard();   // Static Recomp: a tint index past 4 no longer stops the game (fighter.c:828)
 void apply_freeze_final_destination();   // Static Recomp, once per game frame: "Freeze Final Destination" on or off
 void apply_final_destination_guard();   // Static Recomp, once per game frame: a Final Destination skin without its background animation does not stop the game
+void apply_hud_emblems();   // Static Recomp, once per game frame: "Hide emblems behind percents" on or off
 void apply_ko_explosions();   // Static Recomp, once per game frame: "Hide KO explosions" on or off
 uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
@@ -346,6 +347,9 @@ extern std::atomic<bool> g_freeze_fd;
 // "Hide KO explosions" (Video tab, both engines): the blast-zone explosion is spawned far out of
 // sight. Source Port: MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS; Static Recomp: apply_ko_explosions().
 extern std::atomic<bool> g_hide_ko_explosions;
+// "Hide emblems behind percents" (Video tab, both engines): the emblem behind each damage percent is
+// not drawn. Source Port: MU_DISPLAY_OPTION_NO_HUD_EMBLEMS; Static Recomp: apply_hud_emblems().
+extern std::atomic<bool> g_hide_hud_emblems;
 void input_rumble(int game_port, bool on);
 // Immediately clear any motors that were active when the Controls switch is turned off.
 void input_stop_all_rumble();

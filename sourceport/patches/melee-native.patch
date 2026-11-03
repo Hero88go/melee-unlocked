@@ -143925,7 +143925,7 @@ index 8020cdad3..413b811a1 100644
          HSD_SisLib_803A62A0(2, "SdPrize.usd", "SIS_PrizeData");
      } else {
 diff --git a/src/melee/if/ifstatus.c b/src/melee/if/ifstatus.c
-index a6068103c..481e0b740 100644
+index a6068103c..0f8d5504d 100644
 --- a/src/melee/if/ifstatus.c
 +++ b/src/melee/if/ifstatus.c
 @@ -26,29 +26,9 @@
@@ -144175,7 +144175,7 @@ index a6068103c..481e0b740 100644
          HSD_GObj_JObjCallback(player, arg1);
      }
  }
-@@ -657,7 +636,7 @@ static inline IfDamageState* getPlayerByNext(HSD_GObj* gobj)
+@@ -657,9 +636,16 @@ static inline IfDamageState* getPlayerByNext(HSD_GObj* gobj)
      return NULL;
  }
  
@@ -144183,8 +144183,17 @@ index a6068103c..481e0b740 100644
 +void ifStatus_802F5E50(HSD_GObj* gobj, intptr_t arg1)
  {
      IfDamageState* player = getPlayerByNext(gobj);
++#ifdef MU_NATIVE
++    /* "Hide emblems behind percents": only the draw is left out; the emblem is still made and
++     * animated, so nothing else in the game changes. */
++    if (mu_hud_emblems_hidden()) {
++        return;
++    }
++#endif
      if (!player->flags.hide_all_digits) {
-@@ -667,19 +646,19 @@ void ifStatus_802F5E50(HSD_GObj* gobj, s32 arg1)
+         HSD_GObj_JObjCallback(gobj, arg1);
+     }
+@@ -667,19 +653,19 @@ void ifStatus_802F5E50(HSD_GObj* gobj, s32 arg1)
  
  static inline HSD_JObj* ifStatus_GetDamageJObj(HSD_JObj* jobj, s32 i)
  {
@@ -144208,7 +144217,7 @@ index a6068103c..481e0b740 100644
      HSD_JObj* jobj;
      Vec3* vec;
      HSD_TObj* tobj;
-@@ -690,8 +669,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -690,8 +676,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
          gobj = GObj_Create(0xE, 0xF, 0);
          jobj = ifStatus_LoadDamageJObj(hud);
          HSD_GObjObject_80390A70(gobj, HSD_GObj_JObjKind, jobj);
@@ -144218,7 +144227,7 @@ index a6068103c..481e0b740 100644
          HSD_GObj_SetupProc(gobj, ifStatus_802F5B48, 0x11);
          HSD_GObj_SetupProc(gobj, ifStatus_802F4EDC, 0x11);
          state->HUD_parent_entity = gobj;
-@@ -700,10 +678,9 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -700,10 +685,9 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
      }
      state->flags.animation_status_id = 0;
      HSD_JObjRemoveAnim(jobj);
@@ -144232,7 +144241,7 @@ index a6068103c..481e0b740 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_JObjAnimAll(jobj);
      vec = ifAll_GetPlayerHUDPosition((u8) player_idx);
-@@ -716,8 +693,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -716,8 +700,7 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
      if (state->jobjs[3] != NULL) {
          tobj = state->jobjs[3]->u.dobj->mobj->tobj;
          HSD_TObjAddAnimAll(
@@ -144242,7 +144251,7 @@ index a6068103c..481e0b740 100644
          if (Player_GetMoreFlagsBit2((s8) state->player_slot) != 0) {
              HSD_TObjReqAnimAll(tobj, 1.0f);
          } else {
-@@ -733,11 +709,11 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
+@@ -733,11 +716,11 @@ HSD_GObj* ifStatus_802F5EC0(IfDamageState* state, s32 player_idx)
      return state->HUD_parent_entity;
  }
  
@@ -144258,7 +144267,7 @@ index a6068103c..481e0b740 100644
      s32 i;
      if ((node == NULL) || (n < 0)) {
          return NULL;
-@@ -745,32 +721,21 @@ HSD_GObj* ifStatus_802F6194(HSD_GObj* node, s32 n)
+@@ -745,32 +728,21 @@ HSD_GObj* ifStatus_802F6194(HSD_GObj* node, s32 n)
      if (node == NULL) {
          gx_head = NULL;
      } else {
@@ -144300,7 +144309,7 @@ index a6068103c..481e0b740 100644
  {
      *gobj = GObj_Create(0xE, 0xF, 0);
  }
-@@ -803,33 +768,46 @@ HSD_GObj* ifStatus_802F61FC(IfDamageState* state, s32 player_idx)
+@@ -803,33 +775,46 @@ HSD_GObj* ifStatus_802F61FC(IfDamageState* state, s32 player_idx)
              HSD_ASSERTREPORT(0x30A, 0,
                               "Error : gobj dont't get (ifAddMark)\n");
          }
@@ -144354,7 +144363,7 @@ index a6068103c..481e0b740 100644
                                  gm_8016B168(), Player_GetPlayerSlotType(idx)));
      mobj = HSD_JObjGetChild(jobj)->u.dobj->mobj;
      mobj->mat->diffuse.r = color.r;
-@@ -885,6 +863,11 @@ void ifStatus_802F665C(int arg0)
+@@ -885,6 +870,11 @@ void ifStatus_802F665C(int arg0)
      for (i = 0; i < 6; i++) {
          ifStatus_802F6508(i);
      }
@@ -144366,7 +144375,7 @@ index a6068103c..481e0b740 100644
  }
  
  void ifStatus_802F66A4(void)
-@@ -892,27 +875,27 @@ void ifStatus_802F66A4(void)
+@@ -892,27 +882,27 @@ void ifStatus_802F66A4(void)
      HudIndex* hud = ifStatus_GetHUDInfo();
      s32 pad0;
      s32 pad1;
@@ -144406,7 +144415,7 @@ index a6068103c..481e0b740 100644
  #ifdef MUST_MATCH
          }
      }
-@@ -940,8 +923,7 @@ void ifStatus_802F6804(void)
+@@ -940,8 +930,7 @@ void ifStatus_802F6804(void)
      s32 i;
      IfDamageState* v;
  
@@ -144416,7 +144425,7 @@ index a6068103c..481e0b740 100644
          v = &ifStatus_GetHUDInfo()->players[i & 0xFF];
          if (v->HUD_parent_entity != NULL) {
              HSD_GObjFree(v->HUD_parent_entity);
-@@ -952,8 +934,7 @@ void ifStatus_802F6804(void)
+@@ -952,8 +941,7 @@ void ifStatus_802F6804(void)
              v->next = NULL;
          }
          ifStock_802FB650((s8) i & 0xFF);
@@ -144426,7 +144435,7 @@ index a6068103c..481e0b740 100644
  }
  
  /// Hide Percentage Digits
-@@ -1002,8 +983,8 @@ static inline void ifStatus_TriggerStockLoss(s32 player_idx,
+@@ -1002,8 +990,8 @@ static inline void ifStatus_TriggerStockLoss(s32 player_idx,
      struct StartMeleeRules* small_thing;
      IfDamageFlags* hud_player_flags;
  
@@ -144437,7 +144446,7 @@ index a6068103c..481e0b740 100644
      small_thing = gm_GetStartMeleeRules();
      hud_player = &ifStatus_GetHUDInfo()->players[player_idx];
      hud_player_flags = &hud_player->flags;
-@@ -1033,7 +1014,7 @@ void ifStatus_802F69C0(s32 player_idx, s32 arg1)
+@@ -1033,7 +1021,7 @@ void ifStatus_802F69C0(s32 player_idx, s32 arg1)
  {
      VsSceneController* big_thing;
  

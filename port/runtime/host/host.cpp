@@ -1383,6 +1383,7 @@ std::atomic<int> g_game_language{0};
 std::atomic<bool> g_cpu_20xx{false};   // "20XX CPUs", see hackpack_ai.cpp
 std::atomic<bool> g_freeze_fd{false};   // "Freeze Final Destination", see apply_freeze_final_destination
 std::atomic<bool> g_hide_ko_explosions{false};   // "Hide KO explosions", see apply_ko_explosions
+std::atomic<bool> g_hide_hud_emblems{false};   // "Hide emblems behind percents", see apply_hud_emblems
 int game_language_override() {
   const int choice = g_game_language.load(std::memory_order_relaxed);
   return choice == 1 ? 0 : choice == 2 ? 1 : -1;
@@ -1804,6 +1805,27 @@ void spawn_ko_explosion(ppc::Context& c, uint8_t* m) {
   wr32(pos + 4, y);   // the death goes on with its own position
 }
 }  // namespace
+// "Hide emblems behind percents" on the Static Recomp. The emblem's draw (ifStatus_802F5E50) is a
+// GX link callback, reached only through the dispatch table: while the option is on it draws
+// nothing. The emblem is still made and animated, as on the Source Port (if/ifstatus.c).
+namespace {
+ppc::Fn g_hud_emblem_draw = nullptr;
+void draw_hud_emblem(ppc::Context& c, uint8_t* m) {
+  if (g_hide_hud_emblems.load(std::memory_order_relaxed)) return;
+  g_hud_emblem_draw(c, m);
+}
+}  // namespace
+void apply_hud_emblems() {
+  constexpr uint32_t kEmblemDraw = 0x802F5E50u;
+  if (g_hud_emblem_draw || !ram || !g_hide_hud_emblems.load(std::memory_order_relaxed)) return;
+  if (!try_ptr(kEmblemDraw, 4) || rd32(kEmblemDraw) != 0x7C0802A6u) {   // mflr r0: the game's own function
+    static bool logged = false;
+    if (!logged) { logged = true; log("hud: the emblem draw is not the original game's; emblems stay"); }
+    return;
+  }
+  g_hud_emblem_draw = ppc::set_hook(kEmblemDraw, draw_hud_emblem);   // null: the table is not ready yet, next frame
+  if (g_hud_emblem_draw) log("hud: emblems behind percents hidden");
+}
 void apply_ko_explosions() {
   static bool live = false, ours[4] = {};
   if (!ram) return;
