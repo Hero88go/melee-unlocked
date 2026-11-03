@@ -5775,8 +5775,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (settings_combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     changed |= settings_toggle("VSync (prevents tearing)", &options.vsync);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Prevents horizontal screen tearing; may add display latency.\n"
-                        "With VSync off, tearing is possible when automatic variable-refresh detection is unavailable.");
+      ImGui::SetTooltip("On prevents tearing but can add display latency. Off favors lower latency.\n"
+                        "G-Sync/FreeSync must be enabled in your monitor and driver; the game keeps\n"
+                        "the frame rate below refresh when it detects VRR. Fixed-refresh displays\n"
+                        "can tear with Off. Driver VSync settings may override this switch.");
     // Display: one choice. Borderless and exclusive fullscreen were two switches that turned each
     // other off; the same two settings are written, so the renderers see no difference.
     {

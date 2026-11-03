@@ -670,9 +670,8 @@ struct Backend {
   // The display's counts could be read at the last look (false while Windows composes the window).
   virtual bool display_counts_readable() const { return false; }
   // From the presentation loop, every frame: the monitor's nominal refresh rate (what the verdict
-  // above is judged against), and whether to present synced even with V-Sync off. The loop asks for
-  // that on a display that follows the frames, where it costs no delay while the rate stays under
-  // the refresh, and stops every tear.
+  // above is judged against), and an explicit scanline-sync request. VRR detection changes the
+  // frame cap only; it must not silently turn V-Sync on when the player has switched it off.
   virtual void set_display_refresh(double /*hz*/, bool /*tear_free*/) {}
   // Scanline sync on a fixed-refresh display (vblank_clock.h): the first vertical blank at or after
   // `after` (now_seconds clock) and the refresh period, or false with the reason in `why`. Render thread.

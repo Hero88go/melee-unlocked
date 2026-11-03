@@ -145,7 +145,7 @@ int main() {
     CHECK(!gx::skip_for_effects(gx::effects_filter(match, 2), match.draws[1]));
   }
   gx::RenderOptions aspect_options;
-  CHECK(aspect_options.vsync); // New installs start with synchronized presentation.
+  CHECK(!aspect_options.vsync); // Fresh installs avoid VSync display queueing.
   CHECK(aspect_options.te_options == 0x10u); // recognized TE save is enabled by default
   aspect_options.widescreen = true;
   CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 16.0f / 9.0f);
@@ -155,6 +155,14 @@ int main() {
   CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 16.0f / 9.0f);
 
   const fs::path path = fs::temp_directory_path() / "melee_unlocked_settings_load_test.ini";
+  {
+    std::ofstream(path) << "fps 144\n";
+    gx::RenderOptions no_vsync_key;
+    no_vsync_key.settings_path = path.string();
+    int missing_key_volume = 70;
+    gx::load_pc_settings(no_vsync_key, missing_key_volume);
+    CHECK(!no_vsync_key.vsync); // Older settings without a choice use the lower-latency default.
+  }
   {
     std::ofstream f(path);
     // The order the game writes: the preset line sits above the controls.
@@ -201,6 +209,15 @@ int main() {
   CHECK(!reloaded.vsync);
   CHECK(reloaded.mod_choices == options.mod_choices);
   CHECK(reloaded.mod_choices.at("abcdef0123456789") == 0);
+  // The lower-latency default must not erase a player's saved choice in either direction.
+  for (bool enabled : {true, false}) {
+    options.vsync = enabled;
+    CHECK(gx::save_pc_settings(options, volume));
+    reloaded = gx::RenderOptions{};
+    reloaded.settings_path = path.string();
+    gx::load_pc_settings(reloaded, volume);
+    CHECK(reloaded.vsync == enabled);
+  }
   // The volume a player set survives a save and a restart. It came back at full volume before.
   CHECK(gx::save_pc_settings(options, 35));
   int restarted = 70;

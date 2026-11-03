@@ -1863,7 +1863,7 @@ void D3D12Backend::update_variable_refresh() {
   if (!vrr_.add({st.PresentCount, st.SyncRefreshCount, (double)st.SyncQPCTime.QuadPart / qpc_hz}, vrr_nominal_hz_)) return;
   if (vrr_.state() == 1)
     host::log("display: variable refresh (G-Sync or FreeSync) is on: %.0f refreshes a second for %.0f frames on a %.0f Hz "
-              "display; frames are presented synced under %.0f a second, so they never tear", vrr_.refreshes(), vrr_.shown(),
+              "display; frame cap below %.0f fps, V-Sync follows the player's setting", vrr_.refreshes(), vrr_.shown(),
               vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
   else
     host::log("display: fixed refresh: %.0f refreshes a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(),
@@ -3743,12 +3743,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     streamline::pcl_marker(3); streamline::pcl_marker(4);
     Stopwatch present_sw;
     try {
-      // Synced when V-Sync is on, and on a display that follows the frames (tear_free_, from the
-      // presentation loop): there a frame starts its own refresh, so syncing costs nothing while
-      // the rate stays under the refresh, and a frame that comes a little early waits instead of
-      // tearing. A 0.8.99 player with a 240 Hz G-Sync screen and V-Sync off saw tearing.
-      // Not while DLSS frame generation runs: it paces its own frames and needs V-Sync off in the
-      // game (NVIDIA: V-Sync for it belongs in the driver).
+      // Sync by the player's choice or the explicit scanline-sync diagnostic. Detecting VRR
+      // alone must not force V-Sync on. Frame generation paces its own frames, so it also
+      // suppresses the scanline diagnostic's sync request.
       const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
       const double present_call = Stopwatch::now();
       // While the window cannot be seen (minimized, or alt-tabbed out of exclusive fullscreen),
