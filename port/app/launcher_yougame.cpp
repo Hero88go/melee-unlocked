@@ -601,8 +601,8 @@ void refresh_allowed(const std::string& current_version, const std::wstring& exe
   bool current_ok = allowed.empty();
   for (const Allowed& a : allowed) {
     if (a.exe_sha256 == exe_hash && a.game_sha256 == game_hash) current_ok = true;
-    // Only a GitHub release this launcher can fetch: 1.0 and later, never this version itself.
-    if (a.version != current_version && !newer("1.0.0", a.version) && (offer.version.empty() || newer(a.version, offer.version)))
+    // Only a GitHub release this launcher can fetch with YouGame in it: 0.9.97 and later, never this version itself.
+    if (a.version != current_version && !newer("0.9.97", a.version) && (offer.version.empty() || newer(a.version, offer.version)))
       offer = a;
   }
   std::lock_guard<std::mutex> lock(g_mutex);
