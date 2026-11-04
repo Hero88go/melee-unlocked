@@ -143730,7 +143730,7 @@ index 6d7000275..d67b9cf18 100644
  /* 2FC3BC */ void ifMagnify_802FC3BC(void);
  /* 2FC3C0 */ void ifMagnify_802FC3C0(s32 slot);
 diff --git a/src/melee/if/ifnametag.c b/src/melee/if/ifnametag.c
-index f8c4573e8..587ab782e 100644
+index f8c4573e8..766b2c56a 100644
 --- a/src/melee/if/ifnametag.c
 +++ b/src/melee/if/ifnametag.c
 @@ -100,8 +100,8 @@
@@ -143983,7 +143983,7 @@ index f8c4573e8..587ab782e 100644
              }
              HSD_JObjReqAnimAll(jobj, f);
          }
-@@ -301,20 +369,77 @@ void NameTag_Create(int slot)
+@@ -301,20 +369,92 @@ void NameTag_Create(int slot)
      HSD_GObj_SetupProc(gobj, fn_802FCC44, 17);
  }
  
@@ -144023,8 +144023,23 @@ index f8c4573e8..587ab782e 100644
 +    Vec3 vec;
 +    Vec3 vec2;
 +    HSD_GObj* camera;
++    HSD_GObj* fighter;
++    HSD_GObj* selected;
 +    if (slot < 0 || slot >= Gm_Player_NumMax || Player_GetPlayerSlotType(slot) == Gm_PKind_NA ||
-+        !Player_GetPlayerState(slot) || !Player_GetStocks(slot) || (camera = Camera_80030A50()) == NULL ||
++        !Player_GetPlayerState(slot) || !Player_GetStocks(slot) || HSD_GObjPLinkHead == NULL)
++    {
++        return 0;
++    }
++    /* Returning to character select leaves the player's state and stocks in its saved slot after
++     * its fighter is freed (0.9.99, Report #413). The entity pointer can also remain non-null. Only
++     * dereference it, or call the player helpers that dereference it, while it is on the live link. */
++    selected = Player_GetEntity(slot);
++    for (fighter = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER]; fighter != NULL; fighter = fighter->next) {
++        if (fighter == selected) {
++            break;
++        }
++    }
++    if (fighter == NULL || fighter->user_data == NULL || (camera = Camera_80030A50()) == NULL ||
 +        camera->hsd_obj == NULL)
 +    {
 +        return 0;
@@ -144064,7 +144079,7 @@ index f8c4573e8..587ab782e 100644
      }
      HSD_JObjReqAnimAll(jobj, f);
      HSD_JObjAnimAll(jobj);
-@@ -361,10 +486,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
+@@ -361,10 +501,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
      return GObj_Create(0xE, arg0, 0);
  }
  
@@ -144087,7 +144102,7 @@ index f8c4573e8..587ab782e 100644
      int i;
      PAD_STACK(0x10);
      for (i = 0; i < Gm_Player_NumMax; i++) {
-@@ -374,18 +510,20 @@ void un_802FD4C8(void)
+@@ -374,18 +525,20 @@ void un_802FD4C8(void)
      un_804D6D6C = 0;
      memzero(un_804D6D70, i = sizeof(un_804D6D70));
      un_804D6D68 = (gobj = un_802FD4C8_inline(15));

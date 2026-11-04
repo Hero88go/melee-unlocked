@@ -543,6 +543,16 @@ target_include_directories(mu_training_select_test PRIVATE "${CMAKE_CURRENT_BINA
 target_compile_options(mu_training_select_test PRIVATE -UNDEBUG)
 add_test(NAME native_training_select COMMAND mu_training_select_test)
 
+set(MU_FIGHTER_SCREEN_FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/fighter_screen_position_body.h")
+add_custom_command(OUTPUT "${MU_FIGHTER_SCREEN_FIXTURE}"
+  COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/native_major_fixture.py"
+          "${D}/src/melee/if/ifnametag.c" "${MU_FIGHTER_SCREEN_FIXTURE}" --function mu_fighter_screen_position
+  DEPENDS "${D}/src/melee/if/ifnametag.c" "${REPO}/tools/native_major_fixture.py" VERBATIM)
+add_executable(mu_fighter_screen_position_test EXCLUDE_FROM_ALL tests/fighter_screen_position.c "${MU_FIGHTER_SCREEN_FIXTURE}")
+target_include_directories(mu_fighter_screen_position_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_options(mu_fighter_screen_position_test PRIVATE -UNDEBUG)
+add_test(NAME native_fighter_screen_position COMMAND mu_fighter_screen_position_test)
+
 # Build every registered executable fixture, including normally excluded targets, before CTest.
 get_property(MU_GAME_DIRECTORY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 set(MU_GAME_TEST_TARGETS)
