@@ -86,7 +86,8 @@ def main():
             settings = d / 'settings.ini'
             settings.write_text('startup 0\nbackend d3d11\nvolume 0\nscale 1\n')
             env = dict(os.environ, MELEE_NO_GC_ADAPTER='1', APPDATA=str(d / 'appdata'), LOCALAPPDATA=str(d / 'localappdata'),
-                       YOUGAME_BRIDGE=line[1], YOUGAME_TOKEN=line[2], MELEE_YOUGAME_LAUNCHER='1')
+                       YOUGAME_BRIDGE=line[1], YOUGAME_TOKEN=line[2], MELEE_YOUGAME_LAUNCHER='1',
+                       MELEE_TEST_YOUGAME_OPEN='1')   # this build ships YouGame as Coming soon: the test opens it
             env.pop('MELEE_NET_LAG_MS', None)
             cmd = [str(exe), '--iso', str(iso), '--hidden', '--volume', '0', '--frames', str(a.frames),
                    '--script', str((ROOT / a.script).resolve()), '--sys-dir', str(ROOT / 'port' / 'slippi_sys'),
