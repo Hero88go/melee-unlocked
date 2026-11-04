@@ -63,6 +63,24 @@ int main(int argc, char** argv) {
   fs::remove_all(root, ec);
   fs::create_directories(root / "MeleeUnlocked-9.9.9" / "Sys", ec);
   fs::create_directories(root / "Other", ec);
+  {
+    const auto dir = root / "optional";
+    using host::updater::compat_build_needed;
+    fs::create_directories(dir);
+    check(!compat_build_needed(dir.u8string()), "old packages do not require a separate compatibility download");
+    const std::string sha(64, 'a');
+    std::ofstream(dir / "compat.sha256") << sha << " MeleeUnlocked-9.9.9-compat-win64.zip\n";
+    check(compat_build_needed(dir.u8string()), "the matching compatibility build is required on a new package");
+    std::ofstream(dir / "compat.installed") << sha << "\n";
+    check(compat_build_needed(dir.u8string()), "a marker alone cannot claim a missing build is installed");
+    for (const char* name : {"melee_port_compat.exe", "melee_source_compat.exe", "melee_game_compat.dll", "melee_game_compat.snapexcl"})
+      std::ofstream(dir / name).put('x');
+    check(!compat_build_needed(dir.u8string()), "the complete matching compatibility build is reused");
+    std::ofstream(dir / "compat.sha256") << std::string(64, 'b') << " MeleeUnlocked-9.9.10-compat-win64.zip\n";
+    check(compat_build_needed(dir.u8string()), "an update requires its matching compatibility build");
+    std::ofstream(dir / "compat.sha256") << sha << " MeleeUnlocked-../../other.zip\n";
+    check(!compat_build_needed(dir.u8string()), "malformed compatibility metadata is ignored");
+  }
   { std::ofstream(root / "MeleeUnlocked-9.9.9" / "melee_port.exe") << "x"; }
   { std::ofstream(root / "MeleeUnlocked-9.9.9" / "Sys" / "codehandler.bin") << "x"; }
   { std::ofstream(root / "Other" / "stray.txt") << "x"; }

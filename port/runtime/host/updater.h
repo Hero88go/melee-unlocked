@@ -52,4 +52,22 @@ void dlss5_model_download(const std::string& game_dir_utf8);
 ModelState dlss5_model_state(const std::string& game_dir_utf8);
 std::string dlss5_model_message();
 constexpr const char* kDlss5ModelSize = "about 180 MB";
+
+// The build for processors without AVX2 (the _compat programs), its own download since 0.9.98, so
+// nobody else downloads it: the main package names its file and SHA-256 in compat.sha256, and the
+// launcher fetches it on a PC that needs it, again after each update (compat.installed records which
+// one is beside the game). Background thread.
+bool compat_build_needed(const std::string& game_dir_utf8);
+void compat_build_download(const std::string& game_dir_utf8);
+ModelState compat_build_state(const std::string& game_dir_utf8);
+std::string compat_build_message();
+
+// Intel XeSS (libxess.dll), its own download since 0.9.98: PC settings > Video has the button. The
+// file is checked against Intel's build before it goes beside the game; the game loads it at its
+// next start. Background thread.
+bool xess_present(const std::string& game_dir_utf8);
+void xess_download(const std::string& game_dir_utf8);
+ModelState xess_state(const std::string& game_dir_utf8);
+std::string xess_message();
+constexpr const char* kXessSize = "about 60 MB";
 }  // namespace host::updater

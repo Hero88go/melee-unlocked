@@ -19,6 +19,54 @@ bool fetch_verified(const std::string&, const std::string&, const std::string&, 
 static int failures = 0;
 #define CHECK(x) do { if (!(x)) { std::printf("FAIL line %d: %s\n", __LINE__, #x); ++failures; } } while (0)
 
+static void check_stronger_downloads() {
+  using namespace phillip_ai;
+  const auto dir = std::filesystem::temp_directory_path() / ("mu-pro-consent-" + std::to_string(GetCurrentProcessId()));
+  std::filesystem::create_directories(dir);
+  _putenv_s("MELEE_PRO_AI_DIR", dir.string().c_str());
+  auto entry = [](const char* file, int rank, bool heavy) {
+    Entry e;
+    e.file = file; e.priority = rank; e.heavy = heavy; e.character = 18;
+    e.sha256 = std::string(64, 'a');
+    e.source = "https://huggingface.co/vladfi/phillip-models/resolve/pinned/" + e.file;
+    std::fill(std::begin(e.name), std::end(e.name), -1);
+    e.name[1] = 0;
+    return e;
+  };
+  g_catalog = {entry("included.onnx", 1, false), entry("light.onnx", 3, false),
+               entry("heavy.onnx", 4, true), entry("heavy2.onnx", 2, true)};
+  g_catalog_state = 1;
+  std::ofstream(dir / "included.onnx").put('x');
+  g_large_ok = 1;
+  CHECK(stronger_choice() == kStrongerAsk);
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[0]);
+  g_fetch_thread.join();
+  CHECK(g_fetch_tried.count("light.onnx") == 1);
+  CHECK(g_fetch_tried.count("heavy.onnx") == 0 && g_fetch_tried.count("heavy2.onnx") == 0);
+  CHECK(stronger_status(1).missing == 2 && stronger_status(3).total == 0);
+  set_stronger_choice(kStrongerAlways);
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[0]);
+  g_fetch_thread.join();
+  CHECK(g_fetch_tried.count("heavy.onnx") == 1);
+  std::ofstream(dir / "heavy.onnx").put('x');
+  set_stronger_choice(kStrongerAsk);
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[2]);
+  set_stronger_choice(kStrongerNever);
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[0]);
+  CHECK(g_fetch_tried.count("heavy2.onnx") == 0);
+  // An explicit download remains available after Never and queues every missing stronger file.
+  std::filesystem::remove(dir / "heavy.onnx");
+  download_stronger(1);
+  g_fetch_thread.join();
+  CHECK(g_fetch_tried.count("heavy2.onnx") == 1 && g_fetch_pending.empty());
+  CHECK(stronger_choice() == kStrongerNever);
+  g_catalog.clear(); g_catalog_state = 0; g_large_ok = 0;
+  g_fetch_tried.clear();
+  set_stronger_choice(kStrongerAsk);
+  _putenv_s("MELEE_PRO_AI_DIR", "__no_pro_ai__");
+  std::filesystem::remove_all(dir);
+}
+
 int main(int argc, char** argv) {
   using namespace ghost_ai;
   // Phillip's policies (ProAI beside the game) must not answer for the injected test models.
@@ -47,6 +95,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   _putenv("MELEE_PRO_AI_DIR=__no_pro_ai__");
+  if (argc == 1) check_stronger_downloads();
   // This test injects its own model; installed specialist files must not change its evidence.
   std::fill(std::begin(g_specialist_status), std::end(g_specialist_status), -1);
   if (argc == 2) {

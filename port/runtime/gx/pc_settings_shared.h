@@ -77,6 +77,7 @@ struct SettingsState {
   bool practice_open = false;
   bool practice_focus_code = false;
   bool practice_nav_active = false;
+  bool practice_nav_was = false;   // the Practice menu was open last frame (its pad starts on the trainee's)
   bool practice_pad_armed = false;
   bool practice_a_was_down = false;
   bool practice_release_capture = false;

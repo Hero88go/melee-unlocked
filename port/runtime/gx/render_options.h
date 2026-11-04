@@ -247,6 +247,9 @@ struct RenderOptions {
   // "Community codes" (HUD tab, ini key community_codes, Source Port): MU_DISPLAY_OPTION_CODES_ALL
   // bits, the native versions of players' Gecko codes (host::g_community_codes). Picture and sound.
   uint32_t community_codes = 0;
+  // "Stronger Pro AI (Requires additional download)" (Practice menu > Fight a pro, ini key
+  // proaistronger): 0 ask, 1 always, 2 never (phillip_ai::StrongerChoice).
+  int pro_ai_stronger = 0;
   // "Unlock everything" (Game tab, ini key unlock_all, on unless the file says 0): Slippi's "Unlock
   // All Characters and Stages". Off, the save file decides what is unlocked, offline only: a network
   // session always has everything. Static Recomp: gecko::option_unlock_all (host.cpp); Source Port:

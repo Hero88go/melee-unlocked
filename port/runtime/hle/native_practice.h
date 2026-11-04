@@ -43,7 +43,8 @@ void submit_start_direct(const std::string& connect_code);
 // Teams: four players who all enter the same connect code.
 void submit_start_teams(const std::string& connect_code);
 // In a Training match: start it again with the CPU as `character` (a ghost's own character).
-void submit_train_against(int character);
+// Training again with the CPU as `character` in `costume` (a pro's own colours for Fight a pro).
+void submit_train_against(int character, int costume = 0);
 void submit_cancel();
 void submit_acknowledge_failure();
 

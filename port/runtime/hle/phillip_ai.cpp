@@ -193,28 +193,49 @@ bool present(const Entry& e) {
 // published models the first time that matchup is played: the pinned Hugging Face commit in the
 // catalog, refused unless its SHA-256 matches, and used from the next match on. One at a time;
 // a failure is not retried until the game starts again. MELEE_PRO_AI_NO_DOWNLOAD (tests) turns it off.
+// Requests wait in a queue and are fetched one after another, so "download every stronger policy"
+// gets them all.
 std::mutex g_fetch_mutex;
 std::thread g_fetch_thread;
 std::atomic<bool> g_fetching{false};
 std::set<std::string> g_fetch_tried;
+std::set<std::string> g_fetch_pending;
+struct Fetch { std::string url, sha, file, dest; };
+std::deque<Fetch> g_fetch_queue;
 
-void fetch_later(const Entry& e) {
+void fetch_worker() {
+  for (;;) {
+    Fetch f;
+    {
+      std::lock_guard<std::mutex> lk(g_fetch_mutex);
+      if (g_fetch_queue.empty()) { g_fetching = false; return; }
+      f = g_fetch_queue.front();
+      g_fetch_queue.pop_front();
+    }
+    host::log("pro ai: downloading %s", f.file.c_str());
+    std::string why;
+    if (host::updater::fetch_verified(f.url, f.sha, f.dest, &why)) host::log("pro ai: %s installed; it plays from the next match", f.file.c_str());
+    else host::log("pro ai: %s not downloaded (%s); the character's own policy plays", f.file.c_str(), why.c_str());
+    std::lock_guard<std::mutex> lk(g_fetch_mutex);
+    g_fetch_pending.erase(f.file);
+  }
+}
+
+void fetch_later(const Entry& e, bool retry = false) {
   static const bool off = std::getenv("MELEE_PRO_AI_NO_DOWNLOAD") != nullptr;
   if (off || e.sha256.size() != 64 || e.source.rfind("https://huggingface.co/vladfi/phillip-models/resolve/", 0) != 0) return;
   std::lock_guard<std::mutex> lk(g_fetch_mutex);
-  if (g_fetching || g_fetch_tried.count(e.file)) return;
+  if (g_fetch_pending.count(e.file) || (!retry && g_fetch_tried.count(e.file))) return;
   g_fetch_tried.insert(e.file);
+  g_fetch_pending.insert(e.file);
+  g_fetch_queue.push_back({e.source, e.sha256, e.file, pro_dir() + e.file});
+  if (g_fetching) return;
   if (g_fetch_thread.joinable()) g_fetch_thread.join();
   g_fetching = true;
-  const std::string url = e.source, sha = e.sha256, file = e.file, dest = pro_dir() + e.file;
-  g_fetch_thread = std::thread([url, sha, file, dest] {
-    host::log("pro ai: downloading %s for this matchup", file.c_str());
-    std::string why;
-    if (host::updater::fetch_verified(url, sha, dest, &why)) host::log("pro ai: %s installed; it plays from the next match", file.c_str());
-    else host::log("pro ai: %s not downloaded (%s); the character's own policy plays", file.c_str(), why.c_str());
-    g_fetching = false;
-  });
+  g_fetch_thread = std::thread(fetch_worker);
 }
+
+std::atomic<int> g_stronger{kStrongerAsk};
 
 // Phillip's newest policies (90 MB) need about 10 ms a step: a PC plays them only once a background
 // check shows it steps one fast enough (0 not known, 1 fast enough, -1 too slow). Until then, and on
@@ -238,23 +259,24 @@ const Entry* choose(unsigned pro, unsigned slot, int character, int opponent) {
     return nullptr;
   }
   const Entry* best = nullptr;
-  const Entry* wanted = nullptr;
-  int best_rank = -1, wanted_rank = -1;
+  const Entry* wanted = nullptr;   // the best one this player may download now
+  const Entry* stronger = nullptr; // the best stronger one already here, still waiting for the speed check
+  int best_rank = -1, wanted_rank = -1, stronger_rank = -1;
   static const int forced_large = [] { const char* v = std::getenv("MELEE_PRO_AI_LARGE"); return v ? (std::atoi(v) ? 1 : -1) : 0; }();
   if (forced_large) g_large_ok = forced_large;
-  const int large = g_large_ok.load();
+  const int large = g_large_ok.load(), choice = g_stronger.load();
   for (const Entry& e : g_catalog) {
     if (e.character != character || e.name[pro] < 0) continue;
     if (!e.opponents.empty() && std::find(e.opponents.begin(), e.opponents.end(), opponent) == e.opponents.end()) continue;
-    if (e.heavy && large < 0) continue;
+    if (e.heavy && (large < 0 || choice == kStrongerNever)) continue;
     const int rank = e.priority;
-    if (rank > wanted_rank) { wanted_rank = rank; wanted = &e; }
-    if (rank > best_rank && present(e) && (!e.heavy || large > 0)) { best_rank = rank; best = &e; }
+    const bool here = present(e);
+    if ((!e.heavy || choice == kStrongerAlways || here) && rank > wanted_rank) { wanted_rank = rank; wanted = &e; }
+    if (e.heavy && here && large == 0 && rank > stronger_rank) { stronger_rank = rank; stronger = &e; }
+    if (rank > best_rank && here && (!e.heavy || large > 0)) { best_rank = rank; best = &e; }
   }
-  if (wanted && wanted != best && wanted_rank > best_rank) {
-    if (!present(*wanted)) fetch_later(*wanted);
-    else if (wanted->heavy && large == 0) check_speed_later(*wanted);
-  }
+  if (wanted && wanted_rank > best_rank && !present(*wanted)) fetch_later(*wanted);
+  if (stronger && stronger_rank > best_rank) check_speed_later(*stronger);
   return best_rank >= 0 ? best : nullptr;
 }
 
@@ -943,6 +965,37 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   s.last_out = a;
   out = a;
   return true;
+}
+
+void set_stronger_choice(int choice) { g_stronger = std::clamp(choice, 0, 2); }
+int stronger_choice() { return g_stronger.load(); }
+
+StrongerStatus stronger_status(int pro) {
+  std::lock_guard<std::mutex> catalog_lock(g_mutex);
+  read_catalog();
+  StrongerStatus s;
+  for (const Entry& e : g_catalog) {
+    if (!e.heavy) continue;
+    bool mine = pro < 0;
+    if (!mine && pro < (int)kPros) mine = e.name[pro] >= 0;
+    if (!mine) continue;
+    ++s.total;
+    if (!present(e)) { ++s.missing; s.missing_mb += 90.0; }   // each is 89.6 MB (Phillip's v6 policies)
+  }
+  std::lock_guard<std::mutex> lk(g_fetch_mutex);
+  s.downloading = g_fetching.load();
+  return s;
+}
+
+void download_stronger(int pro) {
+  std::lock_guard<std::mutex> catalog_lock(g_mutex);
+  read_catalog();
+  for (const Entry& e : g_catalog) {
+    if (!e.heavy || present(e)) continue;
+    if (pro >= 0 && (pro >= (int)kPros || e.name[pro] < 0)) continue;
+    // An explicit request retries failures without duplicating work already in the queue.
+    fetch_later(e, true);
+  }
 }
 
 }  // namespace phillip_ai

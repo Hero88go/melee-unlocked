@@ -68,14 +68,19 @@ Game Builds
 -----------
 The launcher's Build tab picks the Game Build: the Source Port (the game built from source) or the
 Static Recomp (the original game code translated ahead of time; mod discs such as Akaneia run on
-it). A compatibility build for older processors is included. Optional experimental DLSS 5 uses
+it). The launcher downloads the matching compatibility build for older processors when needed.
+For manual installs, extract MeleeUnlocked-{version}-compat-win64.zip into this folder.
+Intel XeSS is an optional download from Settings > Video. Optional experimental DLSS 5 uses
 NVIDIA's separate model, which is not included in this archive.
 
-Pro ghosts (Source Port)
+Fight a pro (Source Port)
 ------------------------
-In Training, open the Practice menu (Start + D-pad Up + Z) and choose Fight a pro: Mang0, Zain,
-Cody Schwab or aMSa. The CPU becomes that player's character and plays the way that player does,
-learned from their own games. It runs on your PC, works offline and is never used online.
+In Training, open the Practice menu (Start + D-pad Up + Z) and choose Zain, Cody Schwab or aMSa.
+The CPU becomes their Marth, Fox or Yoshi, played by Phillip's AI from players' games and self-play.
+The three included policies work immediately. Lighter matchup policies download automatically.
+Stronger Pro AI (Requires additional download) asks before downloading the larger policies;
+Fight a pro lets you change Ask, Always or Never and download them later. They play on PCs that
+pass the speed check. Pro AI runs locally and is never used online.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -424,8 +429,22 @@ def main():
     if missing_dlls:
         raise SystemExit(f"missing runtime DLLs: {', '.join(missing_dlls)}")
     for dll in runtime_dlls:
+        if dll == "libxess.dll":
+            continue   # its own download (below)
         src = args.exe.parent / dll
         shutil.copy2(src, folder / dll)
+    # Intel XeSS is its own download since 0.9.98 (78 MB unpacked, for the players who pick it):
+    # MeleeUnlocked-XeSS.zip, fetched from PC settings > Video (host/updater.cpp xess_download, which
+    # checks the file against this exact build).
+    xess = args.exe.parent / "libxess.dll"
+    if hashlib.sha256(xess.read_bytes()).hexdigest() != "251659dd84a3e84de67c886a4186e01f3eca49b00641906fe38bb6b807e5d5b7":
+        raise SystemExit(f"{xess} is not the XeSS build the game checks for (host/updater.cpp kXessSha256)")
+    args.out.mkdir(parents=True, exist_ok=True)
+    xess_zip = args.out / "MeleeUnlocked-XeSS.zip"
+    with zipfile.ZipFile(xess_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(xess, "libxess.dll")
+        z.write(ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")
+    print(f"{xess_zip} ({xess_zip.stat().st_size / 1e6:.1f} MB)")
     # NVIDIA's signed DLSS 5 model (RTX Remix 1.6 SDK, NVIDIA RTX SDKs license, redistributable
     # inside an application). Beside the exe is where NVIDIA's runtime loads it from. The DLSS5
     # folder is for a player's own build for other cards; an update ships only its readme.
@@ -577,6 +596,22 @@ def main():
     shutil.copy2(ROOT / "docs/third-party-training-mode-ce.txt", licenses / "training-mode-ce.txt")
     shutil.copy2(ROOT / "docs/training-mods.md", folder / "TrainingMods.md")
     shutil.copy2(ui_src / "gd_melee/ORIGIN.md", licenses / "gd-melee-origin.md")
+    # The builds for processors without AVX2 are their own download since 0.9.98, so nobody else
+    # downloads them: MeleeUnlocked-<version>-compat-win64.zip, named with its SHA-256 in compat.sha256,
+    # which the launcher fetches on a PC that needs it (host/updater.cpp compat_build_download).
+    compat_files = [folder / n for n in ("melee_port_compat.exe", "melee_source_compat.exe", "melee_game_compat.dll",
+                                         "melee_game_compat.snapexcl", "melee_game_compat.dbg") if (folder / n).is_file()]
+    if compat_files:
+        compat_zip = args.out / f"{name}-compat-win64.zip"
+        with zipfile.ZipFile(compat_zip, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in compat_files:
+                z.write(p, p.name)
+        for p in compat_files:
+            p.unlink()
+        compat_sha = hashlib.sha256(compat_zip.read_bytes()).hexdigest()
+        (folder / "compat.sha256").write_text(f"{compat_sha} {compat_zip.name}\n", encoding="ascii")
+        print(f"{compat_zip} ({compat_zip.stat().st_size / 1e6:.1f} MB, {len(compat_files)} files)")
+
     def zip_folder(zip_path):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
             for path in folder.rglob("*"):

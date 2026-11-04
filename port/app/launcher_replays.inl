@@ -452,6 +452,17 @@ enum class ReplayStart { Started, Skipped, Failed };
 ReplayStart replay_start(const std::filesystem::path& file,int place=0,int count=0) {
   if(g_playing||g_building) { replay_status("Close the running game before opening a replay."); return ReplayStart::Failed; }
   if(g_iso.empty()||!file_exists(g_iso)) { replay_status("Choose your Melee disc image on the Play page first."); return ReplayStart::Failed; }
+  if (wants_compat_build() && host::updater::compat_build_needed(active_dir())) {
+    settings_standby_stop();
+    g_replay_after_compat = file;
+    g_replay_after_compat_place = place;
+    g_replay_after_compat_count = count;
+    g_launch_after_compat = false;
+    if (host::updater::compat_build_state(active_dir()) != host::updater::ModelState::Downloading)
+      host::updater::compat_build_download(active_dir());
+    replay_status(host::updater::compat_build_message());
+    return ReplayStart::Started;   // the timer starts this replay when the build is installed
+  }
   const std::string name=file.filename().u8string();
   // A queued replay can be gone by the time its turn comes.
   if(std::error_code ec;!std::filesystem::is_regular_file(file,ec)) {

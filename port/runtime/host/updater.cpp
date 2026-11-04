@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <filesystem>
 #include <iterator>
 #include <mutex>
@@ -938,9 +939,169 @@ ModelState dlss5_model_state(const std::string& game_dir_utf8) {
 }
 std::string dlss5_model_message() { std::lock_guard<std::mutex> lk(g_mutex); return g_model_message; }
 
+// ---------------- optional parts: the older-processor build and Intel XeSS ----------------
+namespace {
+// One optional part's download: a zip from a release, checked against `zip_sha256` when one is known,
+// unpacked in a work folder beside the game, then put in place by `install`.
+struct PartFetch {
+  std::atomic<bool> busy{false}, failed{false};
+  std::string message;
+  std::thread thread;
+};
+PartFetch g_compat, g_xess;
+void part_message(PartFetch& p, const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); p.message = m; }
+std::string part_message(PartFetch& p) { std::lock_guard<std::mutex> lk(g_mutex); return p.message; }
+
+using PartInstall = std::function<std::string(const std::filesystem::path& files, const std::filesystem::path& dir)>;
+void fetch_part(PartFetch& p, const std::string& label, const std::string& size, const std::string& url,
+                const std::string& zip_sha256, const std::string& game_dir_utf8, const char* work_name,
+                PartInstall install) {
+  if (p.busy.exchange(true)) return;
+  if (p.thread.joinable()) p.thread.join();
+  p.failed = false;
+  part_message(p, "Downloading " + label + " (" + size + ")...");
+  p.thread = std::thread([&p, label, url, zip_sha256, game_dir_utf8, work_name, install] {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::u8path(game_dir_utf8), work = dir / work_name;
+    std::error_code ec;
+    auto fail = [&](const std::string& why) {
+      fs::remove_all(work, ec);
+      part_message(p, why);
+      host::log("%s download: %s", label.c_str(), why.c_str());
+      p.failed = true;
+      p.busy = false;
+    };
+    std::string body; int status = 0;
+    if (!http_get(url, &body, &status) || status != 200)
+      return fail(status ? label + " download failed (HTTP " + std::to_string(status) + ")" : label + " download failed (no connection)");
+    if (!zip_sha256.empty() && sha256_hex(body) != zip_sha256) return fail(label + ": the download does not match the release; not installed");
+    fs::remove_all(work, ec);
+    fs::create_directories(work, ec);
+    const fs::path zip = work / "part.zip";
+    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail(label + ": cannot write the download"); }
+    body.clear(); body.shrink_to_fit();
+    if (!unpack_zip(zip, work / "files")) return fail(label + ": the download is damaged");
+    const std::string why = install(work / "files", dir);
+    if (!why.empty()) return fail(why);
+    fs::remove_all(work, ec);
+    p.busy = false;
+  });
+}
+
+std::string read_small(const std::filesystem::path& path) {
+  std::ifstream f(path, std::ios::binary);
+  std::string s((std::istreambuf_iterator<char>(f)), {});
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+  return s;
+}
+
+// compat.sha256: "<sha256> MeleeUnlocked-<version>-compat-win64.zip", written by the packager.
+bool compat_record(const std::string& game_dir_utf8, std::string* sha, std::string* file) {
+  const std::string line = read_small(std::filesystem::u8path(game_dir_utf8) / "compat.sha256");
+  const size_t space = line.find(' ');
+  if (space != 64 || line.size() <= 65) return false;
+  *sha = line.substr(0, 64);
+  *file = line.substr(65);
+  const std::string prefix = "MeleeUnlocked-", suffix = "-compat-win64.zip";
+  if (sha->find_first_not_of("0123456789abcdef") != std::string::npos ||
+      file->rfind(prefix, 0) != 0 || file->size() <= prefix.size() + suffix.size() ||
+      file->compare(file->size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+  const std::string version = file->substr(prefix.size(), file->size() - prefix.size() - suffix.size());
+  return version.find_first_not_of("0123456789.") == std::string::npos &&
+         std::count(version.begin(), version.end(), '.') == 2 && version.front() != '.' && version.back() != '.';
+}
+
+// Intel's XeSS runtime as this release was built with it (XeSS SDK, port/third_party/xess).
+constexpr const char* kXessUrl = "https://github.com/hero88go/melee-unlocked/releases/download/v0.9.98/MeleeUnlocked-XeSS.zip";
+constexpr const char* kXessSha256 = "251659dd84a3e84de67c886a4186e01f3eca49b00641906fe38bb6b807e5d5b7";
+}  // namespace
+
+bool compat_build_needed(const std::string& game_dir_utf8) {
+  std::string sha, file;
+  if (!compat_record(game_dir_utf8, &sha, &file)) return false;   // a package with the build inside, or a source build
+  const auto dir = std::filesystem::u8path(game_dir_utf8);
+  if (read_small(dir / "compat.installed") != sha) return true;
+  for (const char* name : {"melee_port_compat.exe", "melee_source_compat.exe", "melee_game_compat.dll", "melee_game_compat.snapexcl"}) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(dir / name, ec)) return true;
+  }
+  return false;
+}
+
+void compat_build_download(const std::string& game_dir_utf8) {
+  std::string sha, file;
+  if (!compat_record(game_dir_utf8, &sha, &file)) return;
+  // MeleeUnlocked-<version>-compat-win64.zip comes from that version's release.
+  const std::string version = file.substr(14, file.find("-compat-") - 14);
+  const std::string url = "https://github.com/hero88go/melee-unlocked/releases/download/v" + version + "/" + file;
+  fetch_part(g_compat, "the build for your processor", "about 80 MB", url, sha, game_dir_utf8, "compat-download",
+             [sha](const std::filesystem::path& files, const std::filesystem::path& dir) -> std::string {
+               namespace fs = std::filesystem;
+               std::error_code ec;
+               for (const char* name : {"melee_port_compat.exe", "melee_source_compat.exe", "melee_game_compat.dll", "melee_game_compat.snapexcl"})
+                 if (!fs::is_regular_file(files / name, ec)) return std::string("The build for your processor is incomplete; not installed");
+               int placed = 0;
+               for (const auto& e : fs::directory_iterator(files, ec)) {
+                 if (!e.is_regular_file(ec)) continue;
+                 const fs::path to = dir / e.path().filename();
+                 fs::copy_file(e.path(), to, fs::copy_options::overwrite_existing, ec);
+                 if (ec) return "Cannot put the build for your processor beside the game (" + ec.message() + ")";
+                 ++placed;
+               }
+               if (!placed) return std::string("The build for your processor was empty; not installed");
+               { std::ofstream marker(dir / "compat.installed", std::ios::binary);
+                 marker << sha << "\n";
+                 marker.close();
+                 if (!marker) return std::string("Cannot record the installed build for your processor"); }
+               part_message(g_compat, "The build for your processor is installed.");
+               host::log("compat download: %d files installed", placed);
+               return {};
+             });
+}
+
+ModelState compat_build_state(const std::string& game_dir_utf8) {
+  if (g_compat.busy.load()) return ModelState::Downloading;
+  if (!compat_build_needed(game_dir_utf8)) return ModelState::Present;
+  return g_compat.failed.load() ? ModelState::Failed : ModelState::Missing;
+}
+std::string compat_build_message() { return part_message(g_compat); }
+
+bool xess_present(const std::string& game_dir_utf8) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(std::filesystem::u8path(game_dir_utf8) / "libxess.dll", ec);
+}
+
+void xess_download(const std::string& game_dir_utf8) {
+  fetch_part(g_xess, "Intel XeSS", kXessSize, kXessUrl, "", game_dir_utf8, "xess-download",
+             [](const std::filesystem::path& files, const std::filesystem::path& dir) -> std::string {
+               namespace fs = std::filesystem;
+               std::error_code ec;
+               const fs::path found = files / "libxess.dll";
+               std::string data;
+               { std::ifstream f(found, std::ios::binary); data.assign(std::istreambuf_iterator<char>(f), {}); }
+               if (data.empty()) return std::string("Intel XeSS: the download has no libxess.dll in it");
+               if (sha256_hex(data) != kXessSha256) return std::string("Intel XeSS: the file does not match Intel's build; not installed");
+               fs::rename(found, dir / "libxess.dll", ec);
+               if (ec) { ec.clear(); fs::copy_file(found, dir / "libxess.dll", fs::copy_options::overwrite_existing, ec); }
+               if (ec) return "Intel XeSS: cannot put it beside the game (" + ec.message() + ")";
+               part_message(g_xess, "Intel XeSS is installed. It starts with the game's next start.");
+               host::log("xess download: libxess.dll installed beside the game");
+               return {};
+             });
+}
+
+ModelState xess_state(const std::string& game_dir_utf8) {
+  if (g_xess.busy.load()) return ModelState::Downloading;
+  if (xess_present(game_dir_utf8)) return ModelState::Present;
+  return g_xess.failed.load() ? ModelState::Failed : ModelState::Missing;
+}
+std::string xess_message() { return part_message(g_xess); }
+
 void shutdown() {
   join();
   if (g_rollback_thread.joinable()) g_rollback_thread.join();
   if (g_model_thread.joinable()) g_model_thread.join();
+  if (g_compat.thread.joinable()) g_compat.thread.join();
+  if (g_xess.thread.joinable()) g_xess.thread.join();
 }
 }  // namespace host::updater

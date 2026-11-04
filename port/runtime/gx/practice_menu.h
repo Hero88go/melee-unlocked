@@ -52,6 +52,7 @@ struct Result {
   bool start_teams = false;       // Teams with direct_code (everyone enters the same code)
   bool cancel_search = false;
   bool open_window = false;      // "All settings": the full Practice window
+  bool stronger_changed = false; // "Stronger Pro AI" became Always or Never: save it (phillip_ai::stronger_choice)
   std::string direct_code;
 };
 

@@ -170,6 +170,9 @@ launcher::VanillaChoice g_vanilla;
 bool g_install_requested = false;
 bool g_warm_cache_on_play = false;
 bool g_dlss5_asked = false;   // launcher.ini dlss5asked=1: the DLSS 5 download was offered once already
+bool g_launch_after_compat = false;   // a start waits for the build for this processor (compat_build_download)
+std::filesystem::path g_replay_after_compat;
+int g_replay_after_compat_place = 0, g_replay_after_compat_count = 0;
 // Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
@@ -924,6 +927,11 @@ void paint_play(HDC dc) {
     version_status = host::updater::rollback_message();
   else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
     version_status = host::updater::rollback_message();
+  else if (wants_compat_build() && !host::updater::compat_build_message().empty()) {
+    // The build for this processor: its progress, then its result.
+    version_status = host::updater::compat_build_message();
+    status_bad = host::updater::compat_build_state(active_dir()) == host::updater::ModelState::Failed;
+  }
   else if (!host::updater::dlss5_model_message().empty()) {
     // The DLSS 5 download: its progress, then its result.
     version_status = host::updater::dlss5_model_message();
@@ -950,6 +958,7 @@ void paint_build(HDC dc) {
 }
 
 namespace crash_report { void note_launch(); }   // launcher_crash.inl, below: the replay viewer counts as a launch too
+void settings_standby_stop();
 #include "launcher_replays.inl"
 #include "launcher_match_character.inl"
 #include "launcher_theme_picker.inl"
@@ -1344,6 +1353,7 @@ void settings_standby_stop() {
   CloseHandle(g_settings_standby); g_settings_standby = nullptr;
 }
 void settings_standby_start() {
+  if (wants_compat_build() && host::updater::compat_build_needed(active_dir())) return;
   const std::string exe = game_exe();
   if (g_settings_standby && WaitForSingleObject(g_settings_standby, 0) == WAIT_TIMEOUT && g_settings_standby_exe == exe) return;
   settings_standby_stop();
@@ -1598,6 +1608,18 @@ std::string static_recomp_exe() {
   return dir + "\\melee_port.exe";
 }
 void launch_game_now() {
+  // A processor without AVX2 needs its own build, a separate download since 0.9.98: the start waits
+  // for it (the timer below starts the game when it is in place) instead of starting the AVX2 build,
+  // which cannot run there.
+  if (wants_compat_build() && host::updater::compat_build_needed(active_dir())) {
+    settings_standby_stop();
+    if (host::updater::compat_build_state(active_dir()) != host::updater::ModelState::Downloading)
+      host::updater::compat_build_download(active_dir());
+    g_launch_after_compat = true;
+    g_replay_after_compat.clear();
+    invalidate(LR(398, 348, 300, 32));
+    return;
+  }
   std::string cwd = work_dir();
   std::string exe = g_game_exe, args = game_args();
   // Vanilla, on a plain PLAY only: a lobby match is online and a mod launch is modded, so neither
@@ -2420,6 +2442,31 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       refresh_updater();
       if (g_tab == 0 && host::updater::rollback_state() == host::updater::RollbackState::Downloading) invalidate(LR(398, 348, 300, 32));
       {
+        // The build for this processor: repainted while it downloads, and a start that waited for it
+        // goes ahead once it is in place (or gives up and shows why).
+        static host::updater::ModelState last = host::updater::ModelState::Present;
+        const host::updater::ModelState now = host::updater::compat_build_state(active_dir());
+        if (g_tab == 0 && (now == host::updater::ModelState::Downloading || now != last)) invalidate(LR(398, 348, 300, 32));
+        last = now;
+        if (!g_replay_after_compat.empty() && now == host::updater::ModelState::Present) {
+          const auto file = g_replay_after_compat;
+          g_replay_after_compat.clear();
+          if (replay_start(file, g_replay_after_compat_place, g_replay_after_compat_count) == ReplayStart::Failed)
+            g_replay_playing.clear();
+        } else if (!g_replay_after_compat.empty() && now == host::updater::ModelState::Failed) {
+          g_replay_after_compat.clear();
+          g_replay_playing.clear();
+          replay_status(host::updater::compat_build_message());
+        }
+        if (g_launch_after_compat && now == host::updater::ModelState::Present) {
+          g_launch_after_compat = false;
+          g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_in(source_exe_dir()) : static_recomp_exe()) : game_exe();
+          launch_game_now();
+        } else if (g_launch_after_compat && now == host::updater::ModelState::Failed) {
+          g_launch_after_compat = false;
+        }
+      }
+      {
         // The DLSS 5 download's line: repainted while it runs and once when it ends.
         static host::updater::ModelState last = host::updater::ModelState::Missing;
         const host::updater::ModelState now = host::updater::dlss5_model_state(g_dir);
@@ -2428,7 +2475,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     }
-    case WM_APP + 77: offer_dlss5(); return 0;
+    case WM_APP + 77:
+      if (wants_compat_build() && host::updater::compat_build_needed(active_dir())) {
+        settings_standby_stop();
+        host::updater::compat_build_download(active_dir());
+      }
+      offer_dlss5();
+      return 0;
     case WM_CTLCOLORLISTBOX: SetTextColor((HDC)wp,C_TEXT); SetBkColor((HDC)wp,C_FIELD); return (LRESULT)g_br_field;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT: {

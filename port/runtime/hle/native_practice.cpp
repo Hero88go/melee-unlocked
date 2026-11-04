@@ -497,23 +497,30 @@ void process_command(Command command) {
       // A ghost picked in a Training match: the CPU becomes that player's character. Training starts
       // again with the same fighter and stage, pressed through its menus (Source Port).
       const int character = std::atoi(command.text.c_str());
+      const size_t comma = command.text.find(',');
+      int costume = comma == std::string::npos ? 0 : std::atoi(command.text.c_str() + comma + 1);
+      // The offered pros use Fox (4), Marth (5), and Yoshi (6) costumes.
+      const int costumes = character == 9 ? 5 : character == 17 ? 6 : 4;
+      if (costume < 0 || costume >= costumes) costume = 0;
       if (!g_bridge || !is_training() || current_minor() != 2 || g_lifecycle.phase() != Phase::Idle) return;
       const PracticeConfig now = capture_practice();
       if (!now.valid) return;
-      for (const SavedPlayer& p : now.players)
-        if (p.active && p.player_kind == 1 && (int)p.character == character) return;   // already that character
       const SavedPlayer& me = now.players[now.local_slot];
+      // Two players cannot wear the same colours of one character: the next costume then.
+      if ((int)me.character == character && (int)me.costume == costume) costume = (costume + 1) % costumes;
+      for (const SavedPlayer& p : now.players)
+        if (p.active && p.player_kind == 1 && (int)p.character == character && (int)p.costume == costume) return;   // already that character, in those colours
       g_practice = now;
       g_offer_shown = false;   // a prompt from an online session goes with the match it was shown in
       g_offer_mode = MatchMode::None;
       set_training_pick(0, (int)me.character, me.costume);
-      set_training_pick(1, character, 0);
+      set_training_pick(1, character, costume);
       g_enter_training = true;
       g_enter_port = now.controller_port;
       g_enter_ticks = 0;
   g_enter_seen_select = false;
       request_major(kTrainingMajor);
-      host::log("native practice: Training again with the CPU as character %d", character);
+      host::log("native practice: Training again with the CPU as character %d, costume %d", character, costume);
       break;
     }
     case CommandKind::AcknowledgeFailure:
@@ -643,9 +650,9 @@ void submit_start_unranked() {
   g_commands.push_back({CommandKind::StartUnranked, {}});
 }
 
-void submit_train_against(int character) {
+void submit_train_against(int character, int costume) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  g_commands.push_back({CommandKind::TrainAgainst, std::to_string(character)});
+  g_commands.push_back({CommandKind::TrainAgainst, std::to_string(character) + "," + std::to_string(costume)});
 }
 
 void submit_cancel() {

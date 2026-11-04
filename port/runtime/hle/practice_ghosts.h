@@ -39,6 +39,11 @@ inline const Ghost kGhosts[] = {
 // The players Fight a pro offers. Every entry keeps its place (the index is saved in settings and sent to
 // the game); slot 2 is never offered.
 inline constexpr bool kReleased[] = {true, true, false, true, true};
+// Preferred costumes from 25 evenly spaced games among each pro's latest 200 Lunar Melee
+// entries, using /api/replays/<id>/stats summary.players.characterColor (2026-11-04).
+// Zain: red Marth (25/25), Cody: blue Fox (25/25), aMSa: red Yoshi (25/25). Other slots keep the default.
+inline constexpr uint8_t kPreferredCostume[] = {0, 1, 0, 3, 1};
 static_assert(sizeof kReleased / sizeof kReleased[0] == sizeof kGhosts / sizeof kGhosts[0], "one flag per ghost");
+static_assert(sizeof kPreferredCostume / sizeof kPreferredCostume[0] == sizeof kGhosts / sizeof kGhosts[0], "one costume per ghost");
 
 }  // namespace practice_ghosts

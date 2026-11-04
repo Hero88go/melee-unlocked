@@ -781,8 +781,30 @@ bool same_version(std::string a, std::string b) {
   auto norm = [](std::string s) { std::string o; for (char c : s) if (c != ' ' && c != 'v' && c != 'V') o += (char)tolower((unsigned char)c); return o; };
   return norm(a) == norm(b);
 }
+// The mod buttons skip Windows' own clear before they are drawn (it showed as a flash of the plain
+// button colour on every scroll step): draw_item paints every pixel of them.
+LRESULT CALLBACK button_no_erase(HWND w, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+  if (msg == WM_ERASEBKGND) return 1;
+  return DefSubclassProc(w, msg, wp, lp);
+}
+
+// A button's label and visibility only change when they actually do: setting the same label again
+// repainted the button on its own, and hiding and showing it again flashed it.
+void set_label(HWND h, const std::wstring& text) {
+  wchar_t now[128]{};
+  GetWindowTextW(h, now, (int)std::size(now));
+  if (text != now) SetWindowTextW(h, text.c_str());
+}
+void set_shown(HWND h, bool shown) {
+  if ((IsWindowVisible(h) != FALSE) != shown) ShowWindow(h, shown ? SW_SHOWNA : SW_HIDE);
+}
+
 void refresh_window() {
   if (!g_window) return;
+  // Scrolling moves every visible button: with drawing paused until the whole page is laid out,
+  // the page and its buttons repaint once, together, instead of each button flashing on its own at
+  // its old place and then its new one (0.9.97 report).
+  SendMessageW(g_window, WM_SETREDRAW, FALSE, 0);
   const View current = view();
   const auto& found = current.installed;
   std::vector<CatalogMod> catalog;
@@ -804,7 +826,9 @@ void refresh_window() {
     auto make = [&](int id) {
       HWND h = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 0, 0, S(10), S(10), g_window,
                                (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
-      SendMessageW(h, WM_SETFONT, (WPARAM)g_font, TRUE); return h;
+      SendMessageW(h, WM_SETFONT, (WPARAM)g_font, TRUE);
+      SetWindowSubclass(h, button_no_erase, 1, 0);
+      return h;
     };
     g_buttons.push_back(make(ID_MOD_BUTTON + i)); g_updates.push_back(make(ID_MOD_UPDATE + i));
     g_removes.push_back(make(ID_MOD_REMOVE + i)); g_toggles.push_back(make(ID_MOD_TOGGLE + i));
@@ -817,19 +841,19 @@ void refresh_window() {
   for (size_t i = 0; i < g_buttons.size(); ++i) {
     const bool visible = i < g_rows.size() && (int)i >= g_top && (int)i < g_top + shown;
     HWND controls[] = {g_buttons[i], g_updates[i], g_removes[i], g_toggles[i], g_skins[i]};
-    if (!visible) { for (HWND h : controls) ShowWindow(h, SW_HIDE); continue; }
+    if (!visible) { for (HWND h : controls) set_shown(h, false); continue; }
     const RECT card = card_rect((int)i - g_top);
     const int right = units(card.right) - 16, top = units(card.top);
-    MoveWindow(g_toggles[i], S(right - 84), S(top + 12), S(84), S(28), TRUE);
-    MoveWindow(g_removes[i], S(right - 84), S(top + 92), S(84), S(28), TRUE);
-    MoveWindow(g_updates[i], S(right - 176), S(top + 92), S(84), S(28), TRUE);
-    MoveWindow(g_buttons[i], S(right - 308), S(top + 92), S(124), S(28), TRUE);
-    MoveWindow(g_skins[i], S(right - 428), S(top + 92), S(112), S(28), TRUE);
+    MoveWindow(g_toggles[i], S(right - 84), S(top + 12), S(84), S(28), FALSE);
+    MoveWindow(g_removes[i], S(right - 84), S(top + 92), S(84), S(28), FALSE);
+    MoveWindow(g_updates[i], S(right - 176), S(top + 92), S(84), S(28), FALSE);
+    MoveWindow(g_buttons[i], S(right - 308), S(top + 92), S(124), S(28), FALSE);
+    MoveWindow(g_skins[i], S(right - 428), S(top + 92), S(112), S(28), FALSE);
     const auto& row = g_rows[i]; const auto& m = row.catalog; const auto& f = row.installed;
     // "Choose skins" opens the Settings window on the Mods tab, where the disc's costumes are picked.
     // Only once the game has listed them (disc-skins.txt), so the button never leads to an empty list.
     const bool has_skins = row.found && view_skins(current, f.path, nullptr) > 0;
-    SetWindowTextW(g_skins[i], launcher::lang::txw(L"Choose skins").c_str());
+    set_label(g_skins[i], launcher::lang::txw(L"Choose skins"));
     EnableWindow(g_skins[i], has_skins && !g_playing);
     const bool busy = is_busy(m.id), playable = row.found && runs_here(f);
     std::string primary; bool enabled = true; LONG_PTR style = 0;
@@ -837,20 +861,21 @@ void refresh_window() {
     else if (row.found) { primary = playable ? "Play" : scanning() ? "Checking..." : "Not supported yet"; enabled = playable && !g_playing; style = STYLE_ACCENT; }
     else if (m.one_click) { primary = "Get"; style = STYLE_ACCENT; enabled = !m.url.empty() || !m.repo.empty(); }
     else { primary = "Open download page"; enabled = !m.page.empty(); }
-    SetWindowTextW(g_buttons[i], widen(tx(primary)).c_str());
+    set_label(g_buttons[i], widen(tx(primary)));
     SetWindowLongPtrW(g_buttons[i], GWLP_USERDATA, style);
     EnableWindow(g_buttons[i], enabled);
     const bool current = row.found && !m.version.empty() && same_version(m.version, f.version);
-    SetWindowTextW(g_updates[i], launcher::lang::txw(current ? L"Up to date" : L"Update").c_str());
+    set_label(g_updates[i], launcher::lang::txw(current ? L"Up to date" : L"Update"));
     EnableWindow(g_updates[i], row.found && !busy && m.one_click && !m.version.empty() && !current && !g_playing);
-    SetWindowTextW(g_removes[i], launcher::lang::txw(L"Remove").c_str());
+    set_label(g_removes[i], launcher::lang::txw(L"Remove"));
     EnableWindow(g_removes[i], row.found && !busy && !g_playing);
-    SetWindowTextW(g_toggles[i], launcher::lang::txw(f.enabled && row.found ? L"On" : L"Off").c_str());
+    set_label(g_toggles[i], launcher::lang::txw(f.enabled && row.found ? L"On" : L"Off"));
     SetWindowLongPtrW(g_toggles[i], GWLP_USERDATA, row.found && f.enabled ? STYLE_ON : 0);
     EnableWindow(g_toggles[i], playable && !busy && !g_playing);
-    for (HWND h : controls) { ShowWindow(h, h == g_skins[i] && !has_skins ? SW_HIDE : SW_SHOW); InvalidateRect(h, nullptr, FALSE); }
+    for (HWND h : controls) set_shown(h, !(h == g_skins[i] && !has_skins));
   }
-  InvalidateRect(g_window, nullptr, FALSE);
+  SendMessageW(g_window, WM_SETREDRAW, TRUE, 0);
+  RedrawWindow(g_window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 void draw_check(HDC dc, int x, int y, bool on) {
   RECT box = LR(x, y, 18, 18);
@@ -985,7 +1010,29 @@ void paint_page(HDC dc) {
   else if (!g_tools_ok) { note = tx("The mod tools are missing (tools\\xdelta3.exe, tools\\7zr.exe). Reinstall Melee Unlocked to use Get."); note_color = C_WARN; }
   draw_text(dc, widen(note), LR(kPad, height - kFooter + 10, width - 2 * kPad, 30), g_font_small, note_color, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
 }
+void draw_item_direct(DRAWITEMSTRUCT* di);
+// A button is drawn whole in memory and then copied to the screen at once: drawn straight onto the
+// screen, its background, shape and label showed one after another while the list scrolled.
 void draw_item(DRAWITEMSTRUCT* di) {
+  const RECT r = di->rcItem;
+  const int w = r.right - r.left, h = r.bottom - r.top;
+  if (w <= 0 || h <= 0) return;
+  HDC mem = CreateCompatibleDC(di->hDC);
+  HBITMAP bmp = CreateCompatibleBitmap(di->hDC, w, h);
+  HGDIOBJ old_bmp = SelectObject(mem, bmp);
+  HGDIOBJ old_font = SelectObject(mem, GetCurrentObject(di->hDC, OBJ_FONT));
+  SetViewportOrgEx(mem, -r.left, -r.top, nullptr);
+  DRAWITEMSTRUCT copy = *di;
+  copy.hDC = mem;
+  draw_item_direct(&copy);
+  SetViewportOrgEx(mem, 0, 0, nullptr);
+  BitBlt(di->hDC, r.left, r.top, w, h, mem, 0, 0, SRCCOPY);
+  SelectObject(mem, old_font);
+  SelectObject(mem, old_bmp);
+  DeleteObject(bmp);
+  DeleteDC(mem);
+}
+void draw_item_direct(DRAWITEMSTRUCT* di) {
   RECT wr; GetWindowRect(di->hwndItem, &wr); MapWindowPoints(nullptr, g_window, (POINT*)&wr, 2);
   RECT client{}; GetClientRect(g_window, &client);
   const int base = (int)(di->CtlID / 1000) * 1000;

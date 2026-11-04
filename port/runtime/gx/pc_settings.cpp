@@ -8,6 +8,8 @@
 #include <mutex>
 #include <thread>
 #include "gx_streamline.h"
+#include "gx_xess.h"
+#include "phillip_ai.h"
 #ifdef GX_DLSS5
 #include "gx_dlss5.h"
 #endif
@@ -2106,6 +2108,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.hide_ko_explosions = false;
   options.hide_hud_emblems = false;
   options.community_codes = 0;
+  options.pro_ai_stronger = 0;   // a file without the key: ask
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
@@ -2322,6 +2325,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "freeze_fd") options.freeze_fd = value == "1";
       else if (key == "hide_ko_explosions") options.hide_ko_explosions = value == "1";
       else if (key == "hide_hud_emblems") options.hide_hud_emblems = value == "1";
+      else if (key == "proaistronger") options.pro_ai_stronger = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "community_codes") options.community_codes = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & MU_DISPLAY_OPTION_CODES_ALL;
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
@@ -2554,6 +2558,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   host::g_hide_ko_explosions.store(options.hide_ko_explosions, std::memory_order_relaxed);
   host::g_hide_hud_emblems.store(options.hide_hud_emblems, std::memory_order_relaxed);
   host::g_community_codes.store(options.community_codes, std::memory_order_relaxed);
+  phillip_ai::set_stronger_choice(options.pro_ai_stronger);
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
@@ -3976,6 +3981,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     f.time = ImGui::GetTime();
     const practice_menu::Result r = practice_menu::frame(look, f);
     if (r.changed) { state.dirty = true; apply_practice_tools(options); }
+    if (r.stronger_changed) { options.pro_ai_stronger = phillip_ai::stronger_choice(); state.dirty = true; }
     const auto close_menu = [&state]() { state.practice_open = false; state.practice_release_capture = true; };
     if (r.start_unranked && practice.can_start) { slippi::native_practice::submit_start_unranked(); close_menu(); }
     if (r.start_direct || r.start_teams) {
@@ -4350,6 +4356,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nhide_ko_explosions " << (options.hide_ko_explosions ? 1 : 0)
        << "\nhide_hud_emblems " << (options.hide_hud_emblems ? 1 : 0)
        << "\ncommunity_codes " << std::hex << options.community_codes << std::dec
+       << "\nproaistronger " << options.pro_ai_stronger
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
 #ifndef MELEE_NO_SLIPPI
@@ -4830,11 +4837,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   const int shortcut_port = host::window_take_settings_controller_port();
   if (shortcut_port >= 0 && shortcut_port < 4) state.settings_controller_port = shortcut_port;
   const bool nav_active = state.open || state.menu_open || practice_nav;
-  // The panel follows the pad that was last picked up, not the first one that reads as active.
+  // The Practice menu starts on the trainee's controller; then it, like the panel, follows the pad
+  // that was last picked up, not the first one that reads as active. It used to read the trainee's
+  // port only, so a second pad in someone's hands could not move it (0.9.97 report).
+  if (practice_nav && !state.practice_nav_was) state.settings_controller_port = std::clamp(practice.controller_port, 0, 3);
+  state.practice_nav_was = practice_nav;
   const int followed = host::settings_nav::follow(nav_pads, state.settings_pad_was_at_rest.data(),
-                                                  state.settings_controller_port, nav_active && !practice_nav);
-  if (!practice_nav) state.settings_controller_port = followed;
-  int nav_port = practice_nav ? std::clamp(practice.controller_port, 0, 3) : followed;
+                                                  state.settings_controller_port, nav_active);
+  state.settings_controller_port = followed;
+  int nav_port = followed;
   if (pads[nav_port].err != 0)
     for (int i = 0; i < 4; ++i) if (pads[i].err == 0) { nav_port = i; break; }
   const host::PadState& pad = pads[nav_port];
@@ -4851,7 +4862,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   state.practice_generation = practice.generation;
   if (!nav_active) state.practice_pad_armed = false;
   else if (!state.practice_pad_armed && have_pad)
-    state.practice_pad_armed = pad.button == 0 && std::abs(pad.stick_x) < 30 && std::abs(pad.stick_y) < 30;
+    // Only what the menus read must be at rest (A, B, Start, the D-pad and the stick): a held X, Y,
+    // L, R or Z, or a pad that reports one, kept the menu from ever listening (0.9.97 report).
+    state.practice_pad_armed = (pad.button & 0x130F) == 0 && std::abs(pad.stick_x) < 30 && std::abs(pad.stick_y) < 30;
   if (g_ui_diag && nav_active) {
     static uint32_t last_sig = 0xFFFFFFFFu;
     const uint32_t sig = have_pad ? ((uint32_t)nav_port << 28) ^ pad.button ^
@@ -6553,6 +6566,34 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.\n"
                         "DLSS Ultra Performance would render below the GameCube's own resolution on\n"
                         "anything short of an 8K display, so there it switches to Performance.");
+#ifdef _WIN32
+    // Intel XeSS is its own download since 0.9.98 (libxess.dll, 78 MB unpacked): the XeSS modes need it
+    // beside the game, where updates leave it alone (host/updater.cpp xess_download).
+    {
+      std::string game_dir;
+      {
+        wchar_t module[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+        if (length > 0 && length < MAX_PATH) game_dir = std::filesystem::path(module).parent_path().u8string();
+      }
+      using host::updater::ModelState;
+      const ModelState xs = game_dir.empty() ? ModelState::Present : host::updater::xess_state(game_dir);
+      if (xs == ModelState::Downloading) {
+        settings_hint("%s", host::updater::xess_message().c_str());
+      } else if (xs == ModelState::Present && !xess::available() && !host::updater::xess_message().empty()) {
+        settings_hint("Intel XeSS is installed. Restart the game to use it.");
+        restart_now_button("xess");
+      } else if (xs != ModelState::Present) {
+        char label[64];
+        std::snprintf(label, sizeof label, "Download Intel XeSS (%s)", host::updater::kXessSize);
+        if (ImGui::Button(label, ImVec2(0, 32))) host::updater::xess_download(game_dir);
+        if (xs == ModelState::Failed) settings_hint("%s", host::updater::xess_message().c_str());
+        else settings_hint("%s", options.dlss_mode >= 6
+                                     ? "XeSS is a separate download: until it is installed, the game draws at native resolution."
+                                     : "Intel's XeSS upscaler is a separate download. It goes beside the game and stays there through updates.");
+      }
+    }
+#endif
     // What each of these is actually costing, right where the settings that cost it are, instead of
     // only in the separate performance graph. Render latency is Reflex's measured total (works at
     // Native too, see gx_streamline.h); the two "adds" numbers are GPU-timestamp measured costs of
