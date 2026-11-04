@@ -468,7 +468,7 @@ ReplayStart replay_start(const std::filesystem::path& file,int place=0,int count
     }
   }
   std::string exe;
-  if(g_engine==ENGINE_SOURCE&&!source_exe_dir().empty()) exe=source_exe_dir()+"\\melee_source.exe";
+  if(g_engine==ENGINE_SOURCE&&!source_exe_dir().empty()) exe=source_exe_in(source_exe_dir());
   else {
     std::vector<std::string> candidates{active_dir()+"\\melee_port_playback.exe"};
 #ifndef MELEE_NO_SLIPPI
@@ -477,7 +477,7 @@ ReplayStart replay_start(const std::filesystem::path& file,int place=0,int count
 #endif
     for(const auto& path:candidates) if(file_exists(path)) { exe=path; break; }
     // A release has no separate playback program: the Source Port plays replays itself.
-    if(exe.empty()&&!source_exe_dir().empty()) exe=source_exe_dir()+"\\melee_source.exe";
+    if(exe.empty()&&!source_exe_dir().empty()) exe=source_exe_in(source_exe_dir());
   }
   if(exe.empty()||!file_exists(exe)) { replay_status("Replay playback is not installed for this build."); return ReplayStart::Failed; }
   auto sys=active_dir()+"\\SysPlayback";

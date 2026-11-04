@@ -77,6 +77,7 @@ static constexpr bool kShowFasterSoundEffects = true;
 #include "lab_view.h"
 #include "training_overlay.h"
 #include "net_overlay.h"
+#include "coming_soon_overlay.h"
 #include "replay_bar.h"
 #include "replay_control.h"
 #include "replay_coach.h"
@@ -5124,6 +5125,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                              !state.fill_window,
                          ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   if (!clean_replay) net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  {   // YouGame's Coming soon stickers over the online menu (drawn only while its first page shows)
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    const float aspect = presented_aspect(options, (int)screen.x, (int)screen.y, true);
+    float gw = screen.x, gh = gw / std::max(aspect, 0.1f);
+    if (gh > screen.y) { gh = screen.y; gw = gh * aspect; }
+    const float gx0 = (screen.x - gw) * 0.5f, gy0 = (screen.y - gh) * 0.5f;
+    coming_soon_overlay::draw(gx0, gy0, gx0 + gw, gy0 + gh);
+  }
   replay_bar::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y, state.open || state.menu_open || state.practice_open || state.fill_window);
   if (!clean_replay) screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,

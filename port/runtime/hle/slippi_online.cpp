@@ -24,6 +24,7 @@
 #include "window.h"
 #include "discord_presence.h"
 #include "gx_core.h"
+#include "coming_soon_overlay.h"
 #include "cosmetic_mods.h"
 #include "net_trace.h"
 #include "netplay_state.h"
@@ -1896,7 +1897,13 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       // YouGame rows are open (the launcher's bridge is up and its account signed in); bit 3 the
       // Ranked header follows, in the game's text encoding.
       // 3: Start on the older-release offer (start_find_match): the launcher restarts in that release.
-      if (payload_len == 1 && payload[0] == 3) {
+      // 0x10 | row: the first page is on screen (Coming soon), the cursor on `row`; 0x20 | row: a
+      // Coming soon row was picked. Both only feed the stickers over the menu.
+      if (payload_len == 1 && (payload[0] & 0xF0) == 0x10) {
+        coming_soon_overlay::showing(payload[0] & 0x0F);
+      } else if (payload_len == 1 && (payload[0] & 0xF0) == 0x20) {
+        coming_soon_overlay::refused(payload[0] & 0x0F);
+      } else if (payload_len == 1 && payload[0] == 3) {
         if (g_older_offer_mode >= 0) {
           std::string why;
           if (yougame::restart_older(g_older_offer_mode == Matchmaking::DIRECT ? "direct" : "ranked", &why)) host::request_exit(0);
@@ -1909,6 +1916,8 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       if (yougame::active()) q[0] |= 1;
       else if (online_rows::applied()) q[0] |= 2;   // the labels were rewritten (Source Port)
       if (yougame::launcher() && yougame::wait_identity(500).ok) q[0] |= 4;
+      // Bit 6: YouGame is not open yet; its rows show (labelled Coming soon!) but cannot be picked.
+      if (yougame::coming_soon() && !yougame::active() && (q[0] & 2)) q[0] |= 64;
       // Bit 4/5: started for a YouGame mode (--online-mode): the menu opens Ranked (16) or Direct (32).
       if (payload_len == 0 && (q[0] & 4)) {
         if (const int arg = yougame::take_online_mode_arg()) q[0] |= arg == 2 ? 32 : 16;

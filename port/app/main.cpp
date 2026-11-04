@@ -1035,6 +1035,16 @@ static void crash_stack(const CONTEXT* at, FILE* f) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return; }
   }
 }
+// The graphics drivers' own files (NVIDIA, AMD, Intel) and the Vulkan loader, by file name.
+static bool graphics_driver_module(const char* path) {
+  const char* name = std::strrchr(path, '\\') ? std::strrchr(path, '\\') + 1 : path;
+  for (const char* driver : {"nvoglv64.dll", "nvwgf2umx.dll", "nvd3dumx.dll", "nvldumdx.dll", "amdvlk64.dll", "amdxx64.dll",
+                             "amdxc64.dll", "atio6axx.dll", "atiumd6a.dll", "igvk64.dll", "igd10iumd64.dll", "igd12umd64.dll",
+                             "igxelpicd64.dll", "vulkan-1.dll"})
+    if (_stricmp(name, driver) == 0) return true;
+  return false;
+}
+
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
   static volatile LONG entered = 0;
   if (InterlockedExchange(&entered, 1)) return EXCEPTION_CONTINUE_SEARCH;
@@ -1043,6 +1053,14 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
   if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)er->ExceptionAddress, &module))
     GetModuleFileNameA(module, module_name, MAX_PATH);
   const uintptr_t offset = (uintptr_t)er->ExceptionAddress - (uintptr_t)module;
+  // Quitting already, and the fault is in a graphics driver tearing down: everything is saved, so
+  // end quietly instead of offering a crash report for it.
+  if (host::process_ending() && graphics_driver_module(module_name)) {
+    host::log("exit: %s faulted while the game was closing (exception %08lX); ended quietly",
+              std::strrchr(module_name, '\\') ? std::strrchr(module_name, '\\') + 1 : module_name, er->ExceptionCode);
+    host::log_flush();
+    TerminateProcess(GetCurrentProcess(), 0);
+  }
   char head[512];
   std::snprintf(head, sizeof head, "CRASH: exception %08lX at %p (%s+0x%llX), version %s", er->ExceptionCode, er->ExceptionAddress,
                 std::strrchr(module_name, '\\') ? std::strrchr(module_name, '\\') + 1 : module_name, (unsigned long long)offset, MELEE_PORT_VERSION);

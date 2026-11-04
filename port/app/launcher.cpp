@@ -436,10 +436,20 @@ std::string source_exe_dir() {
 }
 bool source_available() { return !source_exe_dir().empty(); }
 
+// A processor without AVX2 (or the compatibility build picked by hand) gets the _compat programs.
+bool wants_compat_build() { return g_cpu_build == CPU_COMPAT || (g_cpu_build == CPU_AUTO && !cpu_has_avx2()); }
+// The Source Port program in `dir` for this processor: every start (Play, replays, mods) goes
+// through here. Replays started melee_source.exe on any processor, so a player without AVX2 still
+// got the AVX2 message there after Play was fixed (0.9.96 report).
+std::string source_exe_in(const std::string& dir) {
+  if (wants_compat_build() && file_exists(dir + "\\melee_source_compat.exe")) return dir + "\\melee_source_compat.exe";
+  return dir + "\\melee_source.exe";
+}
+
 std::string game_exe() {
   // The Source Port when it is picked and installed. Picked but gone since (an update that dropped
   // it, or an older version without it) falls back to Static Recomp rather than failing to start.
-  const bool old_cpu = g_cpu_build == CPU_COMPAT || (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
+  const bool old_cpu = wants_compat_build();
   if (g_engine == ENGINE_SOURCE) {
     const std::string d = source_exe_dir();
     // The Windows Source Port is AVX2 only: on an older processor it refuses to start with an
@@ -813,6 +823,14 @@ void paint_rail(HDC dc) {
 RECT g_yg_link[2] = {};
 bool g_yg_hot = false;
 void paint_yougame_line(HDC dc) {
+#ifdef MELEE_YOUGAME_COMING_SOON
+  // YouGame is not open yet: one line saying so, nothing to click.
+  dot(dc, CX, 287, C_FAINT);
+  draw_text(dc, launcher::lang::txw(L"YouGame online: coming soon"), LR(CX + 15, 284, CW - 15, 17), g_font, C_DIM,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+  g_yg_link[0] = g_yg_link[1] = RECT{};
+  return;
+#endif
   const launcher::yougame::Account a = launcher::yougame::account();
   std::wstring base = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
                                   : launcher::lang::txw(L"YouGame: not connected");
@@ -1548,7 +1566,7 @@ void start_game() {
     MessageBoxW(g_main, problem.c_str(), L"Melee Unlocked Launcher", MB_OK | MB_ICONWARNING);
     return;
   }
-  g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe()) : game_exe();
+  g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_in(source_exe_dir()) : static_recomp_exe()) : game_exe();
   if (file_exists(g_game_exe) && game_exe_version_mismatch(g_game_exe)) {
     g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear(); return;
   }
@@ -1587,7 +1605,7 @@ void launch_game_now() {
   if (vanilla_active() && g_lobby_launch_args.empty() && g_mod_launch_iso.empty() && exe == game_exe())
     args += launcher::vanilla_launch_args(g_vanilla);
   if (!g_mod_launch_iso.empty()) {
-    exe = g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe();
+    exe = g_mod_launch_engine == "source" ? source_exe_in(source_exe_dir()) : static_recomp_exe();
     const std::string base = active_dir();
     args = g_mod_launch_engine == "source"
         ? " --iso \"" + g_iso + "\" " + (g_mod_launch_kind == "te" ? "--mod-gci" : "--mod-iso") + " \"" + g_mod_launch_iso + "\""
@@ -1624,7 +1642,11 @@ void launch_game_now() {
   }
   // The game's YouGame rows ask this launcher (launcher_yougame.h): its address, a token for this
   // launch, and the build's hashes for the ticket's build check. Set only for this one start.
+#ifdef MELEE_YOUGAME_COMING_SOON
+  const std::string yougame_bridge;   // YouGame is not open yet: the game gets no bridge
+#else
   const std::string yougame_bridge = vanilla_active() ? std::string() : launcher::yougame::bridge_url();
+#endif
   if (!yougame_bridge.empty()) {
     const std::string game_dir = exe.substr(0, exe.find_last_of("\\/"));
     launcher::yougame::set_build(g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version.substr(0, g_active_version.find('-')),
@@ -1974,6 +1996,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       ShowWindow(g_slippi_btn, g_slippi_missing && !vanilla_active() ? SW_SHOW : SW_HIDE);
       // YouGame: the bridge the game's YouGame rows ask (launcher_yougame.h), up for the whole run.
       launcher::yougame::set_on_session_change([] { PostMessageW(g_main, WM_APP_YOUGAME, 0, 0); });
+#ifndef MELEE_YOUGAME_COMING_SOON
       if (std::string why; !launcher::yougame::start_bridge(&why)) log_line("yougame: the launcher's bridge did not start (%s)", why.c_str());
       // Which builds YouGame allows: when it is on an older release, get that one beside this
       // version now, so the game's offer to restart in it is ready when a player takes it.
@@ -1995,6 +2018,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::string why;
             if (!launcher::yougame::sign_in(email, pass, &why)) log_line("yougame: test sign-in failed (%s)", why.c_str());
           }).detach();
+#endif   // MELEE_YOUGAME_COMING_SOON: none of YouGame starts until it opens
       if (const char* ms = g_launcher_test ? std::getenv("MELEE_LAUNCHER_TEST_CAPTURE_MS") : nullptr)
         std::thread([ms = std::atoi(ms)] { Sleep(ms); PostMessageW(g_main, WM_APP + 41, 0, 0); }).detach();
 #ifndef MELEE_NO_SLIPPI   // the public releases are the other build: this one must never install them over itself

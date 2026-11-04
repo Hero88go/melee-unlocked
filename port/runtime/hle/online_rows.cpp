@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "online_rows.h"
-#include "online_rows.inc"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <unordered_set>
@@ -29,9 +29,108 @@ struct Archive {
 
 bool fail(std::string* why, const char* what) { if (why) *why = what; return false; }
 
+// A label as alpha and intensity nibbles (0-15), the IA4 texel split, row by row.
+struct Label {
+  std::array<uint8_t, kWidth * kHeight> a{}, l{};
+};
+uint32_t tile_index(uint32_t x, uint32_t y) {   // GX IA4: 8x4 tiles, one byte per texel
+  return ((y / 4) * (kWidth / 8) + x / 8) * 32 + (y % 4) * 8 + x % 8;
+}
+Label decode(const uint8_t* p) {
+  Label out;
+  for (uint32_t y = 0; y < kHeight; ++y)
+    for (uint32_t x = 0; x < kWidth; ++x) {
+      const uint8_t v = p[tile_index(x, y)];
+      out.a[y * kWidth + x] = v >> 4;
+      out.l[y * kWidth + x] = v & 15;
+    }
+  return out;
+}
+void encode(const Label& in, uint8_t* p) {
+  std::memset(p, 0, kBytes);   // the padding rows stay empty
+  for (uint32_t y = 0; y < kHeight; ++y)
+    for (uint32_t x = 0; x < kWidth; ++x)
+      p[tile_index(x, y)] = uint8_t(in.a[y * kWidth + x] << 4 | in.l[y * kWidth + x]);
+}
+uint32_t fnv1a(const uint8_t* p, size_t n) {
+  uint32_t h = 0x811C9DC5u;
+  for (size_t i = 0; i < n; ++i) h = (h ^ p[i]) * 0x01000193u;
+  return h;
+}
+
+// A letter cut from one of the menu's own labels: the columns cut (to the middle of the gap to each
+// neighbour, so its outline comes along but no neighbour's fill), the columns its white fill spans,
+// and a width scale (the only capital F the menu has is in a condensed label). No pixels are kept
+// here; the letters come from the player's own disc as the menu file is built.
+struct Letter { uint8_t image, cut0, cut1, fill0, fill1; uint8_t scale_pct = 100; };
+constexpr int kGap = 3;   // columns between two letters' fills, as the menu's own words space them
+// The labels the letters come from, as Melee 1.02 with Slippi's menu files has them (English).
+constexpr struct { uint8_t image; uint32_t hash; } kSources[] = {
+    {26, 0x745BEA37u}, {29, 0xC3650ACBu}, {34, 0x97FF741Au}, {47, 0xDA03AAF9u}};
+const Letter kFriendsWord[] = {{47, 0, 12, 2, 11, 145}, {26, 47, 60, 49, 59},   {26, 93, 101, 96, 100}, {26, 119, 135, 120, 134},
+                               {34, 45, 61, 47, 60},    {34, 135, 153, 136, 150}, {26, 135, 152, 137, 149}};
+const Letter kSlippiWord[] = {{29, 34, 56, 37, 54}, {29, 133, 142, 135, 139}, {29, 107, 115, 109, 113},
+                              {29, 56, 73, 58, 72}, {29, 56, 73, 58, 72},     {29, 107, 115, 109, 113}};
+
+// One letter's columns (with its outline), stretched to scale_pct of its width; `lead` and `fill`
+// are where its fill starts and how wide it is, after the stretch.
+struct Columns { int width = 0, lead = 0, fill = 0; std::vector<uint8_t> a, l; };   // column-major
+Columns cut(const Label& src, const Letter& g) {
+  const int x0 = g.cut0, x1 = std::min(int(kWidth), int(g.cut1));
+  const int w = x1 - x0, out_w = std::max(1, (w * g.scale_pct + 50) / 100);
+  Columns c;
+  c.width = out_w;
+  c.lead = (int(g.fill0 - g.cut0) * g.scale_pct + 50) / 100;
+  c.fill = (int(g.fill1 - g.fill0) * g.scale_pct + 50) / 100;
+  c.a.resize(size_t(out_w) * kHeight);
+  c.l.resize(size_t(out_w) * kHeight);
+  for (int dx = 0; dx < out_w; ++dx) {
+    const float sx = (dx + 0.5f) * float(w) / float(out_w) - 0.5f;
+    const int s0 = std::clamp(int(sx), 0, w - 1), s1 = std::min(s0 + 1, w - 1);
+    const float f = std::clamp(sx - float(s0), 0.0f, 1.0f);
+    for (uint32_t y = 0; y < kHeight; ++y) {
+      const size_t a0 = y * kWidth + size_t(x0 + s0), a1 = y * kWidth + size_t(x0 + s1);
+      c.a[size_t(dx) * kHeight + y] = uint8_t(src.a[a0] + (src.a[a1] - src.a[a0]) * f + 0.5f);
+      c.l[size_t(dx) * kHeight + y] = uint8_t(src.l[a0] + (src.l[a1] - src.l[a0]) * f + 0.5f);
+    }
+  }
+  return c;
+}
+
+// A word set from the menu's own letters, centred like the menu's labels. Where two letters' edges
+// meet, the white fill wins over the neighbour's black outline.
+template <size_t N>
+Label word(const Label* sources, const Letter (&letters)[N]) {
+  std::vector<Columns> cols;
+  int fills = 0;   // from the first fill's start to the last fill's end
+  for (const Letter& g : letters) {
+    cols.push_back(cut(sources[g.image], g));
+    fills += cols.back().fill;
+  }
+  fills += int(N - 1) * kGap;
+  Label out;
+  int x = (int(kWidth) - fills) / 2;   // where the next letter's fill starts
+  for (const Columns& c : cols) {
+    const int left = x - c.lead;
+    for (int dx = 0; dx < c.width; ++dx) {
+      const int px = left + dx;
+      if (px < 0 || px >= int(kWidth)) continue;
+      for (uint32_t y = 0; y < kHeight; ++y) {
+        const uint8_t a = c.a[size_t(dx) * kHeight + y], l = c.l[size_t(dx) * kHeight + y];
+        const size_t o = y * kWidth + size_t(px);
+        if (!a) continue;
+        out.l[o] = out.a[o] ? std::max(out.l[o], l) : l;
+        out.a[o] = std::max(out.a[o], a);
+      }
+    }
+    x += c.fill + kGap;
+  }
+  return out;
+}
+
 }  // namespace
 
-bool apply(std::vector<uint8_t>& file, std::string* why) {
+bool apply(std::vector<uint8_t>& file, std::string* why, bool coming_soon) {
   if (file.size() < 0x20) return fail(why, "too small");
   auto be = [&](size_t o) { return uint32_t(file[o]) << 24 | uint32_t(file[o + 1]) << 16 | uint32_t(file[o + 2]) << 8 | file[o + 3]; };
   if (be(0) != file.size()) return fail(why, "header size differs from the file");
@@ -61,8 +160,9 @@ bool apply(std::vector<uint8_t>& file, std::string* why) {
   if (!texanim || !a.in(texanim, 24)) return fail(why, "no label animation");
   const uint32_t table = a.ptr(texanim + 12);
   if (!table || a.u16(texanim + 20) != kImages || !a.in(table, 4u * kImages)) return fail(why, "label count differs");
-  // The eight online rows' images: Ranked, Unranked, Direct, Log-in, Log-out, Update, Teams, Party.
-  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63};
+  // The eight online rows' images (Ranked, Unranked, Direct, Log-in, Log-out, Update, Teams, Party),
+  // the labels the new words take their letters from, and Online Play (the fallback Slippi row).
+  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 26, 29, 47, 7};
   uint32_t data[64] = {};
   for (int i : rows) {
     const uint32_t desc = a.ptr(table + 4u * i);
@@ -74,15 +174,30 @@ bool apply(std::vector<uint8_t>& file, std::string* why) {
         !a.in(data[i], kBytes))
       return fail(why, "label image differs");
   }
+  (void)coming_soon;   // Coming soon is drawn over the menu (the host's overlay), not in the labels
   uint8_t* base = file.data() + 0x20;
-  // Rows in the menu's order: slots 0-7 show images 33, 34, 58, 62, 63, 59, 60, 61. Ranked (33) and
-  // Unranked (34) keep the menu's own labels.
-  std::memcpy(base + data[58], kFriends, kBytes);
-  std::memcpy(base + data[62], kSlippi, kBytes);
-  std::memcpy(base + data[63], kSlippiUnranked, kBytes);
-  std::memcpy(base + data[59], kSlippiDirect, kBytes);
-  std::memcpy(base + data[60], kSlippiTeams, kBytes);
-  std::memcpy(base + data[61], kSlippiParty, kBytes);
+  // Slippi's own labels, exactly as Slippi draws them, kept before any row is rewritten.
+  std::vector<uint8_t> unranked(base + data[34], base + data[34] + kBytes), direct(base + data[58], base + data[58] + kBytes),
+      teams(base + data[62], base + data[62] + kBytes), party(base + data[63], base + data[63] + kBytes),
+      online_play(base + data[7], base + data[7] + kBytes);
+  // The two new words, set from the menu's own letters when those labels are the ones the letters
+  // were measured on (English menu files); otherwise Slippi's Direct and the game's Online Play.
+  bool letters_ok = true;
+  for (const auto& s : kSources) letters_ok &= fnv1a(base + data[s.image], kBytes) == s.hash;
+  if (letters_ok) {
+    std::vector<Label> src(64);
+    for (int i : {26, 29, 34, 47}) src[i] = decode(base + data[i]);
+    encode(word(src.data(), kFriendsWord), base + data[58]);
+    encode(word(src.data(), kSlippiWord), base + data[62]);
+  } else {
+    std::memcpy(base + data[62], online_play.data(), kBytes);   // Friends keeps Slippi's Direct label
+  }
+  // Rows in the menu's order: slots 0-7 show images 33, 34, 58, 62, 63, 59, 60, 61. Top page: Ranked
+  // and Unranked (the menu's own), Friends, Slippi. Slippi's page: its own four labels, unchanged.
+  std::memcpy(base + data[63], unranked.data(), kBytes);
+  std::memcpy(base + data[59], direct.data(), kBytes);
+  std::memcpy(base + data[60], teams.data(), kBytes);
+  std::memcpy(base + data[61], party.data(), kBytes);
   if (why) why->clear();
   return true;
 }

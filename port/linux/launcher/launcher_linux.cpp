@@ -543,6 +543,10 @@ std::atomic<bool> g_yg_busy{false};
 std::mutex g_yg_mutex;
 std::string g_yg_status;
 void yougame_line() {
+#ifdef MELEE_YOUGAME_COMING_SOON
+  ImGui::TextDisabled("YouGame online: coming soon");   // not open yet: nothing to connect
+  return;
+#endif
   const launcher::yougame::Account a = launcher::yougame::account();
   const std::string text = a.signed_in ? "YouGame: " + a.name + (a.code.empty() ? "" : " (" + a.code + ")") : "YouGame: not connected";
   ImGui::TextColored(a.signed_in ? ImVec4(0.75f, 0.8f, 1, 1) : ImVec4(0.6f, 0.62f, 0.7f, 1), "%s", text.c_str());
@@ -826,6 +830,7 @@ int main(int argc, char** argv) {
   // YouGame: the bridge for the game's YouGame rows, up for the whole run. On Linux the release YouGame
   // is on cannot be fetched beside this one yet: the game says where to get it instead.
   launcher::yougame::set_on_session_change([] { g_yg_save = true; });
+#ifndef MELEE_YOUGAME_COMING_SOON
   if (std::string why; !launcher::yougame::start_bridge(&why)) std::fprintf(stderr, "yougame: bridge did not start (%s)\n", why.c_str());
   launcher::yougame::set_restart_older(yougame_restart_older);
   // Which builds YouGame allows: when it is on an older release, get that one beside this version
@@ -838,6 +843,7 @@ int main(int argc, char** argv) {
     if (!file_exists(yougame_older_dir(older.version) + "/melee_source"))
       host::updater::install_release(older.version, false, g_dir);
   }).detach();
+#endif   // MELEE_YOUGAME_COMING_SOON: none of YouGame starts until it opens
   refresh_replays();
   refresh_mods();
   host::updater::check(MELEE_PORT_VERSION);

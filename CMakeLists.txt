@@ -3,6 +3,12 @@ project(MeleeUnlocked LANGUAGES CXX)
 
 include(port/tests/embed_view.cmake)
 
+# YouGame's rows show as Coming soon and nothing YouGame runs from the launcher, until YouGame opens.
+option(MELEE_YOUGAME_COMING_SOON "Show YouGame's online rows as Coming soon (launcher YouGame off)" ON)
+if(MELEE_YOUGAME_COMING_SOON)
+  add_compile_definitions(MELEE_YOUGAME_COMING_SOON=1)
+endif()
+
 option(MELEE_BUILD_NATIVE_LINUX "Build the native Linux Source Port (ELF host and game)" OFF)
 if(MELEE_BUILD_NATIVE_LINUX)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)

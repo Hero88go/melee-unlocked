@@ -67,10 +67,13 @@ class YouGame1000MergeTest(unittest.TestCase):
         self.assertIn("{ MU_SLP_MODE_RANKED, MU_SLP_MODE_UNRANKED, MU_SLP_MODE_DIRECT, -1,", menu)
         self.assertIn("{ 0x645, 0x646, 0x647, 0x644, 0x646, 0x647, 0x64B, 0x64C }", menu)
         rows = source("port/runtime/hle/online_rows.cpp")
-        for line in ("kFriends", "kSlippi,", "kSlippiUnranked", "kSlippiDirect", "kSlippiTeams", "kSlippiParty"):
+        # Friends and Slippi set from the menu's own letters; Slippi's own four labels moved unchanged.
+        for line in ("kFriendsWord", "kSlippiWord", "std::memcpy(base + data[63], unranked.data(), kBytes);",
+                     "std::memcpy(base + data[59], direct.data(), kBytes);", "std::memcpy(base + data[60], teams.data(), kBytes);",
+                     "std::memcpy(base + data[61], party.data(), kBytes);"):
             self.assertIn(line, rows)
         host = source("port/app/source_host.cpp")
-        self.assertIn("online_rows::apply(data, &why)", host)
+        self.assertIn("online_rows::apply(data, &why, yougame::coming_soon())", host)
 
 
 if __name__ == "__main__":

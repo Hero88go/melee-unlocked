@@ -47,6 +47,9 @@ bool active();
 // GitHub behaviour (Slippi, mods, spectator, settings); only the YouGame rows of the online menu
 // use the bridge, one search at a time.
 bool launcher();
+// YouGame is not open yet (MELEE_YOUGAME_COMING_SOON): its online rows show as Coming soon and cannot
+// be picked. Hidden test runs reopen them with MELEE_TEST_YOUGAME_OPEN=1 (the end-to-end runs).
+bool coming_soon();
 // YouGame's online rows can be offered: the app started the game, or the launcher's bridge is up.
 bool available();
 // The current search or match is a YouGame one: always in the app, and under the launcher from the

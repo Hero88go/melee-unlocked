@@ -920,7 +920,15 @@ void start() {
 }
 
 bool active() { return g_stdio || (!g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty()); }
-bool launcher() { return g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty(); }
+bool launcher() { return !coming_soon() && g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty(); }
+bool coming_soon() {
+#ifdef MELEE_YOUGAME_COMING_SOON
+  static const bool soon = !host::test_env::getenv("MELEE_TEST_YOUGAME_OPEN");
+  return soon;
+#else
+  return false;
+#endif
+}
 bool available() { return active() || launcher(); }
 bool session() { return active() || (launcher() && g_launcher_session.load()); }
 std::string build_version() {

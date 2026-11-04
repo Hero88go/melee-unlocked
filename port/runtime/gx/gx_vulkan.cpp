@@ -419,6 +419,13 @@ class VulkanBackend final : public Backend {
     if (!device_) return;
     stop_pipeline_worker();   // before anything it uses goes; what it finished joins the maps emptied below
     vkDeviceWaitIdle(device_);
+    // Quitting: keep the caches and leave the device to Windows. NVIDIA's driver crashed inside
+    // vkDestroyDevice as the game closed (RTX 3060, 0.9.96 reports), after everything was saved.
+    if (host::process_ending()) {
+      save_pipeline_recipes();
+      if (pipeline_cache_) save_pipeline_cache();
+      return;
+    }
 #ifdef GX_PC_SETTINGS
     destroy_settings_ui();
 #endif

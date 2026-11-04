@@ -885,7 +885,7 @@ void load_system_files(const char* forced_off_by) {
     // menu is left as it is, and the menu then keeps the old layout too (online_rows::applied).
     if (!yougame::active() && (std::strcmp(name, "MnMaAll.usd") == 0 || std::strcmp(name, "MnMaAll.dat") == 0)) {
       std::string why;
-      if (online_rows::apply(data, &why)) {
+      if (online_rows::apply(data, &why, yougame::coming_soon())) {
         if (std::strcmp(name, "MnMaAll.usd") == 0) online_rows::set_applied(true);
         host::log("online menu: %s shows the YouGame and Slippi rows", name);
       } else {

@@ -1,8 +1,8 @@
-// online_rows::apply on a synthetic MnMaAll-shaped archive: the eight online rows' images move and
-// the four new labels land; anything that does not match leaves the file untouched.
+// online_rows::apply on a synthetic MnMaAll-shaped archive: Slippi's four labels move to its own page
+// unchanged, the top page gets Friends and Slippi (here the fallbacks: the synthetic labels are not the
+// ones the letters were measured on); anything that does not match leaves the file untouched.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "online_rows.h"
-#include "online_rows.inc"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,7 +13,8 @@
 
 namespace {
 constexpr uint32_t kBytes = 176 * 32;
-const int kRows[] = {33, 34, 58, 59, 60, 61, 62, 63};
+const int kRows[] = {7, 26, 29, 47, 33, 34, 58, 59, 60, 61, 62, 63};   // the rows and the letter sources
+bool own(int i) { for (int r : kRows) if (r == i) return true; return false; }
 
 struct Builder {
   std::vector<uint8_t> data;
@@ -37,8 +38,8 @@ Synthetic make(uint16_t width = 176) {
   const uint32_t descs = b.alloc(64 * 24), table = b.alloc(64 * 4);
   for (int i = 0; i < 64; ++i) {
     const uint32_t d = descs + 24 * i;
-    b.ptr(d, s.image_data[(i >= 33 && i <= 34) || i >= 58 ? i : 63]);
-    b.u16(d + 4, i == 33 || i == 34 || i >= 58 ? width : 32);
+    b.ptr(d, s.image_data[own(i) ? i : 63]);
+    b.u16(d + 4, own(i) ? width : 32);
     b.u16(d + 6, 30);
     b.u32(d + 8, 2);
     b.ptr(table + 4 * i, d);
@@ -82,12 +83,12 @@ int main() {
     CHECK(why.empty());
     CHECK(image_filled(s, 33, 33));   // Ranked: the menu's own label
     CHECK(image_filled(s, 34, 34));   // Unranked
-    CHECK(image_is(s, 58, online_rows::kFriends));
-    CHECK(image_is(s, 62, online_rows::kSlippi));
-    CHECK(image_is(s, 63, online_rows::kSlippiUnranked));
-    CHECK(image_is(s, 59, online_rows::kSlippiDirect));
-    CHECK(image_is(s, 60, online_rows::kSlippiTeams));
-    CHECK(image_is(s, 61, online_rows::kSlippiParty));
+    CHECK(image_filled(s, 58, 58));   // Friends: Slippi's Direct label (fallback)
+    CHECK(image_filled(s, 62, 7));    // Slippi: the game's Online Play label (fallback)
+    CHECK(image_filled(s, 63, 34));   // Slippi's page: Unranked, Direct, Teams, Party, as Slippi drew them
+    CHECK(image_filled(s, 59, 58));
+    CHECK(image_filled(s, 60, 62));
+    CHECK(image_filled(s, 61, 63));
   }
   {
     Synthetic s = make(160);          // not the menu the labels were drawn for

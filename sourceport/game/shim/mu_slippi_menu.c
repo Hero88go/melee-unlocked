@@ -93,7 +93,8 @@ static int ranked_offered;    /* FA bit 0 at the last app-state fetch: the host 
 static int yg_flags;
 static int yg_pick;           /* the last row picked was a YouGame row (split layout) */
 static int last_slot = -1;    /* the last row picked (split layout): the cursor goes back to it */
-enum { YG_APP_RANKED = 1, YG_SPLIT = 2, YG_ROWS_OPEN = 4, YG_HEADER = 8, YG_OPEN_RANKED = 16, YG_OPEN_DIRECT = 32 };
+enum { YG_APP_RANKED = 1, YG_SPLIT = 2, YG_ROWS_OPEN = 4, YG_HEADER = 8, YG_OPEN_RANKED = 16, YG_OPEN_DIRECT = 32,
+       YG_COMING_SOON = 64 };
 /* Started for a YouGame mode (--online-mode): the boot menu confirms that row by itself, like the
  * P2P session's Direct (set at the boot entry, cleared by the menu's think before any match). */
 static int auto_slot = -1;
@@ -111,8 +112,13 @@ static int direct_slot(void) { return split_layout() ? 5 : MU_SLP_MODE_DIRECT; }
  * in (one press less for a player without YouGame), else the first page. */
 static int split_start_page(void)
 {
+    if (yg_flags & YG_COMING_SOON) {
+        return 0;   /* everyone sees YouGame's rows marked Coming soon; the cursor starts on Slippi */
+    }
     return !(yg_flags & YG_ROWS_OPEN) && slp.app_state == MU_SLP_APP_LOGGED_IN ? 1 : 0;
 }
+/* YouGame is not open yet: its rows are drawn (their labels say Coming soon!) but cannot be picked. */
+static int yougame_soon(void) { return split_layout() && (yg_flags & YG_COMING_SOON) != 0; }
 static int yougame_query(int pick, char* out, unsigned int cap);
 static int first_boot = 1;    /* OnMenuLoad's DOFST_IS_FIRST_BOOT */
 /* A peer-to-peer session with menus (mu_online_p2p_menus): the first online submenu confirms Direct
@@ -385,7 +391,8 @@ int mu_slippi_option_unlocked(int sel)
     if (split_layout()) {
         if (split_page == 0) {
             if (sel < SPLIT_SLIPPI) {
-                return (yg_flags & YG_ROWS_OPEN) != 0;   /* YouGame: the launcher's account */
+                /* YouGame: the launcher's account, or shown as Coming soon */
+                return (yg_flags & (YG_ROWS_OPEN | YG_COMING_SOON)) != 0;
             }
             return sel == SPLIT_SLIPPI;   /* Slippi: its page, or its log in / update */
         }
@@ -411,6 +418,10 @@ int mu_slippi_first_unlocked(void)
 {
     int i;
     int count = mn_803EB6B0[MENU_KIND_8].selection_count;
+    /* Coming soon: the cursor starts on Slippi, the first row that does something. */
+    if (yougame_soon() && split_page == 0) {
+        return SPLIT_SLIPPI;
+    }
     /* The split layout: the first open row of the page shown. */
     for (i = split_layout() ? 0 : MU_SLP_MODE_UNRANKED; i < count; i++) {
         if (mn_80229938(MENU_KIND_8, i)) {
@@ -591,7 +602,18 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         }
     }
     mn_804A04F0.buttons = buttons;
-    if (buttons & MenuInput_Confirm) {
+    if (yougame_soon() && split_page == 0 && mn_804A04F0.cur_menu == MENU_KIND_8) {
+        /* The host draws the Coming soon stickers while this page is on screen. */
+        yougame_query(0x10 | (mn_804A04F0.hovered_selection & 3), NULL, 0);
+    }
+    if ((buttons & MenuInput_Confirm) && yougame_soon() && split_page == 0 &&
+        mn_804A04F0.hovered_selection < SPLIT_SLIPPI)
+    {
+        /* A Coming soon row: the menu's refusal sound (as a locked character on the character
+         * select) and the sticker shakes; nothing else happens. */
+        lbAudioAx_80024030(3);
+        yougame_query(0x20 | mn_804A04F0.hovered_selection, NULL, 0);
+    } else if (buttons & MenuInput_Confirm) {
         mn_804D6BC8.cooldown = 5;
         mn_804A04F0.entering_menu = 1;
         gm_801677E8(auto_direct ? (s8) mu_online_p2p_port() : (s8) confirm_port());
