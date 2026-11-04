@@ -68,7 +68,7 @@ class YouGame1000MergeTest(unittest.TestCase):
         self.assertIn("{ 0x645, 0x646, 0x647, 0x644, 0x646, 0x647, 0x64B, 0x64C }", menu)
         rows = source("port/runtime/hle/online_rows.cpp")
         # Friends and Slippi set from the menu's own letters; Slippi's own four labels moved unchanged.
-        for line in ("kRankedWord", "kUnrankedWord", "kFriendsWord", "kSlippiWord", "make_y(", "std::memcpy(base + data[63], unranked.data(), kBytes);",
+        for line in ("kRankedLine", "kUnrankedLine", "kFriendsLine", "kSlippiWord", "make_y(", "make_f(", "std::memcpy(base + data[63], unranked.data(), kBytes);",
                      "std::memcpy(base + data[59], direct.data(), kBytes);", "std::memcpy(base + data[60], teams.data(), kBytes);",
                      "std::memcpy(base + data[61], party.data(), kBytes);"):
             self.assertIn(line, rows)

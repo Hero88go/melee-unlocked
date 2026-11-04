@@ -13,7 +13,7 @@
 
 namespace {
 constexpr uint32_t kBytes = 176 * 32;
-const int kRows[] = {1, 7, 15, 20, 26, 29, 47, 33, 34, 58, 59, 60, 61, 62, 63};   // the rows and the letter sources
+const int kRows[] = {1, 7, 19, 20, 24, 26, 29, 44, 33, 34, 58, 59, 60, 61, 62, 63};   // the rows and the letter sources
 bool own(int i) { for (int r : kRows) if (r == i) return true; return false; }
 
 struct Builder {

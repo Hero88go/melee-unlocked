@@ -1897,12 +1897,10 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       // YouGame rows are open (the launcher's bridge is up and its account signed in); bit 3 the
       // Ranked header follows, in the game's text encoding.
       // 3: Start on the older-release offer (start_find_match): the launcher restarts in that release.
-      // 0x10 | row: the first page is on screen (Coming soon), the cursor on `row`; 0x20 | row: a
-      // Coming soon row was picked. Both only feed the stickers over the menu.
+      // 0x10 | row: the first page is on screen with YouGame Coming soon (the cursor on `row`): only
+      // feeds the stickers over the menu.
       if (payload_len == 1 && (payload[0] & 0xF0) == 0x10) {
-        coming_soon_overlay::showing(payload[0] & 0x0F);
-      } else if (payload_len == 1 && (payload[0] & 0xF0) == 0x20) {
-        coming_soon_overlay::refused(payload[0] & 0x0F);
+        coming_soon_overlay::showing();
       } else if (payload_len == 1 && payload[0] == 3) {
         if (g_older_offer_mode >= 0) {
           std::string why;

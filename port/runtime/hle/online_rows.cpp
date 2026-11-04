@@ -59,163 +59,192 @@ uint32_t fnv1a(const uint8_t* p, size_t n) {
   return h;
 }
 
-// A letter cut from one of the menu's own labels: the columns cut (to the middle of the gap to each
-// neighbour, so its outline comes along but no neighbour's fill), the columns its white fill spans,
-// and a width scale (the only capital F the menu has is in a condensed label). No pixels are kept
-// here; the letters come from the player's own disc as the menu file is built. A whole label (Ranked,
-// Unranked) is one "letter"; kSpace stands for the gap between two words.
-struct Letter { uint8_t image, cut0, cut1, fill0, fill1; uint8_t scale_pct = 100; };
-constexpr Letter kSpace = {0, 0, 0, 0, 0, 0};
-constexpr uint8_t kY = 255;   // the Y of YouGame, made from the V of "VS. Mode" (the menu has no Y)
-constexpr int kGap = 3;       // columns between two letters' fills, as the menu's own words space them
-constexpr int kWordGap = 11;
-constexpr int kGreyPct = 55;  // a greyed-out row's letters, against the menu's white  // between two words, as "Event Match" and "Regular Match" have it
 // The labels the letters come from, as Melee 1.02 with Slippi's menu files has them (English).
 constexpr struct { uint8_t image; uint32_t hash; } kSources[] = {
-    {1, 0x7E718C33u},  {15, 0x1BCF3D50u}, {20, 0xFA6049D4u}, {26, 0x745BEA37u}, {29, 0xC3650ACBu},
-    {33, 0xA933D462u}, {34, 0x97FF741Au}, {47, 0xDA03AAF9u}, {60, 0x2AA44EB1u}, {62, 0x082E8B42u}};
-// "YouGame": Y (made), o (Log-out), u (Sound), G (Gallery), a (Ranked), m (Teams), e (Ranked).
-#define YOUGAME {kY, 0, 0, 0, 0}, {60, 55, 70, 56, 69}, {20, 81, 97, 83, 96}, {15, 33, 59, 39, 58}, \
-                {33, 58, 74, 59, 73}, {62, 93, 117, 95, 116}, {33, 105, 121, 107, 120}, kSpace
-#define FRIENDS {47, 0, 12, 2, 11, 145}, {26, 47, 60, 49, 59}, {26, 93, 101, 96, 100}, {26, 119, 135, 120, 134}, \
-                {34, 45, 61, 47, 60}, {34, 135, 153, 136, 150}, {26, 135, 152, 137, 149}
-const Letter kRankedWord[] = {YOUGAME, {33, 35, 141, 41, 135}};
-const Letter kUnrankedWord[] = {YOUGAME, {34, 21, 155, 27, 149}};
-const Letter kFriendsWord[] = {YOUGAME, FRIENDS};
+    {1, 0x7E718C33u},  {19, 0x8ACD1283u}, {20, 0xFA6049D4u}, {24, 0x24A09B0Du}, {26, 0x745BEA37u},
+    {29, 0xC3650ACBu}, {33, 0xA933D462u}, {34, 0x97FF741Au}, {44, 0x95433836u}};
+
+// ---- Slippi: one label's own letters, cut whole with their outline ----
+
+// A letter cut from one of the menu's own labels: the columns cut (to the middle of the gap to each
+// neighbour, so its outline comes along but no neighbour's fill) and the columns its white fill spans.
+struct Letter { uint8_t image, cut0, cut1, fill0, fill1; };
+constexpr int kGap = 3;   // columns between two letters' fills, as the menu's own words space them
 const Letter kSlippiWord[] = {{29, 34, 56, 37, 54}, {29, 133, 142, 135, 139}, {29, 107, 115, 109, 113},
                               {29, 56, 73, 58, 72}, {29, 56, 73, 58, 72},     {29, 107, 115, 109, 113}};
-#undef YOUGAME
-#undef FRIENDS
 
-// One letter's columns (with its outline), stretched to scale_pct of its width; `lead` and `fill`
-// are where its fill starts and how wide it is, after the stretch.
-struct Columns { int width = 0, lead = 0, fill = 0; std::vector<uint8_t> a, l; };   // column-major
-Columns cut(const Label& src, const Letter& g) {
-  const int x0 = g.cut0, x1 = std::min(int(kWidth), int(g.cut1));
-  const int w = x1 - x0, out_w = std::max(1, (w * g.scale_pct + 50) / 100);
-  Columns c;
-  c.width = out_w;
-  c.lead = (int(g.fill0 - g.cut0) * g.scale_pct + 50) / 100;
-  c.fill = (int(g.fill1 - g.fill0) * g.scale_pct + 50) / 100;
-  c.a.resize(size_t(out_w) * kHeight);
-  c.l.resize(size_t(out_w) * kHeight);
-  for (int dx = 0; dx < out_w; ++dx) {
-    const float sx = (dx + 0.5f) * float(w) / float(out_w) - 0.5f;
-    const int s0 = std::clamp(int(sx), 0, w - 1), s1 = std::min(s0 + 1, w - 1);
-    const float f = std::clamp(sx - float(s0), 0.0f, 1.0f);
-    for (uint32_t y = 0; y < kHeight; ++y) {
-      const size_t a0 = y * kWidth + size_t(x0 + s0), a1 = y * kWidth + size_t(x0 + s1);
-      c.a[size_t(dx) * kHeight + y] = uint8_t(src.a[a0] + (src.a[a1] - src.a[a0]) * f + 0.5f);
-      c.l[size_t(dx) * kHeight + y] = uint8_t(src.l[a0] + (src.l[a1] - src.l[a0]) * f + 0.5f);
-    }
-  }
-  return c;
-}
-
-// The Y: the V of "VS. Mode" (columns 13-40, its point under column 30). Its left arm moves in row by
-// row so the two arms meet halfway down, the right arm is its mirror, and below the meeting row its
-// middle (one stroke with its outline) runs down as the stem to the V's own bottom edge.
-Columns make_y(const Label& vs) {
-  constexpr int kX0 = 13, kMid = 30 - kX0, kN = 2 * kMid + 1;
-  constexpr uint32_t kJoin = 13;
-  Columns c;
-  c.width = kN;
-  c.a.assign(size_t(kN) * kHeight, 0);
-  c.l.assign(size_t(kN) * kHeight, 0);
-  auto put = [&](int x, uint32_t y, uint8_t a, uint8_t l) {
-    if (x < 0 || x >= kN || !a) return;
-    const size_t o = size_t(x) * kHeight + y;
-    c.l[o] = c.a[o] ? std::max(c.l[o], l) : l;
-    c.a[o] = std::max(c.a[o], a);
-  };
-  auto src = [&](int x, uint32_t y) { return y * kWidth + size_t(kX0 + x); };
-  for (uint32_t y = 0; y <= kJoin; ++y) {
-    const int s = int(std::lround(std::max(0, int(y) - 3) * 4.0 / (kJoin - 3)));
-    for (int x = 0; x <= kMid; ++x) {
-      put(x + s, y, vs.a[src(x, y)], vs.l[src(x, y)]);
-      put(kN - 1 - x - s, y, vs.a[src(x, y)], vs.l[src(x, y)]);
-    }
-  }
-  uint32_t bottom = kJoin;   // the V's last row of white fill under its point
-  for (uint32_t y = kJoin; y < kHeight; ++y)
-    if (vs.a[src(kMid, y)] >= 12 && vs.l[src(kMid, y)] >= 12) bottom = y;
-  for (uint32_t y = kJoin + 1; y < kHeight; ++y)
-    for (int x = kMid - 5; x <= kMid + 5; ++x) {
-      const size_t o = size_t(x) * kHeight + y;
-      if (y <= bottom) { c.a[o] = c.a[size_t(x) * kHeight + kJoin]; c.l[o] = c.l[size_t(x) * kHeight + kJoin]; }
-      else { c.a[o] = vs.a[src(x, y)]; c.l[o] = vs.l[src(x, y)]; }
-    }
-  int f0 = kN, f1 = -1;
-  for (int x = 0; x < kN; ++x)
-    for (uint32_t y = 0; y < kHeight; ++y)
-      if (c.a[size_t(x) * kHeight + y] >= 12 && c.l[size_t(x) * kHeight + y] >= 12) { f0 = std::min(f0, x); f1 = std::max(f1, x); }
-  c.lead = f0;
-  c.fill = f1 - f0 + 1;
-  return c;
-}
-
-// A line set from the menu's own letters. Where two letters' edges meet, the white fill wins over
-// the neighbour's black outline. A line that fits is centred like the menu's labels; a longer one is
-// narrowed to the label's width, as the menu's own long labels ("Home-Run Contest") are.
+// A word set from the menu's own letters, centred like the menu's labels. Where two letters' edges
+// meet, the white fill wins over the neighbour's black outline.
 template <size_t N>
 Label word(const Label* sources, const Letter (&letters)[N]) {
-  constexpr int kCanvas = 512;
-  std::vector<uint8_t> ca(size_t(kCanvas) * kHeight), cl(size_t(kCanvas) * kHeight);   // column-major
-  int x = 32, fill_lo = -1, fill_hi = 0, lo = kCanvas, hi = -1;
-  for (const Letter& g : letters) {
-    if (g.image == 0 && g.cut1 == 0) { x += kWordGap - kGap; continue; }
-    const Columns c = g.image == kY ? make_y(sources[1]) : cut(sources[g.image], g);
-    if (fill_lo < 0) fill_lo = x;
-    fill_hi = x + c.fill;
-    const int left = x - c.lead;
-    for (int dx = 0; dx < c.width; ++dx) {
-      const int px = left + dx;
-      if (px < 0 || px >= kCanvas) continue;
-      for (uint32_t y = 0; y < kHeight; ++y) {
-        const uint8_t a = c.a[size_t(dx) * kHeight + y], l = c.l[size_t(dx) * kHeight + y];
-        const size_t o = size_t(px) * kHeight + y;
-        if (!a) continue;
-        cl[o] = ca[o] ? std::max(cl[o], l) : l;
-        ca[o] = std::max(ca[o], a);
-        lo = std::min(lo, px);
-        hi = std::max(hi, px);
-      }
-    }
-    x += c.fill + kGap;
-  }
+  int fills = int(N - 1) * kGap;   // from the first fill's start to the last fill's end
+  for (const Letter& g : letters) fills += g.fill1 - g.fill0;
   Label out;
-  if (hi < lo) return out;
-  const int ink = hi - lo + 1;
-  if (ink <= int(kWidth)) {
-    const int shift = (int(kWidth) - (fill_hi - fill_lo)) / 2 - fill_lo;
-    for (int px = lo; px <= hi; ++px) {
-      const int ox = px + shift;
-      if (ox < 0 || ox >= int(kWidth)) continue;
+  int x = (int(kWidth) - fills) / 2;   // where the next letter's fill starts
+  for (const Letter& g : letters) {
+    const Label& src = sources[g.image];
+    for (int sx = g.cut0; sx < g.cut1; ++sx) {
+      const int px = x - (g.fill0 - g.cut0) + (sx - g.cut0);
+      if (px < 0 || px >= int(kWidth)) continue;
       for (uint32_t y = 0; y < kHeight; ++y) {
-        out.a[y * kWidth + size_t(ox)] = ca[size_t(px) * kHeight + y];
-        out.l[y * kWidth + size_t(ox)] = cl[size_t(px) * kHeight + y];
+        const uint8_t a = src.a[y * kWidth + size_t(sx)], l = src.l[y * kWidth + size_t(sx)];
+        const size_t o = y * kWidth + size_t(px);
+        if (!a) continue;
+        out.l[o] = out.a[o] ? std::max(out.l[o], l) : l;
+        out.a[o] = std::max(out.a[o], a);
       }
     }
-    return out;
+    x += g.fill1 - g.fill0 + kGap;
   }
-  // Narrowed: each label column averages the canvas columns it covers (intensity weighted by alpha).
-  const int out_w = int(kWidth) - 2, off = 1;
+  return out;
+}
+
+// ---- YouGame's rows: letter shapes from several labels, one line, one outline ----
+//
+// The letters come from labels that share one baseline (x-height rows 11-24); the game's own labels
+// draw capitals and ascenders one row taller than Slippi's (rows 4-24 against 5-24), so those lose a
+// row in their upper part. Only the white shapes are taken: the line is narrowed to the label like
+// the menu's long labels ("Home-Run Contest") and then gets one even outline, as the menu draws it.
+
+// White coverage 0-1, kHeight rows of `w` columns (row-major).
+struct Shape {
+  int w = 0;
+  std::vector<float> f;
+  float& at(int x, int y) { return f[size_t(y) * size_t(w) + size_t(x)]; }
+  float at(int x, int y) const { return f[size_t(y) * size_t(w) + size_t(x)]; }
+};
+float white(const Label& src, int x, int y) {
+  const size_t o = size_t(y) * kWidth + size_t(x);
+  return float(src.a[o]) * float(src.l[o]) / 225.0f;
+}
+// One row out of the upper part (row 8), a blank row on top: a capital as tall as Slippi's.
+void drop_row(Shape& s) {
+  for (int y = 8; y > 0; --y)
+    for (int x = 0; x < s.w; ++x) s.at(x, y) = s.at(x, y - 1);
+  for (int x = 0; x < s.w; ++x) s.at(x, 0) = 0.0f;
+}
+// The fill of columns fill0..fill1 of a label, with one column of soft edge each side.
+Shape shape(const Label& src, int fill0, int fill1, bool taller) {
+  Shape s;
+  s.w = fill1 - fill0 + 3;
+  s.f.assign(size_t(s.w) * kHeight, 0.0f);
+  for (int x = 0; x < s.w; ++x)
+    for (int y = 0; y < int(kHeight); ++y) {
+      const float v = white(src, fill0 - 1 + x, y);
+      s.at(x, y) = (x == 0 || x == s.w - 1) ? std::min(v, 0.6f) : v;
+    }
+  if (taller) drop_row(s);
+  return s;
+}
+// The Y (the menu has none): the V of "VS. Mode" with its left arm moved in row by row so the arms
+// meet halfway down, the right arm its mirror, and the meeting row repeated down as the stem.
+Shape make_y(const Label& vs) {
+  constexpr int kJoin = 13;
+  const Shape v = shape(vs, 21, 39, false);
+  Shape y;
+  y.w = v.w;
+  y.f.assign(v.f.size(), 0.0f);
+  const int mid = (v.w - 1) / 2;
+  for (int row = 0; row <= kJoin; ++row) {
+    const int sh = int(std::lround(std::max(0, row - 4) * 4.0 / (kJoin - 4)));
+    for (int x = 0; x <= mid; ++x) {
+      const float c = v.at(x, row);
+      if (x + sh < y.w) y.at(x + sh, row) = std::max(y.at(x + sh, row), c);
+      if (v.w - 1 - x - sh >= 0) y.at(v.w - 1 - x - sh, row) = std::max(y.at(v.w - 1 - x - sh, row), c);
+    }
+  }
+  int bottom = kJoin;
+  for (int row = kJoin; row < int(kHeight); ++row)
+    if (v.at(mid, row) > 0.7f) bottom = row;
+  for (int row = kJoin + 1; row <= bottom; ++row)
+    for (int x = 0; x < y.w; ++x) y.at(x, row) = y.at(x, kJoin);
+  drop_row(y);
+  return y;
+}
+// The F (the menu's only capital F is in a condensed label): the E of "Erase Data" without its
+// bottom bar.
+Shape make_f(const Label& erase) {
+  Shape f = shape(erase, 11, 24, false);
+  int left = -1, stem = 0;   // the stem's columns, from a row with only the stem
+  for (int x = 0; x < f.w; ++x)
+    if (f.at(x, 20) > 0.7f) { if (left < 0) left = x; ++stem; }
+  for (int row = 16; row < int(kHeight); ++row)
+    for (int x = left + stem + 1; x < f.w; ++x) f.at(x, row) = 0.0f;
+  drop_row(f);
+  return f;
+}
+
+// A part of a line: a label's letter (taller: from the game's own labels, see above), a made letter,
+// or the gap between two words.
+struct Part { uint8_t image; uint8_t fill0, fill1; bool taller; };
+constexpr uint8_t kMadeY = 250, kMadeF = 251, kWordSpace = 252;
+#define YOUGAME {kMadeY, 0, 0, false}, {20, 66, 79, true}, {20, 83, 95, true}, {44, 19, 33, true}, \
+                {44, 44, 54, true}, {19, 74, 94, true}, {19, 125, 138, true}, {kWordSpace, 0, 0, false}
+const Part kRankedLine[] = {YOUGAME, {33, 41, 134, false}};
+const Part kUnrankedLine[] = {YOUGAME, {34, 27, 148, false}};
+const Part kFriendsLine[] = {YOUGAME, {kMadeF, 0, 0, false}, {26, 49, 57, true}, {26, 96, 99, true}, {26, 120, 133, true},
+                             {34, 47, 59, false}, {34, 136, 148, false}, {26, 137, 148, true}};
+#undef YOUGAME
+constexpr int kWordGap = 12;   // fill to fill between two words, as "Event Match" has it
+constexpr int kOutline = 4;    // columns the outline adds each side
+constexpr int kGreyPct = 55;   // a greyed-out row's letters, against the menu's white
+
+template <size_t N>
+Label line(const Label* sources, const Part (&parts)[N]) {
+  constexpr int kCanvas = 640;
+  std::vector<float> canvas(size_t(kCanvas) * kHeight, 0.0f);   // row-major
+  int x = 10, lo = -1, hi = 0;
+  for (const Part& p : parts) {
+    if (p.image == kWordSpace) { x += kWordGap - kGap; continue; }
+    const Shape s = p.image == kMadeY ? make_y(sources[1])
+                    : p.image == kMadeF ? make_f(sources[24])
+                                        : shape(sources[p.image], p.fill0, p.fill1, p.taller);
+    const int left = x - 1;
+    int first = -1, last = -1;
+    for (int dx = 0; dx < s.w; ++dx)
+      for (int y = 0; y < int(kHeight); ++y) {
+        const float v = s.at(dx, y);
+        float& c = canvas[size_t(y) * kCanvas + size_t(left + dx)];
+        c = std::max(c, v);
+        if (v > 0.5f) { if (first < 0) first = dx; last = dx; }
+      }
+    if (lo < 0) lo = left + first;
+    hi = left + last;
+    x = hi + kGap;
+  }
+  // Narrow the white to the label (each column averages the canvas columns it covers).
+  const int src0 = lo - 1, src_w = hi - lo + 3;
+  const int out_w = std::min(src_w, int(kWidth) - 2 * kOutline), off = (int(kWidth) - out_w) / 2;
+  std::vector<float> fill(size_t(kWidth) * kHeight, 0.0f);
   for (int dx = 0; dx < out_w; ++dx) {
-    const double x0 = lo + double(dx) * ink / out_w, x1 = lo + double(dx + 1) * ink / out_w;
-    for (uint32_t y = 0; y < kHeight; ++y) {
-      double wa = 0, wl = 0, tot = 0;
-      for (int sx = int(x0); sx < x1 && sx <= hi; ++sx) {
+    const double x0 = double(dx) * src_w / out_w, x1 = double(dx + 1) * src_w / out_w;
+    for (int y = 0; y < int(kHeight); ++y) {
+      double acc = 0, tot = 0;
+      for (int sx = int(x0); sx < x1 && sx < src_w; ++sx) {
         const double cover = std::min(x1, double(sx + 1)) - std::max(x0, double(sx));
-        const size_t o = size_t(sx) * kHeight + y;
-        wa += ca[o] * cover;
-        wl += double(cl[o]) * ca[o] * cover;
+        acc += canvas[size_t(y) * kCanvas + size_t(src0 + sx)] * cover;
         tot += cover;
       }
-      const size_t o = y * kWidth + size_t(off + dx);
-      out.a[o] = uint8_t(std::clamp(std::lround(wa / tot), 0L, 15L));
-      out.l[o] = wa > 0 ? uint8_t(std::clamp(std::lround(wl / wa), 0L, 15L)) : 0;
+      fill[size_t(y) * kWidth + size_t(off + dx)] = float(acc / tot);
     }
   }
+  // The outline: full within two pixels of the white, a soft third, as on the menu's labels.
+  Label out;
+  for (int y = 0; y < int(kHeight); ++y)
+    for (int px = 0; px < int(kWidth); ++px) {
+      float d = 99.0f;
+      for (int dy = -4; dy <= 4; ++dy)
+        for (int dx = -4; dx <= 4; ++dx) {
+          const int sy = y + dy, sx = px + dx;
+          if (sy < 0 || sy >= int(kHeight) || sx < 0 || sx >= int(kWidth)) continue;
+          if (fill[size_t(sy) * kWidth + size_t(sx)] >= 0.5f) d = std::min(d, std::sqrt(float(dx * dx + dy * dy)));
+        }
+      const float w = fill[size_t(y) * kWidth + size_t(px)];
+      const float a = std::max(w, std::clamp(3.4f - d, 0.0f, 1.0f));
+      const size_t o = size_t(y) * kWidth + size_t(px);
+      out.a[o] = uint8_t(std::lround(a * 15.0f));
+      out.l[o] = a > 0.0f ? uint8_t(std::lround(w / a * 15.0f)) : 0;
+    }
   return out;
 }
 
@@ -253,7 +282,7 @@ bool apply(std::vector<uint8_t>& file, std::string* why, bool coming_soon) {
   if (!table || a.u16(texanim + 20) != kImages || !a.in(table, 4u * kImages)) return fail(why, "label count differs");
   // The eight online rows' images (Ranked, Unranked, Direct, Log-in, Log-out, Update, Teams, Party),
   // the labels the new words take their letters from, and Online Play (the fallback Slippi row).
-  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 1, 15, 20, 26, 29, 47, 7};
+  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 1, 19, 20, 24, 26, 29, 44, 7};
   uint32_t data[64] = {};
   for (int i : rows) {
     const uint32_t desc = a.ptr(table + 4u * i);
@@ -278,9 +307,9 @@ bool apply(std::vector<uint8_t>& file, std::string* why, bool coming_soon) {
   if (letters_ok) {
     std::vector<Label> src(64);
     for (const auto& s : kSources) src[s.image] = decode(base + data[s.image]);
-    encode(word(src.data(), kRankedWord), base + data[33]);
-    encode(word(src.data(), kUnrankedWord), base + data[34]);
-    encode(word(src.data(), kFriendsWord), base + data[58]);
+    encode(line(src.data(), kRankedLine), base + data[33]);
+    encode(line(src.data(), kUnrankedLine), base + data[34]);
+    encode(line(src.data(), kFriendsLine), base + data[58]);
     encode(word(src.data(), kSlippiWord), base + data[62]);
   } else {
     std::memcpy(base + data[62], online_play.data(), kBytes);   // Friends keeps Slippi's Direct label
