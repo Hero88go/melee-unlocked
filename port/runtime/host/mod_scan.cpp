@@ -10,6 +10,7 @@
 #include <bcrypt.h>
 #include <shellapi.h>
 #include <algorithm>
+#include <iterator>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -412,7 +413,13 @@ const KnownDisc kMexSha256[] = {
 const KnownDisc kMexFingerprint[] = {
   {"9a1a48b999a2f8f4deaee2554e5f177cb265666b95676a508406db80b181246b", "Akaneia", "1.0.1", "akaneia"},
 };
-constexpr const char kTmceSupported[] = "v1.4 d1";   // the Training Mode CE compiled into the game (tmce/src/events.h)
+// The Training Mode CE compiled into the game is v1.4 d2 (tmce/src/events.h). Its code runs natively and
+// only the disc's TM files (menus, models) are read, so a disc whose TM files carry the same public
+// symbols plays too: v1.4 d1 (identical symbols; no Laser Land file, which the event does not need) and
+// v1.4.1, the stable CE-v1.4 release (the same symbols, a few extra models). Each checked through the Lab
+// and its menus in a hidden run before it was listed here.
+constexpr const char kTmceSupported[] = "v1.4 d2";
+constexpr const char* const kTmceAlsoSupported[] = {"v1.4 d1", "v1.4.1"};
 
 struct DiscFile { uint32_t offset = 0, length = 0; bool dir = false; };
 struct DiscInfo {
@@ -919,14 +926,15 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
   if (info.id == "GTME01" && info.has("/tm/eventmenu.dat")) {
     const std::string text = tmce_version(in, info);                     // "v1.4 d1"
     d.kind = Kind::TmCe; d.name = "Training Mode CE"; d.version = text; d.key = "tmce"; d.catalog_id = "tmce"; d.restart = true;
-    if (text == kTmceSupported) {
+    if (text == kTmceSupported || std::any_of(std::begin(kTmceAlsoSupported), std::end(kTmceAlsoSupported),
+                                              [&](const char* v) { return text == v; })) {
       set_support(d, Engine::Source, Support::Supported, true);
       d.message = "Detected: Training Mode CE " + text;
     } else {
       set_support(d, Engine::Source, Support::NotSupportedYet, false);
       d.key = content_key(d.hash);
       d.message = std::string("Found Training Mode CE") + (text.empty() ? "" : " " + text) +
-                  ", but this version is not supported. Supported: " + kTmceSupported + ".";
+                  ", but this version is not supported. Supported: " + kTmceSupported + ", v1.4 d1 and v1.4.1.";
     }
     return d;
   }
@@ -1057,7 +1065,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 14";   // 14: retail content identity independent of disc padding
+constexpr const char kCacheHeader[] = "mu-scan 15";   // 15: Training Mode CE v1.4 d2 and v1.4.1 discs play natively; 14: retail content identity independent of disc padding
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

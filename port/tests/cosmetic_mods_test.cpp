@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include "cosmetic_mods.h"
+#include "stage_dat_safety.h"
 #include "../runtime/gx/companion_texture_match.h"
 
 #include <windows.h>
@@ -1638,6 +1639,57 @@ int main(int argc, char** argv) {
     check(host::cosmetics::set_stage_pack_random(stage_pack, true, &error) && host::cosmetics::stage_packs()[0].random,
           "and it can be put back");
     check(host::cosmetics::set_random_stage_skins(false, &error), "random stage skins off again");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // A well-formed DAT container can still have an invalid stage model table. It remains an explicit
+  // choice, but must never be selected at random when the retail stage is understood by the reader.
+  {
+    const fs::path stage_folder = folder / L"broken-stage-tables";
+    fs::create_directories(stage_folder, ec);
+    host::cosmetics::configure((stage_folder / L"port-settings.ini").string());
+    const uint32_t size = 0x400;
+    const std::vector<uint32_t> reloc{8, 0x50, 0x54, 0x60, 0x90, 0x100, 0x340};
+    const std::vector<std::pair<std::string, uint32_t>> roots{
+        {"map_head", 0}, {"coll_data", 0x3c0}, {"grGroundParam", 0x3d0}};
+    const size_t table = 32 + size + reloc.size() * 4, strings = table + roots.size() * 8;
+    auto clean = visual_dat();
+    clean.resize(32 + size);
+    clean.resize(strings, 0);
+    for (const auto& root : roots) clean.insert(clean.end(), root.first.c_str(), root.first.c_str() + root.first.size() + 1);
+    be32(clean, 0, (uint32_t)clean.size()); be32(clean, 4, size);
+    be32(clean, 8, (uint32_t)reloc.size()); be32(clean, 12, (uint32_t)roots.size());
+    be32(clean, 40, 0x60); be32(clean, 44, 1);
+    be32(clean, 32 + 0x60, 0x80); be32(clean, 32 + 0x90, 0xe0);
+    for (size_t i = 0; i < reloc.size(); ++i) be32(clean, 32 + size + i * 4, reloc[i]);
+    uint32_t name = 0;
+    for (size_t i = 0; i < roots.size(); ++i) {
+      be32(clean, table + i * 8, roots[i].second); be32(clean, table + i * 8 + 4, name);
+      name += (uint32_t)roots[i].first.size() + 1;
+    }
+    auto broken = clean;
+    be32(broken, 44, 300); // map_head claims more model entries than the file holds
+    check(host::cosmetics::stage_safety::Archive{clean}.parse() &&
+              !host::cosmetics::stage_safety::Archive{broken}.parse(), "stage table regression fixture");
+    constexpr uint32_t retail_at = 0x100, fst_at = 0x600, asset_at = 0x800;
+    g_disc_bytes.assign(0x1800, 0);
+    std::copy(clean.begin(), clean.end(), g_disc_bytes.begin() + retail_at);
+    g_disc_table = {{"GrNBa.dat", {retail_at, (uint32_t)clean.size()}}};
+    const auto mod_fst = one_file_fst(asset_at, (uint32_t)broken.size(), "GrNBa.dat");
+    std::vector<uint8_t> image(0x1800, 0);
+    be32(image, 0x424, fst_at); be32(image, 0x428, (uint32_t)mod_fst.size());
+    std::copy(mod_fst.begin(), mod_fst.end(), image.begin() + fst_at);
+    std::copy(broken.begin(), broken.end(), image.begin() + asset_at);
+    const auto iso = stage_folder / L"broken.iso";
+    write_file(iso, image);
+    check(host::cosmetics::scan_disc_skins(iso.string(), "Broken Stage", &error).ok, "scan stage with broken model table");
+    auto game_fst = one_file_fst(retail_at, (uint32_t)clean.size(), "GrNBa.dat");
+    host::cosmetics::apply_to_fst(game_fst.data(), (uint32_t)game_fst.size());
+    check(host::cosmetics::set_random_stage_skins(true, &error), "enable random stage regression");
+    const auto pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 99);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at).empty(), "random never chooses a malformed stage table");
+    check(!host::cosmetics::assets().empty(), "the rejected random skin remains listed for explicit selection");
+    host::cosmetics::set_random_stage_skins(false, &error);
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 

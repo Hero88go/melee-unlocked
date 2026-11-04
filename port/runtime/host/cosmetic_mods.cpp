@@ -6367,12 +6367,32 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
     }
     if (originals.empty() || originals.size() > 2) return result;
     for (const auto& original : originals) extent = std::max(extent, original.size());
+    bool original_reads = true;   // every retail stage file does (all 76 of melee 1.02)
+    for (const auto& original : originals) {
+      stage_safety::Archive archive{original};
+      if (!archive.parse()) original_reads = false;
+    }
     for (const auto& asset : g_assets) {
       if (!asset.info.available || asset.info.kind != "stage_visual" || selection_key(asset) != target) continue;
       if (asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)) continue;
       std::string error;
       const auto bytes = load_runtime_asset_locked(asset, &error);
       if (bytes.empty()) continue;
+      // A file whose stage tables do not even read (relocations past its data, pointers into
+      // nothing) is never a random pick, offline either: one such Yoshi's Story file on a player's
+      // disc stopped the game at its Shy Guys and at the stage's load (0.9.97 reports). Online it
+      // was already refused below. Still served when the player picks it themselves.
+      // Only when the original reads: a file this reader does not know at all is not judged.
+      if (original_reads) {
+        stage_safety::Archive readable{bytes};
+        if (!readable.parse()) {
+          static std::set<std::string> told;
+          if (told.insert(asset.info.id).second)
+            host::log("cosmetics: %s stays out of the random pick for %s: its stage tables are malformed",
+                      asset.info.id.c_str(), target.c_str());
+          continue;
+        }
+      }
       bool allowed = true;
       size_t longest = bytes.size();
       for (const auto& original : originals) {

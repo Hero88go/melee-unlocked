@@ -46,16 +46,32 @@ unsigned mu_tmce_osd_enabled(void)
     return stc_memcard->TM_OSDEnabled;
 }
 
-/* The byte after it (+0x1F28): the legacy message system's window count, now the OSD position */
+/* d2 uses +0x1F28 for position. Legacy events retain their full five-message queue. */
 int mu_tmce_osd_max_windows(void)
 {
-    return stc_memcard->TM_OSDPosition;
+    return 4;
+}
+
+/* The OSD toggle menu (Event Select > L; mn/mnstagesw.c, TM-CE's "Onscreen Display/Toggle UI"). */
+void mu_tmce_osd_set_enabled(unsigned bits)
+{
+    stc_memcard->TM_OSDEnabled = bits;
+}
+/* 0 HUD, 1 Sides, 2 Top Left, 3 Top Right; a value from the removed max-windows setting reads as HUD */
+int mu_tmce_osd_position(void)
+{
+    const int p = stc_memcard->TM_OSDPosition;
+    return p >= 0 && p < 4 ? p : 0;
+}
+void mu_tmce_osd_set_position(int position)
+{
+    stc_memcard->TM_OSDPosition = (u8) position;
 }
 
 /* Misc/On No Save (the memory card scene found no save): TM-CE's defaults in the new save */
 void mu_tmce_osd_no_save_defaults(void)
 {
-    stc_memcard->TM_OSDPosition = 1; /* OSDMaxWindows */
+    stc_memcard->TM_OSDPosition = 0; /* above the HUD */
     stc_memcard->TM_EventPage = 1;
     stc_memcard->TM_OSDRecommended = 0;
     stc_memcard->TM_OSDEnabled = 0;

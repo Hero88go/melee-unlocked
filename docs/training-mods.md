@@ -1,4 +1,4 @@
-# Training mods in v0.8.5
+# Training mods
 
 Open **Mods**, just above Build in the launcher sidebar, to download the five catalog packs or add
 your own finished mod files. Dropping multiple files adds an entry for each detected pack. Playable
@@ -10,7 +10,7 @@ The public download includes native implementations, not the packs' disc images 
 | Pack | Supplied file | In-game entry | Purpose |
 | --- | --- | --- | --- |
 | 20XX Tournament Edition (TE) | Supported 20XX TE `.gci` save | VS Mode > Tournament Melee | VS rules, tournament conveniences and training switches |
-| UnclePunch Training Mode Community Edition (TM-CE) | Supported 1.4d1 disc image | 1P Mode > Event Match | Event selection, Training Lab and individual exercises; newer unported versions stay Off |
+| UnclePunch Training Mode Community Edition (TM-CE) | 1.4 d2, 1.4 d1 and 1.4.1 disc images | 1P Mode > Event Match | Event selection, Training Lab, individual exercises and global OSD settings; other versions stay Off |
 | 20XX Training Hack Pack | Patched Hack Pack disc | Not supported yet (not a native pack, and it stops at startup on the Static Recomp) | A separate mod with its own training menus and features |
 
 20XX TE and the 20XX Training Hack Pack are different mods. Adding a Hack Pack disc as an
@@ -81,9 +81,9 @@ their executable patches.
 - Supported Source Port file overlays use the retail view for Unranked and other vanilla online
   queues. Direct uses matching mods only when Mods in Direct is enabled. Preflight keeps the
   training exercise loaded during search and switches the content view at the online handoff.
-- TM-CE's Event Select L-button shortcut to its global on-screen-display toggle screen remains
-  disabled. The port does not yet provide that console screen; individual exercises retain
-  their own menus.
+- On TM-CE's Event Select screen, press L for global on-screen-display toggles. X/Y changes
+  their position; B or Start saves and returns to Event Select. The Training Lab also has
+  the d2 Display Options presets and separate Controls menu.
 
 The event menu, exercise entry and pause-menu crash reproduction have been tested. That is
 not exhaustive validation of every exercise condition, score-saving path or TE switch.

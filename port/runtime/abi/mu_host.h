@@ -436,6 +436,11 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
 #define MU_DISPLAY_OPTION_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
 #define MU_DISPLAY_OPTION_CODES_ALL 0x003FF000u
+/* Offline community codes: they change menu timing and the pause, so the host sends them only
+ * outside network play (source_host.cpp h_display_options). Saved with the codes above. */
+#define MU_DISPLAY_OPTION_INSTANT_MELEE      0x00400000u   /* Instant Melee: faster stage, stage select and character select loads; pause during the countdown */
+#define MU_DISPLAY_OPTION_FREE_PAUSE_CAMERA  0x00800000u   /* Unrestricted pause camera */
+#define MU_DISPLAY_OPTION_OFFLINE_CODES 0x00C00000u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

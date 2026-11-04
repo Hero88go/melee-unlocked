@@ -73,9 +73,14 @@ static void invalid(void) {
     }
     refused(&l,l.section,l.g2h[1],l.h2g[0],YG_SECTION_SIZE-1);
     refused(&l,l.section,l.g2h[1],l.h2g[0],YG_SECTION_SIZE+1);
+    /* WSL1 cannot shrink a mapped file. This case tests the file size at attach, so leave it
+       unmapped while changing its size, as a producer can before handing the descriptor over. */
+    CHECK(munmap(l.m,YG_SECTION_SIZE)==0);
     CHECK(ftruncate(l.section,YG_SECTION_SIZE-1)==0);
     refused(&l,l.section,l.g2h[1],l.h2g[0],YG_SECTION_SIZE);
     CHECK(ftruncate(l.section,YG_SECTION_SIZE)==0);
+    l.m=mmap(NULL,YG_SECTION_SIZE,PROT_READ|PROT_WRITE,MAP_SHARED,l.section,0);
+    CHECK(l.m!=MAP_FAILED);
     refused(&l,l.g2h[0],l.g2h[1],l.h2g[0],YG_SECTION_SIZE);
     refused(&l,l.section,l.section,l.h2g[0],YG_SECTION_SIZE);
     refused(&l,l.section,l.g2h[1],l.section,YG_SECTION_SIZE);

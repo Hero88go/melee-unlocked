@@ -128,9 +128,15 @@ int mu_practice_bridge(int op, int* a, int n)
     case MU_PR_TRAINING_PICK: {
         /* Training's character select starts from its saved match: the player (slot 0) and the CPU (1). */
         VsModeData* vs = &gmMainLib_804D3EE0->modes.table[GmVsMode_Training];
+        int colors;
         if (n < 3 || a[0] < 0 || a[0] > 1 || a[1] < 0 || a[1] >= 26) return -1;
+        /* The online match's costume can be one this view does not have (a mod's extra costume):
+         * that CPU was not drawn on the select screen and Training's start divided by its 0
+         * costumes (0.9.98 report). Such a costume is the first one. */
+        colors = gm_GetNumCostumesForCKind((u8) a[1]);
+        if (colors <= 0) return -1;
         vs->start.players[a[0]].ckind = (s8) a[1];
-        vs->start.players[a[0]].color = (u8) a[2];
+        vs->start.players[a[0]].color = (u8) (a[2] >= 0 && a[2] < colors ? a[2] : 0);
         return 0;
     }
     case MU_PR_UNLOCKED: {

@@ -78,6 +78,12 @@ EDITS = [
     ('lab.c', 'RGB565 *orig_img = snap_image.img_ptr;', 'RGB565 *orig_img = MEX_DP(snap_image.img_ptr);'),
     ('lab.c', 'resized_image.img_ptr = new_img;                                            // store pointer to resized image',
      'MEX_DP_SET(resized_image.img_ptr, new_img); // store pointer to resized image'),
+    # the HUD's hidden flag (r13-0x4948 on the console) is ifAll's own `hidden` natively: set and read
+    # through ifAll (Match_*HUDDevelop are ifAll_HideHUD, ifAll_ShowHUD and ifAll_IsHUDHidden)
+    ('lab.c', 'bool *hide_hud_ptr = (bool *)(R13 + -0x4948);',
+     'if (show_hud) Match_ShowHUDDevelop(); else Match_HideHUDDevelop();'),
+    ('lab.c', '*hide_hud_ptr = !show_hud;', '/* set just above */'),
+    ('lab.c', 'bool hidden = *(u8*)(R13 + -0x4948);', 'bool hidden = Match_IsHUDHiddenDevelop();'),
 ]
 
 

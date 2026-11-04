@@ -163,6 +163,12 @@ int mu_hud_emblems_hidden(void);
 #define MU_DISPLAY_CODES_ALL         0x003FF000u
 /* shim/mu_code_features.c: nonzero while the player has that community code on. */
 int mu_code_feature(unsigned int bit);
+/* Offline community codes (HUD tab): they change menu timing and the pause, so the host sends them
+ * only outside network play (source_host.cpp h_display_options). */
+#define MU_DISPLAY_INSTANT_MELEE      0x00400000u   /* Instant Melee: faster stage, stage select and character select loads; pause during the countdown */
+#define MU_DISPLAY_FREE_PAUSE_CAMERA  0x00800000u   /* Unrestricted pause camera: no angle limits, zoom 2.5 to 32768 */
+int mu_instant_melee(void);
+int mu_free_pause_camera(void);
 /* shim/mu_code_features.c: the knockback angle line of a hitbox bubble just drawn (ftdrawcommon.c). */
 struct HitCapsule;
 void mu_hitbox_angle(struct HitCapsule* hit, float fighter_scale, float facing);

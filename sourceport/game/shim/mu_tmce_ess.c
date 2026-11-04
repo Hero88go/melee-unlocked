@@ -53,10 +53,9 @@ void mu_tmce_set_event_page(int page);
 #define ESS_ANALOG_TRIGGER_THRESHOLD 43 /* Globals.s AnalogTriggerThreshold */
 #define ESS_CURSOR_ROW_Y (-1.32F)       /* Better X and Y Event Jump: the cursor's step per row */
 #define ESS_SCORE_SLOTS 51              /* the save file's event score array (x1A70 + its padding) */
-/* Custom ESS Button Actions: L opens the OSD toggle menu on the Random Stage Select screen. That menu
- * is TM-CE's "Onscreen Display/Toggle UI" patches, not ported yet (ledger_T2.md); until they are,
- * L would land on the vanilla Random Stage Select screen, so the action stays off. */
-#define ESS_OSD_MENU_PORTED 0
+/* Custom ESS Button Actions: L opens the OSD toggle menu on the Random Stage Select screen, in its
+ * TM-CE mode (TM-CE's "Onscreen Display/Toggle UI" patches, native in mn/mnstagesw.c). */
+#define ESS_OSD_MENU_PORTED 1
 
 static int page_is_valid(int page)
 {

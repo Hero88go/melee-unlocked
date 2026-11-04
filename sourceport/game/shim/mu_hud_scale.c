@@ -73,6 +73,7 @@ void mu_hud_scale(HSD_GObj* gobj, int stock)
 #include <melee/ft/forward.h>
 
 int mu_nametag_position(int slot, float* x, float* y);   /* if/ifnametag.c */
+int mu_fighter_screen_position(int slot, float* x, float* y);   /* if/ifnametag.c */
 void mu_hud_player_abi(int slot, int present, int damage, int stocks, float tag_x, float tag_y,
                        int tag_visible);                   /* mu_online_abi.c */
 void mu_hud_combo_abi(int slot, int link, float percent, int stunned);   /* mu_online_abi.c */
@@ -104,6 +105,11 @@ void mu_hud_report(void)
         float x = 0.0f, y = 0.0f;
         const int present = Player_GetPlayerSlotType(slot) != Gm_PKind_NA;
         const int visible = present && mu_nametag_position(slot, &x, &y);
+        /* A hidden tag does not move: where it would be instead, or no place at all (NaN) while the
+         * player has no fighter in play, for the overlays that follow the fighter (ally markers). */
+        if (!visible && !(present && mu_fighter_screen_position(slot, &x, &y))) {
+            x = y = __builtin_nanf("");
+        }
         mu_hud_player_abi(slot, present, present ? ifStatus_HudInfo.players[slot].damage_percent : 0,
                           present ? Player_GetStocks(slot) : 0, x, y, visible);
         /* For the Arcade look's combo counter (read only): the player this one's combo link holds right

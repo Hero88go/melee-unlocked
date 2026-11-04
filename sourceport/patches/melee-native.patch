@@ -48299,7 +48299,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..d3ba008c2 100644
+index 1a8206270..596a5bb1b 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -48599,19 +48599,26 @@ index 1a8206270..d3ba008c2 100644
              var_f1 = HSD_PadCopyStatus[idx].nml_subStickY;
          }
          var_f2 = var_f1;
-@@ -1742,6 +1843,11 @@ void Camera_8002BAA8(f32 zoom_amt)
+@@ -1742,6 +1843,18 @@ void Camera_8002BAA8(f32 zoom_amt)
          ((zoom_amt * ((offset_len * cm_803BCCA0.x9C) + cm_803BCCA0.xA0)) +
           game_camera.pause_eye_distance);
  
 +#ifdef MU_NATIVE
 +    /* 20XX TE: the pause camera zooms without limits. */
 +    if (mu_te_general()) {
++    } else if (mu_free_pause_camera()) {
++        /* Unrestricted pause camera (offline community code): zoom from 2.5 to 32768. */
++        if (game_camera.pause_eye_distance < 2.5f) {
++            game_camera.pause_eye_distance = 2.5f;
++        } else if (game_camera.pause_eye_distance > 32768.0f) {
++            game_camera.pause_eye_distance = 32768.0f;
++        }
 +    } else
 +#endif
      if (game_camera.pause_eye_distance < game_camera.x2D0.unk28) {
          game_camera.pause_eye_distance = game_camera.x2D0.unk28;
      } else if (game_camera.pause_eye_distance > game_camera.x2D0.unk2C) {
-@@ -2035,11 +2141,11 @@ void Camera_8002C1A8(void)
+@@ -2035,11 +2148,11 @@ void Camera_8002C1A8(void)
  
  static inline float eye_offset_len(Vec3* offset)
  {
@@ -48626,7 +48633,7 @@ index 1a8206270..d3ba008c2 100644
  {
      f64 len;
      Vec3 temp_pos;
-@@ -2132,7 +2238,7 @@ void Camera_8002C5B4(Camera_x2D0* arg0)
+@@ -2132,29 +2245,44 @@ void Camera_8002C5B4(Camera_x2D0* arg0)
      len = eye_offset_len(eye_offset);
  
      xz_dist =
@@ -48635,7 +48642,50 @@ index 1a8206270..d3ba008c2 100644
  
      PSVECCrossProduct(eye_offset, &cam->pause_up, &cross1);
      lbVector_Normalize(&cross1);
-@@ -2182,64 +2288,7 @@ static inline bool get_subject_pos(Vec3* pos, const s8* slot_ptr)
+     PSVECCrossProduct(&cross1, eye_offset, &cross2);
+     lbVector_Normalize(&cross2);
+ 
++#ifdef MU_NATIVE
++    {
++        /* Unrestricted pause camera (offline community code): the code's 32 (radians, so no
++         * limit) for down, right and left; up keeps the stage's own. */
++        const int free_cam = mu_free_pause_camera();
++        const f32 angle_down = free_cam ? 32.0f : params->angle_down;
++        const f32 angle_right = free_cam ? 32.0f : params->angle_right;
++        const f32 angle_left = free_cam ? 32.0f : params->angle_left;
++#else
++    {
++        const f32 angle_down = params->angle_down;
++        const f32 angle_right = params->angle_right;
++        const f32 angle_left = params->angle_left;
++#endif
+     pitch = atan2f(*eye_offset_y, xz_dist);
+-    if (pitch > params->angle_down) {
++    if (pitch > angle_down) {
+         lbVector_RotateAboutUnitAxis(eye_offset, &cross1,
+-                                     params->angle_down - pitch);
++                                     angle_down - pitch);
+     } else if (pitch < -params->angle_up) {
+         lbVector_RotateAboutUnitAxis(eye_offset, &cross1,
+                                      -params->angle_up - pitch);
+     }
+ 
+     yaw = atan2f(eye_offset->x, *eye_offset_z);
+-    if (yaw > params->angle_right) {
++    if (yaw > angle_right) {
+         lbVector_RotateAboutUnitAxis(eye_offset, &cross2,
+-                                     params->angle_right - yaw);
+-    } else if (yaw < -params->angle_left) {
++                                     angle_right - yaw);
++    } else if (yaw < -angle_left) {
+         lbVector_RotateAboutUnitAxis(eye_offset, &cross2,
+-                                     -params->angle_left - yaw);
++                                     -angle_left - yaw);
++    }
+     }
+ }
+ 
+@@ -2182,64 +2310,7 @@ static inline bool get_subject_pos(Vec3* pos, const s8* slot_ptr)
      return valid;
  }
  
@@ -48701,7 +48751,7 @@ index 1a8206270..d3ba008c2 100644
  {
      return &transform->target_interest;
  }
-@@ -2253,11 +2302,16 @@ static inline void track_subject(CameraTransformState* transform,
+@@ -2253,11 +2324,16 @@ static inline void track_subject(CameraTransformState* transform,
      f32* coeff_ptr;
      f32 coeff;
  
@@ -48719,7 +48769,7 @@ index 1a8206270..d3ba008c2 100644
  
      game_camera.transform.target_position = *copy_src;
      target_pos = &transform->target_position;
-@@ -2273,8 +2327,8 @@ static inline void track_subject(CameraTransformState* transform,
+@@ -2273,8 +2349,8 @@ static inline void track_subject(CameraTransformState* transform,
      eye_diff->z *= coeff;
      lbVector_Add(position_ptr, eye_diff);
  
@@ -48730,7 +48780,7 @@ index 1a8206270..d3ba008c2 100644
      coeff = *coeff_ptr;
      interest_diff->x *= coeff;
      interest_diff->y *= coeff;
-@@ -2372,6 +2426,23 @@ void Camera_8002CB0C(CameraBounds* bounds)
+@@ -2372,6 +2448,23 @@ void Camera_8002CB0C(CameraBounds* bounds)
  
      {
          s8 pauser_slot = camera->x2C5;
@@ -48754,7 +48804,7 @@ index 1a8206270..d3ba008c2 100644
          if (pauser_slot == 5) {
              return;
          }
-@@ -2455,7 +2526,7 @@ void Camera_8002CB0C(CameraBounds* bounds)
+@@ -2455,7 +2548,7 @@ void Camera_8002CB0C(CameraBounds* bounds)
  void Camera_8002CDDC(void* unused)
  {
      s8* slot_ptr;
@@ -48763,7 +48813,7 @@ index 1a8206270..d3ba008c2 100644
      HSD_GObj* gobj;
      CmSubject* subject;
      CameraBounds bounds;
-@@ -2469,8 +2540,16 @@ void Camera_8002CDDC(void* unused)
+@@ -2469,8 +2562,16 @@ void Camera_8002CDDC(void* unused)
      Camera_800293E0();
      Camera_8002958C(&bounds, &game_camera.transform);
      slot_ptr = &game_camera.x2C4;
@@ -48782,7 +48832,7 @@ index 1a8206270..d3ba008c2 100644
      Camera_8002CB0C(&bounds);
      if (*slot_ptr != 10 && *slot_ptr != 11 &&
          (gobj = Player_GetEntity(*slot_ptr)) != NULL &&
-@@ -2479,7 +2558,7 @@ void Camera_8002CDDC(void* unused)
+@@ -2479,7 +2580,7 @@ void Camera_8002CDDC(void* unused)
          Camera_80029124(&subject->bone_pos, 0) == CAM_BOUNDS_INSIDE &&
          ABS(subject->bone_pos.z) < 30.0f)
      {
@@ -48791,7 +48841,7 @@ index 1a8206270..d3ba008c2 100644
          game_camera.transform.target_fov = cm_803BCCA0.x6C;
          delta = game_camera.transform.target_fov - game_camera.transform.fov;
          game_camera.transform.fov += delta * cm_803BCCA0.x70;
-@@ -2496,9 +2575,6 @@ void Camera_8002CDDC(void* unused)
+@@ -2496,9 +2597,6 @@ void Camera_8002CDDC(void* unused)
      update_avg_bounds_width();
  }
  
@@ -48801,7 +48851,7 @@ index 1a8206270..d3ba008c2 100644
  static inline f32 compute_orbit_distance(s32 slot)
  {
      f32 distance;
-@@ -2857,17 +2933,17 @@ s32 Camera_8002DFE4(Vec3* arg0, Vec3* interest,
+@@ -2857,17 +2955,17 @@ s32 Camera_8002DFE4(Vec3* arg0, Vec3* interest,
          var_r31 = 1;
          break;
      case 1:
@@ -48823,7 +48873,7 @@ index 1a8206270..d3ba008c2 100644
          }
          break;
      }
-@@ -2897,18 +2973,18 @@ bool Camera_8002E158(f32* arg0, f32 farg0, f32 farg1)
+@@ -2897,18 +2995,18 @@ bool Camera_8002E158(f32* arg0, f32 farg0, f32 farg1)
          break;
  
      case 1:
@@ -48846,7 +48896,7 @@ index 1a8206270..d3ba008c2 100644
          }
          break;
      }
-@@ -2994,7 +3070,7 @@ void Camera_8002E490(void* unused)
+@@ -2994,7 +3092,7 @@ void Camera_8002E490(void* unused)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48855,7 +48905,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3050,15 +3126,15 @@ void Camera_8002E490(void* unused)
+@@ -3050,15 +3148,15 @@ void Camera_8002E490(void* unused)
      case 0:
          break;
      case 1:
@@ -48877,7 +48927,7 @@ index 1a8206270..d3ba008c2 100644
          }
          break;
      }
-@@ -3075,11 +3151,11 @@ void Camera_8002E6FC(int arg0)
+@@ -3075,11 +3173,11 @@ void Camera_8002E6FC(int arg0)
      }
  
      game_camera.x341_b1_b2 = 1;
@@ -48891,7 +48941,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3116,7 +3192,7 @@ void Camera_8002E818(Vec3* pos)
+@@ -3116,7 +3214,7 @@ void Camera_8002E818(Vec3* pos)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48900,7 +48950,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3153,7 +3229,7 @@ void Camera_8002E948(bool (*cb)(Vec*))
+@@ -3153,7 +3251,7 @@ void Camera_8002E948(bool (*cb)(Vec*))
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48909,7 +48959,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3323,7 +3399,7 @@ void Camera_8002EF14(void)
+@@ -3323,7 +3421,7 @@ void Camera_8002EF14(void)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48918,7 +48968,7 @@ index 1a8206270..d3ba008c2 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3375,7 +3451,7 @@ void Camera_8002EF14(void)
+@@ -3375,7 +3473,7 @@ void Camera_8002EF14(void)
      game_camera.transform.fov = game_camera.transform.target_fov;
  }
  
@@ -48927,7 +48977,7 @@ index 1a8206270..d3ba008c2 100644
  {
      s32 sp24;
      s32 sp20;
-@@ -3388,8 +3464,8 @@ void Camera_8002F0E4(s32 arg0)
+@@ -3388,8 +3486,8 @@ void Camera_8002F0E4(s32 arg0)
      }
  
      game_camera.x341_b5_b6 = 1;
@@ -48938,7 +48988,7 @@ index 1a8206270..d3ba008c2 100644
  
      switch (game_camera.x341_b1_b2) {
      case 0:
-@@ -3481,6 +3557,12 @@ void Camera_8002F3AC(void)
+@@ -3481,6 +3579,12 @@ void Camera_8002F3AC(void)
  
  void Camera_SetModeToStandard(void)
  {
@@ -48951,7 +49001,7 @@ index 1a8206270..d3ba008c2 100644
      game_camera.mode = CAMERA_STANDARD;
  }
  
-@@ -3832,7 +3914,7 @@ void Camera_8002FE38(void)
+@@ -3832,7 +3936,7 @@ void Camera_8002FE38(void)
          game_camera.transform.fov;
  }
  
@@ -48960,7 +49010,7 @@ index 1a8206270..d3ba008c2 100644
  {
      HSD_CObj* cobj;
      CmSubject* box;
-@@ -3844,7 +3926,6 @@ void Camera_8002FEEC(s32 arg0)
+@@ -3844,7 +3948,6 @@ void Camera_8002FEEC(s32 arg0)
      f32 temp_f1;
      f32 temp_f31;
      f32 temp_f1_4;
@@ -48968,7 +49018,7 @@ index 1a8206270..d3ba008c2 100644
  
      if (Player_GetEntity(arg0) != NULL) {
          box = ftLib_80086B74(Player_GetEntity(arg0));
-@@ -3860,7 +3941,7 @@ void Camera_8002FEEC(s32 arg0)
+@@ -3860,7 +3963,7 @@ void Camera_8002FEEC(s32 arg0)
              cm_80453004.follow_int_offset.z = 0.0f;
              cm_80453004.follow_int_offset.y = 0.0f;
              cm_80453004.follow_int_offset.x = 0.0f;
@@ -48977,7 +49027,7 @@ index 1a8206270..d3ba008c2 100644
              HSD_CObjGetInterest(cobj, &eye);
              HSD_CObjGetEyePosition(cobj, &target);
              fov = HSD_CObjGetFov(cobj);
-@@ -3994,7 +4075,7 @@ static inline void render_gxlink_pass(HSD_GObj* gobj, int pass, int gxlink)
+@@ -3994,7 +4097,7 @@ static inline void render_gxlink_pass(HSD_GObj* gobj, int pass, int gxlink)
      HSD_GObj_80390ED0(gobj, gxlink);
  }
  
@@ -48986,7 +49036,7 @@ index 1a8206270..d3ba008c2 100644
  {
      s64 prio8_a;
      s64 prio1_a;
-@@ -4003,6 +4084,12 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4003,6 +4106,12 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
      cobj = gobj->hsd_obj;
      lbRefract_8002247C(cobj);
      Camera_8002A4AC(gobj);
@@ -48999,7 +49049,7 @@ index 1a8206270..d3ba008c2 100644
      lbShadow_8000F38C(game_camera.x399_b7);
      if (HSD_CObjSetCurrent(cobj) != 0) {
          if (!game_camera.x398_b5) {
-@@ -4013,10 +4100,21 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4013,10 +4122,21 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
              HSD_SetEraseColor(0, 0, 0, 0xFF);
          }
          HSD_CObjEraseScreen(cobj, 1, 0, 0);
@@ -49021,7 +49071,7 @@ index 1a8206270..d3ba008c2 100644
          prio8_a = gxlink_prio8();
          prio1_a = gxlink_prio1();
          gobj->gxlink_prios = prio1_a | prio8_a;
-@@ -4154,6 +4252,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
+@@ -4154,6 +4274,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
      return (fwd_z * dir_z) > 0.0L;
  }
  
@@ -49044,7 +49094,7 @@ index 1a8206270..d3ba008c2 100644
  bool Camera_800307D0(f32* left, f32* center, f32* right)
  {
      HSD_CObj* cobj;
-@@ -4172,8 +4286,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
+@@ -4172,8 +4308,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
      f32 edge_z2;
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49059,7 +49109,7 @@ index 1a8206270..d3ba008c2 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4433,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4455,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49097,7 +49147,7 @@ index 1a8206270..d3ba008c2 100644
  
      if ((point.x > 2.1474836e9f) || (point.x < -2.1474836e9f) ||
          (point.y > 2.1474836e9f) || (point.y < -2.1474836e9f))
-@@ -4343,6 +4491,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
+@@ -4343,6 +4513,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
      return Camera_80030BBC(&arg0->bone_pos, arg1);
  }
  
@@ -49123,7 +49173,7 @@ index 1a8206270..d3ba008c2 100644
  /// Camera_IsSubjectOnScreen
  bool Camera_80030CFC(CmSubject* cam_box, f32 tolerance)
  {
-@@ -4381,6 +4548,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
+@@ -4381,6 +4570,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
  
  void Camera_80030DF8(void)
  {
@@ -49140,7 +49190,7 @@ index 1a8206270..d3ba008c2 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4578,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4600,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -49153,7 +49203,7 @@ index 1a8206270..d3ba008c2 100644
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4812,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4834,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };
@@ -118897,7 +118947,7 @@ index 33ad58ea9..2de131af8 100644
  void gm_801B1A2C(GameModeState* arg0)
  {
 diff --git a/src/melee/gm/gmtrainingmode.c b/src/melee/gm/gmtrainingmode.c
-index 2adba8159..7f7f5c3a3 100644
+index 2adba8159..1d2b33edb 100644
 --- a/src/melee/gm/gmtrainingmode.c
 +++ b/src/melee/gm/gmtrainingmode.c
 @@ -1,3 +1,6 @@
@@ -118951,7 +119001,52 @@ index 2adba8159..7f7f5c3a3 100644
      CSSData* css = gm_GetGameModeStateExitData(arg0);
      s32 i;
      struct GameCache* cache;
-@@ -190,7 +186,7 @@ void gm_801B1EEC(GameModeState* arg0)
+@@ -128,9 +124,36 @@ void gm_801B1C24(GameModeState* arg0)
+     gm_801B07E8_layer(css, &vs->start.players[1].ckind, NULL,
+                       (s8*) &vs->start.players[1].color,
+                       (s8*) &vs->start.players[1].nametag, NULL);
++#ifdef MU_NATIVE
++    /* No CPU from the select screen (see the loop below): the player's character, the next
++     * costume, as a mirror match, instead of a fighter that does not exist. */
++    if (gm_GetNumCostumesForCKind(vs->start.players[1].ckind) == 0 &&
++        gm_GetNumCostumesForCKind(vs->start.players[0].ckind) != 0)
++    {
++        OSReport("[training] the CPU had no character (%d); it plays the player's\n",
++                 (int) vs->start.players[1].ckind);
++        vs->start.players[1].ckind = vs->start.players[0].ckind;
++        vs->start.players[1].color = (vs->start.players[0].color + 1) %
++                                     gm_GetNumCostumesForCKind(vs->start.players[0].ckind);
++    }
++#endif
+     j = (i = 2);
+     vs->start.players[1].cpu_kind = 0;
+     for (; i < 4; i++, j++) {
++#ifdef MU_NATIVE
++        /* A CPU the select screen did not draw (a costume this view does not have, after an
++         * online session) has no costumes: the console divided by 0 here (0.9.98 report). */
++        u8 colors;
++        vs->start.players[i] = vs->start.players[1];
++        colors = gm_GetNumCostumesForCKind(vs->start.players[j].ckind);
++        if (colors == 0) {
++            colors = 1;
++        }
++        vs->start.players[i].color = (vs->start.players[i - 1].color + 1) % colors;
++        if (vs->start.players[i].color == vs->start.players[0].color) {
++            vs->start.players[i].color = (vs->start.players[i].color + 1) % colors;
++        }
++#else
+         vs->start.players[i] = vs->start.players[1];
+         vs->start.players[i].color =
+             (vs->start.players[i - 1].color + 1) %
+@@ -140,6 +163,7 @@ void gm_801B1C24(GameModeState* arg0)
+                 (vs->start.players[i].color + 1) %
+                 gm_GetNumCostumesForCKind(vs->start.players[j].ckind);
+         }
++#endif
+         vs->start.players[i].slot_type = 3;
+     }
+     if (gm_804D68C0 == 0) {
+@@ -190,7 +214,7 @@ void gm_801B1EEC(GameModeState* arg0)
      SSSData* sss;
      s16 stkind;
  
@@ -118960,7 +119055,7 @@ index 2adba8159..7f7f5c3a3 100644
      sss = gm_GetGameModeStateExitData(arg0);
      if (sss->start_game == 0) {
          gm_SetNextGameModeStateId(0);
-@@ -206,17 +202,13 @@ void gm_801B1EEC(GameModeState* arg0)
+@@ -206,17 +230,13 @@ void gm_801B1EEC(GameModeState* arg0)
  
  void fn_801B1F6C(int unused) {}
  
@@ -118979,7 +119074,7 @@ index 2adba8159..7f7f5c3a3 100644
      data = gm_GetGameModeStateEnterData(arg0);
      gm_SetupRulesDefaults(&data->rules);
  
-@@ -247,18 +239,32 @@ void gm_801B1F70(GameModeState* arg0)
+@@ -247,18 +267,32 @@ void gm_801B1F70(GameModeState* arg0)
          }
      }
  
@@ -119015,7 +119110,7 @@ index 2adba8159..7f7f5c3a3 100644
      gm_80162968(temp_r3->match_end.frame_count / 60);
      gm_8016247C(temp_r3->match_end.player_standings[0].xE);
      gm_80163298(
-@@ -274,7 +280,7 @@ void gm_801B2204(GameModeState* arg0)
+@@ -274,7 +308,7 @@ void gm_801B2204(GameModeState* arg0)
  
  void gm_Mode_Training_OnInit(void)
  {
@@ -119025,7 +119120,7 @@ index 2adba8159..7f7f5c3a3 100644
  
      gm_InitVsMode(temp_r31);
 diff --git a/src/melee/gm/gmvs.c b/src/melee/gm/gmvs.c
-index b2fc84a75..38ed1db4e 100644
+index b2fc84a75..5e3eebea3 100644
 --- a/src/melee/gm/gmvs.c
 +++ b/src/melee/gm/gmvs.c
 @@ -1,4 +1,9 @@
@@ -119785,16 +119880,23 @@ index b2fc84a75..38ed1db4e 100644
              Player_GetPlayerSlotType(slot) == Gm_PKind_Human)
          {
              return slot;
-@@ -1118,7 +1278,7 @@ void gm_DoPauseChecksAndRoutine(VsSceneController* arg0, int arg1)
+@@ -1118,8 +1278,14 @@ void gm_DoPauseChecksAndRoutine(VsSceneController* arg0, int arg1)
      s8 pauserSlot;
      u8 var_r4;
  
 -    if (arg0->unpause_timer == 0 && arg0->hud_enabled != 0 &&
++#ifdef MU_NATIVE
++    /* Instant Melee, "Pause During Game Start" (offline): pausing does not wait for the HUD. */
++    if (arg0->state.unpause_timer == 0 && (arg0->state.hud_enabled != 0 || mu_instant_melee()) &&
++        !arg0->start.disable_pausing)
++#else
 +    if (arg0->state.unpause_timer == 0 && arg0->state.hud_enabled != 0 &&
          !arg0->start.disable_pausing)
++#endif
      {
          if (arg0->start.check_for_pauser_override != NULL) {
-@@ -1147,6 +1307,9 @@ void gm_DoPauseChecksAndRoutine(VsSceneController* arg0, int arg1)
+             pauser = arg0->start.check_for_pauser_override();
+@@ -1147,6 +1313,9 @@ void gm_DoPauseChecksAndRoutine(VsSceneController* arg0, int arg1)
                  gm_801A0FEC(pauser, var_r4);
              }
              gm_SetDbPauseFlag((s64) arg1);
@@ -119804,7 +119906,7 @@ index b2fc84a75..38ed1db4e 100644
              if (arg0->start.x4_0) {
                  pauserSlot = gm_GetSlotByPlayerId(pauser);
                  if (arg0->start.on_pause_override != NULL) {
-@@ -1156,8 +1319,8 @@ void gm_DoPauseChecksAndRoutine(VsSceneController* arg0, int arg1)
+@@ -1156,8 +1325,8 @@ void gm_DoPauseChecksAndRoutine(VsSceneController* arg0, int arg1)
                  }
              }
              HSD_PadRumblePauseAll();
@@ -119815,7 +119917,7 @@ index b2fc84a75..38ed1db4e 100644
          }
      }
  }
-@@ -1201,10 +1364,10 @@ void gm_DoUnpauseChecksAndRoutine(VsSceneController* arg0, int arg1)
+@@ -1201,10 +1370,14 @@ void gm_DoUnpauseChecksAndRoutine(VsSceneController* arg0, int arg1)
      int i;
      PAD_STACK(0x14);
  
@@ -119824,11 +119926,15 @@ index b2fc84a75..38ed1db4e 100644
          return;
      }
 -    if (arg0->hud_enabled == 0) {
++#ifdef MU_NATIVE
++    if (arg0->state.hud_enabled == 0 && !mu_instant_melee()) {
++#else
 +    if (arg0->state.hud_enabled == 0) {
++#endif
          return;
      }
      if (arg0->start.disable_pausing) {
-@@ -1213,9 +1376,12 @@ void gm_DoUnpauseChecksAndRoutine(VsSceneController* arg0, int arg1)
+@@ -1213,9 +1386,12 @@ void gm_DoUnpauseChecksAndRoutine(VsSceneController* arg0, int arg1)
  
      i = gm_GetPlayerPressingUnpause();
  
@@ -119842,7 +119948,7 @@ index b2fc84a75..38ed1db4e 100644
          ifAll_802F33CC();
          gm_801A10FC(i);
          HSD_PadRumbleUnpauseAll();
-@@ -1226,11 +1392,11 @@ void gm_DoUnpauseChecksAndRoutine(VsSceneController* arg0, int arg1)
+@@ -1226,11 +1402,11 @@ void gm_DoUnpauseChecksAndRoutine(VsSceneController* arg0, int arg1)
                  Ground_EnableMatchCamera();
              }
          }
@@ -119856,7 +119962,7 @@ index b2fc84a75..38ed1db4e 100644
  {
      s32 temp_r3_4;
      s32 var_r3;
-@@ -1239,43 +1405,45 @@ void fn_8016CD98(VsSceneController* arg0)
+@@ -1239,43 +1415,45 @@ void fn_8016CD98(VsSceneController* arg0)
      int i;
      PAD_STACK(4);
  
@@ -119921,7 +120027,7 @@ index b2fc84a75..38ed1db4e 100644
                      } else {
                          var_r3 = 0x7C865;
                      }
-@@ -1291,16 +1459,16 @@ void fn_8016CD98(VsSceneController* arg0)
+@@ -1291,16 +1469,16 @@ void fn_8016CD98(VsSceneController* arg0)
  void fn_8016CF4C(int slot, MatchOutcome matchResult)
  {
      gm_801A10FC(slot);
@@ -119941,7 +120047,7 @@ index b2fc84a75..38ed1db4e 100644
          return;
      }
      fn_8016C7F0();
-@@ -1328,9 +1496,9 @@ static inline void fn_8016CFE0_inline(void)
+@@ -1328,9 +1506,9 @@ static inline void fn_8016CFE0_inline(void)
  
      tmp = &controller;
      for (i = 0; i < 6; i++) {
@@ -119954,7 +120060,7 @@ index b2fc84a75..38ed1db4e 100644
              }
          }
      }
-@@ -1344,6 +1512,12 @@ void fn_8016CFE0(void)
+@@ -1344,6 +1522,12 @@ void fn_8016CFE0(void)
      int unpauser_slot;
      PAD_STACK(0x10);
  
@@ -119967,7 +120073,7 @@ index b2fc84a75..38ed1db4e 100644
      fn_8016CFE0_inline();
  
      fn_8016A4C8();
-@@ -1357,13 +1531,21 @@ void fn_8016CFE0(void)
+@@ -1357,13 +1541,21 @@ void fn_8016CFE0(void)
                         PAD_BUTTON_START;
          }
          no_contest_buttons = tmp_btns;
@@ -119992,7 +120098,7 @@ index b2fc84a75..38ed1db4e 100644
                          fn_8016CF4C_dontinline(unpauser_slot,
                                                 OUTCOME_NO_CONTEST);
                          return;
-@@ -1371,39 +1553,58 @@ void fn_8016CFE0(void)
+@@ -1371,39 +1563,58 @@ void fn_8016CFE0(void)
                  }
              }
          }
@@ -120062,7 +120168,7 @@ index b2fc84a75..38ed1db4e 100644
          fn_8016CD98(tmp);
      }
  }
-@@ -1447,18 +1648,18 @@ void gm_Scene_Training_OnFrame(void)
+@@ -1447,18 +1658,18 @@ void gm_Scene_Training_OnFrame(void)
      if (gm_GetDbPauseFlag(2) != 0) {
          fn_8016CBE8_inline();
          gm_DoUnpauseChecksAndRoutine(tmp, 2);
@@ -120087,7 +120193,7 @@ index b2fc84a75..38ed1db4e 100644
          fn_8016C7F0();
          gm_801A4B60();
      }
-@@ -1489,58 +1690,71 @@ bool fn_8016D538(void)
+@@ -1489,58 +1700,71 @@ bool fn_8016D538(void)
  void fn_8016D634(void)
  {
      VsSceneController* tmp = &controller;
@@ -120176,7 +120282,7 @@ index b2fc84a75..38ed1db4e 100644
      case 0:
          fn_8016CFE0();
          break;
-@@ -1549,10 +1763,15 @@ void gm_Scene_Vs_OnFrame(void)
+@@ -1549,10 +1773,15 @@ void gm_Scene_Vs_OnFrame(void)
          break;
      case 2:
          if (fn_80180AC0() != 0) {
@@ -120193,7 +120299,7 @@ index b2fc84a75..38ed1db4e 100644
          gm_801A4B60();
          break;
      }
-@@ -1563,25 +1782,28 @@ void gm_Scene_Vs_OnFrame(void)
+@@ -1563,25 +1792,28 @@ void gm_Scene_Vs_OnFrame(void)
  
  void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
  {
@@ -120229,7 +120335,7 @@ index b2fc84a75..38ed1db4e 100644
          (Player_GetPlayerCharacter(arg0) == CKind_Zelda ||
           Player_GetPlayerCharacter(arg0) == CKind_Seak))
      {
-@@ -1590,19 +1812,28 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1590,19 +1822,28 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
          } else {
              Player_SetPlayerCharacter(arg0, CKind_Zelda);
          }
@@ -120262,7 +120368,7 @@ index b2fc84a75..38ed1db4e 100644
      }
      Player_SetPlayerAndEntityCpuType(arg0, arg1->cpu_kind);
      Player_SetPlayerAndEntityCpuLevel(arg0, arg1->cpu_level);
-@@ -1612,7 +1843,7 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1612,7 +1853,7 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
          Player_SetHUDDamage(arg0, arg1->damage1);
      }
  
@@ -120271,7 +120377,7 @@ index b2fc84a75..38ed1db4e 100644
  
      if (arg1->xC_b7) {
          Player_SetMoreFlagsBit2(arg0, 1);
-@@ -1629,14 +1860,14 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1629,14 +1870,14 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
          Player_SetMoreFlagsBit1(arg0, 0);
      }
  
@@ -120289,7 +120395,7 @@ index b2fc84a75..38ed1db4e 100644
      if (arg1->vs_invisible) {
          Player_SetFlagsBit6(arg0, 1);
          Player_SetFlagsBit7(arg0, 0);
-@@ -1660,10 +1891,10 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1660,10 +1901,10 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
      } else {
          Player_SetMoreFlagsBit5(arg0, 0);
      }
@@ -120302,7 +120408,7 @@ index b2fc84a75..38ed1db4e 100644
  }
  
  void fn_8016DCC0(StartMeleeData* arg0)
-@@ -1671,59 +1902,59 @@ void fn_8016DCC0(StartMeleeData* arg0)
+@@ -1671,59 +1912,59 @@ void fn_8016DCC0(StartMeleeData* arg0)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -120384,7 +120490,7 @@ index b2fc84a75..38ed1db4e 100644
      case 0:
      case 2:
      case 3:
-@@ -1740,6 +1971,11 @@ void fn_8016DCC0(StartMeleeData* arg0)
+@@ -1740,6 +1981,11 @@ void fn_8016DCC0(StartMeleeData* arg0)
              fn_8016A09C();
          }
      }
@@ -120396,7 +120502,7 @@ index b2fc84a75..38ed1db4e 100644
  }
  
  static float direction(float x)
-@@ -1754,10 +1990,10 @@ static float direction(float x)
+@@ -1754,10 +2000,10 @@ static float direction(float x)
  static inline void getSpawnPoint(int i, Vec3* v)
  {
      VsSceneController* tmp = &controller;
@@ -120409,7 +120515,7 @@ index b2fc84a75..38ed1db4e 100644
      }
  }
  
-@@ -1765,7 +2001,7 @@ static inline void setPlayerUnk45(int i)
+@@ -1765,7 +2011,7 @@ static inline void setPlayerUnk45(int i)
  {
      bool is_teams = controller.start.is_teams == true;
      Player_SetUnk45(
@@ -120418,7 +120524,7 @@ index b2fc84a75..38ed1db4e 100644
                                     is_teams, Player_GetPlayerSlotType(i))));
  }
  
-@@ -1882,6 +2118,162 @@ void fn_8016E124(void)
+@@ -1882,6 +2128,162 @@ void fn_8016E124(void)
  }
  
  /// @todo The loop's SFX flag load uses a different equivalent address form.
@@ -120581,7 +120687,7 @@ index b2fc84a75..38ed1db4e 100644
  void fn_8016E2BC(void)
  {
      UNUSED u8 pad[8];
-@@ -1896,7 +2288,7 @@ void fn_8016E2BC(void)
+@@ -1896,7 +2298,7 @@ void fn_8016E2BC(void)
      PAD_STACK(0xC);
  
      Player_80036DA4();
@@ -120590,7 +120696,7 @@ index b2fc84a75..38ed1db4e 100644
          var_r0 = true;
      } else {
          var_r0 = false;
-@@ -1913,10 +2305,10 @@ void fn_8016E2BC(void)
+@@ -1913,10 +2315,10 @@ void fn_8016E2BC(void)
          Player_80032768(0, &sp24);
          single_is_teams = controller.start.is_teams == true;
          Player_SetUnk45(0, fn_80160840(gm_80160854(
@@ -120603,7 +120709,7 @@ index b2fc84a75..38ed1db4e 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_80169C54(Player_GetPlayerCharacter(0), Player_GetCostumeId(0));
-@@ -1940,13 +2332,18 @@ void fn_8016E2BC(void)
+@@ -1940,13 +2342,18 @@ void fn_8016E2BC(void)
                      }
                  }
                  Player_80032768(i, &sp18);
@@ -120624,7 +120730,7 @@ index b2fc84a75..38ed1db4e 100644
                      lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
                  }
              }
-@@ -1989,6 +2386,19 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1989,6 +2396,19 @@ void fn_8016E730(StartMeleeData* arg0)
      VsSceneController* r30;
  
      db_Setup();
@@ -120644,7 +120750,7 @@ index b2fc84a75..38ed1db4e 100644
      gm_SetDbPauseInputHandlers(gm_AnyControllerPressedStart,
                                 gm_AnyControllerPressedZ);
      gm_SetPreGObjProcCallback(db_RunEveryFrame);
-@@ -1997,6 +2407,9 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1997,6 +2417,9 @@ void fn_8016E730(StartMeleeData* arg0)
      Camera_Init(70);
      Camera_Create();
      fn_8016DCC0(arg0);
@@ -120654,7 +120760,7 @@ index b2fc84a75..38ed1db4e 100644
      lbRefract_800222A4();
      lb_8000FCDC();
      efLib_Init();
-@@ -2010,7 +2423,7 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2010,7 +2433,7 @@ void fn_8016E730(StartMeleeData* arg0)
  
      r30 = &controller;
  
@@ -120663,7 +120769,7 @@ index b2fc84a75..38ed1db4e 100644
      Item_80266F70();
      Item_80266FCC();
      it_8026D018();
-@@ -2022,13 +2435,20 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2022,13 +2445,20 @@ void fn_8016E730(StartMeleeData* arg0)
      Ground_EnableMatchCamera();
      Camera_8002F3AC();
      fn_801A1134();
@@ -120686,7 +120792,7 @@ index b2fc84a75..38ed1db4e 100644
      if (arg0->rules.on_match_start != NULL) {
          arg0->rules.on_match_start();
      }
-@@ -2059,7 +2479,7 @@ struct EndMeleeData {
+@@ -2059,7 +2489,7 @@ struct EndMeleeData {
      /* 00 */ u32 x0;
      /* 04 */ u32 x4;
      /* 08 */ u32 x8;
@@ -120695,7 +120801,7 @@ index b2fc84a75..38ed1db4e 100644
  };
  
  static inline bool gm_8016E9C8_inline(void)
-@@ -2086,43 +2506,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
+@@ -2086,43 +2516,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -120775,7 +120881,7 @@ index b2fc84a75..38ed1db4e 100644
  }
  
  void gm_Scene_SuddenDeath_OnEnter(void* user_data)
-@@ -2145,7 +2591,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
+@@ -2145,7 +2601,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
      grStadium_801D410C();
      un_802FD404();
      tmp2 = &controller;
@@ -120784,7 +120890,7 @@ index b2fc84a75..38ed1db4e 100644
      Stage_802252E4(tmp2->start.stkind, NULL);
      grStadium_801D4040();
      if (!controller.start.x1_3) {
-@@ -2187,7 +2633,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2187,7 +2643,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
      float var_f1;
      PAD_STACK(8);
  
@@ -120793,7 +120899,7 @@ index b2fc84a75..38ed1db4e 100644
          Player_GetPlayerSlotType(arg0) == Gm_PKind_NA &&
          Player_GetEntity(arg0) == NULL)
      {
-@@ -2211,7 +2657,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2211,7 +2667,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
          Player_80032768(arg0, &sp18);
          setPlayerUnk45(arg0);
          Player_80031AD0(arg0);
@@ -120802,7 +120908,7 @@ index b2fc84a75..38ed1db4e 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_8016E124();
-@@ -2225,7 +2671,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2225,7 +2681,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
  
  bool fn_8016EF98(int arg0)
  {
@@ -120813,7 +120919,7 @@ index b2fc84a75..38ed1db4e 100644
          ifStatus_802F6788(arg0);
          Player_80031EBC(arg0);
          Player_SetSlottype(arg0, Gm_PKind_NA);
-@@ -2281,10 +2729,20 @@ int gm_8016F120(int arg0)
+@@ -2281,10 +2739,20 @@ int gm_8016F120(int arg0)
  
  void fn_8016F140(int arg0)
  {
@@ -127680,7 +127786,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..c122bc9b2 100644
+index 536bb3b2b..4043024d7 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -127913,7 +128019,7 @@ index 536bb3b2b..c122bc9b2 100644
          ftDrawCommon_80081140();
          Camera_8002A4AC(Camera_80030A50());
  
-@@ -762,7 +847,15 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+@@ -762,7 +847,21 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
                  HSD_CObjSetNear(dst, HSD_CObjGetNear(src));
                  HSD_CObjSetFar(dst, HSD_CObjGetFar(src));
                  HSD_CObjSetFov(dst, HSD_CObjGetFov(src));
@@ -127921,17 +128027,34 @@ index 536bb3b2b..c122bc9b2 100644
 +                /* True widescreen widens the picture in the renderer, not the game's camera: the
 +                 * reflection is widened the same way here, so its image covers the widened water
 +                 * and the texture matrix below (built from this aspect) still matches it. Without
-+                 * it the sides of the water stretched the reflection's outer pixels. */
-+                HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src) * mu_picture_widen());
++                 * it the sides of the water stretched the reflection's outer pixels.
++                 * The full-resolution view (community code) is as large as the screen, and the
++                 * renderer widens every view that large itself (gx_shader.cpp, full_viewport):
++                 * widened here too it was widened twice and the reflection was squeezed to the
++                 * middle. That view keeps the main camera's aspect and only its texture matrix
++                 * below is widened, by the same factor the renderer applies. */
++                HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src) *
++                                           (ReflectCObjDesc.viewport.xmax == 80 ? mu_picture_widen() : 1.0f));
 +#else
                  HSD_CObjSetAspect(dst, HSD_CObjGetAspect(src));
 +#endif
                  HSD_CObjGetEyePosition(src, &vec);
                  vec.y = -vec.y;
                  HSD_CObjSetEyePosition(dst, &vec);
-@@ -792,6 +885,9 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+@@ -788,10 +887,20 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+             HSD_CObjEndCurrent();
+         }
+         lb_800122C8(refl->image, 0, 0, 1);
++#ifdef MU_NATIVE
++        MTXLightPerspective(mtx, cobj->projection_param.perspective.fov,
++                            cobj->projection_param.perspective.aspect *
++                                (ReflectCObjDesc.viewport.xmax == 80 ? 1.0f : mu_picture_widen()),
++                            0.49f, -0.49f, 0.5f, 0.5f);
++#else
+         MTXLightPerspective(mtx, cobj->projection_param.perspective.fov,
                              cobj->projection_param.perspective.aspect, 0.49f,
                              -0.49f, 0.5f, 0.5f);
++#endif
          PSMTXConcat(mtx, HSD_CObjGetViewingMtxPtr(cobj), refl->texture_matrix);
 +#ifdef MU_NATIVE
 +        if (ReflectCObjDesc.viewport.xmax == 80)
@@ -127939,7 +128062,7 @@ index 536bb3b2b..c122bc9b2 100644
          ftDrawCommon_80081118();
      }
  }
-@@ -849,12 +945,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -849,12 +958,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -127961,7 +128084,7 @@ index 536bb3b2b..c122bc9b2 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +983,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +996,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }
@@ -143607,7 +143730,7 @@ index 6d7000275..d67b9cf18 100644
  /* 2FC3BC */ void ifMagnify_802FC3BC(void);
  /* 2FC3C0 */ void ifMagnify_802FC3C0(s32 slot);
 diff --git a/src/melee/if/ifnametag.c b/src/melee/if/ifnametag.c
-index f8c4573e8..696062fb2 100644
+index f8c4573e8..587ab782e 100644
 --- a/src/melee/if/ifnametag.c
 +++ b/src/melee/if/ifnametag.c
 @@ -100,8 +100,8 @@
@@ -143860,7 +143983,7 @@ index f8c4573e8..696062fb2 100644
              }
              HSD_JObjReqAnimAll(jobj, f);
          }
-@@ -301,20 +369,48 @@ void NameTag_Create(int slot)
+@@ -301,20 +369,77 @@ void NameTag_Create(int slot)
      HSD_GObj_SetupProc(gobj, fn_802FCC44, 17);
  }
  
@@ -143890,6 +144013,35 @@ index f8c4573e8..696062fb2 100644
 +    child = jobj->child;
 +    return child != NULL && !(child->flags & JOBJ_HIDDEN);
 +}
++
++/* Where a player's tag would be this frame, shown or not (fn_802FCC44's own sums): the tag only
++ * moves while it shows, so a hidden one (online, most matches) kept its first spot, and the ally
++ * markers drawn there stayed put on the screen. 0 while the player has no fighter in play (no
++ * stocks, between stocks, far off) so nothing is drawn then. Read only. */
++int mu_fighter_screen_position(int slot, float* x, float* y)
++{
++    Vec3 vec;
++    Vec3 vec2;
++    HSD_GObj* camera;
++    if (slot < 0 || slot >= Gm_Player_NumMax || Player_GetPlayerSlotType(slot) == Gm_PKind_NA ||
++        !Player_GetPlayerState(slot) || !Player_GetStocks(slot) || (camera = Camera_80030A50()) == NULL ||
++        camera->hsd_obj == NULL)
++    {
++        return 0;
++    }
++    Player_LoadPlayerCoords(slot, &vec);
++    vec.y += Player_800360D8(slot);
++    vec.y -= 2.5f;
++    if (!(vec.x > -50000.0F && vec.x < 50000.0F && vec.y > -50000.0F && vec.y < 50000.0F &&
++          vec.z > -50000.0F && vec.z < 50000.0F))
++    {
++        return 0;
++    }
++    lbVector_WorldToScreen(camera->hsd_obj, &vec, &vec2, 0);
++    *x = vec2.x;
++    *y = vec2.y;
++    return 1;
++}
 +#endif
 +
  void un_802FD28C(int slot)
@@ -143912,7 +144064,7 @@ index f8c4573e8..696062fb2 100644
      }
      HSD_JObjReqAnimAll(jobj, f);
      HSD_JObjAnimAll(jobj);
-@@ -361,10 +457,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
+@@ -361,10 +486,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
      return GObj_Create(0xE, arg0, 0);
  }
  
@@ -143935,7 +144087,7 @@ index f8c4573e8..696062fb2 100644
      int i;
      PAD_STACK(0x10);
      for (i = 0; i < Gm_Player_NumMax; i++) {
-@@ -374,18 +481,20 @@ void un_802FD4C8(void)
+@@ -374,18 +510,20 @@ void un_802FD4C8(void)
      un_804D6D6C = 0;
      memzero(un_804D6D70, i = sizeof(un_804D6D70));
      un_804D6D68 = (gobj = un_802FD4C8_inline(15));
@@ -176902,7 +177054,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..5cda09624 100644
+index d580c0aa4..5cd7d3949 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -1,4 +1,10 @@
@@ -178763,7 +178915,7 @@ index d580c0aa4..5cda09624 100644
      mnCharSel_804D6CE4 = NULL;
 +#ifdef MU_NATIVE
 +    /* General Codes, "Faster CSS Load": start is accepted after 1 frame instead of 30. */
-+    mnCharSel_804D6CF2 = mu_general_codes() ? 1 : 0x1E;
++    mnCharSel_804D6CF2 = mu_general_codes() || mu_instant_melee() ? 1 : 0x1E;   /* also Instant Melee */
 +#else
      mnCharSel_804D6CF2 = 0x1E;
 +#endif
@@ -186856,7 +187008,7 @@ index e03ab11ef..488225f8d 100644
      proc = HSD_GObj_SetupProc(GObj_Create(0U, 1U, 0x80U), fn_8024B2B0, 0U);
      proc->flags_3 = (u16) HSD_GObj_804D783C;
 diff --git a/src/melee/mn/mnstagesel.c b/src/melee/mn/mnstagesel.c
-index dfb2b5510..ee484eb20 100644
+index dfb2b5510..0d0e0155b 100644
 --- a/src/melee/mn/mnstagesel.c
 +++ b/src/melee/mn/mnstagesel.c
 @@ -2,9 +2,9 @@
@@ -187594,7 +187746,7 @@ index dfb2b5510..ee484eb20 100644
      switch (mnStageSel_804D6CAE) {
      case 30:
          if (!(mnStageSel_804D6CA0 & 0x1000)) {
-@@ -131,14 +798,24 @@ void mnStageSel_80259C28(void)
+@@ -131,18 +798,38 @@ void mnStageSel_80259C28(void)
      }
      mnStageSel_804D6CAE = mnStageSel_802599EC();
  skip_randomize:
@@ -187621,8 +187773,24 @@ index dfb2b5510..ee484eb20 100644
 +                       DP(sss_models->now_loading.shapeanim_joint));
      HSD_JObjReqAnimAll(gobj->hsd_obj, 0.0F);
      HSD_JObjAnimAll(gobj->hsd_obj);
-     mnStageSel_804D6CAF = 1;
-@@ -166,7 +843,34 @@ void fn_80259D84(HSD_GObj* gobj)
+-    mnStageSel_804D6CAF = 1;
+-    mnStageSel_804D6CA4 = 0x1E;
++#ifdef MU_NATIVE
++    /* Instant Melee, "Faster Stage Load" (offline community code): leave at once, as the online
++     * stage select does, instead of after 30 frames. */
++    if (mu_instant_melee()) {
++        mnStageSel_804D6CAF = 2;
++        mnStageSel_804D6CA4 = 0;
++    } else
++#endif
++    {
++        mnStageSel_804D6CAF = 1;
++        mnStageSel_804D6CA4 = 0x1E;
++    }
+     sfxForward();
+ }
+ 
+@@ -166,7 +853,34 @@ void fn_80259D84(HSD_GObj* gobj)
          if (mnStageSel_804D6CAF == 0) {
              mnStageSel_80259C28();
          }
@@ -187657,7 +187825,7 @@ index dfb2b5510..ee484eb20 100644
              if (temp_r31->x0 < 0x1E &&
                  mnStageSel_803F06D0[temp_r31->x0].x8 >= 2)
              {
-@@ -175,7 +879,11 @@ void fn_80259D84(HSD_GObj* gobj)
+@@ -175,7 +889,11 @@ void fn_80259D84(HSD_GObj* gobj)
              sfxMove();
              temp_r31->x4 = 0;
              temp_r31->x2 = 2;
@@ -187669,7 +187837,7 @@ index dfb2b5510..ee484eb20 100644
          }
          break;
      case 2:
-@@ -204,17 +912,47 @@ void mnStageSel_80259ED8(int id)
+@@ -204,17 +922,47 @@ void mnStageSel_80259ED8(int id)
      u8 _[4];
  
      gobj = GObj_Create(HSD_GOBJ_CLASS_FIGHTER, 5, 0x80);
@@ -187721,7 +187889,7 @@ index dfb2b5510..ee484eb20 100644
      temp_r3_2->x0 = id;
      temp_r3_2->x4 = 0;
      temp_r3_2->x2 = 0;
-@@ -232,6 +970,12 @@ void fn_8025A090(HSD_GObj* gobj)
+@@ -232,6 +980,12 @@ void fn_8025A090(HSD_GObj* gobj)
      }* temp_r30;
      HSD_JObj* jobj;
  
@@ -187734,7 +187902,7 @@ index dfb2b5510..ee484eb20 100644
      jobj = GET_JOBJ(gobj);
      temp_r30 = HSD_GObjGetUserData(gobj);
      var_r3 = mnStageSel_804D6CAE;
-@@ -299,6 +1043,12 @@ void fn_8025A310(HSD_GObj* gobj)
+@@ -299,6 +1053,12 @@ void fn_8025A310(HSD_GObj* gobj)
  
      HSD_JObjSetTranslate(jobj, &sp1C);
      lb_8000B1CC(jobj, NULL, &sp1C);
@@ -187747,7 +187915,7 @@ index dfb2b5510..ee484eb20 100644
      for (i = 0; i < 0x1E; i++) {
          if (mnStageSel_803F06D0[i].x8 != 0) {
              lb_8000B1CC(mnStageSel_803F06D0[i].x0, NULL, &sp10);
-@@ -308,6 +1058,11 @@ void fn_8025A310(HSD_GObj* gobj)
+@@ -308,6 +1068,11 @@ void fn_8025A310(HSD_GObj* gobj)
                  if (sp10.y - mnStageSel_803F06D0[i].x10 < sp1C.y &&
                      sp10.y + mnStageSel_803F06D0[i].x10 > sp1C.y)
                  {
@@ -187759,7 +187927,7 @@ index dfb2b5510..ee484eb20 100644
                      mnStageSel_804D6CAE = i;
                      return;
                  }
-@@ -325,6 +1080,23 @@ void fn_8025A560(HSD_GObj* gobj)
+@@ -325,6 +1090,23 @@ void fn_8025A560(HSD_GObj* gobj)
      HSD_JObj* jobj = GET_JOBJ(gobj);
      temp_r30 = HSD_GObjGetUserData(gobj);
  
@@ -187783,7 +187951,7 @@ index dfb2b5510..ee484eb20 100644
      if (mnStageSel_804D6CAE < 0x16 && (mnStageSel_804D6CAE & 1) &&
          mnStageSel_803F06D0[mnStageSel_804D6CAE].x8 == 0)
      {
-@@ -360,7 +1132,7 @@ void fn_8025A91C(HSD_GObj* gobj)
+@@ -360,7 +1142,7 @@ void fn_8025A91C(HSD_GObj* gobj)
      }
  }
  
@@ -187792,7 +187960,7 @@ index dfb2b5510..ee484eb20 100644
  {
      HSD_FogSet(gobj->hsd_obj);
  }
-@@ -372,26 +1144,26 @@ static inline void make_stage_icon(HSD_JObj** out)
+@@ -372,26 +1154,26 @@ static inline void make_stage_icon(HSD_JObj** out)
      HSD_GObj* gobj;
      HSD_JObj* jobj;
      gobj = GObj_Create(4, 5, 0x80);
@@ -187827,7 +187995,7 @@ index dfb2b5510..ee484eb20 100644
  }
  
  static inline void make_bg_model(HSD_JObj** out)
-@@ -399,13 +1171,18 @@ static inline void make_bg_model(HSD_JObj** out)
+@@ -399,13 +1181,18 @@ static inline void make_bg_model(HSD_JObj** out)
      HSD_GObj* gobj;
      HSD_JObj* jobj;
      gobj = GObj_Create(4, 5, 0x80);
@@ -187850,7 +188018,7 @@ index dfb2b5510..ee484eb20 100644
      *out = gobj->hsd_obj;
  }
  
-@@ -414,13 +1191,13 @@ static inline void make_icon_root(HSD_JObj** icons)
+@@ -414,13 +1201,13 @@ static inline void make_icon_root(HSD_JObj** icons)
      HSD_GObj* gobj;
      HSD_JObj* jobj;
      gobj = GObj_Create(4, 5, 0x80);
@@ -187868,7 +188036,7 @@ index dfb2b5510..ee484eb20 100644
      icons[0] = GET_JOBJ(gobj)->child;
      HSD_JObjReqAnimAll(icons[0], 0.0F);
      HSD_JObjAnimAll(icons[0]);
-@@ -439,33 +1216,70 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -439,35 +1226,77 @@ void mnStageSel_Scene_OnEnter(void* arg0)
      Vec3 spCC;
  
      int i;
@@ -187948,9 +188116,16 @@ index dfb2b5510..ee484eb20 100644
          mnStageSel_804D6CAE = 0x1E;
 +#endif
          mnStageSel_804D50A0 = sss_data->unk_stage - 1;
++#ifdef MU_NATIVE
++        /* Instant Melee, "Faster SSS Load": input after 1 frame instead of 20. */
++        mnStageSel_804D6CA4 = mu_instant_melee() ? 1 : 0x14;
++#else
          mnStageSel_804D6CA4 = 0x14;
++#endif
  
-@@ -483,8 +1297,8 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+         {
+             HSD_GObj* gobj = mnStageSel_804D6C9C = GObj_Create(2, 3, 0x80);
+@@ -483,8 +1312,8 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_LObj* lobj1;
              HSD_LObj* lobj2;
              gobj = GObj_Create(3, 4, 0x80);
@@ -187961,7 +188136,7 @@ index dfb2b5510..ee484eb20 100644
              HSD_LObjSetNext(lobj1, lobj2);
              HSD_GObjObject_80390A70(gobj, (u8) HSD_GObj_LightKind, lobj1);
              GObj_SetupGXLink(gobj, HSD_GObj_LObjCallback, 0, 0x80);
-@@ -492,7 +1306,7 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -492,7 +1321,7 @@ void mnStageSel_Scene_OnEnter(void* arg0)
  
          {
              HSD_GObj* gobj = GObj_Create(0xE, 0xF, 0);
@@ -187970,7 +188145,7 @@ index dfb2b5510..ee484eb20 100644
              HSD_GObjObject_80390A70(gobj, HSD_GObj_FogKind, fog);
              GObj_SetupGXLink(gobj, fn_8025A974, 0, 0x80);
          }
-@@ -518,6 +1332,12 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -518,6 +1347,12 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_JObjAnimAll(temp_r22_4);
          }
  
@@ -187983,7 +188158,7 @@ index dfb2b5510..ee484eb20 100644
          make_icon_root(spDC);
  
          for (i = 0; i < 0x12; i++) {
-@@ -529,6 +1349,9 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -529,6 +1364,9 @@ void mnStageSel_Scene_OnEnter(void* arg0)
          for (i = 0; i < 0x1D; i++) {
              mnStageSel_803F06D0[i].x8 =
                  gm_80164430(mnStageSel_803F06D0[i].stkind) ? 2 : 1;
@@ -187993,7 +188168,7 @@ index dfb2b5510..ee484eb20 100644
          }
  
          for (i = 0; i <= 0xA; i++) {
-@@ -578,13 +1401,13 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -578,13 +1416,13 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_GObj* gobj = GObj_Create(4, 5, 0x80);
              s32 temp_r22_7;
              HSD_JObj* temp_r23_3;
@@ -188011,7 +188186,7 @@ index dfb2b5510..ee484eb20 100644
              temp_r23_3 = gobj->hsd_obj;
              lb_8000C1C0(temp_r23_3, spDC[i]);
              mnStageSel_803F06D0[i + 13].x0 = temp_r23_3;
-@@ -606,13 +1429,13 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -606,13 +1444,13 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_JObj* jobj;
              HSD_GObj* gobj = GObj_Create(4, 5, 0x80);
              HSD_JObj* temp_r22_8;
@@ -188029,7 +188204,7 @@ index dfb2b5510..ee484eb20 100644
              temp_r22_8 = gobj->hsd_obj;
              lb_8000C1C0(temp_r22_8, spDC[0x10]);
              do_anim(temp_r22_8, 2);
-@@ -625,14 +1448,14 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -625,14 +1463,14 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_GObj* gobj = GObj_Create(4, 5, 0x80);
              s32 temp_r22_9;
              HSD_JObj* temp_r23_6;
@@ -188048,7 +188223,7 @@ index dfb2b5510..ee484eb20 100644
  
              temp_r23_6 = gobj->hsd_obj;
              lb_8000C1C0(temp_r23_6, spDC[i]);
-@@ -650,24 +1473,36 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -650,24 +1488,36 @@ void mnStageSel_Scene_OnEnter(void* arg0)
                  break;
              }
          }
@@ -188089,7 +188264,7 @@ index dfb2b5510..ee484eb20 100644
                  g = gobj;
                  jobj2 = jobj;
                  HSD_GObj_SetupProc(g, fn_8025A310, 2);
-@@ -680,20 +1515,24 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -680,20 +1530,24 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_JObj* jobj;
              HSD_GObj* gobj;
              gobj = GObj_Create(HSD_GOBJ_CLASS_FIGHTER, 5, 0x80);
@@ -188118,7 +188293,7 @@ index dfb2b5510..ee484eb20 100644
                  userdata->x4 = 0;
                  userdata->x2 = 0;
              }
-@@ -702,13 +1541,13 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -702,13 +1556,13 @@ void mnStageSel_Scene_OnEnter(void* arg0)
          {
              HSD_JObj* jobj;
              HSD_GObj* gobj = GObj_Create(4, 5, 0x80);
@@ -188136,7 +188311,7 @@ index dfb2b5510..ee484eb20 100644
  
              {
                  HSD_GObj* g;
-@@ -735,14 +1574,14 @@ void mnStageSel_Scene_OnEnter(void* arg0)
+@@ -735,14 +1589,14 @@ void mnStageSel_Scene_OnEnter(void* arg0)
              HSD_JObj* jobj;
              HSD_GObj* gobj = GObj_Create(4, 5, 0x80);
              HSD_JObj* temp_r3_15 =
@@ -188155,7 +188330,7 @@ index dfb2b5510..ee484eb20 100644
              jobj = gobj->hsd_obj;
              temp_r3_16 = HSD_MemAlloc(sizeof(*temp_r3_16));
              GObj_InitUserData(gobj, 4, HSD_Free, temp_r3_16);
-@@ -765,16 +1604,35 @@ void mnStageSel_Scene_OnFrame(void)
+@@ -765,16 +1619,35 @@ void mnStageSel_Scene_OnFrame(void)
  {
      if (sss_data->force_stage_id >= 0) {
          mnStageSel_804D6CAF = 2;
@@ -188191,7 +188366,7 @@ index dfb2b5510..ee484eb20 100644
          gm_801A4B60();
          return;
      }
-@@ -819,15 +1677,58 @@ void mnStageSel_Scene_OnFrame(void)
+@@ -819,15 +1692,58 @@ void mnStageSel_Scene_OnFrame(void)
          mnStageSel_804D6CA4 -= 1;
          return;
      }
@@ -188250,7 +188425,7 @@ index dfb2b5510..ee484eb20 100644
          gm_801A4B60();
      }
  }
-@@ -838,6 +1739,10 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
+@@ -838,6 +1754,10 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
          lbArchive_80016EFC(mnStageSel_804D6C94);
          mnStageSel_804D6C94 = NULL;
      }
@@ -188261,7 +188436,7 @@ index dfb2b5510..ee484eb20 100644
      {
          SSSData* sss = sss_data;
          sss->start_game = mnStageSel_804D6CAF == 2 ? true : false;
-@@ -851,10 +1756,22 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
+@@ -851,10 +1771,22 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
  
  int mnSelStageRandom(void)
  {
@@ -188394,21 +188569,63 @@ index 1b2aa67ea..000000000
 -
 -#endif
 diff --git a/src/melee/mn/mnstagesw.c b/src/melee/mn/mnstagesw.c
-index b4f760c3b..665e40cc1 100644
+index b4f760c3b..0db347f70 100644
 --- a/src/melee/mn/mnstagesw.c
 +++ b/src/melee/mn/mnstagesw.c
-@@ -60,8 +60,8 @@ static f32 mnStageSw_804D4BB8[2] = { 0.0F, 1.0F };
+@@ -60,8 +60,50 @@ static f32 mnStageSw_804D4BB8[2] = { 0.0F, 1.0F };
  static HSD_GObj* mnStageSw_804D6BF0;
  static s8 mnStageSw_804D6BF4;
  
 -extern StaticModelDesc MenMainConSs_Top;
 -extern StaticModelDesc MenMainCursorSs_Top;
++#ifdef MU_NATIVE
++#include <mu_native.h>
++#include <mu_tmce_osd.h>
++#include <melee/gm/gmevent.h>
++#include <melee/mn/mnevent.h>
++/* Training Mode CE's OSD toggle menu ("Onscreen Display/Toggle UI" patches): Event Select's L
++ * (shim/mu_tmce_ess.c) opens this screen with entering_menu 3, and its rows are then TM-CE's
++ * on-screen displays, one bit each of TM_OSDEnabled (the row's stage id is the OSD id, as on the
++ * console). X/Y change where the OSDs are drawn (TM_OSDPosition); B and START go back to the event,
++ * saving the choices. Every row may be off. Nothing changes when TM-CE is not running. */
++static int mnStageSw_OsdMenu(void)
++{
++    return mu_tmce_active() && mn_804A04F0.entering_menu >= 2;
++}
++/* TM-CE's names by row (its two lists past their header line); blank rows are ids it does not use */
++static const char* const mnStageSw_OsdNames[NUM_STAGES] = {
++    "Wavedash Info", "L-Cancel", "", "Act OoS Frame", "", "Dashback", "", "", "Fighter-specific Tech",
++    "Powershield Frame", "", "SDI Inputs", "Grab Breakout", "Ledgedash Info", "Act OoHitstun",
++    "Lockout Timers", "Item Throw Interrupts", "Boost Grab", "", "Act OoLag", "", "Act OoAirborne",
++    "Jump Cancel Timing", "Fastfall Timing", "Frame Advantage", "Combo Counter", "", "", "",
++};
++static const char* const mnStageSw_OsdPositions[4] = { "HUD", "Sides", "Top Left", "Top Right" };
++static HSD_Text* mnStageSw_OsdTitle;
++static HSD_Text* mnStageSw_OsdPosition;
++/* A text that takes its own lines (HSD_SisLib_803A6754; the stage names are premade SIS strings,
++ * whose texts have no buffer for a line of their own), where the stage name's text would be. */
++#ifndef OSD_NAME_X
++#define OSD_NAME_X 0.0f   /* the line's start inside its row (text units) */
++#define OSD_NAME_Y 0.0f
++#endif
++static HSD_Text* mnStageSw_OsdLine(f32 x, f32 y, f32 width)
++{
++    HSD_Text* text = HSD_SisLib_803A6754(0, mn_804D6BB5);
++    text->pos_x = x;
++    text->pos_y = y;
++    text->pos_z = 17.5f;
++    text->box_size_x = width;
++    text->box_size_y = 300.0f;
++    return text;
++}
++#endif
++
 +extern StaticModelSyms MenMainConSs_Top;
 +extern StaticModelSyms MenMainCursorSs_Top;
  
  /* 23593C */ static void mnStageSw_8023593C(HSD_GObj* gobj);
  /* 2359C8 */ static void mnStageSw_802359C8(MnStageSwData* data);
-@@ -77,12 +77,6 @@ extern StaticModelDesc MenMainCursorSs_Top;
+@@ -77,12 +119,6 @@ extern StaticModelDesc MenMainCursorSs_Top;
  /// Sync stage toggle states from user data to unlock system.
  /// For each stage, if it's unlocked, set its enable state from user_data[i+2].
  /// Stack padding required to match original frame size.
@@ -188421,7 +188638,25 @@ index b4f760c3b..665e40cc1 100644
  static void mnStageSw_8023593C(HSD_GObj* gobj)
  {
      s32 i;
-@@ -98,9 +92,6 @@ static void mnStageSw_8023593C(HSD_GObj* gobj)
+@@ -91,6 +127,17 @@ static void mnStageSw_8023593C(HSD_GObj* gobj)
+     u8 pad[8];
+     (void) pad;
+ 
++#ifdef MU_NATIVE
++    if (mnStageSw_OsdMenu()) {   /* TM-CE Save Toggles When Loaded With L (80235994) */
++        unsigned bits = mu_tmce_osd_enabled();
++        for (i = 0; i < NUM_STAGES; i++) {
++            const unsigned bit = 1u << mnStageSw_803ED4C4[i];
++            bits = user_data[i + 2] ? (bits | bit) : (bits & ~bit);
++        }
++        mu_tmce_osd_set_enabled(bits);
++        return;
++    }
++#endif
+     for (i = 0; i < NUM_STAGES; i++) {
+         p = mnStageSw_803ED4C4 + (u8) i;
+         if (gm_80164430(gm_801641CC(*p)) != 0) {
+@@ -98,9 +145,6 @@ static void mnStageSw_8023593C(HSD_GObj* gobj)
          }
      }
  }
@@ -188431,7 +188666,51 @@ index b4f760c3b..665e40cc1 100644
  
  static void mnStageSw_802359C8(MnStageSwData* data)
  {
-@@ -301,10 +292,14 @@ static inline s32 mnStageSw_CountEnabled(const u8* user_data)
+@@ -116,6 +160,43 @@ static void mnStageSw_802359C8(MnStageSwData* data)
+     (void) delta_y;
+     delta_y -= step_y;
+ 
++#ifdef MU_NATIVE
++    /* TM-CE Load Alt Text When Loaded With L (80236B40): the OSD names on the rows, a title above
++     * them and the OSD position (X/Y) below. */
++    if (mnStageSw_OsdMenu()) {
++        static GXColor title_color = { 0xFF, 0x75, 0x75, 0xFF };
++        static GXColor position_color = { 0x8D, 0xFF, 0x6E, 0xFF };
++        for (i = 0; i < NUM_STAGES; i++) {
++            HSD_JObj* column = i < 15 ? data->x2C : data->x34;
++            const s32 row = i < 15 ? i : i - 15;
++            text = mnStageSw_OsdLine(1.0f + HSD_JObjGetTranslationX(column),
++                                     -((delta_y * (f32) row) + start_y), 160.0f);
++            data->x40[i] = text;
++            text->font_size.x = 0.03f;
++            text->font_size.y = 0.03f;
++            text->default_alignment = 0;
++            text->default_fitting = 1;
++            HSD_SisLib_803A6B98(text, OSD_NAME_X, OSD_NAME_Y, "%s", mnStageSw_OsdNames[i]);
++        }
++        text = mnStageSw_OsdLine(1.0f + HSD_JObjGetTranslationX(data->x2C), -((delta_y * -1.4f) + start_y), 400.0f);
++        text->font_size.x = 0.04f;
++        text->font_size.y = 0.04f;
++        text->default_alignment = 0;
++        HSD_SisLib_803A74F0(text, HSD_SisLib_803A6B98(text, OSD_NAME_X, 0.0f, "OSD Menu"), &title_color);
++        mnStageSw_OsdTitle = text;
++        text = mnStageSw_OsdLine(1.0f + HSD_JObjGetTranslationX(data->x2C), -((delta_y * 15.3f) + start_y), 400.0f);
++        text->font_size.x = 0.035f;
++        text->font_size.y = 0.035f;
++        text->default_alignment = 0;
++        HSD_SisLib_803A74F0(text,
++                            HSD_SisLib_803A6B98(text, OSD_NAME_X, 0.0f, "OSD Position: %s   (X/Y)",
++                                                mnStageSw_OsdPositions[mu_tmce_osd_position()]),
++                            &position_color);
++        mnStageSw_OsdPosition = text;
++        return;
++    }
++#endif
++
+     for (i = 0; i < 15; i++) {
+         text = HSD_SisLib_803A5ACC(
+             0, mn_804D6BB5, 1.0f + HSD_JObjGetTranslationX(data->x2C),
+@@ -301,10 +382,14 @@ static inline s32 mnStageSw_CountEnabled(const u8* user_data)
      return count;
  }
  
@@ -188448,12 +188727,39 @@ index b4f760c3b..665e40cc1 100644
      s32 enabled;
      s32 result;
      u32 buttons;
-@@ -314,12 +309,11 @@ static void fn_80235F80(HSD_GObj* gobj)
+@@ -314,12 +399,38 @@ static void fn_80235F80(HSD_GObj* gobj)
  
      user_data = mnStageSw_804D6BF0->user_data;
      buttons = mn_804A04F0.buttons = mn_80229624(4U);
 -    PAD_STACK(0x28);
 +    PAD_STACK(0x18);
++#ifdef MU_NATIVE
++    if (mnStageSw_OsdMenu()) {
++        /* TM-CE Set Flag on Leaving / Return to First Page / Return to Event Screen When Pressing
++         * Start (80235FCC, 80235FE4, 80236128): B and START save and go back to the event. */
++        if (buttons & (0x20 | 0x100)) {
++            if (buttons & 0x20) sfxBack(); else sfxForward();
++            saveSettings();
++            mn_804D6BC8.cooldown = 5;
++            mn_804A04F0.entering_menu = 0;
++            HSD_GObjFree(gobj);
++            mnEvent_8024E838(gm_801BEB80(), true);
++            return;
++        }
++        /* TM-CE XY To Adjust OSD Position (802360F8) */
++        if ((u8) mnStageSw_804D6BF4 == 0 && (buttons & (0x400 | 0x800))) {
++            int position = mu_tmce_osd_position() + ((buttons & 0x800) ? 1 : -1);
++            position = position < 0 ? 3 : position > 3 ? 0 : position;
++            mu_tmce_osd_set_position(position);
++            if (mnStageSw_OsdPosition != NULL) {
++                HSD_SisLib_803A70A0(mnStageSw_OsdPosition, 0, "OSD Position: %s   (X/Y)",
++                                    mnStageSw_OsdPositions[position]);
++            }
++            sfxMove();
++            return;
++        }
++    }
++#endif
      if (buttons & 0x20) {
          sfxBack();
          mn_804A04F0.entering_menu = 0;
@@ -188463,7 +188769,20 @@ index b4f760c3b..665e40cc1 100644
          mn_804D6BC8.cooldown = 5;
          mn_802339FC();
          HSD_GObjFree(gobj);
-@@ -346,18 +340,7 @@ static void fn_80235F80(HSD_GObj* gobj)
+@@ -336,6 +447,12 @@ static void fn_80235F80(HSD_GObj* gobj)
+                     } else {
+                         enabled = 1;
+                     }
++#ifdef MU_NATIVE
++                    /* TM-CE Can Disable All Toggles in Custom RSS (80236064) */
++                    if (mnStageSw_OsdMenu()) {
++                        enabled = 0;
++                    }
++#endif
+                     if (enabled != 0) {
+                         lbAudioAx_80024030(3);
+                     } else {
+@@ -346,18 +463,7 @@ static void fn_80235F80(HSD_GObj* gobj)
                      sfxMove();
                      *confirmed = 1;
                  }
@@ -188483,7 +188802,7 @@ index b4f760c3b..665e40cc1 100644
                  return;
              }
              goto check_dpad;
-@@ -367,13 +350,11 @@ static void fn_80235F80(HSD_GObj* gobj)
+@@ -367,13 +473,11 @@ static void fn_80235F80(HSD_GObj* gobj)
              result = gm_GetCurrentGameMode();
              switch (result) {
              case GM_MENU:
@@ -188499,8 +188818,21 @@ index b4f760c3b..665e40cc1 100644
                  mn_8022F4CC();
                  return;
              }
-@@ -538,7 +519,7 @@ static inline void mnStageSw_FreeTexts(MnStageSwData* data)
+@@ -536,9 +640,20 @@ static inline void mnStageSw_FreeTexts(MnStageSwData* data)
+     for (i = 0; i < NUM_STAGES; i++) {
+         HSD_SisLib_803A5CC4(data->x40[i]);
      }
++#ifdef MU_NATIVE
++    /* TM-CE Remove Text When Leaving Custom RSS (80236BBC) */
++    if (mnStageSw_OsdTitle != NULL) {
++        HSD_SisLib_803A5CC4(mnStageSw_OsdTitle);
++        mnStageSw_OsdTitle = NULL;
++    }
++    if (mnStageSw_OsdPosition != NULL) {
++        HSD_SisLib_803A5CC4(mnStageSw_OsdPosition);
++        mnStageSw_OsdPosition = NULL;
++    }
++#endif
  }
  
 -static void fn_80236998(HSD_GObj* gobj)
@@ -188508,7 +188840,20 @@ index b4f760c3b..665e40cc1 100644
  {
      HSD_JObj* jobj;
      MnStageSwData* current_data = gobj->user_data;
-@@ -739,7 +720,7 @@ static HSD_GObj* mnStageSw_80236CBC(s8 arg0)
+@@ -681,6 +796,12 @@ static inline void mnStageSw_InitUserData(MnStageSwData* user_data, s8 state)
+     user_data->x1 = (u8) mn_804A04F0.hovered_selection;
+     user_data->x1F = state;
+     for (i = 0; (u8) i < NUM_STAGES; i++) {
++#ifdef MU_NATIVE
++        if (mnStageSw_OsdMenu()) {   /* TM-CE Load Toggles When Loaded With L (80236E00) */
++            user_data->x2[(u8) i] = (mu_tmce_osd_enabled() >> mnStageSw_803ED4C4[i]) & 1;
++            continue;
++        }
++#endif
+         if (gm_80164430(gm_801641CC(mnStageSw_803ED4C4[(u8) i])) != 0) {
+             user_data->x2[(u8) i] = gm_IsStageUnlocked(mnStageSw_803ED4C4[i]);
+         } else {
+@@ -739,7 +860,7 @@ static HSD_GObj* mnStageSw_80236CBC(s8 arg0)
      HSD_JObj* jobj;
      MnStageSwData* user_data;
      AnimLoopSettings* anims = mnStageSw_803ED488;
@@ -188517,7 +188862,7 @@ index b4f760c3b..665e40cc1 100644
      f32 y_spacing;
      s32 i;
  
-@@ -790,7 +771,7 @@ static HSD_GObj* mnStageSw_80236CBC(s8 arg0)
+@@ -790,7 +911,7 @@ static HSD_GObj* mnStageSw_80236CBC(s8 arg0)
      return gobj;
  }
  

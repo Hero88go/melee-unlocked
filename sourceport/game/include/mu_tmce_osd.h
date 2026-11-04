@@ -110,5 +110,9 @@ void mu_tmce_osd_pause_stick_remove(void);    /* gm/gmpause.c gm_801A10FC */
 void mu_tmce_osd_no_save_defaults(void);      /* gm/gmscmemcard.c: no save on the card */
 void* mu_tmce_legacy_message(int ply, int timeout, int area, int window_id); /* Display Message 2.0 */
 unsigned mu_tmce_osd_enabled(void);
+/* the OSD toggle menu (Event Select > L, mn/mnstagesw.c): TM_OSDEnabled and TM_OSDPosition */
+void mu_tmce_osd_set_enabled(unsigned bits);
+int mu_tmce_osd_position(void);
+void mu_tmce_osd_set_position(int position);
 
 #endif

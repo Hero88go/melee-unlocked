@@ -861,6 +861,19 @@ uint32_t fnv1a(const uint8_t* p, size_t n) {
   return h;
 }
 
+bool read_overlay(uint32_t offset, void* dst, uint32_t size, bool* ok);
+// True when the served file (a mod disc's stage select) is an m-ex one: its symbol table names
+// mexMapData, the stage pages the native m-ex layer reads (mnstagesel.c, mexsel_map).
+bool mex_stage_select(const FstFile& file) {
+  if (file.dir || file.length < 32 || file.length > 64u * 1024 * 1024) return false;
+  std::vector<uint8_t> bytes(file.length);
+  bool ok = false;
+  if (!read_overlay(file.offset, bytes.data(), file.length, &ok)) ok = host::disc_read(file.offset, bytes.data(), file.length);
+  if (!ok) return false;
+  static const char kName[] = "mexMapData";
+  return std::search(bytes.begin(), bytes.end(), kName, kName + sizeof kName) != bytes.end();   // with its 0
+}
+
 void load_system_files(const char* forced_off_by) {
 #ifdef MELEE_NO_SLIPPI
   // This build has no patched menu files to serve: the game reads the disc's own, always.
@@ -903,7 +916,21 @@ void load_system_files(const char* forced_off_by) {
     int32_t entry;
     if (found != g_paths.end()) {
       if (g_fst[found->second].dir) { host::log("slippi menus: %s is a disc directory", f.path.c_str()); continue; }
-      entry = found->second; ++replaced;
+      entry = found->second;
+      // An m-ex disc's own stage select (ACE: its stage pages, mexMapData) stays in the mod view:
+      // Slippi's copy, built from the retail file, left only the retail stages on the screen
+      // (0.9.97 report "ACE maps don't show up"). The native m-ex layer locks every added stage
+      // it has no code for. The retail view (online against the standard game) gets Slippi's.
+      const auto alias = g_view_alias.find(entry);
+      if ((f.path == "/mnslmap.usd" || f.path == "/mnslmap.dat") && alias != g_view_alias.end() &&
+          mex_stage_select(g_fst[entry])) {
+        const int32_t slippi_entry = (int32_t)g_fst.size();
+        g_fst.push_back({f.start, (uint32_t)f.data.size(), false});
+        alias->second = slippi_entry;
+        host::log("slippi menus: %s keeps the disc's m-ex stage select; Slippi's copy is its retail view", f.path.c_str());
+        continue;
+      }
+      ++replaced;
     } else {
       entry = (int32_t)g_fst.size(); g_fst.push_back({0, 0, false}); g_paths[f.path] = entry; ++added;
     }
@@ -1146,6 +1173,9 @@ uint32_t h_display_options() {
          (host::g_hide_ko_explosions.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS : 0u) |
          (host::g_hide_hud_emblems.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_HUD_EMBLEMS : 0u) |
          (host::g_community_codes.load(std::memory_order_relaxed) & MU_DISPLAY_OPTION_CODES_ALL) |
+         // The offline community codes (menu timing, the pause): never in a network match.
+         (slippi::online::session_mode() >= 0 || source_p2p::requested()
+              ? 0u : host::g_community_codes.load(std::memory_order_relaxed) & MU_DISPLAY_OPTION_OFFLINE_CODES) |
          // The Arcade look's hitboxes: never in a network match (the game also checks). Its grid is a
          // picture like the rest of the background, so it stays.
          (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |

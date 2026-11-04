@@ -532,8 +532,18 @@ endif()
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native-game-sources.txt"
   CONTENT "$<JOIN:$<TARGET_PROPERTY:melee_game,SOURCES>,\n>\n$<JOIN:$<TARGET_PROPERTY:sdk_math,SOURCES>,\n>\n")
 
-# Build every registered executable fixture, including the normally excluded
-# targets, before running CTest from a fresh Linux checkout.
+# Extract the actual Training exit routine, so an absent CPU exercises the same code that ships.
+set(MU_TRAINING_FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/training_select_body.h")
+add_custom_command(OUTPUT "${MU_TRAINING_FIXTURE}"
+  COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/native_major_fixture.py"
+          "${D}/src/melee/gm/gmtrainingmode.c" "${MU_TRAINING_FIXTURE}" --function gm_801B1C24
+  DEPENDS "${D}/src/melee/gm/gmtrainingmode.c" "${REPO}/tools/native_major_fixture.py" VERBATIM)
+add_executable(mu_training_select_test EXCLUDE_FROM_ALL tests/training_select.c "${MU_TRAINING_FIXTURE}")
+target_include_directories(mu_training_select_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_options(mu_training_select_test PRIVATE -UNDEBUG)
+add_test(NAME native_training_select COMMAND mu_training_select_test)
+
+# Build every registered executable fixture, including normally excluded targets, before CTest.
 get_property(MU_GAME_DIRECTORY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 set(MU_GAME_TEST_TARGETS)
 foreach(mu_target IN LISTS MU_GAME_DIRECTORY_TARGETS)

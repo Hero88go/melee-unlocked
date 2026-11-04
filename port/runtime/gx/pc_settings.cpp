@@ -2326,7 +2326,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "hide_ko_explosions") options.hide_ko_explosions = value == "1";
       else if (key == "hide_hud_emblems") options.hide_hud_emblems = value == "1";
       else if (key == "proaistronger") options.pro_ai_stronger = std::clamp(std::atoi(value.c_str()), 0, 2);
-      else if (key == "community_codes") options.community_codes = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & MU_DISPLAY_OPTION_CODES_ALL;
+      else if (key == "community_codes") options.community_codes = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & (MU_DISPLAY_OPTION_CODES_ALL | MU_DISPLAY_OPTION_OFFLINE_CODES);
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
 #ifndef MELEE_NO_SLIPPI
@@ -9104,6 +9104,25 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("%s\nPicture or sound only, yours alone. Source Port.", c.tip);
+      }
+      // Offline only: these change menu timing and the pause, so online they stay off.
+      static const Code kOffline[] = {
+        {MU_DISPLAY_OPTION_INSTANT_MELEE, "Instant Melee",
+         "Faster stage, stage select and character select loads, and pausing during the\n"
+         "match countdown."},
+        {MU_DISPLAY_OPTION_FREE_PAUSE_CAMERA, "Unrestricted pause camera",
+         "The pause camera turns all the way down, left and right and zooms much further."},
+      };
+      for (const Code& c : kOffline) {
+        bool on = (options.community_codes & c.bit) != 0;
+        if (settings_toggle(c.name, &on)) {
+          options.community_codes = on ? (options.community_codes | c.bit) : (options.community_codes & ~c.bit);
+          host::g_community_codes.store(options.community_codes, std::memory_order_relaxed);
+          changed = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("%s\nOffline only: off in online matches. Source Port (on the Static Recomp, add the\n"
+                            "Gecko code itself).", c.tip);
       }
     }
 
