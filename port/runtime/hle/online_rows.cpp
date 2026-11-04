@@ -198,7 +198,8 @@ const Part kUnrankedLine[] = {YOUGAME, {34, 27, 148, kAsIs}};
 const Part kFriendsLine[] = {YOUGAME, {kMadeF, 0, 0, kAsIs}, {26, 49, 57, kAsIs}, {26, 96, 99, kAscender},
                              {26, 120, 133, kAsIs}, {34, 47, 59, kAsIs}, {34, 136, 148, kAsIs}, {26, 137, 148, kAsIs}};
 #undef YOUGAME
-constexpr int kWordGap = 12;   // fill to fill between two words, as "Event Match" has it
+constexpr int kLineGap = 4;    // fill to fill between two letters: three clear columns, as the game's labels
+constexpr int kWordGap = 13;   // fill to fill between two words, as "Event Match" has it
 constexpr int kOutline = 4;    // columns the outline adds each side
 constexpr int kGreyPct = 55;   // a greyed-out row's letters, against the menu's white
 
@@ -208,7 +209,7 @@ Label line(const Label* sources, const Part (&parts)[N]) {
   std::vector<float> canvas(size_t(kCanvas) * kHeight, 0.0f);   // row-major
   int x = 10, lo = -1, hi = 0;
   for (const Part& p : parts) {
-    if (p.image == kWordSpace) { x += kWordGap - kGap; continue; }
+    if (p.image == kWordSpace) { x += kWordGap - kLineGap; continue; }
     const Shape s = p.image == kMadeY ? make_y(sources[1])
                     : p.image == kMadeF ? make_f(sources[24])
                                         : shape(sources[p.image], p.fill0, p.fill1, p.h);
@@ -223,7 +224,7 @@ Label line(const Label* sources, const Part (&parts)[N]) {
       }
     if (lo < 0) lo = left + first;
     hi = left + last;
-    x = hi + kGap;
+    x = hi + kLineGap;
   }
   // Narrow the white to the label (each column averages the canvas columns it covers).
   const int src0 = lo - 1, src_w = hi - lo + 3;
