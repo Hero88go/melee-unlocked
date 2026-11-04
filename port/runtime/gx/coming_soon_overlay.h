@@ -14,7 +14,7 @@ void refused(int row);
 // UI thread, once per presented frame: draws the stickers while the page is showing. The game
 // picture is the rectangle x0,y0 to x1,y1 in the window.
 void draw(float x0, float y0, float x1, float y1);
-// The sticker style (0-4), for the look options; MELEE_TEST_SOON_STYLE picks one in hidden runs.
+// The sticker style (0-9), for the look options; MELEE_TEST_SOON_STYLE picks one in hidden runs.
 void set_style(int style);
 
 }  // namespace coming_soon_overlay

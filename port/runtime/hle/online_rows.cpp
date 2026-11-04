@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <unordered_set>
 
@@ -61,16 +62,30 @@ uint32_t fnv1a(const uint8_t* p, size_t n) {
 // A letter cut from one of the menu's own labels: the columns cut (to the middle of the gap to each
 // neighbour, so its outline comes along but no neighbour's fill), the columns its white fill spans,
 // and a width scale (the only capital F the menu has is in a condensed label). No pixels are kept
-// here; the letters come from the player's own disc as the menu file is built.
+// here; the letters come from the player's own disc as the menu file is built. A whole label (Ranked,
+// Unranked) is one "letter"; kSpace stands for the gap between two words.
 struct Letter { uint8_t image, cut0, cut1, fill0, fill1; uint8_t scale_pct = 100; };
-constexpr int kGap = 3;   // columns between two letters' fills, as the menu's own words space them
+constexpr Letter kSpace = {0, 0, 0, 0, 0, 0};
+constexpr uint8_t kY = 255;   // the Y of YouGame, made from the V of "VS. Mode" (the menu has no Y)
+constexpr int kGap = 3;       // columns between two letters' fills, as the menu's own words space them
+constexpr int kWordGap = 11;
+constexpr int kGreyPct = 55;  // a greyed-out row's letters, against the menu's white  // between two words, as "Event Match" and "Regular Match" have it
 // The labels the letters come from, as Melee 1.02 with Slippi's menu files has them (English).
 constexpr struct { uint8_t image; uint32_t hash; } kSources[] = {
-    {26, 0x745BEA37u}, {29, 0xC3650ACBu}, {34, 0x97FF741Au}, {47, 0xDA03AAF9u}};
-const Letter kFriendsWord[] = {{47, 0, 12, 2, 11, 145}, {26, 47, 60, 49, 59},   {26, 93, 101, 96, 100}, {26, 119, 135, 120, 134},
-                               {34, 45, 61, 47, 60},    {34, 135, 153, 136, 150}, {26, 135, 152, 137, 149}};
+    {1, 0x7E718C33u},  {15, 0x1BCF3D50u}, {20, 0xFA6049D4u}, {26, 0x745BEA37u}, {29, 0xC3650ACBu},
+    {33, 0xA933D462u}, {34, 0x97FF741Au}, {47, 0xDA03AAF9u}, {60, 0x2AA44EB1u}, {62, 0x082E8B42u}};
+// "YouGame": Y (made), o (Log-out), u (Sound), G (Gallery), a (Ranked), m (Teams), e (Ranked).
+#define YOUGAME {kY, 0, 0, 0, 0}, {60, 55, 70, 56, 69}, {20, 81, 97, 83, 96}, {15, 33, 59, 39, 58}, \
+                {33, 58, 74, 59, 73}, {62, 93, 117, 95, 116}, {33, 105, 121, 107, 120}, kSpace
+#define FRIENDS {47, 0, 12, 2, 11, 145}, {26, 47, 60, 49, 59}, {26, 93, 101, 96, 100}, {26, 119, 135, 120, 134}, \
+                {34, 45, 61, 47, 60}, {34, 135, 153, 136, 150}, {26, 135, 152, 137, 149}
+const Letter kRankedWord[] = {YOUGAME, {33, 35, 141, 41, 135}};
+const Letter kUnrankedWord[] = {YOUGAME, {34, 21, 155, 27, 149}};
+const Letter kFriendsWord[] = {YOUGAME, FRIENDS};
 const Letter kSlippiWord[] = {{29, 34, 56, 37, 54}, {29, 133, 142, 135, 139}, {29, 107, 115, 109, 113},
                               {29, 56, 73, 58, 72}, {29, 56, 73, 58, 72},     {29, 107, 115, 109, 113}};
+#undef YOUGAME
+#undef FRIENDS
 
 // One letter's columns (with its outline), stretched to scale_pct of its width; `lead` and `fill`
 // are where its fill starts and how wide it is, after the stretch.
@@ -97,33 +112,109 @@ Columns cut(const Label& src, const Letter& g) {
   return c;
 }
 
-// A word set from the menu's own letters, centred like the menu's labels. Where two letters' edges
-// meet, the white fill wins over the neighbour's black outline.
+// The Y: the V of "VS. Mode" (columns 13-40, its point under column 30). Its left arm moves in row by
+// row so the two arms meet halfway down, the right arm is its mirror, and below the meeting row its
+// middle (one stroke with its outline) runs down as the stem to the V's own bottom edge.
+Columns make_y(const Label& vs) {
+  constexpr int kX0 = 13, kMid = 30 - kX0, kN = 2 * kMid + 1;
+  constexpr uint32_t kJoin = 13;
+  Columns c;
+  c.width = kN;
+  c.a.assign(size_t(kN) * kHeight, 0);
+  c.l.assign(size_t(kN) * kHeight, 0);
+  auto put = [&](int x, uint32_t y, uint8_t a, uint8_t l) {
+    if (x < 0 || x >= kN || !a) return;
+    const size_t o = size_t(x) * kHeight + y;
+    c.l[o] = c.a[o] ? std::max(c.l[o], l) : l;
+    c.a[o] = std::max(c.a[o], a);
+  };
+  auto src = [&](int x, uint32_t y) { return y * kWidth + size_t(kX0 + x); };
+  for (uint32_t y = 0; y <= kJoin; ++y) {
+    const int s = int(std::lround(std::max(0, int(y) - 3) * 4.0 / (kJoin - 3)));
+    for (int x = 0; x <= kMid; ++x) {
+      put(x + s, y, vs.a[src(x, y)], vs.l[src(x, y)]);
+      put(kN - 1 - x - s, y, vs.a[src(x, y)], vs.l[src(x, y)]);
+    }
+  }
+  uint32_t bottom = kJoin;   // the V's last row of white fill under its point
+  for (uint32_t y = kJoin; y < kHeight; ++y)
+    if (vs.a[src(kMid, y)] >= 12 && vs.l[src(kMid, y)] >= 12) bottom = y;
+  for (uint32_t y = kJoin + 1; y < kHeight; ++y)
+    for (int x = kMid - 5; x <= kMid + 5; ++x) {
+      const size_t o = size_t(x) * kHeight + y;
+      if (y <= bottom) { c.a[o] = c.a[size_t(x) * kHeight + kJoin]; c.l[o] = c.l[size_t(x) * kHeight + kJoin]; }
+      else { c.a[o] = vs.a[src(x, y)]; c.l[o] = vs.l[src(x, y)]; }
+    }
+  int f0 = kN, f1 = -1;
+  for (int x = 0; x < kN; ++x)
+    for (uint32_t y = 0; y < kHeight; ++y)
+      if (c.a[size_t(x) * kHeight + y] >= 12 && c.l[size_t(x) * kHeight + y] >= 12) { f0 = std::min(f0, x); f1 = std::max(f1, x); }
+  c.lead = f0;
+  c.fill = f1 - f0 + 1;
+  return c;
+}
+
+// A line set from the menu's own letters. Where two letters' edges meet, the white fill wins over
+// the neighbour's black outline. A line that fits is centred like the menu's labels; a longer one is
+// narrowed to the label's width, as the menu's own long labels ("Home-Run Contest") are.
 template <size_t N>
 Label word(const Label* sources, const Letter (&letters)[N]) {
-  std::vector<Columns> cols;
-  int fills = 0;   // from the first fill's start to the last fill's end
+  constexpr int kCanvas = 512;
+  std::vector<uint8_t> ca(size_t(kCanvas) * kHeight), cl(size_t(kCanvas) * kHeight);   // column-major
+  int x = 32, fill_lo = -1, fill_hi = 0, lo = kCanvas, hi = -1;
   for (const Letter& g : letters) {
-    cols.push_back(cut(sources[g.image], g));
-    fills += cols.back().fill;
-  }
-  fills += int(N - 1) * kGap;
-  Label out;
-  int x = (int(kWidth) - fills) / 2;   // where the next letter's fill starts
-  for (const Columns& c : cols) {
+    if (g.image == 0 && g.cut1 == 0) { x += kWordGap - kGap; continue; }
+    const Columns c = g.image == kY ? make_y(sources[1]) : cut(sources[g.image], g);
+    if (fill_lo < 0) fill_lo = x;
+    fill_hi = x + c.fill;
     const int left = x - c.lead;
     for (int dx = 0; dx < c.width; ++dx) {
       const int px = left + dx;
-      if (px < 0 || px >= int(kWidth)) continue;
+      if (px < 0 || px >= kCanvas) continue;
       for (uint32_t y = 0; y < kHeight; ++y) {
         const uint8_t a = c.a[size_t(dx) * kHeight + y], l = c.l[size_t(dx) * kHeight + y];
-        const size_t o = y * kWidth + size_t(px);
+        const size_t o = size_t(px) * kHeight + y;
         if (!a) continue;
-        out.l[o] = out.a[o] ? std::max(out.l[o], l) : l;
-        out.a[o] = std::max(out.a[o], a);
+        cl[o] = ca[o] ? std::max(cl[o], l) : l;
+        ca[o] = std::max(ca[o], a);
+        lo = std::min(lo, px);
+        hi = std::max(hi, px);
       }
     }
     x += c.fill + kGap;
+  }
+  Label out;
+  if (hi < lo) return out;
+  const int ink = hi - lo + 1;
+  if (ink <= int(kWidth)) {
+    const int shift = (int(kWidth) - (fill_hi - fill_lo)) / 2 - fill_lo;
+    for (int px = lo; px <= hi; ++px) {
+      const int ox = px + shift;
+      if (ox < 0 || ox >= int(kWidth)) continue;
+      for (uint32_t y = 0; y < kHeight; ++y) {
+        out.a[y * kWidth + size_t(ox)] = ca[size_t(px) * kHeight + y];
+        out.l[y * kWidth + size_t(ox)] = cl[size_t(px) * kHeight + y];
+      }
+    }
+    return out;
+  }
+  // Narrowed: each label column averages the canvas columns it covers (intensity weighted by alpha).
+  const int out_w = int(kWidth) - 2, off = 1;
+  for (int dx = 0; dx < out_w; ++dx) {
+    const double x0 = lo + double(dx) * ink / out_w, x1 = lo + double(dx + 1) * ink / out_w;
+    for (uint32_t y = 0; y < kHeight; ++y) {
+      double wa = 0, wl = 0, tot = 0;
+      for (int sx = int(x0); sx < x1 && sx <= hi; ++sx) {
+        const double cover = std::min(x1, double(sx + 1)) - std::max(x0, double(sx));
+        const size_t o = size_t(sx) * kHeight + y;
+        wa += ca[o] * cover;
+        wl += double(cl[o]) * ca[o] * cover;
+        tot += cover;
+      }
+      const size_t o = y * kWidth + size_t(off + dx);
+      out.a[o] = uint8_t(std::clamp(std::lround(wa / tot), 0L, 15L));
+      out.l[o] = wa > 0 ? uint8_t(std::clamp(std::lround(wl / wa), 0L, 15L)) : 0;
+    }
   }
   return out;
 }
@@ -162,7 +253,7 @@ bool apply(std::vector<uint8_t>& file, std::string* why, bool coming_soon) {
   if (!table || a.u16(texanim + 20) != kImages || !a.in(table, 4u * kImages)) return fail(why, "label count differs");
   // The eight online rows' images (Ranked, Unranked, Direct, Log-in, Log-out, Update, Teams, Party),
   // the labels the new words take their letters from, and Online Play (the fallback Slippi row).
-  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 26, 29, 47, 7};
+  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 1, 15, 20, 26, 29, 47, 7};
   uint32_t data[64] = {};
   for (int i : rows) {
     const uint32_t desc = a.ptr(table + 4u * i);
@@ -174,30 +265,40 @@ bool apply(std::vector<uint8_t>& file, std::string* why, bool coming_soon) {
         !a.in(data[i], kBytes))
       return fail(why, "label image differs");
   }
-  (void)coming_soon;   // Coming soon is drawn over the menu (the host's overlay), not in the labels
   uint8_t* base = file.data() + 0x20;
   // Slippi's own labels, exactly as Slippi draws them, kept before any row is rewritten.
   std::vector<uint8_t> unranked(base + data[34], base + data[34] + kBytes), direct(base + data[58], base + data[58] + kBytes),
       teams(base + data[62], base + data[62] + kBytes), party(base + data[63], base + data[63] + kBytes),
       online_play(base + data[7], base + data[7] + kBytes);
-  // The two new words, set from the menu's own letters when those labels are the ones the letters
-  // were measured on (English menu files); otherwise Slippi's Direct and the game's Online Play.
+  // The four new labels (YouGame Ranked, YouGame Unranked, YouGame Friends, Slippi), set from the
+  // menu's own letters when those labels are the ones the letters were measured on (English menu
+  // files); otherwise Ranked, Unranked and Direct as Slippi has them, and the game's Online Play.
   bool letters_ok = true;
   for (const auto& s : kSources) letters_ok &= fnv1a(base + data[s.image], kBytes) == s.hash;
   if (letters_ok) {
     std::vector<Label> src(64);
-    for (int i : {26, 29, 34, 47}) src[i] = decode(base + data[i]);
+    for (const auto& s : kSources) src[s.image] = decode(base + data[s.image]);
+    encode(word(src.data(), kRankedWord), base + data[33]);
+    encode(word(src.data(), kUnrankedWord), base + data[34]);
     encode(word(src.data(), kFriendsWord), base + data[58]);
     encode(word(src.data(), kSlippiWord), base + data[62]);
   } else {
     std::memcpy(base + data[62], online_play.data(), kBytes);   // Friends keeps Slippi's Direct label
   }
-  // Rows in the menu's order: slots 0-7 show images 33, 34, 58, 62, 63, 59, 60, 61. Top page: Ranked
-  // and Unranked (the menu's own), Friends, Slippi. Slippi's page: its own four labels, unchanged.
+  // Rows in the menu's order: slots 0-7 show images 33, 34, 58, 62, 63, 59, 60, 61. Top page: YouGame
+  // Ranked, YouGame Unranked, YouGame Friends, Slippi. Slippi's page: its own four labels, unchanged.
   std::memcpy(base + data[63], unranked.data(), kBytes);
   std::memcpy(base + data[59], direct.data(), kBytes);
   std::memcpy(base + data[60], teams.data(), kBytes);
   std::memcpy(base + data[61], party.data(), kBytes);
+  // Coming soon: YouGame's three rows greyed out (their white letters dimmed, the outline kept); the
+  // sticker over them is the host's overlay.
+  if (coming_soon)
+    for (int i : {33, 34, 58}) {
+      Label g = decode(base + data[i]);
+      for (uint8_t& l : g.l) l = uint8_t((l * kGreyPct + 50) / 100);
+      encode(g, base + data[i]);
+    }
   if (why) why->clear();
   return true;
 }

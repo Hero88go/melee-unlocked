@@ -13,7 +13,7 @@
 
 namespace {
 constexpr uint32_t kBytes = 176 * 32;
-const int kRows[] = {7, 26, 29, 47, 33, 34, 58, 59, 60, 61, 62, 63};   // the rows and the letter sources
+const int kRows[] = {1, 7, 15, 20, 26, 29, 47, 33, 34, 58, 59, 60, 61, 62, 63};   // the rows and the letter sources
 bool own(int i) { for (int r : kRows) if (r == i) return true; return false; }
 
 struct Builder {
@@ -81,8 +81,8 @@ int main() {
     std::string why;
     CHECK(online_rows::apply(s.file, &why));
     CHECK(why.empty());
-    CHECK(image_filled(s, 33, 33));   // Ranked: the menu's own label
-    CHECK(image_filled(s, 34, 34));   // Unranked
+    CHECK(image_filled(s, 33, 33));   // Ranked: Slippi's label (fallback)
+    CHECK(image_filled(s, 34, 34));   // Unranked (fallback)
     CHECK(image_filled(s, 58, 58));   // Friends: Slippi's Direct label (fallback)
     CHECK(image_filled(s, 62, 7));    // Slippi: the game's Online Play label (fallback)
     CHECK(image_filled(s, 63, 34));   // Slippi's page: Unranked, Direct, Teams, Party, as Slippi drew them

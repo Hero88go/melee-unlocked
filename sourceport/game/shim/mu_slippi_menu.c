@@ -117,8 +117,16 @@ static int split_start_page(void)
     }
     return !(yg_flags & YG_ROWS_OPEN) && slp.app_state == MU_SLP_APP_LOGGED_IN ? 1 : 0;
 }
-/* YouGame is not open yet: its rows are drawn (their labels say Coming soon!) but cannot be picked. */
+/* YouGame is not open yet: its rows stay on the menu (a locked row would vanish from it), their
+ * labels greyed out with a Coming soon sticker over them, and the cursor never stops on them. */
 static int yougame_soon(void) { return split_layout() && (yg_flags & YG_COMING_SOON) != 0; }
+static int cursor_stops(int sel)
+{
+    if (yougame_soon() && split_page == 0 && sel < SPLIT_SLIPPI) {
+        return 0;
+    }
+    return mn_80229938(MENU_KIND_8, sel);
+}
 static int yougame_query(int pick, char* out, unsigned int cap);
 static int first_boot = 1;    /* OnMenuLoad's DOFST_IS_FIRST_BOOT */
 /* A peer-to-peer session with menus (mu_online_p2p_menus): the first online submenu confirms Direct
@@ -391,7 +399,7 @@ int mu_slippi_option_unlocked(int sel)
     if (split_layout()) {
         if (split_page == 0) {
             if (sel < SPLIT_SLIPPI) {
-                /* YouGame: the launcher's account, or shown as Coming soon */
+                /* YouGame: the launcher's account, or shown greyed out as Coming soon */
                 return (yg_flags & (YG_ROWS_OPEN | YG_COMING_SOON)) != 0;
             }
             return sel == SPLIT_SLIPPI;   /* Slippi: its page, or its log in / update */
@@ -475,7 +483,7 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
         if (split_layout()) {
             /* Back from a match: the page and row it was started from. */
             split_page = last_slot >= SPLIT_FIRST_SLIPPI ? 1 : last_slot >= 0 ? 0 : split_start_page();
-            *hovered = last_slot >= 0 && mn_80229938(MENU_KIND_8, last_slot) ? (u8) last_slot
+            *hovered = last_slot >= 0 && cursor_stops(last_slot) ? (u8) last_slot
                                                                              : (u8) mu_slippi_first_unlocked();
         } else {
             *hovered = mn_80229938(MENU_KIND_8, slp.mode) ? slp.mode : (u8) mu_slippi_first_unlocked();
@@ -491,7 +499,7 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
             const int slot = (yg_open & YG_OPEN_DIRECT) ? 2 : 0;   /* Friends or Ranked */
             yg_open = 0;
             split_page = 0;
-            if (mn_80229938(MENU_KIND_8, slot)) {
+            if (cursor_stops(slot)) {
                 *hovered = (u8) slot;
                 auto_slot = slot;
             }
@@ -606,14 +614,7 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         /* The host draws the Coming soon stickers while this page is on screen. */
         yougame_query(0x10 | (mn_804A04F0.hovered_selection & 3), NULL, 0);
     }
-    if ((buttons & MenuInput_Confirm) && yougame_soon() && split_page == 0 &&
-        mn_804A04F0.hovered_selection < SPLIT_SLIPPI)
-    {
-        /* A Coming soon row: the menu's refusal sound (as a locked character on the character
-         * select) and the sticker shakes; nothing else happens. */
-        lbAudioAx_80024030(3);
-        yougame_query(0x20 | mn_804A04F0.hovered_selection, NULL, 0);
-    } else if (buttons & MenuInput_Confirm) {
+    if (buttons & MenuInput_Confirm) {
         mn_804D6BC8.cooldown = 5;
         mn_804A04F0.entering_menu = 1;
         gm_801677E8(auto_direct ? (s8) mu_online_p2p_port() : (s8) confirm_port());
@@ -689,7 +690,7 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
             } else {
                 mn_804A04F0.hovered_selection--;
             }
-        } while (!mn_80229938(MENU_KIND_8, mn_804A04F0.hovered_selection));
+        } while (!cursor_stops(mn_804A04F0.hovered_selection));
     } else if (buttons & MenuInput_Down) {
         sfxMove();
         do {
@@ -698,7 +699,7 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
             } else {
                 mn_804A04F0.hovered_selection++;
             }
-        } while (!mn_80229938(MENU_KIND_8, mn_804A04F0.hovered_selection));
+        } while (!cursor_stops(mn_804A04F0.hovered_selection));
     }
 }
 
