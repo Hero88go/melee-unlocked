@@ -227,15 +227,47 @@ int main() {
   block_version_fetch = false;
   CHECK(poll() == -1 && version_requests == before_cancelled_check + 2);
 
+  // Queue entry, peer connection and the first ready screen share one request. The next match
+  // still fetches again and rejects a newly incompatible server version.
+  user.ResetOnlineCompatibility();
+  version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
+  const int before_search = version_requests;
+  CHECK(user.CheckSessionCompatibility(&compatibility_error, fetch_version));
+  CHECK(user.CheckSessionCompatibility(&compatibility_error, fetch_version));
+  CHECK(poll() == 1 && version_requests == before_search + 1);
+  user.ResetOnlineCompatibility();
+  version_reply = "{\"latestVersion\":\"99.0.0\"}";
+  CHECK(!user.CheckSessionCompatibility(&compatibility_error, fetch_version));
+  CHECK(poll() == -1 && version_requests == before_search + 2);
+
+  // A polling worker and the matchmaking thread arriving together still issue one request.
+  user.ResetOnlineCompatibility();
+  version_reply = nlohmann::json{{"latestVersion", slippi::SLIPPI_SEMVER}}.dump();
+  block_version_fetch = true;
+  const int before_shared_check = version_requests;
+  CHECK(user.PollOnlineCompatibility(&compatibility_error, fetch_version) == 0);
+  for (int i = 0; i < 2000 && version_requests == before_shared_check; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  auto peer_check = std::async(std::launch::async, [&] {
+    std::string error;
+    return user.CheckSessionCompatibility(&error, fetch_version) && error.empty();
+  });
+  block_version_fetch = false;
+  CHECK(peer_check.get() && poll() == 1);
+  CHECK(version_requests == before_shared_check + 1);
+
   // A complete portable login takes priority. Logout/re-login and refresh read its current contents.
   const auto portable = profile("Portable test", "LOCAL#123");
   write(local / "user.json", portable);
   CHECK(user.AttemptLogin(true) && user.GetUserInfo().connect_code == "LOCAL#123");
   CHECK(slippi::account::resolve(local).file == local / "user.json");
+  CHECK(user.CheckSessionCompatibility(&compatibility_error, fetch_version));
   user.LogOut();
   CHECK(!user.IsLoggedIn() && user.GetUserInfo().play_key.empty());
   const int requests_before_logout_check = version_requests;
   CHECK(!user.CheckOnlineCompatibility(&compatibility_error, fetch_version));
+  CHECK(version_requests == requests_before_logout_check);
+  CHECK(!user.CheckSessionCompatibility(&compatibility_error, fetch_version));
   CHECK(version_requests == requests_before_logout_check);
   CHECK(user.AttemptLogin() && user.GetUserInfo().connect_code == "LOCAL#123");
   write(local / "user.json", profile("Changed", "LOCAL#456"));

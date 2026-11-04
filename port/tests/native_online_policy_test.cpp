@@ -31,5 +31,13 @@ int main() {
   CHECK(native_profile_mode_error(NativeGameplayProfile::Vanilla, 5) != nullptr);
   CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::Akaneia, 1), "Direct") != nullptr);
   CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::OtherMod, 1), "Direct") != nullptr);
+  // Verified cosmetic packs retain their full files offline and advertise retail gameplay in
+  // every online mode, so a one-sided look cannot cause a Direct build mismatch.
+  for (bool yougame : {false, true}) {
+    CHECK(slippi::online::native_source_mod_view(true, -1, yougame, false, true, "", true));
+    for (int mode = 0; mode <= 4; ++mode)
+      CHECK(!slippi::online::native_source_mod_view(true, mode, yougame, false, true, std::string(64, 'a'), true));
+    CHECK(slippi::online::native_source_mod_view(true, 2, yougame, false, true, std::string(64, 'a')));
+  }
   std::puts("native_online_policy: ok");
 }

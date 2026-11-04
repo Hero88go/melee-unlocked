@@ -328,6 +328,7 @@ std::vector<mods::Layer> g_explicit_mod_layers;
 std::vector<std::filesystem::path> g_mod_gcis;
 std::string g_mod_fingerprint;                 // content identity of the enabled layers, "" = vanilla
 std::string g_direct_fingerprint;              // what Direct compares when not the content identity (Melee Maker)
+bool g_cosmetic_pack = false;                  // a verified official look; standard gameplay online
 std::filesystem::path g_profile_card;          // the profile's own card folder, "" = the ordinary card
 std::vector<mods::CardImport> g_card_imports;
 
@@ -568,6 +569,9 @@ void load_mod_overlay() {
         [path](const ModOverlay::File& file) { return file.path == path; });
   };
   const bool one_iso = g_mod_layers.size() == 1 && g_mod_layers[0].kind == mods::LayerKind::Iso;
+  g_cosmetic_pack = one_iso && host::cosmetics::official_cosmetic_disc(g_mod_layers[0].path.u8string());
+  if (g_cosmetic_pack)
+    host::log("mods: verified Animelee look; online uses standard gameplay with verified costumes and music");
   const bool akaneia = one_iso && has("/mxdt.dat") && has("/plsn.dat") && has("/plts.dat");
   if (akaneia) host::log("mods: Akaneia profile detected; its content online is Direct-only");
   // The 2D-style build: its hitbox code is the Arcade look's hitbox switches, on for this profile.
@@ -1982,7 +1986,8 @@ slippi::online::LocalBuild content_build_for_mode(int mode) {
   slippi::online::LocalBuild build;
   build.fingerprint = g_direct_fingerprint.empty() ? g_mod_fingerprint : g_direct_fingerprint;
   build.mod_view = slippi::online::native_source_mod_view(mods, mode, yougame::active(), g_plain_opponent,
-                                                         gx::RenderOptions::live_mods_in_direct(), build.fingerprint);
+                                                         gx::RenderOptions::live_mods_in_direct(), build.fingerprint,
+                                                         g_cosmetic_pack);
   // Akaneia and ACE: their added fighters are compiled into this game library (an Akaneia disc is
   // refused without them), so Direct and Teams may pick them, as on the Static Recomp. Before this
   // only Static mod boots said so, and the Source Port refused every added fighter online.
@@ -1999,7 +2004,8 @@ void apply_content_mode(int mode) {
   g_content_mode = mode;
   if (retail != g_retail_view)
     host::log("content: %s view (%s)", retail ? "retail" : "mod",
-              mode < 0 ? "offline" : mode == 2 && retail ? "Direct, the opponent is on Slippi Dolphin" :
+              mode < 0 ? "offline" : g_cosmetic_pack ? "online cosmetic look" :
+              mode == 2 && retail ? "Direct, the opponent is on Slippi Dolphin" :
               mode == 2 ? "Direct" : mode == 0 && build.mod_view ? "YouGame Ranked, same verified build" :
               mode == 1 && build.mod_view ? "YouGame Unranked, same verified build" :
               "online mode that plays the retail game");

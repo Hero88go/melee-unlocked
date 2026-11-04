@@ -40,9 +40,13 @@ inline bool native_mod_fingerprint_valid(const std::string& fingerprint) {
 // YouGame Ranked/Unranked (0/1): mod iff the full fingerprint is valid. Other modes: retail.
 // Standalone keeps the original offline/Direct rule for every fingerprint and setting.
 inline bool native_source_mod_view(bool has_mod, int mode, bool yougame, bool plain_opponent,
-                                   bool live_mods_in_direct, const std::string& fingerprint) {
+                                   bool live_mods_in_direct, const std::string& fingerprint,
+                                   bool cosmetic_pack = false) {
   if (!has_mod) return false;
   if (mode < 0) return true;
+  // An identified cosmetic pack uses the host's filtered retail view online. Its verified
+  // costumes remain local and do not require the opponent to install the same look.
+  if (cosmetic_pack) return false;
   if (mode == 2) return !plain_opponent && live_mods_in_direct;
   return yougame && (mode == 0 || mode == 1) && native_mod_fingerprint_valid(fingerprint);
 }

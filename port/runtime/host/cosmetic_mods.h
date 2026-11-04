@@ -210,6 +210,9 @@ struct OfficialLookState {
   std::string disc;       // Animelee: the built disc's path
 };
 OfficialLookState official_look_state(int which, const std::string& mods_folder);
+// True only for the complete, hash-verified Animelee discs built by the official look installer.
+// Their Source Port online view keeps verified costumes/music over standard gameplay files.
+bool official_cosmetic_disc(const std::string& disc_path);
 void install_official_look(int which, const std::string& retail_disc, const std::string& xdelta_tool, const std::string& mods_folder);
 // At startup with the game disc open: scans every built look disc as its pack.
 void scan_look_packs();

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def extract(text, name="runGameMode"):
-    start = re.search(r"^(?:static\s+)?(?:inline\s+)?\w+\s+" + re.escape(name) +
+    start = re.search(r"^(?:static\s+)?(?:inline\s+)?\w+(?:[ \t]*\*)?\s+" + re.escape(name) +
                       r"\([^\n]*\)\s*\{", text, re.MULTILINE)
     if not start:
         raise ValueError("production " + name + " definition not found")

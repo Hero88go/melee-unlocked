@@ -553,6 +553,20 @@ target_include_directories(mu_fighter_screen_position_test PRIVATE "${CMAKE_CURR
 target_compile_options(mu_fighter_screen_position_test PRIVATE -UNDEBUG)
 add_test(NAME native_fighter_screen_position COMMAND mu_fighter_screen_position_test)
 
+set(MU_SIS_STACK_FIXTURES)
+foreach(MU_SIS_STACK_FUNCTION HSD_SisLib_803A7684 HSD_SisLib_803A7F0C sisRejectInvalidCursor)
+  set(MU_SIS_STACK_BODY "${CMAKE_CURRENT_BINARY_DIR}/${MU_SIS_STACK_FUNCTION}_body.h")
+  add_custom_command(OUTPUT "${MU_SIS_STACK_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/native_major_fixture.py"
+            "${D}/src/sysdolphin/baselib/hsd_3A76.c" "${MU_SIS_STACK_BODY}" --function "${MU_SIS_STACK_FUNCTION}"
+    DEPENDS "${D}/src/sysdolphin/baselib/hsd_3A76.c" "${REPO}/tools/native_major_fixture.py" VERBATIM)
+  list(APPEND MU_SIS_STACK_FIXTURES "${MU_SIS_STACK_BODY}")
+endforeach()
+add_executable(mu_sis_state_stack_test EXCLUDE_FROM_ALL tests/sis_state_stack.c ${MU_SIS_STACK_FIXTURES})
+target_include_directories(mu_sis_state_stack_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_options(mu_sis_state_stack_test PRIVATE -UNDEBUG)
+add_test(NAME native_sis_state_stack COMMAND mu_sis_state_stack_test)
+
 # Build every registered executable fixture, including normally excluded targets, before CTest.
 get_property(MU_GAME_DIRECTORY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 set(MU_GAME_TEST_TARGETS)

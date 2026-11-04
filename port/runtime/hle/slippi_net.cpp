@@ -227,13 +227,31 @@ void User::RefreshFromServer() {
     }
   });
 }
+bool User::CheckSessionCompatibilityAt(uint64_t generation, std::string* error, VersionFetch fetch) {
+  // Matchmaking and the render thread's asynchronous poll can request the same check. Keep the
+  // network request off the render thread and share its result instead of repeating HTTP at
+  // queue entry, "connecting to player", and the first game's ready screen.
+  std::lock_guard<std::mutex> lock(compatibility_request_mutex_);
+  if (verified_generation_ != generation) {
+    const uint64_t start = time_ms();
+    verified_ok_ = CheckOnlineCompatibility(&verified_error_, fetch);
+    verified_generation_ = generation;
+    host::log("slippi: version verification %s in %llu ms", verified_ok_ ? "passed" : "refused",
+              (unsigned long long)(time_ms() - start));
+  }
+  *error = verified_error_;
+  return verified_ok_;
+}
+bool User::CheckSessionCompatibility(std::string* error, VersionFetch fetch) {
+  return CheckSessionCompatibilityAt(compatibility_generation_.load(), error, fetch);
+}
 int User::PollOnlineCompatibility(std::string* error, VersionFetch fetch) {
   if (!compatibility_done_) {
     if (!compatibility_.valid()) {
-      const uint64_t generation = compatibility_generation_;
+      const uint64_t generation = compatibility_generation_.load();
       compatibility_ = std::async(std::launch::async, [this, fetch, generation] {
         std::string reason;
-        const bool ok = CheckOnlineCompatibility(&reason, fetch);
+        const bool ok = CheckSessionCompatibilityAt(generation, &reason, fetch);
         return VersionResult{ok, std::move(reason), generation};
       });
     }
@@ -337,6 +355,7 @@ bool User::AttemptLogin(bool rediscover) {
     const yougame::Identity id = yougame::identity();
     std::lock_guard<std::mutex> lock(mutex_);
     const bool had = !info_.uid.empty();
+    if (info_.uid != id.player_id) ResetOnlineCompatibility();
     info_ = UserInfo();
     info_.uid = id.player_id;
     info_.play_key = "yougame";
@@ -356,6 +375,7 @@ bool User::AttemptLogin(bool rediscover) {
     profile = account::read(account_file_);
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  const std::string previous_uid = info_.uid, previous_key = info_.play_key;
   if (profile) {
     const json& j = profile.data;
     info_.uid = str_or(j, "uid", "");
@@ -374,9 +394,10 @@ bool User::AttemptLogin(bool rediscover) {
     info_ = UserInfo();
     logged_in_ = false;
   }
+  if (info_.uid != previous_uid || info_.play_key != previous_key) ResetOnlineCompatibility();
   return logged_in_;
 }
-void User::LogOut() { std::lock_guard<std::mutex> lock(mutex_); logged_in_ = false; info_ = UserInfo(); host::log("slippi: logged out (user.json left in place)"); }
+void User::LogOut() { std::lock_guard<std::mutex> lock(mutex_); ResetOnlineCompatibility(); logged_in_ = false; info_ = UserInfo(); host::log("slippi: logged out (user.json left in place)"); }
 std::vector<std::string> User::GetUserChatMessages() const { UserInfo me = GetUserInfo(); return me.chat_messages.size() == 16 ? me.chat_messages : GetDefaultChatMessages(); }
 std::vector<std::string> User::GetDefaultChatMessages() {
   return {"ggs", "one more", "brb", "good luck", "well played", "that was fun", "thanks", "too good",
@@ -1441,7 +1462,7 @@ static json local_peer_ticket(const UserInfo& me, Matchmaking::OnlinePlayMode mo
 void Matchmaking::startMatchmaking() {
   if (!yougame::session() && !local_peer.enabled) {
     std::string error;
-    if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
+    if (!user_ || !user_->CheckSessionCompatibility(&error)) {
       fail(error.empty() ? "Could not check Slippi version. Try again." : error);
       return;
     }
@@ -1711,7 +1732,7 @@ bool Matchmaking::ingest_ticket(const Ticket& ticket) {
 void Matchmaking::handleConnecting() {
   if (!yougame::session() && !local_peer.enabled) {
     std::string error;
-    if (!user_ || !user_->CheckOnlineCompatibility(&error)) {
+    if (!user_ || !user_->CheckSessionCompatibility(&error)) {
       fail(error.empty() ? "Could not check Slippi version. Try again." : error);
       return;
     }

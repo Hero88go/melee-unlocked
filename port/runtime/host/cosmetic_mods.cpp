@@ -7055,6 +7055,12 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
 #endif
 }  // namespace
 
+bool official_cosmetic_disc(const std::string& disc_path) {
+  for (const auto& pin : kAnimeleeDiscs)
+    if (file_matches(fs::u8path(disc_path), pin.size, pin.sha)) return true;
+  return false;
+}
+
 OfficialLookState official_look_state(int which, const std::string& mods_folder) {
   OfficialLookState s;
   if (which < 0 || which > 2) return s;
