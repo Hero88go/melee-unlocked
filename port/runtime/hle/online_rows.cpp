@@ -102,8 +102,8 @@ Label word(const Label* sources, const Letter (&letters)[N]) {
 // ---- YouGame's rows: letter shapes from several labels, one line, one outline ----
 //
 // The letters come from labels that share one baseline (x-height rows 11-24); the game's own labels
-// draw capitals and ascenders one row taller than Slippi's (rows 4-24 against 5-24), so those lose a
-// row in their upper part. Only the white shapes are taken: the line is narrowed to the label like
+// draw capitals and ascenders one row taller than Slippi's (rows 4-24 against 5-24), so those lose
+// one row where the letter is straightest (a capital anywhere, an ascender above the x-height). Only the white shapes are taken: the line is narrowed to the label like
 // the menu's long labels ("Home-Run Contest") and then gets one even outline, as the menu draws it.
 
 // White coverage 0-1, kHeight rows of `w` columns (row-major).
@@ -117,14 +117,27 @@ float white(const Label& src, int x, int y) {
   const size_t o = size_t(y) * kWidth + size_t(x);
   return float(src.a[o]) * float(src.l[o]) / 225.0f;
 }
-// One row out of the upper part (row 8), a blank row on top: a capital as tall as Slippi's.
-void drop_row(Shape& s) {
-  for (int y = 8; y > 0; --y)
+// How a letter from the game's own labels loses its extra row: not at all (x-height letters), as a
+// capital or as an ascender.
+enum Height : uint8_t { kAsIs, kCapital, kAscender };
+// One row out, a blank row on top: the last row in the range most like the row above it (a straight
+// stem or side), so curves and tips keep every row.
+void drop_row(Shape& s, Height h) {
+  if (h == kAsIs) return;
+  const int lo = 6, hi = h == kCapital ? 20 : 10;
+  int best = lo;
+  float best_diff = 1e9f;
+  for (int r = lo; r <= hi; ++r) {
+    float diff = 0.0f;
+    for (int x = 0; x < s.w; ++x) diff += std::fabs(s.at(x, r) - s.at(x, r - 1));
+    if (diff <= best_diff) { best_diff = diff; best = r; }
+  }
+  for (int y = best; y > 0; --y)
     for (int x = 0; x < s.w; ++x) s.at(x, y) = s.at(x, y - 1);
   for (int x = 0; x < s.w; ++x) s.at(x, 0) = 0.0f;
 }
 // The fill of columns fill0..fill1 of a label, with one column of soft edge each side.
-Shape shape(const Label& src, int fill0, int fill1, bool taller) {
+Shape shape(const Label& src, int fill0, int fill1, Height h) {
   Shape s;
   s.w = fill1 - fill0 + 3;
   s.f.assign(size_t(s.w) * kHeight, 0.0f);
@@ -133,14 +146,14 @@ Shape shape(const Label& src, int fill0, int fill1, bool taller) {
       const float v = white(src, fill0 - 1 + x, y);
       s.at(x, y) = (x == 0 || x == s.w - 1) ? std::min(v, 0.6f) : v;
     }
-  if (taller) drop_row(s);
+  drop_row(s, h);
   return s;
 }
 // The Y (the menu has none): the V of "VS. Mode" with its left arm moved in row by row so the arms
 // meet halfway down, the right arm its mirror, and the meeting row repeated down as the stem.
 Shape make_y(const Label& vs) {
   constexpr int kJoin = 13;
-  const Shape v = shape(vs, 21, 39, false);
+  const Shape v = shape(vs, 21, 39, kAsIs);
   Shape y;
   y.w = v.w;
   y.f.assign(v.f.size(), 0.0f);
@@ -158,32 +171,32 @@ Shape make_y(const Label& vs) {
     if (v.at(mid, row) > 0.7f) bottom = row;
   for (int row = kJoin + 1; row <= bottom; ++row)
     for (int x = 0; x < y.w; ++x) y.at(x, row) = y.at(x, kJoin);
-  drop_row(y);
+  drop_row(y, kCapital);
   return y;
 }
 // The F (the menu's only capital F is in a condensed label): the E of "Erase Data" without its
 // bottom bar.
 Shape make_f(const Label& erase) {
-  Shape f = shape(erase, 11, 24, false);
+  Shape f = shape(erase, 11, 24, kAsIs);
   int left = -1, stem = 0;   // the stem's columns, from a row with only the stem
   for (int x = 0; x < f.w; ++x)
     if (f.at(x, 20) > 0.7f) { if (left < 0) left = x; ++stem; }
   for (int row = 16; row < int(kHeight); ++row)
     for (int x = left + stem + 1; x < f.w; ++x) f.at(x, row) = 0.0f;
-  drop_row(f);
+  drop_row(f, kCapital);
   return f;
 }
 
-// A part of a line: a label's letter (taller: from the game's own labels, see above), a made letter,
-// or the gap between two words.
-struct Part { uint8_t image; uint8_t fill0, fill1; bool taller; };
+// A part of a line: a label's letter (with how it loses the game's extra row), a made letter, or the
+// gap between two words.
+struct Part { uint8_t image; uint8_t fill0, fill1; Height h; };
 constexpr uint8_t kMadeY = 250, kMadeF = 251, kWordSpace = 252;
-#define YOUGAME {kMadeY, 0, 0, false}, {20, 66, 79, true}, {20, 83, 95, true}, {44, 19, 33, true}, \
-                {44, 44, 54, true}, {19, 74, 94, true}, {19, 125, 138, true}, {kWordSpace, 0, 0, false}
-const Part kRankedLine[] = {YOUGAME, {33, 41, 134, false}};
-const Part kUnrankedLine[] = {YOUGAME, {34, 27, 148, false}};
-const Part kFriendsLine[] = {YOUGAME, {kMadeF, 0, 0, false}, {26, 49, 57, true}, {26, 96, 99, true}, {26, 120, 133, true},
-                             {34, 47, 59, false}, {34, 136, 148, false}, {26, 137, 148, true}};
+#define YOUGAME {kMadeY, 0, 0, kAsIs}, {20, 66, 79, kAsIs}, {20, 83, 95, kAsIs}, {44, 19, 33, kCapital}, \
+                {44, 44, 54, kAsIs}, {19, 74, 94, kAsIs}, {19, 125, 138, kAsIs}, {kWordSpace, 0, 0, kAsIs}
+const Part kRankedLine[] = {YOUGAME, {33, 41, 134, kAsIs}};
+const Part kUnrankedLine[] = {YOUGAME, {34, 27, 148, kAsIs}};
+const Part kFriendsLine[] = {YOUGAME, {kMadeF, 0, 0, kAsIs}, {26, 49, 57, kAsIs}, {26, 96, 99, kAscender},
+                             {26, 120, 133, kAsIs}, {34, 47, 59, kAsIs}, {34, 136, 148, kAsIs}, {26, 137, 148, kAsIs}};
 #undef YOUGAME
 constexpr int kWordGap = 12;   // fill to fill between two words, as "Event Match" has it
 constexpr int kOutline = 4;    // columns the outline adds each side
@@ -198,7 +211,7 @@ Label line(const Label* sources, const Part (&parts)[N]) {
     if (p.image == kWordSpace) { x += kWordGap - kGap; continue; }
     const Shape s = p.image == kMadeY ? make_y(sources[1])
                     : p.image == kMadeF ? make_f(sources[24])
-                                        : shape(sources[p.image], p.fill0, p.fill1, p.taller);
+                                        : shape(sources[p.image], p.fill0, p.fill1, p.h);
     const int left = x - 1;
     int first = -1, last = -1;
     for (int dx = 0; dx < s.w; ++dx)
