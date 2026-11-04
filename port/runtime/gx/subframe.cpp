@@ -525,7 +525,8 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
         p.used_slots = p.pos_slots | p.tex_slots;
         // One camera per frame (chosen after this loop), so draws that cannot be paired at all can
         // still be moved onto this frame's timeline (below).
-        if (d.authored_pose && pd.authored_pose && d.authored_pose->has_view && pd.authored_pose->has_view) {
+        if (d.authored_pose && pd.authored_pose && d.authored_pose->has_view && pd.authored_pose->has_view &&
+            !d.authored_pose->model_shift && !pd.authored_pose->model_shift) {
           bool counted = false;
           for (CameraVote& v : camera_votes)
             if (v.current->view == d.authored_pose->view && v.previous->view == pd.authored_pose->view) { ++v.draws; counted = true; break; }

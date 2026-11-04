@@ -40,10 +40,12 @@ struct AuthoredPose {
   // Envelope (skinned) draws: view matrix, skeleton root transform and the weighted bones per matrix slot.
   bool envelope = false;
   bool has_view = false;               // `view` holds the draw's camera (view) matrix
-  bool quake = false;                  // a camera quake was running when the view was captured
+  bool quake = false;                  // this view carries a stepped shake offset
+  bool model_shift = false;            // per-model hit/grab shake: not the shared stage camera
   // The shake in `view`: the game moves the eye and the point it looks at by this world-space
   // (x, y) offset (game_camera.translation, Camera_8002AF68). Taking it out gives the camera
   // without the shake, which moves smoothly and is sampled between frames like any other view.
+  // Model shake adds to the view instead, so its world offset is subtracted here.
   std::array<float,2> quake_shift{};
   std::array<float,12> view{};
   std::shared_ptr<const AuthoredPose> chain;   // rigid draws: the joint chain root..joint (shared per joint per frame)

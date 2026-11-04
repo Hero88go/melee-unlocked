@@ -326,5 +326,33 @@ int main() {
           "a paired draw holding the previous frame is carried off that view");
     gx::set_authored_interpolate(false);
   }
-  std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
+  // Three shaken fighter draws must not outvote the stage's actual camera.
+  // An unpaired piece of stage art should follow the camera pan alone.
+  {
+    gx::Frame before, after; before.sequence = 1; after.sequence = 2;
+    before.vertices.resize(3); after.vertices.resize(3);
+    auto old_view = std::make_shared<gx::AuthoredPose>(), new_view = std::make_shared<gx::AuthoredPose>();
+    old_view->has_view = new_view->has_view = true;
+    old_view->view = new_view->view = NativeMelee::Identity(); new_view->view[3] = 2;
+    gx::AuthoredJoint root; root.generation = 1; root.scale = {1,1,1}; root.world = NativeMelee::Identity();
+    old_view->joints.push_back(root); new_view->joints.push_back(root);
+    auto old_model = std::make_shared<gx::AuthoredPose>(*old_view), new_model = std::make_shared<gx::AuthoredPose>(*new_view);
+    old_model->model_shift = new_model->model_shift = old_model->quake = new_model->quake = true;
+    old_model->view[3] += 2; old_model->quake_shift = {-2,0};
+    new_model->view[3] -= 2; new_model->quake_shift = {2,0};
+    for (int i = 0; i < 4; ++i) {
+      gx::DrawCall draw{}; draw.identity = i + 100; draw.object_generation = 1;
+      draw.vertex_count = 3; draw.primitive = 0x90;
+      draw.authored_pose = i ? old_model : old_view;
+      rot_z(0, draw.authored_pose->view[3], draw.posMatrices);
+      std::memcpy(draw.normalMatrices, ident_n, sizeof ident_n); before.draws.push_back(draw);
+      draw.authored_pose = i ? new_model : new_view;
+      rot_z(0, draw.authored_pose->view[3], draw.posMatrices); after.draws.push_back(draw);
+    }
+    auto scenery = after.draws[0]; scenery.identity = 999; after.draws.push_back(scenery);
+    solver.set_frames(&before, &after); solver.build(.5, false, mats, true);
+    std::printf("model-shake stage carry: %g (paired=%u carried=%u)\n", mats.back().pos[3], solver.stats().paired, solver.stats().carried);
+    check(near(mats.back().pos[3], 3), "fighter hit shake cannot become the stage camera");
+  }
+  std::puts("sub-frame rigid fractions, cuts, blends, pairing and model-shake isolation passed");
 }

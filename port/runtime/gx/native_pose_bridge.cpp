@@ -143,13 +143,14 @@ std::shared_ptr<const AuthoredPose> copy_native_pose_snapshot(
       !snapshot.joints ||
       (snapshot.track_count && !snapshot.tracks) ||
       (snapshot.track_byte_count && !snapshot.track_bytes) ||
-      snapshot.has_view > 1 || snapshot.quake > 1 ||
+      snapshot.has_view > 1 || (snapshot.quake & ~MU_NATIVE_POSE_VIEW_SHIFT_MASK) ||
       (snapshot.has_view && !finite_values(snapshot.view, 12)))
     return {};
 
   auto pose = std::make_shared<AuthoredPose>();
   pose->has_view = snapshot.has_view != 0;
   pose->quake = snapshot.quake != 0;
+  pose->model_shift = (snapshot.quake & MU_NATIVE_POSE_VIEW_MODEL_SHIFT) != 0;
   if (pose->quake && finite_values(snapshot.quake_shift, 2))
     pose->quake_shift = {snapshot.quake_shift[0], snapshot.quake_shift[1]};
   if (pose->has_view)
@@ -177,7 +178,7 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
       !snapshot.joints || !snapshot.chains || !snapshot.links || !snapshot.bones || !snapshot.slots ||
       (snapshot.track_count && !snapshot.tracks) ||
       (snapshot.track_byte_count && !snapshot.track_bytes) ||
-      snapshot.has_view != 1 || snapshot.quake > 1 ||
+      snapshot.has_view != 1 || (snapshot.quake & ~MU_NATIVE_POSE_VIEW_SHIFT_MASK) ||
       !finite_values(snapshot.view, 12))
     return {};
 
@@ -208,6 +209,7 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
   pose->envelope = true;
   pose->has_view = true;
   pose->quake = snapshot.quake != 0;
+  pose->model_shift = (snapshot.quake & MU_NATIVE_POSE_VIEW_MODEL_SHIFT) != 0;
   if (pose->quake && finite_values(snapshot.quake_shift, 2))
     pose->quake_shift = {snapshot.quake_shift[0], snapshot.quake_shift[1]};
   std::memcpy(pose->view.data(), snapshot.view, sizeof(snapshot.view));

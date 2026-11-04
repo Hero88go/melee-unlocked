@@ -1,8 +1,10 @@
 #include "native_pose_bridge.h"
+#include "../runtime/abi/mu_pose_view.h"
 
 #include <array>
 #include <cstdio>
 #include <type_traits>
+#include <cmath>
 
 static_assert(std::is_trivially_copyable_v<MuNativePoseJoint>);
 static_assert(std::is_trivially_copyable_v<MuNativePoseTrack>);
@@ -134,5 +136,45 @@ int main() {
     std::fputs("envelope right transform with an out-of-range chain was accepted\n", stderr);
     return 1;
   }
+  // Both snapshot kinds retain the stepped hit shake and mark it as per-model,
+  // so a fighter's shifted view cannot win the shared stage-camera vote.
+  snapshot.has_view = 1;
+  snapshot.view[0] = snapshot.view[5] = snapshot.view[10] = 1;
+  for (auto* value : {&snapshot, &env}) {
+    value->quake = MU_NATIVE_POSE_VIEW_QUAKE | MU_NATIVE_POSE_VIEW_MODEL_SHIFT;
+    value->quake_shift[0] = 3;
+    value->quake_shift[1] = -2;
+    auto shifted = value == &snapshot ? gx::copy_native_pose_snapshot(*value) : gx::copy_native_envelope_snapshot(*value);
+    if (!shifted || !shifted->quake || !shifted->model_shift || shifted->quake_shift[0] != 3 || shifted->quake_shift[1] != -2) {
+      std::fputs("native hit-shake metadata lost in pose conversion\n", stderr);
+      return 1;
+    }
+    value->quake = 4;
+    if (gx::copy_native_pose_snapshot(*value) || gx::copy_native_envelope_snapshot(*value)) {
+      std::fputs("unknown view-shift flags accepted\n", stderr);
+      return 1;
+    }
+  }
+  // A tilted camera: recover world x/y from all three view-space rows, while
+  // rejecting depth offsets and other camera orientations.
+  float camera[12]{1,0,0,10, 0,.8f,-.6f,-7, 0,.6f,.8f,-90};
+  float view[12], shift[2];
+  for (int k = 0; k < 12; ++k) view[k] = camera[k];
+  view[3] += 2; view[7] -= 2.4f; view[11] -= 1.8f;
+  if (!mu_pose_view_model_shift(view, camera, shift) || std::abs(shift[0] - 2) > .0001f || std::abs(shift[1] + 3) > .0001f) {
+    std::fputs("model shake was not recovered from the tilted camera\n", stderr);
+    return 1;
+  }
+  view[11] += 1;
+  if (mu_pose_view_model_shift(view, camera, shift) || mu_pose_view_model_shift(camera, camera, shift)) {
+    std::fputs("depth offset or unchanged view was mistaken for model shake\n", stderr);
+    return 1;
+  }
+  view[0] = .5f;
+  if (mu_pose_view_model_shift(view, camera, shift)) {
+    std::fputs("different camera orientation was mistaken for model shake\n", stderr);
+    return 1;
+  }
+  std::puts("native pose bridge and stepped model-shake checks passed");
   return 0;
 }

@@ -96,7 +96,8 @@ void Receive(void* object, u8, HSD_ObjData* data) {
   result.value=data->fv; result.sampled=true;
 }
 } // anonymous namespace
-bool SamplePacked(const PackedTrack& track, float frame, float& value) {
+bool SamplePacked(const PackedTrack& track, float frame, float& value, PackedSampleCursor* cursor) {
+  if (cursor) cursor->track=nullptr;
   if (!std::isfinite(frame)) throw std::invalid_argument("invalid animation time");
   if (track.bytes.empty()) return false;
   if (track.bytes.size() > 65535) throw std::invalid_argument("oversized fighter track");
@@ -108,10 +109,41 @@ bool SamplePacked(const PackedTrack& track, float frame, float& value) {
   fobj.length=static_cast<u32>(track.bytes.size());
   stream_end=track.bytes.data()+track.bytes.size();
   HSD_FObjReqAnim(&fobj, frame);
+  const float initial_time=fobj.time;
   Result result;
   HSD_FObjInterpretAnim(&fobj, &result, Receive, 0);
+  if (cursor && result.sampled && HSD_FObjGetState(&fobj)==5 &&
+      fobj.op_intrp>=HSD_A_OP_CON && fobj.op_intrp<=HSD_A_OP_SLP &&
+      initial_time>=0 && initial_time<=1048576.f) {
+    const float elapsed=initial_time-fobj.time;
+    // Every wait is an integer. Within this bound the interpreter's successive
+    // subtractions are exact, so target-elapsed reproduces a fresh scan bit for
+    // bit. KEY callbacks and finished/inactive tracks retain the original path.
+    if (elapsed>=0 && elapsed<=1048576.f && elapsed==float(int32_t(elapsed))) {
+      static_assert(sizeof fobj<=sizeof cursor->state,"packed cursor storage");
+      std::memcpy(cursor->state,&fobj,sizeof fobj);
+      cursor->elapsed_wait=elapsed; cursor->track=&track;
+    }
+  }
   if (result.sampled) value=result.value;
   return result.sampled;
+}
+bool SamplePackedFromCursor(const PackedTrack& track, float frame, float& value, const PackedSampleCursor& cursor) {
+  if (!std::isfinite(frame)) throw std::invalid_argument("invalid animation time");
+  if (cursor.track==&track) {
+    HSD_FObj fobj;
+    std::memcpy(&fobj,cursor.state,sizeof fobj);
+    const float initial_time=float(track.start_frame)+frame;
+    const float relative=initial_time-cursor.elapsed_wait;
+    if (initial_time>=0 && initial_time<=1048576.f && relative>=0 && relative<fobj.fterm) {
+      fobj.time=relative;
+      Result result;
+      FObjUpdateAnim(&fobj,&result,Receive);
+      if (result.sampled) value=result.value;
+      return result.sampled;
+    }
+  }
+  return SamplePacked(track,frame,value);
 }
 }
 '''

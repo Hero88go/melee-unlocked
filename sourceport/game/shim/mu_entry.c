@@ -436,8 +436,12 @@ int mu_native_pose_capture_enabled(void)
            mu_host->native_pose_capture_enabled();
 }
 
+void mu_native_pose_step_view(MuNativePoseSnapshot* snapshot);
 void mu_native_pose_snapshot(const MuNativePoseSnapshot* snapshot)
 {
-    if (mu_host != NULL && mu_host->native_pose_snapshot != NULL)
-        mu_host->native_pose_snapshot(snapshot);
+    if (mu_host != NULL && mu_host->native_pose_snapshot != NULL) {
+        MuNativePoseSnapshot stepped = *snapshot;
+        mu_native_pose_step_view(&stepped);
+        mu_host->native_pose_snapshot(&stepped);
+    }
 }

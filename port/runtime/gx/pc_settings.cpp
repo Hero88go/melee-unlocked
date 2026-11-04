@@ -8912,6 +8912,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("A CPU Captain Falcon never starts his rapid jab. Offline only.");
       cpu_changed |= settings_toggle("CPU Zelda and Sheik: no transform", &options.cpu_no_transform);
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("A CPU Zelda or Sheik never uses the down special. Offline only.");
+      if (options.cpu_training_word() != 0) {
+        ImGui::TextWrapped("CPU training overrides are on. They also affect Training CPUs set to Stand "
+                           "and stay on when mod packs are disabled.");
+        if (ImGui::Button("Reset CPU training options")) {
+          options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;
+          options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
+          cpu_changed = true;
+        }
+      }
       if (cpu_changed) {
         RenderOptions::live_cpu_training() = options.cpu_training_word();
         changed = true;

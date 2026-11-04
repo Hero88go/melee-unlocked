@@ -26,6 +26,11 @@ typedef __UINT8_TYPE__ MuNativePoseU8;
 #define MU_NATIVE_POSE_MAX_SLOTS 10u
 #define MU_NATIVE_POSE_MAX_BONES 640u
 
+/* Stepped offsets in view. Older hosts safely decline the model-shift bit. */
+#define MU_NATIVE_POSE_VIEW_QUAKE 1u
+#define MU_NATIVE_POSE_VIEW_MODEL_SHIFT 2u
+#define MU_NATIVE_POSE_VIEW_SHIFT_MASK 3u
+
 enum {
     MU_NATIVE_POSE_UNSUPPORTED = 0,
     MU_NATIVE_POSE_RIGID = 1,
@@ -125,9 +130,9 @@ typedef struct MuNativePoseSnapshot {
     const MuNativePoseBone* bones;
     const MuNativePoseSlot* slots;
 
-    /* Every kind, while `quake` is set: the world (x, y) offset the camera shake added to the eye
-     * and its target in `view` (game_camera.translation), so the camera under the shake can be
-     * sampled between frames. Zero otherwise. */
+    /* Every kind, while a `quake` flag is set: world (x, y) camera shake minus
+     * the model's view offset. Removing it recovers the smooth camera; restoring
+     * the shown frame's offset keeps both shakes at their original 60 Hz. */
     float quake_shift[2];
 } MuNativePoseSnapshot;
 

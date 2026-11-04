@@ -158,7 +158,7 @@ bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,doub
   // A view that did not change is drawn as it is. That includes every camera other than the game's
   // own during a quake: the shake flag and offset are global, and the HUD's camera, which never
   // moves, would otherwise have the stage camera's shake taken out of it (the timer bobbed).
-  if(!previous.has_view||previous.view==current.view) return true;
+  if(!previous.has_view||(previous.view==current.view&&!previous.model_shift&&!current.model_shift)) return true;
   Matrix prev=from12(previous.view.data());
   // A quake jolts the view back and forth every tick. Advancing along the jolt overshoots it (an
   // alternating offset of a is drawn as up to 3a), and blending it shows camera positions the game
@@ -303,8 +303,9 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
           else if(t.channel>=8&&t.channel<=10)component=&ts[t.channel-8];
           else { ++authored_stats().sample[5]; sampled=false; break; }
           float at_current, value;
-          if(!NativeMelee::SamplePacked(t,j.frame,at_current)||!near(at_current,*component)){ ++authored_stats().sample[6]; sampled=false; break; }
-          if(!NativeMelee::SamplePacked(t,sample_frame,value)){ ++authored_stats().sample[7]; sampled=false; break; }
+          NativeMelee::PackedSampleCursor cursor;
+          if(!NativeMelee::SamplePacked(t,j.frame,at_current,&cursor)||!near(at_current,*component)){ ++authored_stats().sample[6]; sampled=false; break; }
+          if(!NativeMelee::SamplePackedFromCursor(t,sample_frame,value,cursor)){ ++authored_stats().sample[7]; sampled=false; break; }
           *component=value;
         }
         if(sampled){ scale=ts; rot=tr; pos=tp; animated=true; } else partial=true;
