@@ -61,7 +61,7 @@ uint32_t fnv1a(const uint8_t* p, size_t n) {
 
 // The labels the letters come from, as Melee 1.02 with Slippi's menu files has them (English).
 constexpr struct { uint8_t image; uint32_t hash; } kSources[] = {
-    {1, 0x7E718C33u},  {19, 0x8ACD1283u}, {20, 0xFA6049D4u}, {24, 0x24A09B0Du}, {26, 0x745BEA37u},
+    {19, 0x8ACD1283u}, {20, 0xFA6049D4u}, {24, 0x24A09B0Du}, {26, 0x745BEA37u},
     {29, 0xC3650ACBu}, {33, 0xA933D462u}, {34, 0x97FF741Au}, {44, 0x95433836u}};
 
 // ---- Slippi: one label's own letters, cut whole with their outline ----
@@ -149,29 +149,28 @@ Shape shape(const Label& src, int fill0, int fill1, Height h) {
   drop_row(s, h);
   return s;
 }
-// The Y (the menu has none): the V of "VS. Mode" with its left arm moved in row by row so the arms
-// meet halfway down, the right arm its mirror, and the meeting row repeated down as the stem.
-Shape make_y(const Label& vs) {
-  constexpr int kJoin = 13;
-  const Shape v = shape(vs, 21, 39, kAsIs);
+// The Y (the menu has none), drawn to the font's own measures: arms 5.4 pixels across meeting a
+// 5-pixel stem (the width of the R's) just above the middle, capitals' rows 5-24, its edges soft from
+// each pixel's coverage (8 x 8 samples) as the menu's letters are.
+Shape make_y() {
+  constexpr float kW = 18.0f, kArm = 5.4f, kStem = 5.0f, kJoin = 15.5f, kCx = kW / 2.0f;
+  constexpr int kSamples = 8;
   Shape y;
-  y.w = v.w;
-  y.f.assign(v.f.size(), 0.0f);
-  const int mid = (v.w - 1) / 2;
-  for (int row = 0; row <= kJoin; ++row) {
-    const int sh = int(std::lround(std::max(0, row - 4) * 4.0 / (kJoin - 4)));
-    for (int x = 0; x <= mid; ++x) {
-      const float c = v.at(x, row);
-      if (x + sh < y.w) y.at(x + sh, row) = std::max(y.at(x + sh, row), c);
-      if (v.w - 1 - x - sh >= 0) y.at(v.w - 1 - x - sh, row) = std::max(y.at(v.w - 1 - x - sh, row), c);
+  y.w = int(kW) + 3;
+  y.f.assign(size_t(y.w) * kHeight, 0.0f);
+  for (int py = 5; py < 25; ++py)
+    for (int px = 0; px < y.w; ++px) {
+      int hit = 0;
+      for (int sy = 0; sy < kSamples; ++sy)
+        for (int sx = 0; sx < kSamples; ++sx) {
+          const float fy = float(py) + (float(sy) + 0.5f) / kSamples, fx = float(px - 1) + (float(sx) + 0.5f) / kSamples;
+          if (std::fabs(fx - kCx) <= kStem / 2 && fy >= kJoin - 2.5f) { ++hit; continue; }
+          if (fy > kJoin) continue;
+          const float outer = (kCx - kStem / 2) * (fy - 5.0f) / (kJoin - 5.0f), m = std::min(fx, kW - fx);
+          if (m >= outer && m <= outer + kArm && m <= kCx + kStem / 2) ++hit;
+        }
+      y.at(px, py) = float(hit) / float(kSamples * kSamples);
     }
-  }
-  int bottom = kJoin;
-  for (int row = kJoin; row < int(kHeight); ++row)
-    if (v.at(mid, row) > 0.7f) bottom = row;
-  for (int row = kJoin + 1; row <= bottom; ++row)
-    for (int x = 0; x < y.w; ++x) y.at(x, row) = y.at(x, kJoin);
-  drop_row(y, kCapital);
   return y;
 }
 // The F (the menu's only capital F is in a condensed label): the E of "Erase Data" without its
@@ -210,7 +209,7 @@ Label line(const Label* sources, const Part (&parts)[N]) {
   int x = 10, lo = -1, hi = 0;
   for (const Part& p : parts) {
     if (p.image == kWordSpace) { x += kWordGap - kLineGap; continue; }
-    const Shape s = p.image == kMadeY ? make_y(sources[1])
+    const Shape s = p.image == kMadeY ? make_y()
                     : p.image == kMadeF ? make_f(sources[24])
                                         : shape(sources[p.image], p.fill0, p.fill1, p.h);
     const int left = x - 1;
@@ -296,7 +295,7 @@ bool apply(std::vector<uint8_t>& file, std::string* why, bool coming_soon) {
   if (!table || a.u16(texanim + 20) != kImages || !a.in(table, 4u * kImages)) return fail(why, "label count differs");
   // The eight online rows' images (Ranked, Unranked, Direct, Log-in, Log-out, Update, Teams, Party),
   // the labels the new words take their letters from, and Online Play (the fallback Slippi row).
-  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 1, 19, 20, 24, 26, 29, 44, 7};
+  const int rows[] = {33, 34, 58, 59, 60, 61, 62, 63, 19, 20, 24, 26, 29, 44, 7};
   uint32_t data[64] = {};
   for (int i : rows) {
     const uint32_t desc = a.ptr(table + 4u * i);

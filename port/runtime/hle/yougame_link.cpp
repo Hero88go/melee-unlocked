@@ -923,8 +923,10 @@ bool active() { return g_stdio || (!g_launcher && !g_bridge_url.empty() && !g_br
 bool launcher() { return !coming_soon() && g_launcher && !g_bridge_url.empty() && !g_bridge_token.empty(); }
 bool coming_soon() {
 #ifdef MELEE_YOUGAME_COMING_SOON
+  // Only the GitHub build's own rows wait: a game the YouGame app started (active(), known from the
+  // first line of main) plays YouGame as always, rows open and labels not greyed.
   static const bool soon = !host::test_env::getenv("MELEE_TEST_YOUGAME_OPEN");
-  return soon;
+  return soon && !active();
 #else
   return false;
 #endif

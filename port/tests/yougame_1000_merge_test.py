@@ -74,6 +74,8 @@ class YouGame1000MergeTest(unittest.TestCase):
             self.assertIn(line, rows)
         host = source("port/app/source_host.cpp")
         self.assertIn("online_rows::apply(data, &why, yougame::coming_soon())", host)
+        # The YouGame app's own sessions are never Coming soon.
+        self.assertIn("return soon && !active();", source("port/runtime/hle/yougame_link.cpp"))
 
 
 if __name__ == "__main__":
