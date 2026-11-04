@@ -56,7 +56,7 @@ class YouGame1000MergeTest(unittest.TestCase):
 
     def test_host_api_and_practice_ops(self):
         api = source("port/runtime/abi/mu_host.h")
-        self.assertIn("#define MU_HOST_API_VERSION 23", api)
+        self.assertIn("#define MU_HOST_API_VERSION 24", api)
         self.assertLess(api.index("screen_shake_scale"), api.index("card_boot_confirm"))
         self.assertIn("MU_PRACTICE_PAGE_PAUSE = 15", api)
         self.assertIn("mu_host->version >= 23 && mu_host->card_boot_confirm", source("sourceport/game/shim/mu_card.c"))

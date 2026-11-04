@@ -1025,6 +1025,13 @@ void set_native_hud_player(int slot, bool present, int damage, int stocks, float
                     tag_x >= 0 && tag_x <= 640 && tag_y >= 0 && tag_y <= 480;
 }
 
+void set_native_hud_extras(int slot, int nana_damage, int team) {
+  if (slot < 0 || slot >= 4) return;
+  auto& out = g_native_hud[slot];
+  out.nana_damage = nana_damage >= 0 && nana_damage <= 999 ? nana_damage : -1;
+  out.team = team >= 0 && team <= 3 ? team : -1;
+}
+
 void set_native_hud_combo(int slot, int link, float percent, bool stunned) {
   if (slot < 0 || slot >= 4) return;
   auto& out = g_native_hud[slot];

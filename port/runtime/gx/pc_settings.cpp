@@ -380,6 +380,56 @@ static void draw_combo_counter() {
   draw->PopClipRect();
 }
 
+// Community codes drawn over the match (HUD tab), from what the native game reports each drawn frame
+// (host API 24), in the game's font. Nana's percent: under each Ice Climbers player's damage, while
+// Nana is in play. Ally markers (online, as the code has them): YOU over your own fighter, a heart
+// over your teammate in a teams match.
+static void draw_community_code_overlays() {
+  const uint32_t codes = host::g_community_codes.load(std::memory_order_relaxed);
+  if (!g_hud_match || !(codes & (MU_DISPLAY_OPTION_NANA_PERCENT | MU_DISPLAY_OPTION_ALLY_INDICATORS))) return;
+  const OverlayBounds bounds = overlay_bounds();
+  const float width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+  static constexpr ImU32 colors[4] = {
+    IM_COL32(255, 99, 107, 255), IM_COL32(83, 164, 255, 255),
+    IM_COL32(255, 211, 84, 255), IM_COL32(93, 220, 143, 255)};
+  ImDrawList* draw = ImGui::GetForegroundDrawList();
+  draw->PushClipRect(ImVec2(bounds.left, bounds.top), ImVec2(bounds.right, bounds.bottom), true);
+  const auto at_x = [&](float x640) {
+    const float x = true_widescreen_active() ? 320.0f + (x640 - 320.0f) * true_widescreen_factor() : x640;
+    return bounds.left + x / 640.0f * width;
+  };
+  if (codes & MU_DISPLAY_OPTION_NANA_PERCENT) {
+    const float px = std::clamp(height / 30.0f, 12.0f, 30.0f);
+    for (int slot = 0; slot < 4; ++slot) {
+      const HudPlayerSnapshot& p = g_hud_players[slot];
+      if (!p.present || p.nana_damage < 0) continue;
+      char label[24];
+      std::snprintf(label, sizeof label, "NANA %d%%", p.nana_damage);
+      const float w = practice_menu::text_width(px, label);
+      // Under the damage display (the game lays them out by port, as for the combo counter).
+      const float x = at_x(128.0f + 151.0f * slot) - w * 0.5f;
+      const float y = bounds.top + height * 0.955f - px;
+      practice_menu::text(draw, x, y, px, IM_COL32(255, 255, 255, 235), label, 0.0f, true);
+    }
+  }
+  const int me = slippi::online::is_online_match() ? slippi::online::local_player_index() : -1;
+  if ((codes & MU_DISPLAY_OPTION_ALLY_INDICATORS) && me >= 0 && me < 4) {
+    const float px = std::clamp(height / 26.0f, 14.0f, 34.0f);
+    for (int slot = 0; slot < 4; ++slot) {
+      const HudPlayerSnapshot& p = g_hud_players[slot];
+      const bool mine = slot == me, ally = !mine && p.team >= 0 && p.team == g_hud_players[me].team;
+      if (!p.present || (!mine && !ally)) continue;
+      if (!std::isfinite(p.tag_x) || !std::isfinite(p.tag_y) || p.tag_y <= 0.0f) continue;
+      const char* label = mine ? "YOU" : "\xE2\x99\xA5";
+      const float w = practice_menu::text_width(px, label);
+      const float x = at_x(p.tag_x) - w * 0.5f;
+      const float y = bounds.top + p.tag_y / 480.0f * height - px * 2.2f;
+      practice_menu::text(draw, x, y, px, mine ? colors[slot] : IM_COL32(255, 90, 140, 255), label, 0.0f, true);
+    }
+  }
+  draw->PopClipRect();
+}
+
 static void draw_player_nicknames() {
   if (!g_hud_match) return;
   const OverlayBounds bounds = overlay_bounds();
@@ -2055,6 +2105,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.freeze_fd = false;
   options.hide_ko_explosions = false;
   options.hide_hud_emblems = false;
+  options.community_codes = 0;
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
@@ -2271,6 +2322,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "freeze_fd") options.freeze_fd = value == "1";
       else if (key == "hide_ko_explosions") options.hide_ko_explosions = value == "1";
       else if (key == "hide_hud_emblems") options.hide_hud_emblems = value == "1";
+      else if (key == "community_codes") options.community_codes = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & MU_DISPLAY_OPTION_CODES_ALL;
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
 #ifndef MELEE_NO_SLIPPI
@@ -2501,6 +2553,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
   host::g_hide_ko_explosions.store(options.hide_ko_explosions, std::memory_order_relaxed);
   host::g_hide_hud_emblems.store(options.hide_hud_emblems, std::memory_order_relaxed);
+  host::g_community_codes.store(options.community_codes, std::memory_order_relaxed);
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
@@ -4296,6 +4349,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nfreeze_fd " << (options.freeze_fd ? 1 : 0)
        << "\nhide_ko_explosions " << (options.hide_ko_explosions ? 1 : 0)
        << "\nhide_hud_emblems " << (options.hide_hud_emblems ? 1 : 0)
+       << "\ncommunity_codes " << std::hex << options.community_codes << std::dec
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
 #ifndef MELEE_NO_SLIPPI
@@ -8963,6 +9017,46 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("No character emblem behind each player's damage percent.\n"
                         "Picture only, yours alone: the match is the same, online and in replays too. Both engines.");
 
+    // Community codes: players' favourite Gecko codes, built in (shim/mu_code_features.c). Picture and
+    // sound only, so each is yours alone, online and in replays too.
+    ImGui::TextUnformatted("Community codes");
+    {
+      struct Code { uint32_t bit; const char* name; const char* tip; };
+      static const Code kCodes[] = {
+        {MU_DISPLAY_OPTION_HUD_FADE, "HUD transparency",
+         "A player's damage and stock icons turn see-through while a fighter is behind them."},
+        {MU_DISPLAY_OPTION_NANA_PERCENT, "Show Nana's percent",
+         "Nana's damage under each Ice Climbers player's percent."},
+        {MU_DISPLAY_OPTION_ALLY_INDICATORS, "Ally indicators online",
+         "Online: YOU over your fighter, and a heart over your teammate in teams."},
+        {MU_DISPLAY_OPTION_ANGEL_STOCK_COLORS, "Respawn platform by stocks",
+         "The respawn platform turns green with three stocks left, orange with two, red with one."},
+        {MU_DISPLAY_OPTION_NO_GO_TEXT, "Hide GO! at match start",
+         "No GO! graphic when a match starts. Its sound and timing are unchanged."},
+        {MU_DISPLAY_OPTION_VCANCEL_SOUND, "V-cancel sound",
+         "The menu's confirm sound plays on a successful V-cancel."},
+        {MU_DISPLAY_OPTION_HITBOX_ID_COLORS, "Hitbox colours by ID",
+         "Shown hitboxes: ID 0 red, 1 green, 2 cyan, 3 purple."},
+        {MU_DISPLAY_OPTION_HITBOX_ID_ORDER, "Highest-priority hitbox on top",
+         "Shown hitboxes are drawn 3 to 0, so ID 0 is in front."},
+        {MU_DISPLAY_OPTION_HITBOX_ANGLES, "Hitbox knockback angles",
+         "Shown hitboxes carry a line along their knockback angle."},
+        {MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS, "Full Fountain of Dreams reflections",
+         "With Fountain of Dreams reflections on: the reflection at full resolution with full\n"
+         "models. Applies from the next match on the stage."},
+      };
+      for (const Code& c : kCodes) {
+        bool on = (options.community_codes & c.bit) != 0;
+        if (settings_toggle(c.name, &on)) {
+          options.community_codes = on ? (options.community_codes | c.bit) : (options.community_codes & ~c.bit);
+          host::g_community_codes.store(options.community_codes, std::memory_order_relaxed);
+          changed = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("%s\nPicture or sound only, yours alone. Source Port.", c.tip);
+      }
+    }
+
 
     ImGui::TextUnformatted("Input delay");
     {
@@ -10351,6 +10445,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (!state.fill_window && !state.open && !state.menu_open && options.show_player_nicknames)
     draw_player_nicknames();
   if (!state.fill_window && !state.open && !state.menu_open) draw_combo_counter();
+  if (!state.fill_window && !state.open && !state.menu_open) draw_community_code_overlays();
   if (!state.fill_window && !state.open && !state.menu_open && !g_hud_match && yougame::stdio_bridge())
     draw_back_to_yougame_hint();
   {

@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 23
+#define MU_HOST_API_VERSION 24
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -378,6 +378,11 @@ typedef struct MuHostApi {
     /* Version 23. YouGame answers only the card scene's create/created prompts.
      * The game still probes, creates and writes the save using its own disc assets. */
     int32_t (*card_boot_confirm)(uint32_t channel, uint32_t decision);
+
+    /* Version 24. Each drawn frame, per player slot 0..3, for the community codes' overlays: Nana's
+     * damage (-1 when the player has no Nana in play) and the player's team in a teams match (-1
+     * otherwise). Display only. */
+    void (*hud_extras)(int32_t slot, int32_t nana_damage, int32_t team);
     /* Version 23. Session-gated diagnostic environment; NULL means unset. */
     const char* (*test_getenv)(const char* name);
 } MuHostApi;
@@ -418,6 +423,19 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS 0x400u
 /* "Hide emblems behind percents": the character emblem behind each damage percent is not drawn. */
 #define MU_DISPLAY_OPTION_NO_HUD_EMBLEMS 0x800u
+/* Community codes (HUD tab), the native versions of the players' favourite Gecko codes. All are
+ * picture or sound only: never in a replay, never sent to an opponent. */
+#define MU_DISPLAY_OPTION_HUD_FADE           0x00001000u   /* HUD Transparency: a player's HUD fades while a fighter is behind it */
+#define MU_DISPLAY_OPTION_ANGEL_STOCK_COLORS 0x00002000u   /* the respawn platform's colour by the stocks left */
+#define MU_DISPLAY_OPTION_NANA_PERCENT       0x00004000u   /* Nana's damage shown under Popo's */
+#define MU_DISPLAY_OPTION_ALLY_INDICATORS    0x00008000u   /* online: YOU over your fighter; teams: a heart over your teammate */
+#define MU_DISPLAY_OPTION_NO_GO_TEXT         0x00010000u   /* no GO! graphic at the start of a match (its sound stays) */
+#define MU_DISPLAY_OPTION_HITBOX_ID_COLORS   0x00020000u   /* shown hitboxes coloured by id: 0 red, 1 green, 2 cyan, 3 purple */
+#define MU_DISPLAY_OPTION_HITBOX_ID_ORDER    0x00040000u   /* shown hitboxes drawn 3 to 0, so id 0 (the highest priority) is on top */
+#define MU_DISPLAY_OPTION_HITBOX_ANGLES      0x00080000u   /* shown hitboxes carry a line along their knockback angle */
+#define MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
+#define MU_DISPLAY_OPTION_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
+#define MU_DISPLAY_OPTION_CODES_ALL 0x003FF000u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

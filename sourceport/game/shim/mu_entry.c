@@ -182,6 +182,18 @@ int mu_hud_emblems_hidden(void)
     return (mu_display_options() & MU_DISPLAY_NO_HUD_EMBLEMS) != 0;
 }
 _Static_assert(MU_DISPLAY_NO_HUD_EMBLEMS == MU_DISPLAY_OPTION_NO_HUD_EMBLEMS, "display option bits");
+/* The community codes (shim/mu_code_features.c). */
+_Static_assert(MU_DISPLAY_HUD_FADE == MU_DISPLAY_OPTION_HUD_FADE, "display option bits");
+_Static_assert(MU_DISPLAY_ANGEL_STOCK_COLORS == MU_DISPLAY_OPTION_ANGEL_STOCK_COLORS, "display option bits");
+_Static_assert(MU_DISPLAY_NANA_PERCENT == MU_DISPLAY_OPTION_NANA_PERCENT, "display option bits");
+_Static_assert(MU_DISPLAY_ALLY_INDICATORS == MU_DISPLAY_OPTION_ALLY_INDICATORS, "display option bits");
+_Static_assert(MU_DISPLAY_NO_GO_TEXT == MU_DISPLAY_OPTION_NO_GO_TEXT, "display option bits");
+_Static_assert(MU_DISPLAY_HITBOX_ID_COLORS == MU_DISPLAY_OPTION_HITBOX_ID_COLORS, "display option bits");
+_Static_assert(MU_DISPLAY_HITBOX_ID_ORDER == MU_DISPLAY_OPTION_HITBOX_ID_ORDER, "display option bits");
+_Static_assert(MU_DISPLAY_HITBOX_ANGLES == MU_DISPLAY_OPTION_HITBOX_ANGLES, "display option bits");
+_Static_assert(MU_DISPLAY_HQ_FOD_REFLECTIONS == MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS, "display option bits");
+_Static_assert(MU_DISPLAY_VCANCEL_SOUND == MU_DISPLAY_OPTION_VCANCEL_SOUND, "display option bits");
+_Static_assert(MU_DISPLAY_CODES_ALL == MU_DISPLAY_OPTION_CODES_ALL, "display option bits");
 
 /* The Arcade look grid's colour (0 from a host before version 21: the default). */
 float mu_screen_shake_scale(void)

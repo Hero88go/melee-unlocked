@@ -30,6 +30,13 @@ void mu_hud_player_abi(int slot, int present, int damage, int stocks, float tag_
     }
 }
 
+void mu_hud_extras_abi(int slot, int nana_damage, int team)
+{
+    if (mu_host->version >= 24 && mu_host->hud_extras != NULL) {
+        mu_host->hud_extras(slot, nana_damage, team);
+    }
+}
+
 void mu_hud_combo_abi(int slot, int link, float percent, int stunned)
 {
     if (mu_host->version >= 21 && mu_host->hud_combo != NULL) {

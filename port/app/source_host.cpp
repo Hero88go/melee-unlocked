@@ -1145,6 +1145,7 @@ uint32_t h_display_options() {
          (gx::RenderOptions::live_freeze_fd() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u) |
          (host::g_hide_ko_explosions.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_KO_EXPLOSIONS : 0u) |
          (host::g_hide_hud_emblems.load(std::memory_order_relaxed) ? MU_DISPLAY_OPTION_NO_HUD_EMBLEMS : 0u) |
+         (host::g_community_codes.load(std::memory_order_relaxed) & MU_DISPLAY_OPTION_CODES_ALL) |
          // The Arcade look's hitboxes: never in a network match (the game also checks). Its grid is a
          // picture like the rest of the background, so it stays.
          (slippi::online::session_mode() >= 0 || source_p2p::requested() ? 0u : gx::arcade_display() & gx::kArcadeGameBits) |
@@ -1160,6 +1161,7 @@ uint32_t h_grid_color() { return gx::look_live().arcade_grid_rgb.load(std::memor
 void h_hud_combo(int32_t slot, int32_t link_slot, float percent, int32_t stunned) {
   gx::set_native_hud_combo(slot, link_slot, percent, stunned != 0);
 }
+void h_hud_extras(int32_t slot, int32_t nana_damage, int32_t team) { gx::set_native_hud_extras(slot, nana_damage, team); }
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
   gx::set_native_hud_player(slot, present != 0, damage, stocks, tag_x, tag_y, tag_visible != 0);
@@ -3306,6 +3308,7 @@ MuHostApi make_host() {
   h.grid_color = h_grid_color;
   h.screen_shake_scale = h_screen_shake_scale;
   h.card_boot_confirm = h_card_boot_confirm;
+  h.hud_extras = h_hud_extras;
   return h;
 }
 

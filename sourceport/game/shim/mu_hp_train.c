@@ -58,6 +58,19 @@ void mu_hp_hitbox_color(unsigned char* rgba)
     static int changed;
     const int by_id = mu_hp_setting(MU_HP_SET_BUBBLE_FLAGS) & 1;
     const int alpha = mu_hp_setting(MU_HP_SET_HITBOX_ALPHA) ^ 0x80;
+    if (!by_id && mu_code_feature(MU_DISPLAY_HITBOX_ID_COLORS)) {
+        /* Community code "Hitbox colours by id" (UnclePunch, NeilHarbin0), its own table: 0 red,
+         * 1 green, 2 cyan, 3 purple. The pack's own id colours win while they are on. */
+        static const unsigned char ids[4][3] = {
+            {0xFF, 0x31, 0x31}, {0x7C, 0xFC, 0x00}, {0x00, 0xFF, 0xFF}, {0x96, 0x00, 0xFF}};
+        const int id = hp_hit_id < 0 ? 0 : hp_hit_id & 3;
+        rgba[0] = ids[id][0];
+        rgba[1] = ids[id][1];
+        rgba[2] = ids[id][2];
+        rgba[3] = (unsigned char) alpha;
+        changed = 1;
+        return;
+    }
     if (!by_id && alpha == 0x80) {
         if (changed) {
             /* Switched off (or the match went online): the game's own color again. */

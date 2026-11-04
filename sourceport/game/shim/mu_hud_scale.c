@@ -30,6 +30,7 @@ void mu_hud_scale(HSD_GObj* gobj, int stock)
     if (gobj == NULL || (root = gobj->hsd_obj) == NULL) {
         return;
     }
+    mu_hud_fade(gobj);
     if (stock && (mu_game_options() & MU_OPTION_PAL_STOCK_ICONS)) {
         percent = 100;   /* PAL stock icons set their own size */
     }
@@ -66,6 +67,7 @@ void mu_hud_scale(HSD_GObj* gobj, int stock)
 /* ---- player tags for the host's overlays ---- */
 #include <melee/if/ifstatus.h>
 #include <melee/if/types.h>
+#include <melee/gm/gmvs.h>
 #include <melee/pl/player.h>
 #include <melee/ft/types.h>
 #include <melee/ft/forward.h>
@@ -74,6 +76,7 @@ int mu_nametag_position(int slot, float* x, float* y);   /* if/ifnametag.c */
 void mu_hud_player_abi(int slot, int present, int damage, int stocks, float tag_x, float tag_y,
                        int tag_visible);                   /* mu_online_abi.c */
 void mu_hud_combo_abi(int slot, int link, float percent, int stunned);   /* mu_online_abi.c */
+void mu_hud_extras_abi(int slot, int nana_damage, int team);             /* mu_online_abi.c */
 
 static int mu_combo_stun_action(unsigned int a)
 {
@@ -113,5 +116,117 @@ void mu_hud_report(void)
             mu_hud_combo_abi(slot, link != NULL ? link->player_idx : -1, fp != NULL ? fp->dmg.x1830_percent : 0.0f,
                              fp != NULL && (fp->dmg.x195c_hitlag_frames > 0.0f || mu_combo_stun_action(fp->motion_id)));
         }
+        /* The community codes' overlays (Nana's percent, the teammate marker): read only. */
+        {
+            HSD_GObj* nana = present ? Player_GetEntityAtIndex(slot, 1) : NULL;
+            Fighter* np = mu_live_fighter(nana) ? nana->user_data : NULL;
+            mu_hud_extras_abi(slot, np != NULL ? (int) np->dmg.x1830_percent : -1,
+                              present && gm_8016B168() ? Player_GetTeam(slot) : -1);
+        }
     }
+}
+
+/* ---- HUD Transparency (UnclePunch), a community code ----
+ * Each HUD part (damage, stock icons, emblem) fades to 40% while a fighter stands behind it and back
+ * when it leaves, 8% a frame as in the code. Done from the parts' own draw callbacks, so a re-simulated
+ * rollback frame, which draws nothing, never runs it; only the parts' material alpha changes. */
+#include <melee/cm/camera.h>
+#include <melee/lb/lb_00B0.h>
+#include <melee/lb/lbvector.h>
+#include <sysdolphin/baselib/cobj.h>
+#include <sysdolphin/baselib/dobj.h>
+#include <sysdolphin/baselib/mobj.h>
+
+typedef struct MuHudFade {
+    HSD_JObj* root;
+    float alpha;
+} MuHudFade;
+static MuHudFade mu_hud_fades[24];
+static unsigned int mu_hud_fade_next;
+
+static void mu_hud_set_alpha(HSD_JObj* jobj, float alpha)
+{
+    for (; jobj != NULL; jobj = jobj->next) {
+        if (!(jobj->flags & 0x4020)) {   /* no spline or particle in place of the model list */
+            HSD_DObj* dobj;
+            for (dobj = jobj->u.dobj; dobj != NULL; dobj = dobj->next) {
+                if (dobj->mobj != NULL && dobj->mobj->mat != NULL) {
+                    dobj->mobj->mat->alpha = alpha;
+                }
+            }
+        }
+        mu_hud_set_alpha(jobj->child, alpha);
+    }
+}
+
+/* A fighter in front of the part: the part's box on screen (its centre, 50 pixels each side, 40 above
+ * and 32 below) crosses the fighter's span from its feet to a head height above them. */
+static int mu_hud_covered(HSD_JObj* root)
+{
+    HSD_GObj* cam = Camera_80030A50();
+    HSD_CObj* hud = HSD_CObjGetCurrent();
+    HSD_GObj* cur;
+    Vec3 world, part;
+    if (cam == NULL || cam->hsd_obj == NULL || hud == NULL || HSD_GObjPLinkHead == NULL) {
+        return 0;
+    }
+    lb_8000B1CC(root, NULL, &world);
+    lbVector_WorldToScreen(hud, &world, &part, 0);
+    for (cur = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER]; cur != NULL; cur = cur->next) {
+        Fighter* fp = cur->user_data;
+        Vec3 feet, head, a, b;
+        if (fp == NULL) {
+            continue;
+        }
+        feet = fp->cur_pos;
+        head = feet;
+        head.y += 14.0f * fp->x34_scale.y;
+        if (feet.x < -40000.0f || feet.x > 40000.0f || feet.y < -40000.0f || feet.y > 40000.0f) {
+            continue;
+        }
+        lbVector_WorldToScreen(cam->hsd_obj, &feet, &a, 0);
+        lbVector_WorldToScreen(cam->hsd_obj, &head, &b, 0);
+        if (a.x > part.x - 50.0f && a.x < part.x + 50.0f && b.y < part.y + 32.0f && a.y > part.y - 40.0f) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void mu_hud_fade(HSD_GObj* gobj)
+{
+    HSD_JObj* root = gobj != NULL ? gobj->hsd_obj : NULL;
+    MuHudFade* f = NULL;
+    float target;
+    unsigned int i;
+    if (root == NULL) {
+        return;
+    }
+    for (i = 0; i < sizeof(mu_hud_fades) / sizeof(mu_hud_fades[0]); i++) {
+        if (mu_hud_fades[i].root == root) {
+            f = &mu_hud_fades[i];
+            break;
+        }
+    }
+    target = mu_code_feature(MU_DISPLAY_HUD_FADE) && mu_hud_covered(root) ? 0.4f : 1.0f;
+    if (f == NULL) {
+        if (target >= 1.0f) {
+            return;   /* never faded: the game's own alpha stays untouched */
+        }
+        f = &mu_hud_fades[mu_hud_fade_next++ % (sizeof(mu_hud_fades) / sizeof(mu_hud_fades[0]))];
+        f->root = root;
+        f->alpha = 1.0f;
+    }
+    if (f->alpha == target) {
+        if (target >= 1.0f) {
+            f->root = NULL;   /* back to full: let go, as if it had never faded */
+            return;
+        }
+    } else {
+        f->alpha += target > f->alpha ? 0.08f : -0.08f;
+        if ((target > 0.5f) == (f->alpha > target) || f->alpha < 0.4f) {
+            f->alpha = target;
+        }
+    }
+    mu_hud_set_alpha(root, f->alpha);
 }

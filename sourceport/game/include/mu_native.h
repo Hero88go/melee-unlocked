@@ -148,6 +148,30 @@ int mu_ko_explosions_hidden(void);
  * each player's damage percent is not drawn (if/ifstatus.c ifStatus_802F5E50). Picture only. */
 #define MU_DISPLAY_NO_HUD_EMBLEMS 0x800u
 int mu_hud_emblems_hidden(void);
+/* Community codes (HUD tab, MU_DISPLAY_OPTION_* in mu_host.h), the native versions of the players' favourite Gecko codes. All are
+ * picture or sound only: never in a replay, never sent to an opponent. */
+#define MU_DISPLAY_HUD_FADE           0x00001000u   /* HUD Transparency: a player's HUD fades while a fighter is behind it */
+#define MU_DISPLAY_ANGEL_STOCK_COLORS 0x00002000u   /* the respawn platform's colour by the stocks left */
+#define MU_DISPLAY_NANA_PERCENT       0x00004000u   /* Nana's damage shown under Popo's */
+#define MU_DISPLAY_ALLY_INDICATORS    0x00008000u   /* online: YOU over your fighter; teams: a heart over your teammate */
+#define MU_DISPLAY_NO_GO_TEXT         0x00010000u   /* no GO! graphic at the start of a match (its sound stays) */
+#define MU_DISPLAY_HITBOX_ID_COLORS   0x00020000u   /* shown hitboxes coloured by id: 0 red, 1 green, 2 cyan, 3 purple */
+#define MU_DISPLAY_HITBOX_ID_ORDER    0x00040000u   /* shown hitboxes drawn 3 to 0, so id 0 (the highest priority) is on top */
+#define MU_DISPLAY_HITBOX_ANGLES      0x00080000u   /* shown hitboxes carry a line along their knockback angle */
+#define MU_DISPLAY_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
+#define MU_DISPLAY_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
+#define MU_DISPLAY_CODES_ALL         0x003FF000u
+/* shim/mu_code_features.c: nonzero while the player has that community code on. */
+int mu_code_feature(unsigned int bit);
+/* shim/mu_code_features.c: the knockback angle line of a hitbox bubble just drawn (ftdrawcommon.c). */
+struct HitCapsule;
+void mu_hitbox_angle(struct HitCapsule* hit, float fighter_scale, float facing);
+/* shim/mu_hud_scale.c: HUD Transparency, from a HUD part's draw callback (damage, stocks, emblem). */
+struct HSD_GObj;
+void mu_hud_fade(struct HSD_GObj* gobj);
+/* shim/mu_code_features.c: the respawn platform coloured by the stocks left, as it is made. */
+struct Fighter;
+void mu_angel_platform_colors(struct Fighter* fp);
 /* "Shield colours" (MuHostApi.shield_color): this player's own colour for its shield bubble and KO
  * blast, from the player's settings (shim/mu_te_menus.c). Nonzero with *rgb set; zero keeps the game's.
  * Team matches keep the team colours. */

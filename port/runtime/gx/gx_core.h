@@ -194,6 +194,8 @@ struct HudPlayerSnapshot {
   int combo_link = -1;
   float percent = 0;
   bool stunned = false;
+  // The community codes' overlays: Nana's damage (-1 no Nana in play) and the team (-1 not teams).
+  int nana_damage = -1, team = -1;
 };
 
 struct Frame {
@@ -317,6 +319,8 @@ bool clean_replay_active();
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
                            bool tag_visible);
 void set_native_hud_combo(int slot, int link, float percent, bool stunned);   // MuHostApi.hud_combo, simulation thread
+// Host API 24: Nana's damage and the player's team, for the community codes' overlays.
+void set_native_hud_extras(int slot, int nana_damage, int team);
 // The actions in which a fighter cannot act for the combo counter: damage and tumble, down and tech,
 // grabbed, thrown and carried (ftCo_MS_* ids; the game's mu_combo_stun_action is the same list).
 inline bool combo_stun_action(uint32_t a) {

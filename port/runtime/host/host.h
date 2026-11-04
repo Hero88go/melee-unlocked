@@ -357,6 +357,9 @@ extern std::atomic<bool> g_hide_ko_explosions;
 // "Hide emblems behind percents" (Video tab, both engines): the emblem behind each damage percent is
 // not drawn. Source Port: MU_DISPLAY_OPTION_NO_HUD_EMBLEMS; Static Recomp: apply_hud_emblems().
 extern std::atomic<bool> g_hide_hud_emblems;
+// "Community codes" (HUD tab): the native versions of players' favourite Gecko codes, as the
+// MU_DISPLAY_OPTION_* bits in MU_DISPLAY_OPTION_CODES_ALL. Source Port only; picture and sound only.
+extern std::atomic<uint32_t> g_community_codes;
 void input_rumble(int game_port, bool on);
 // Immediately clear any motors that were active when the Controls switch is turned off.
 void input_stop_all_rumble();
