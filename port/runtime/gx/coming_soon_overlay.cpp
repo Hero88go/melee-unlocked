@@ -130,7 +130,8 @@ void draw(float x0, float y0, float x1, float y1) {
   const int64_t now = now_ms();
   if (now - g_last_show.load() > 120) return;   // the page is not on screen
   const float u = (y1 - y0) / 480.0f, cx = (x0 + x1) * 0.5f;
-  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  // On the background list: over the game's menu, under the settings panel and every other window.
+  ImDrawList* dl = ImGui::GetBackgroundDrawList();
   const float since = float(now - g_since.load()) / 1000.0f;
   for (int i = 0; i < 3; ++i) {
     const float t = since - 0.35f - 0.09f * float(i);   // after the rows settle, one after another
