@@ -40,14 +40,19 @@ int main(int argc, char** argv) {
     std::printf("inside %d unpacked %d\n", inside, unpacked);
     return inside && unpacked ? 0 : 1;
   }
-  if (argc == 4 && std::string(argv[1]) == "--hold-updater-test") {
+  if (argc == 5 && std::string(argv[1]) == "--hold-updater-test") {
     HANDLE ready = OpenEventA(EVENT_MODIFY_STATE, FALSE, argv[2]);
     HANDLE quit = OpenEventA(SYNCHRONIZE, FALSE, argv[3]);
-    if (!ready || !quit) return 2;
+    HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)std::stoul(argv[4]));
+    if (!ready || !quit || !parent) return 2;
     SetEvent(ready);
-    const DWORD result = WaitForSingleObject(quit, 30000);
-    CloseHandle(ready); CloseHandle(quit);
-    return result == WAIT_OBJECT_0 ? 0 : 3;
+    // Either sibling may take the parent's full 60 s startup allowance on a
+    // busy PC. Remain alive through enumeration, but leave at once if the
+    // parent test is killed instead of signalling quit.
+    HANDLE stop[] = {quit, parent};
+    const DWORD result = WaitForMultipleObjects(2, stop, FALSE, 180000);
+    CloseHandle(ready); CloseHandle(quit); CloseHandle(parent);
+    return result < WAIT_OBJECT_0 + 2 ? 0 : 3;
   }
   namespace fs = std::filesystem;
   using host::updater::archive_inside;
@@ -146,7 +151,8 @@ int main(int argc, char** argv) {
     ready[i] = CreateEventA(nullptr, TRUE, FALSE, ready_name.c_str());
     quit[i] = CreateEventA(nullptr, TRUE, FALSE, quit_name.c_str());
     std::wstring command = L"\"" + exe.wstring() + L"\" --hold-updater-test " +
-      std::wstring(ready_name.begin(), ready_name.end()) + L" " + std::wstring(quit_name.begin(), quit_name.end());
+      std::wstring(ready_name.begin(), ready_name.end()) + L" " + std::wstring(quit_name.begin(), quit_name.end()) +
+      L" " + std::to_wstring(GetCurrentProcessId());
     STARTUPINFOW si{}; si.cb = sizeof si;
     const bool started = !ec && CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
       CREATE_NO_WINDOW | IDLE_PRIORITY_CLASS, nullptr, nullptr, &si, &children[i]);
