@@ -2396,13 +2396,13 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
       else if (key == "lowspec") options.low_spec = value == "1";
-      else if (key == "lowspec_prev_backend") options.low_spec_previous.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
+      else if (key == "lowspec_prev_backend") options.low_spec_previous.api = value == "d3d11" ? RenderApi::D3D11 : value == "vulkan" ? RenderApi::Vulkan : RenderApi::D3D12;
       else if (key == "lowspec_prev_fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || rate >= 30) options.low_spec_previous.fps_cap = std::min(rate, 2000.0); }
       else if (key == "lowspec_prev_scale") { int n = std::stoi(value); if (n >= 0 && n <= 8) options.low_spec_previous.efb_scale = n; }
       else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n >= 1 && n <= 4) options.low_spec_previous.ssaa = n; }
       else if (key == "lowspec_prev_anisotropy") { int n = std::stoi(value); if (n == 1 || n == 2 || n == 4 || n == 8 || n == 16) options.low_spec_previous.anisotropy = n; }
       else if (key == "lowspec_prev_effects") { int n = std::stoi(value); if (n >= 0 && n <= 3) options.low_spec_previous.effects_level = n; }
-      else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 10) options.low_spec_previous.dlss_mode = n; }
+      else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 15) options.low_spec_previous.dlss_mode = n; }   // as "dlss" (FSR is 11 to 15)
       else if (key == "lowspec_prev_subframe") options.low_spec_previous.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "discord") options.discord_presence = value == "1";
       // A Discord application id is a snowflake; anything else would only be rejected by Discord.
@@ -4334,7 +4334,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\narcade_grid_rgb " << std::hex << options.arcade_grid_rgb << std::dec
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
-       << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+       << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : options.low_spec_previous.api == RenderApi::Vulkan ? "vulkan" : "d3d12")
        << "\nlowspec_prev_fps " << options.low_spec_previous.fps_cap
        << "\nlowspec_prev_scale " << options.low_spec_previous.efb_scale
        << "\nlowspec_prev_ssaa " << options.low_spec_previous.ssaa

@@ -379,6 +379,25 @@ int main() {
     std::error_code ec;
     fs::remove(low_path, ec);
   }
+  // ... and for a Vulkan player with an FSR mode: saved and loaded, Low spec off gives Vulkan and the
+  // same FSR mode back (the file could only say d3d11 or d3d12, and modes above 10 were dropped).
+  {
+    const fs::path low_path = fs::temp_directory_path() / "melee_unlocked_settings_lowspec_vk_test.ini";
+    gx::RenderOptions o;
+    o.settings_path = low_path.string();
+    o.api = gx::RenderApi::Vulkan; o.dlss_mode = 12;
+    gx::apply_low_spec(o, false);
+    int vol = 100;
+    CHECK(gx::save_pc_settings(o, vol));
+    gx::RenderOptions next;
+    next.settings_path = low_path.string();
+    gx::load_pc_settings(next, vol);
+    CHECK(next.low_spec);
+    gx::restore_low_spec(next);
+    CHECK(next.api == gx::RenderApi::Vulkan && next.dlss_mode == 12);
+    std::error_code ec;
+    fs::remove(low_path, ec);
+  }
 
   // The Lossless adapter lag test arms one launch. 0.9.62's switch stayed on, so every launch after
   // it booted to an FFA character select that rumbled and turned the picture black and white on X/A.
