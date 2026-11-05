@@ -394,6 +394,10 @@ int main() {
       if (chance(80)) { auto& p = chosen[pick(length)]; if (!p.bytes.empty() && !p.bytes[0].empty()) p.bytes[0][0] ^= 1; }
       if (chance(40)) { auto& p = chosen[pick(length)]; if (!p.tracks.empty()) p.tracks[0].start_frame += 1; }
       if (chance(20)) chosen[pick(length)].joint.world[pick(12)] = std::numeric_limits<float>::quiet_NaN();
+      if (chance(10)) chosen[pick(length)].joint.frame = std::numeric_limits<float>::infinity();
+      if (chance(10)) chosen[pick(length)].joint.rate = -std::numeric_limits<float>::infinity();
+      if (chance(10)) chosen[pick(length)].joint.scale[pick(3)] = std::numeric_limits<float>::denorm_min();   // finite
+      if (chance(10)) chosen[pick(length)].joint.translation[pick(3)] = std::numeric_limits<float>::max();   // finite
       if (chance(15)) chosen[pick(length)].joint.generation = 0;
       if (chance(15)) { auto& p = chosen[pick(length)]; if (!p.tracks.empty()) p.tracks[0].channel = 4; }
       for (const auto& p : chosen) add_joint(b, p);
@@ -415,6 +419,8 @@ int main() {
             MuNativePoseBone bone{};
             bone.chain = pick(chains);
             bone.weight = k ? 0.25f : 0.75f;
+            if (chance(15)) bone.weight = std::numeric_limits<float>::infinity();
+            if (chance(15)) bone.envelope[pick(12)] = std::numeric_limits<float>::quiet_NaN();
             for (int e = 0; e < 12; ++e) bone.envelope[e] = (e % 5 == 0) ? 1.0f : 0.0f;
             b.bones.push_back(bone);
           }

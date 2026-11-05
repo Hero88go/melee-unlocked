@@ -10,9 +10,16 @@
 
 namespace gx {
 namespace {
+// A float is finite unless its exponent bits are all set (infinity, NaN): the same answer as
+// std::isfinite, which on Windows is a C runtime call per value (~200,000 a frame here).
+inline bool finite(float value) {
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof bits);
+  return (bits & 0x7F800000u) != 0x7F800000u;
+}
 bool finite_values(const float* values, size_t count) {
   for (size_t i = 0; i < count; ++i)
-    if (!std::isfinite(values[i])) return false;
+    if (!finite(values[i])) return false;
   return true;
 }
 
@@ -37,8 +44,8 @@ bool valid_joints(const MuNativePoseSnapshot& snapshot) {
         !finite_values(source.scale, 3) || !finite_values(source.rotation, 3) ||
         !finite_values(source.translation, 3) || !finite_values(source.quaternion, 4) ||
         !finite_values(source.world, 12) ||
-        !std::isfinite(source.frame) || !std::isfinite(source.rate) ||
-        !std::isfinite(source.end) || !std::isfinite(source.rewind))
+        !finite(source.frame) || !finite(source.rate) ||
+        !finite(source.end) || !finite(source.rewind))
       return false;
     for (uint32_t t = 0; t < source.track_count; ++t) {
       const MuNativePoseTrack& source_track = snapshot.tracks[source.first_track + t];
@@ -256,7 +263,7 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
     slot.bones.reserve(source.bone_count);
     for (uint32_t b = 0; b < source.bone_count; ++b) {
       const MuNativePoseBone& bone = snapshot.bones[source.first_bone + b];
-      if (bone.chain >= chains.size() || !std::isfinite(bone.weight) ||
+      if (bone.chain >= chains.size() || !finite(bone.weight) ||
           !finite_values(bone.envelope, 12))
         return {};
       AuthoredBone target;
