@@ -50127,7 +50127,7 @@ index ca748b5d1..012d1b4e2 100644
                                  ...);
  /* 0676F0 */ void efAsync_QueueInit(void);
 diff --git a/src/melee/ef/eflib.c b/src/melee/ef/eflib.c
-index c33452391..911dc24bd 100644
+index c33452391..62815edaa 100644
 --- a/src/melee/ef/eflib.c
 +++ b/src/melee/ef/eflib.c
 @@ -1,3 +1,6 @@
@@ -50335,16 +50335,53 @@ index c33452391..911dc24bd 100644
          scale.x = scale.z = scale.y;
          HSD_JObjSetScale(GET_JOBJ(effect->gobj), &scale);
      }
-@@ -641,7 +653,7 @@ EF_Effect* efLib_Create_Attach_Pos(u32 gfx_id, HSD_GObj* gobj, Vec3* position)
+@@ -641,7 +653,23 @@ EF_Effect* efLib_Create_Attach_Pos(u32 gfx_id, HSD_GObj* gobj, Vec3* position)
      return effect;
  }
  
 -void efLib_render_callback(HSD_GObj* gobj, int code)
++#ifdef MU_NATIVE
++#include "mu_gxpipe.h"
++#include <mu_rtx_tokens.h>
++int mu_native_rtx_semantics(void);
++
++/* Render semantics (mu_rtx_tokens.h, token 0xF6): the draws between these are the particle system's,
++ * which the host's ray-traced renderer composites and lets glow. Only while the host asks. */
++static void efLib_NativeRtxPass(u8 pass)
++{
++    if (mu_native_rtx_semantics()) {
++        GXW_u8(MU_RTX_TOKEN_PASS);
++        GXW_u8(pass);
++    }
++}
++#endif
++
 +void efLib_render_callback(HSD_GObj* gobj, intptr_t code)
  {
      u32 particles_code;
  
-@@ -669,12 +681,20 @@ void efLib_render_callback(HSD_GObj* gobj, int code)
+@@ -660,21 +688,41 @@ void efLib_render_callback(HSD_GObj* gobj, int code)
+     }
+     HSD_StateSetColorUpdate(1);
+     if (gobj->gx_link == 7) {
++#ifdef MU_NATIVE
++        efLib_NativeRtxPass(MU_RTX_PASS_PARTICLES);
++#endif
+         psDispParticles(PTCL_RENDER_LINKNO_0 | PTCL_RENDER_LINKNO_2,
+                         particles_code);
++#ifdef MU_NATIVE
++        efLib_NativeRtxPass(MU_RTX_PASS_NONE);
++#endif
+         return;
+     }
++#ifdef MU_NATIVE
++    efLib_NativeRtxPass(MU_RTX_PASS_PARTICLES);
++#endif
+     psDispParticles(PTCL_RENDER_LINKNO_1, particles_code);
++#ifdef MU_NATIVE
++    efLib_NativeRtxPass(MU_RTX_PASS_NONE);
++#endif
+ }
  
  void efLib_particles_proc_main(HSD_GObj* gobj)
  {
@@ -50365,7 +50402,7 @@ index c33452391..911dc24bd 100644
      hsd_8039CEAC(PTCL_SKIP_LINKNO_0);
      hsd_8039EE24(PTCL_SKIP_LINKNO_0);
  }
-@@ -800,6 +820,12 @@ HSD_Generator* efLib_CreateGenerator_Attach_Scale(s32 gfx_id, va_list vlist,
+@@ -800,6 +848,12 @@ HSD_Generator* efLib_CreateGenerator_Attach_Scale(s32 gfx_id, va_list vlist,
                                        va_arg(vlist, HSD_JObj*));
      if (generator != NULL) {
          HSD_JObjGetScale(GET_JOBJ(gobj), &scale);
@@ -50378,7 +50415,7 @@ index c33452391..911dc24bd 100644
          generator->appsrt->scale.x = generator->appsrt->scale.y =
              generator->appsrt->scale.z = scale.y;
      }
-@@ -860,7 +886,7 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -860,7 +914,7 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
      HSD_JObj* root = jobj;
      s32 chk = 0;
  
@@ -50387,7 +50424,7 @@ index c33452391..911dc24bd 100644
  
      switch (gfx_id) {
      case 0x4A38:
-@@ -872,7 +898,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -872,7 +926,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
          // attach, inherit root rot.y
          eflib_create_generator_add_appsrt(&generator, gfx_id, jobj);
          if (generator != NULL) {
@@ -50398,7 +50435,7 @@ index c33452391..911dc24bd 100644
              generator->appsrt->rot.y = HSD_JObjGetRotationY(root);
          }
          return;
-@@ -891,7 +919,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -891,7 +947,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
          // attach, inherit root rot.y + scale
          eflib_create_generator_add_appsrt(&generator, gfx_id, jobj);
          if (generator != NULL) {
@@ -50409,7 +50446,7 @@ index c33452391..911dc24bd 100644
              generator->appsrt->rot.y = HSD_JObjGetRotationY(root);
              HSD_JObjGetScale(root, &generator->appsrt->scale);
          }
-@@ -909,7 +939,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -909,7 +967,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
          // attach, inherit root scale
          eflib_create_generator_add_appsrt(&generator, gfx_id, jobj);
          if (generator != NULL) {
@@ -50420,7 +50457,7 @@ index c33452391..911dc24bd 100644
              HSD_JObjGetScale(root, &generator->appsrt->scale);
          }
          return;
-@@ -923,7 +955,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -923,7 +983,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
          if ((generator = eflib_generator_add_appsrt(
                   hsd_8039F05C(0, (gfx_id / 1000), gfx_id), 1)) != NULL)
          {
@@ -50431,7 +50468,7 @@ index c33452391..911dc24bd 100644
              generator->appsrt->rot.y = HSD_JObjGetRotationY(root);
              HSD_JObjGetTranslation(root, &generator->appsrt->translate);
          }
-@@ -937,7 +971,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -937,7 +999,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
                  psAppSRT = psAddGeneratorAppSRT_begin(generator, 1);
              }
              if (psAppSRT != NULL) {
@@ -50442,7 +50479,7 @@ index c33452391..911dc24bd 100644
                  psAppSRT->rot.z = HSD_JObjGetRotationZ(root);
                  HSD_JObjGetTranslation(root, &psAppSRT->translate);
                  HSD_JObjGetScale(root, &psAppSRT->scale);
-@@ -956,7 +992,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -956,7 +1020,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
                  psAppSRT = psAddGeneratorAppSRT_begin(generator, 1);
              }
              if (psAppSRT != NULL) {
@@ -50453,7 +50490,7 @@ index c33452391..911dc24bd 100644
                  psAppSRT->rot.z = HSD_JObjGetRotationZ(root);
                  HSD_JObjGetTranslation(root, &psAppSRT->translate);
                  return;
-@@ -971,7 +1009,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
+@@ -971,7 +1037,9 @@ void efLib_SpawnParticleEffect(int bank, s32 gfx_id, HSD_JObj* jobj, bool flag)
                   hsd_8039F05C(0, (gfx_id / 1000), gfx_id), 1)) != NULL)
          {
              lb_8000B1CC(jobj, NULL, &generator->appsrt->translate);
@@ -50464,7 +50501,7 @@ index c33452391..911dc24bd 100644
              HSD_JObjGetScale(root, &generator->appsrt->scale);
          }
          return;
-@@ -1049,16 +1089,16 @@ void (*lbl_803BF810[0x03])(HSD_Particle* particle) = { efLib_Cb_ParticleRender,
+@@ -1049,16 +1117,16 @@ void (*lbl_803BF810[0x03])(HSD_Particle* particle) = { efLib_Cb_ParticleRender,
  // parent joint.
  void efLib_Cb_PtclAppSRTHook(HSD_Generator* gen)
  {
@@ -50485,7 +50522,7 @@ index c33452391..911dc24bd 100644
          hsd_8039D1E4(gen, lbl_803BF810);
      }
  }
-@@ -1294,9 +1334,7 @@ void efLib_Cb_ftMr_SpecialLw(EF_Effect* effect)
+@@ -1294,9 +1362,7 @@ void efLib_Cb_ftMr_SpecialLw(EF_Effect* effect)
      } else {
          HSD_JObjSetFlagsAll(eff_child_nxt_jobj, JOBJ_HIDDEN);
      }
@@ -50496,7 +50533,7 @@ index c33452391..911dc24bd 100644
          f32 rotate_z = -atan2f(fighter->coll_data.floor.normal.x,
                                 fighter->coll_data.floor.normal.y);
          HSD_JObjSetRotationZ(eff_jobj, rotate_z);
-@@ -1325,9 +1363,7 @@ void efLib_Cb_ftLg_SpecialLw(EF_Effect* effect)
+@@ -1325,9 +1391,7 @@ void efLib_Cb_ftLg_SpecialLw(EF_Effect* effect)
          HSD_JObjSetFlagsAll(eff_child_nxt_jobj, JOBJ_HIDDEN);
      }
  
@@ -50507,7 +50544,7 @@ index c33452391..911dc24bd 100644
          f32 rotate_z = -atan2f(fighter->coll_data.floor.normal.x,
                                 fighter->coll_data.floor.normal.y);
          HSD_JObjSetRotationZ(eff_jobj, rotate_z);
-@@ -1407,13 +1443,21 @@ void efLib_SetTevKonstColor(HSD_JObj* jobj, s32 count, u32 konst, u32 tev0)
+@@ -1407,13 +1471,21 @@ void efLib_SetTevKonstColor(HSD_JObj* jobj, s32 count, u32 konst, u32 tev0)
  // Used by efLib_Cb_ApplyStoredAlpha to set TEV konst alpha.
  
  /* 458F60 */ EF_ParamEntry efLib_ParamTable[0x8];
@@ -50530,7 +50567,7 @@ index c33452391..911dc24bd 100644
  
      for (idx = 0; idx < 8; idx++) {
          if (base[idx].gobj == gobj) {
-@@ -1429,8 +1473,8 @@ void efLib_SetParamAlpha(HSD_GObj* gobj, u8 alpha)
+@@ -1429,8 +1501,8 @@ void efLib_SetParamAlpha(HSD_GObj* gobj, u8 alpha)
  
  found:
      // WHY
@@ -50541,7 +50578,7 @@ index c33452391..911dc24bd 100644
  }
  
  void efLib_SetParamGfxId(HSD_GObj* gobj, s32 gfx_id)
-@@ -1438,7 +1482,7 @@ void efLib_SetParamGfxId(HSD_GObj* gobj, s32 gfx_id)
+@@ -1438,7 +1510,7 @@ void efLib_SetParamGfxId(HSD_GObj* gobj, s32 gfx_id)
      s32 idx;
  
      // WHY
@@ -50550,7 +50587,7 @@ index c33452391..911dc24bd 100644
  
      for (idx = 0; idx < 8; idx++) {
          if (base[idx].gobj == gobj) {
-@@ -1454,8 +1498,8 @@ void efLib_SetParamGfxId(HSD_GObj* gobj, s32 gfx_id)
+@@ -1454,8 +1526,8 @@ void efLib_SetParamGfxId(HSD_GObj* gobj, s32 gfx_id)
  
  found:
      // WHY
@@ -206742,7 +206779,7 @@ index 90de5e6fc..8f9a71211 100644
  typedef struct _HSD_Class {
      struct _HSD_ClassInfo* class_info;
 diff --git a/src/sysdolphin/baselib/cobj.c b/src/sysdolphin/baselib/cobj.c
-index a1b904ed3..5e7b90201 100644
+index a1b904ed3..a2115fab6 100644
 --- a/src/sysdolphin/baselib/cobj.c
 +++ b/src/sysdolphin/baselib/cobj.c
 @@ -110,9 +110,9 @@ void HSD_CObjAddAnim(HSD_CObj* cobj, HSD_CameraAnim* canim)
@@ -206785,16 +206822,93 @@ index a1b904ed3..5e7b90201 100644
  
      top = cobj->viewport.ymin;                   // lfs f4,0x14(r30)
      left = cobj->viewport.xmin;                  // lfs f1,0xc(r30)
-@@ -478,7 +478,7 @@ void HSD_CObjSetupViewingMtx(HSD_CObj* cobj)
+@@ -478,7 +478,74 @@ void HSD_CObjSetupViewingMtx(HSD_CObj* cobj)
      }
  }
  
 -bool HSD_CObjSetCurrent(HSD_CObj* cobj)
++#ifdef MU_NATIVE
++#include "mu_gxpipe.h"
++#include <mu_rtx_tokens.h>
++int mu_native_rtx_semantics(void);
++
++/* A world position already resolved this frame (see HSD_WObjGetPosition: getting it can run a
++ * joint's matrix setup, which stays the game's to do), zero otherwise. */
++static void HSD_CObjNativeResolved(HSD_WObj* wobj, Vec3* out)
++{
++    if (wobj == NULL || (wobj->flags & 1) != 0) {
++        out->x = out->y = out->z = 0.0F;
++    } else {
++        *out = wobj->pos;
++    }
++}
++
++/* Render semantics (mu_rtx_tokens.h, token 0xF5): the camera just made current, with its exact
++ * world-to-view matrix, so the host's ray-traced renderer can place the scene in world space and
++ * tell the match camera from the HUD's and the offscreen passes'. Only while the host asks. */
++static void HSD_CObjNativeEmitSemantics(HSD_CObj* cobj, HSD_RenderPass render_pass)
++{
++    Vec3 eye, interest;
++    __UINTPTR_TYPE__ address;
++    int row, col;
++
++    if (!mu_native_rtx_semantics()) {
++        return;
++    }
++    HSD_CObjNativeResolved(cobj->eyepos, &eye);
++    HSD_CObjNativeResolved(cobj->interest, &interest);
++    address = (__UINTPTR_TYPE__) cobj;
++    GXW_u8(MU_RTX_TOKEN_CAMERA);
++    GXW_u8((u8) render_pass);
++    GXW_u8(cobj->projection_type);
++    GXW_u8(0);
++    GXW_u32((u32) (address ^ (address >> 32)));
++    for (row = 0; row < 3; row++) {
++        for (col = 0; col < 4; col++) {
++            GXW_f32(cobj->view_mtx[row][col]);
++        }
++    }
++    GXW_f32(eye.x);
++    GXW_f32(eye.y);
++    GXW_f32(eye.z);
++    GXW_f32(interest.x);
++    GXW_f32(interest.y);
++    GXW_f32(interest.z);
++    if (cobj->projection_type == PROJ_PERSPECTIVE) {
++        GXW_f32(cobj->projection_param.perspective.fov);
++        GXW_f32(cobj->projection_param.perspective.aspect);
++        GXW_f32(0.0F);
++        GXW_f32(0.0F);
++    } else {
++        GXW_f32(cobj->projection_param.frustum.top);
++        GXW_f32(cobj->projection_param.frustum.bottom);
++        GXW_f32(cobj->projection_param.frustum.left);
++        GXW_f32(cobj->projection_param.frustum.right);
++    }
++    GXW_f32(cobj->near);
++    GXW_f32(cobj->far);
++    GXW_f32(cobj->viewport.xmin);
++    GXW_f32(cobj->viewport.xmax);
++    GXW_f32(cobj->viewport.ymin);
++    GXW_f32(cobj->viewport.ymax);
++}
++#endif
++
 +MU_NO_CONTRACT bool HSD_CObjSetCurrent(HSD_CObj* cobj)
  {
      HSD_RenderPass render_pass;
      bool result;
-@@ -642,14 +642,12 @@ static inline f32 vec_get_x(Vec3* v)
+@@ -510,6 +577,9 @@ bool HSD_CObjSetCurrent(HSD_CObj* cobj)
+         return false;
+     } else {
+         HSD_CObjSetupViewingMtx(cobj);
++#ifdef MU_NATIVE
++        HSD_CObjNativeEmitSemantics(cobj, render_pass);
++#endif
+         return true;
+     }
+ }
+@@ -642,14 +712,12 @@ static inline f32 vec_get_x(Vec3* v)
      return v->x;
  }
  
@@ -206812,7 +206926,7 @@ index a1b904ed3..5e7b90201 100644
  {
      int res;
      Vec3 eye;
-@@ -661,11 +659,7 @@ static int roll2upvec(HSD_CObj* cobj, Vec3* up, float roll)
+@@ -661,11 +729,7 @@ static int roll2upvec(HSD_CObj* cobj, Vec3* up, float roll)
      if (res != 0) {
          return res;
      }
@@ -206825,7 +206939,7 @@ index a1b904ed3..5e7b90201 100644
          v0.x = sqrtf(eye.y * eye.y + eye.z * eye.z);
          v0.y = eye.y * (-vec_get_x(&eye) / v0.x);
          v0.z = eye.z * (-eye.x / v0.x);
-@@ -1253,8 +1247,8 @@ void HSD_CObjSetDefaultClass(HSD_ClassInfo* info)
+@@ -1253,8 +1317,8 @@ void HSD_CObjSetDefaultClass(HSD_ClassInfo* info)
  
  HSD_CObj* HSD_CObjAlloc(void)
  {
@@ -206836,7 +206950,7 @@ index a1b904ed3..5e7b90201 100644
      HSD_ASSERT(1954, cobj);
      return cobj;
  }
-@@ -1272,15 +1266,38 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
+@@ -1272,15 +1336,38 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
      static Vec3 up = { 0.0f, 1.0f, 0.0f };
      cobj->flags = desc->common.flags;
      CObjResetFlags(cobj, desc->common.flags);
@@ -206879,7 +206993,7 @@ index a1b904ed3..5e7b90201 100644
          } else {
              HSD_CObjSetUpVector(cobj, &up);
          }
-@@ -1289,8 +1306,21 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
+@@ -1289,8 +1376,21 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
      }
      switch (desc->common.projection_type) {
      case PROJ_PERSPECTIVE:
@@ -206901,7 +207015,7 @@ index a1b904ed3..5e7b90201 100644
          break;
      case PROJ_ORTHO:
          HSD_CObjSetOrtho(cobj, desc->ortho.top, desc->ortho.bottom,
-@@ -1301,7 +1331,13 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
+@@ -1301,7 +1401,13 @@ static int CObjLoad(HSD_CObj* cobj, HSD_CObjDesc* desc)
                             desc->frustum.left, desc->frustum.right);
          break;
      default:
@@ -206915,7 +207029,7 @@ index a1b904ed3..5e7b90201 100644
          break;
      }
      return 0;
-@@ -1321,8 +1357,8 @@ HSD_CObj* HSD_CObjLoadDesc(HSD_CObjDesc* desc)
+@@ -1321,8 +1427,8 @@ HSD_CObj* HSD_CObjLoadDesc(HSD_CObjDesc* desc)
      HSD_CObj* cobj;
  
      if (desc != NULL) {
@@ -206926,7 +207040,7 @@ index a1b904ed3..5e7b90201 100644
          {
              cobj = HSD_CObjAlloc();
          } else {
-@@ -1342,7 +1378,7 @@ static int CObjInit(HSD_Class* o)
+@@ -1342,7 +1448,7 @@ static int CObjInit(HSD_Class* o)
      if (status < 0) {
          return status;
      }
@@ -206935,7 +207049,7 @@ index a1b904ed3..5e7b90201 100644
      if (cobj != NULL) {
          HSD_CObjSetMtxDirty(cobj);
      }
-@@ -1355,23 +1391,13 @@ void CObjRelease(HSD_Class* o)
+@@ -1355,23 +1461,13 @@ void CObjRelease(HSD_Class* o)
  {
      HSD_WObj* eyepos;
      HSD_WObj* interest;
@@ -207945,7 +208059,7 @@ index 0f500d319..5160cb9e9 100644
      }
  }
 diff --git a/src/sysdolphin/baselib/dobj.c b/src/sysdolphin/baselib/dobj.c
-index 20a50b86c..e5cd583f5 100644
+index 20a50b86c..6b02e93b3 100644
 --- a/src/sysdolphin/baselib/dobj.c
 +++ b/src/sysdolphin/baselib/dobj.c
 @@ -87,7 +87,7 @@ void HSD_DObjAddAnim(HSD_DObj* dobj, HSD_MatAnim* mat_anim,
@@ -208015,6 +208129,85 @@ index 20a50b86c..e5cd583f5 100644
      {
          HSD_DObjResolveRefs(dobj, desc);
      }
+@@ -293,13 +292,65 @@ void forceStringAllocation(
+     }
+ }
+ 
++#ifdef MU_NATIVE
++#include "mu_gxpipe.h"
++#include <mu_rtx_tokens.h>
++int mu_native_rtx_semantics(void);
++
++static u32 HSD_DObjNativeColor(GXColor c)
++{
++    return ((u32) c.r << 24) | ((u32) c.g << 16) | ((u32) c.b << 8) | c.a;
++}
++
++/* Render semantics (mu_rtx_tokens.h, token 0xF3 01): the material its setup just applied, so the
++ * host's ray-traced renderer can light the DObj's draws itself. The textures went out just before,
++ * from HSD_TObjSetup. Returns whether a matching end (0xF3 02) is owed. Only while the host asks. */
++static int HSD_DObjNativeEmitMaterial(HSD_MObj* mobj)
++{
++    HSD_Material* mat;
++    __UINTPTR_TYPE__ address;
++
++    if (mobj == NULL || !mu_native_rtx_semantics()) {
++        return 0;
++    }
++    mat = mobj->mat;
++    address = (__UINTPTR_TYPE__) mobj;
++    GXW_u8(MU_RTX_TOKEN_MATERIAL);
++    GXW_u8(MU_RTX_MATERIAL_BEGIN);
++    GXW_u8(0);
++    GXW_u8(0);
++    GXW_u32(mobj->rendermode);
++    if (mat != NULL) {
++        GXW_u32(HSD_DObjNativeColor(mat->ambient));
++        GXW_u32(HSD_DObjNativeColor(mat->diffuse));
++        GXW_u32(HSD_DObjNativeColor(mat->specular));
++        GXW_f32(mat->alpha);
++        GXW_f32(mat->shininess);
++    } else {
++        GXW_u32(0);
++        GXW_u32(0xFFFFFFFF);
++        GXW_u32(0);
++        GXW_f32(1.0F);
++        GXW_f32(0.0F);
++    }
++    GXW_u32((u32) (address ^ (address >> 32)));
++    return 1;
++}
++#endif
++
+ void HSD_DObjDisp(HSD_DObj* dobj, Mtx vmtx, Mtx pmtx, u32 rendermode)
+ {
+     HSD_PObj* p;
++#ifdef MU_NATIVE
++    int rtx_material = 0;
++#endif
+ 
+     HSD_MObjSetCurrent(dobj->mobj);
+     if ((rendermode & 0x4000000) == 0) {
+         HSD_MOBJ_METHOD(dobj->mobj)->setup(dobj->mobj, rendermode);
++#ifdef MU_NATIVE
++        rtx_material = HSD_DObjNativeEmitMaterial(dobj->mobj);
++#endif
+     }
+     for (p = dobj->pobj; p != NULL; p = p->next) {
+         HSD_POBJ_METHOD(p)->disp(p, vmtx, pmtx, rendermode);
+@@ -307,6 +358,12 @@ void HSD_DObjDisp(HSD_DObj* dobj, Mtx vmtx, Mtx pmtx, u32 rendermode)
+     if ((rendermode & 0x4000000) == 0) {
+         HSD_MOBJ_METHOD(dobj->mobj)->unset(dobj->mobj, rendermode);
+     }
++#ifdef MU_NATIVE
++    if (rtx_material) {
++        GXW_u8(MU_RTX_TOKEN_MATERIAL);
++        GXW_u8(MU_RTX_MATERIAL_END);
++    }
++#endif
+     HSD_MObjSetCurrent(NULL);
+ }
+ 
 diff --git a/src/sysdolphin/baselib/dobj.h b/src/sysdolphin/baselib/dobj.h
 index 12709676a..7f424dfc3 100644
 --- a/src/sysdolphin/baselib/dobj.h
@@ -218388,10 +218581,107 @@ index a36b6d26e..cd2231ba9 100644
              leak_count++;
          }
 diff --git a/src/sysdolphin/baselib/lobj.c b/src/sysdolphin/baselib/lobj.c
-index 0f5206059..7461f8af0 100644
+index 0f5206059..0e9f0a94c 100644
 --- a/src/sysdolphin/baselib/lobj.c
 +++ b/src/sysdolphin/baselib/lobj.c
-@@ -907,7 +907,7 @@ HSD_LObjInfo* HSD_LObjGetDefaultClass(void)
+@@ -473,6 +473,86 @@ static void setup_spot_lightobj(HSD_LObj* lobj, Mtx mtx)
+     }
+ }
+ 
++#ifdef MU_NATIVE
++#include "mu_gxpipe.h"
++#include <mu_rtx_tokens.h>
++int mu_native_rtx_semantics(void);
++
++/* A world position the game has already resolved for this frame, without resolving it here (getting
++ * it through HSD_WObjGetPosition can run a joint's matrix setup, which is the game's to do). */
++static int HSD_LObjNativeResolved(HSD_WObj* wobj, Vec3* out)
++{
++    if (wobj == NULL || (wobj->flags & 1) != 0) {
++        out->x = out->y = out->z = 0.0F;
++        return 0;
++    }
++    *out = wobj->pos;
++    return 1;
++}
++
++/* Render semantics (mu_rtx_tokens.h, token 0xF4): the light set just made active for a camera, with
++ * world positions, so the host's ray-traced renderer lights the scene from the game's own lights.
++ * Only while the host asks; reads only. */
++static void HSD_LObjNativeEmitSemantics(void)
++{
++    int i, count = 0;
++
++    if (!mu_native_rtx_semantics()) {
++        return;
++    }
++    for (i = 0; i < MAX_GXLIGHT; i++) {
++        if (active_lights[i] != NULL) {
++            ++count;
++        }
++    }
++    GXW_u8(MU_RTX_TOKEN_LIGHTS);
++    GXW_u8((u8) count);
++    GXW_u8(0);
++    GXW_u8(0);
++    for (i = 0; i < MAX_GXLIGHT; i++) {
++        HSD_LObj* lobj = active_lights[i];
++        Vec3 position, interest;
++        u32 params[6];
++        u8 resolved = 0;
++        __UINTPTR_TYPE__ address;
++        int k;
++
++        if (lobj == NULL) {
++            continue;
++        }
++        if (HSD_LObjNativeResolved(lobj->position, &position)) {
++            resolved |= MU_RTX_LIGHT_POSITION_RESOLVED;
++        }
++        if (HSD_LObjNativeResolved(lobj->interest, &interest)) {
++            resolved |= MU_RTX_LIGHT_INTEREST_RESOLVED;
++        }
++        __builtin_memset(params, 0, sizeof params);
++        __builtin_memcpy(params, &lobj->u, sizeof lobj->u < sizeof params ? sizeof lobj->u : sizeof params);
++        address = (__UINTPTR_TYPE__) lobj;
++        GXW_u8((u8) HSD_LObjGetType(lobj));
++        GXW_u8(lobj->id != GX_LIGHT_NULL ? (u8) HSD_LightID2Index(lobj->id) : 0xFF);
++        GXW_u8(lobj->spec_id != GX_LIGHT_NULL ? (u8) HSD_LightID2Index(lobj->spec_id) : 0xFF);
++        GXW_u8(resolved);
++        GXW_u32(lobj->flags);
++        GXW_u8(lobj->color.r);
++        GXW_u8(lobj->color.g);
++        GXW_u8(lobj->color.b);
++        GXW_u8(lobj->color.a);
++        GXW_f32(position.x);
++        GXW_f32(position.y);
++        GXW_f32(position.z);
++        GXW_f32(interest.x);
++        GXW_f32(interest.y);
++        GXW_f32(interest.z);
++        for (k = 0; k < 6; k++) {
++            GXW_u32(params[k]);
++        }
++        GXW_f32(lobj->shininess);
++        GXW_u32((u32) (address ^ (address >> 32)));
++    }
++}
++#endif
++
+ void HSD_LObjSetupInit(HSD_CObj* cobj)
+ {
+     MtxPtr vmtx;
+@@ -581,6 +661,9 @@ void HSD_LObjSetupInit(HSD_CObj* cobj)
+         setup_spec_lightobj(lobj, vmtx, HSD_Index2LightID(idx++));
+         num++;
+     }
++#ifdef MU_NATIVE
++    HSD_LObjNativeEmitSemantics();
++#endif
+ 
+     for (i = 0; i < MAX_GXLIGHT - 1; i++) {
+         HSD_LObj* lobj;
+@@ -907,7 +990,7 @@ HSD_LObjInfo* HSD_LObjGetDefaultClass(void)
  
  HSD_LObj* HSD_LObjAlloc(void)
  {
@@ -218400,7 +218690,7 @@ index 0f5206059..7461f8af0 100644
      HSD_ASSERT(1478, new);
      return new;
  }
-@@ -956,34 +956,34 @@ static int LObjLoad(HSD_LObj* lobj, HSD_LightDesc* ldesc)
+@@ -956,34 +1039,34 @@ static int LObjLoad(HSD_LObj* lobj, HSD_LightDesc* ldesc)
      case LOBJ_AMBIENT:
          break;
      case LOBJ_INFINITE:
@@ -218452,7 +218742,7 @@ index 0f5206059..7461f8af0 100644
          }
          break;
      default:
-@@ -998,11 +998,11 @@ HSD_LObj* HSD_LObjLoadDesc(HSD_LightDesc* ldesc)
+@@ -998,11 +1081,11 @@ HSD_LObj* HSD_LObjLoadDesc(HSD_LightDesc* ldesc)
  {
      HSD_LObj *top, **p = &top;
  
@@ -218467,7 +218757,7 @@ index 0f5206059..7461f8af0 100644
          {
              *p = HSD_LObjAlloc();
          } else {
-@@ -1027,9 +1027,9 @@ void HSD_LObjAddAnim(HSD_LObj* lobj, HSD_LightAnim* lanim)
+@@ -1027,9 +1110,9 @@ void HSD_LObjAddAnim(HSD_LObj* lobj, HSD_LightAnim* lanim)
          if (lobj->aobj) {
              HSD_AObjRemove(lobj->aobj);
          }
@@ -218480,7 +218770,7 @@ index 0f5206059..7461f8af0 100644
      }
  }
  
-@@ -1042,7 +1042,7 @@ void HSD_LObjAddAnimAll(HSD_LObj* lobj, HSD_LightAnim* lanim)
+@@ -1042,7 +1125,7 @@ void HSD_LObjAddAnimAll(HSD_LObj* lobj, HSD_LightAnim* lanim)
          return;
      }
  
@@ -223636,7 +223926,7 @@ index 3327fe42c..726d5650e 100644
                                     HSD_TExp** result, HSD_TExpRes* resource);
  /* 386470 */ int SimplifySrc(HSD_TExp*);
 diff --git a/src/sysdolphin/baselib/tobj.c b/src/sysdolphin/baselib/tobj.c
-index 8cccdf681..d7333ceaa 100644
+index 8cccdf681..6b925d952 100644
 --- a/src/sysdolphin/baselib/tobj.c
 +++ b/src/sysdolphin/baselib/tobj.c
 @@ -48,7 +48,7 @@ void HSD_TObjRemoveAnimAll(HSD_TObj* tobj)
@@ -223762,16 +224052,64 @@ index 8cccdf681..d7333ceaa 100644
          return new;
      }
      return NULL;
-@@ -1134,7 +1146,7 @@ static int DifferentTluts(HSD_Tlut* t0, HSD_Tlut* t1)
+@@ -1134,7 +1146,45 @@ static int DifferentTluts(HSD_Tlut* t0, HSD_Tlut* t1)
          (t0->n_entries != t1->n_entries);
  }
  
 -void HSD_TObjSetup(HSD_TObj* tobj)
++#ifdef MU_NATIVE
++#include "mu_gxpipe.h"
++#include <mu_rtx_tokens.h>
++int mu_native_rtx_semantics(void);
++
++/* Render semantics (mu_rtx_tokens.h, token 0xF3 03): the textures this setup loads, in chain order
++ * with the texmap each was given, so the host's ray-traced renderer knows each one's role (colour,
++ * reflection, highlight, shadow). Fields the setup already uses; nothing is resolved or changed.
++ * Only while the host asks. */
++static void HSD_TObjNativeEmitSemantics(HSD_TObj* chain)
++{
++    HSD_TObj* tobj;
++    int count = 0;
++
++    if (!mu_native_rtx_semantics()) {
++        return;
++    }
++    for (tobj = chain; tobj != NULL && count < MU_RTX_MAX_TOBJS; tobj = tobj->next) {
++        ++count;
++    }
++    GXW_u8(MU_RTX_TOKEN_MATERIAL);
++    GXW_u8(MU_RTX_MATERIAL_TEXTURES);
++    GXW_u8((u8) count);
++    GXW_u8(0);
++    for (tobj = chain; tobj != NULL && count > 0; tobj = tobj->next, --count) {
++        HSD_ImageDesc* image = tobj->imagedesc;
++        GXW_u8(tobj->id == GX_TEXMAP_NULL ? 0xFF : (u8) tobj->id);
++        GXW_u8((u8) tobj_coord(tobj));
++        GXW_u8((u8) tobj->src);
++        GXW_u8(0);
++        GXW_u32(tobj->flags);
++        GXW_f32(tobj->blending);
++        GXW_u16(image != NULL ? image->width : 0);
++        GXW_u16(image != NULL ? image->height : 0);
++    }
++}
++#endif
++
 +MU_NO_CONTRACT void HSD_TObjSetup(HSD_TObj* tobj)
  {
      GXTlutObj tlutobj;
      GXTexObj texobj;
-@@ -1170,7 +1182,7 @@ void HSD_TObjSetup(HSD_TObj* tobj)
+@@ -1155,6 +1205,9 @@ void HSD_TObjSetup(HSD_TObj* tobj)
+     if (num > 0) {
+         HSD_StateRegisterTexGen(HSD_Index2TexCoord(num - 1));
+     }
++#ifdef MU_NATIVE
++    HSD_TObjNativeEmitSemantics(tobj);
++#endif
+ 
+     for (; tobj; tobj = tobj->next) {
+         static HSD_TexLODDesc default_lod = {
+@@ -1170,7 +1223,7 @@ void HSD_TObjSetup(HSD_TObj* tobj)
  
          TObjSetupMtx(tobj);
          HSD_ASSERT(1578, imagedesc);
@@ -223780,7 +224118,7 @@ index 8cccdf681..d7333ceaa 100644
  
          lod = tobj->lod != NULL ? tobj->lod : &default_lod;
          min_filter = lod->minFilt;
-@@ -1209,7 +1221,7 @@ void HSD_TObjSetup(HSD_TObj* tobj)
+@@ -1209,7 +1262,7 @@ void HSD_TObjSetup(HSD_TObj* tobj)
                  tlut->tlut_name = GX_TLUT0;
              }
  
@@ -223789,7 +224127,7 @@ index 8cccdf681..d7333ceaa 100644
                             imagedesc->height, imagedesc->format, tobj->wrap_s,
                             tobj->wrap_t,
                             imagedesc->mipmap ? GX_TRUE : GX_FALSE,
-@@ -1227,7 +1239,7 @@ void HSD_TObjSetup(HSD_TObj* tobj)
+@@ -1227,7 +1280,7 @@ void HSD_TObjSetup(HSD_TObj* tobj)
          case GX_TF_RGB5A3:
          case GX_TF_RGBA8:
          case GX_TF_CMPR:
@@ -223798,7 +224136,7 @@ index 8cccdf681..d7333ceaa 100644
                           imagedesc->height, imagedesc->format, tobj->wrap_s,
                           tobj->wrap_t, imagedesc->mipmap ? GX_TRUE : GX_FALSE);
              break;
-@@ -1497,7 +1509,7 @@ HSD_TObjInfo* HSD_TObjGetDefaultClass(void)
+@@ -1497,7 +1550,7 @@ HSD_TObjInfo* HSD_TObjGetDefaultClass(void)
  
  HSD_TObj* HSD_TObjAlloc(void)
  {
@@ -223807,7 +224145,7 @@ index 8cccdf681..d7333ceaa 100644
      HSD_ASSERT(2040, new);
      return new;
  }
-@@ -1575,7 +1587,7 @@ void HSD_ImageDescCopyFromEFB(HSD_ImageDesc* idesc, u16 origx, u16 origy,
+@@ -1575,7 +1628,7 @@ void HSD_ImageDescCopyFromEFB(HSD_ImageDesc* idesc, u16 origx, u16 origy,
      if (clear) {
          HSD_StateSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
      }

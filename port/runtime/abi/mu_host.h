@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 24
+#define MU_HOST_API_VERSION 25
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -385,6 +385,11 @@ typedef struct MuHostApi {
     void (*hud_extras)(int32_t slot, int32_t nana_damage, int32_t team);
     /* Version 23. Session-gated diagnostic environment; NULL means unset. */
     const char* (*test_getenv)(const char* name);
+
+    /* Version 25. Nonzero while the host's ray-traced renderer wants render semantics: the game then
+     * writes the private FIFO tokens 0xF3-0xF6 (mu_rtx_tokens.h) describing its materials, textures,
+     * lights, cameras and particle passes. Display only; zero means not one byte is written. */
+    int32_t (*native_rtx_semantics)(void);
 } MuHostApi;
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):

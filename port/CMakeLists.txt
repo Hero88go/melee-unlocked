@@ -119,6 +119,28 @@ if(MELEE_NO_SLIPPI)
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_DXR_DXIL}"
             "$<TARGET_FILE_DIR:melee_source>/dxr_pathtrace.dxil"
     VERBATIM)
+  # The path tracer's geometry pass (rtx_scene.cpp), beside the executable like the DXR library.
+  set(MELEE_RTX_TRANSFORM_DXIL "${CMAKE_CURRENT_BINARY_DIR}/rtx_transform.dxil")
+  add_custom_command(OUTPUT "${MELEE_RTX_TRANSFORM_DXIL}"
+    COMMAND "${MELEE_DXC_EXECUTABLE}" -T cs_6_0 -HV 2021 -O3
+            -Fo "${MELEE_RTX_TRANSFORM_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_transform.hlsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_transform.hlsl"
+    VERBATIM)
+  # The path tracer's ray-traced passes (rtx_tracer.cpp): DXR 1.1 for GeometryIndex().
+  set(MELEE_RTX_TRACE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/rtx_trace.dxil")
+  add_custom_command(OUTPUT "${MELEE_RTX_TRACE_DXIL}"
+    COMMAND "${MELEE_DXC_EXECUTABLE}" -T lib_6_5 -HV 2021 -O3
+            -Fo "${MELEE_RTX_TRACE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
+    VERBATIM)
+  add_custom_target(melee_rtx_shaders DEPENDS "${MELEE_RTX_TRANSFORM_DXIL}" "${MELEE_RTX_TRACE_DXIL}")
+  add_dependencies(melee_source melee_rtx_shaders)
+  add_custom_command(TARGET melee_source POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRANSFORM_DXIL}"
+            "$<TARGET_FILE_DIR:melee_source>/rtx_transform.dxil"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRACE_DXIL}"
+            "$<TARGET_FILE_DIR:melee_source>/rtx_trace.dxil"
+    VERBATIM)
 
   # Cache identity follows shader generation, constant layout and pipeline setup.
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -564,6 +586,10 @@ add_executable(port_dxr_scene_test tests/dxr_scene_test.cpp runtime/gx/gx_dxr_sc
 target_include_directories(port_dxr_scene_test PRIVATE runtime/gx)
 target_compile_features(port_dxr_scene_test PRIVATE cxx_std_17)
 add_test(NAME port_dxr_scene COMMAND port_dxr_scene_test)
+add_executable(port_rtx_semantics_test tests/rtx_semantics_test.cpp runtime/gx/rtx_semantics.cpp)
+target_include_directories(port_rtx_semantics_test PRIVATE runtime/gx)
+target_compile_features(port_rtx_semantics_test PRIVATE cxx_std_17)
+add_test(NAME port_rtx_semantics COMMAND port_rtx_semantics_test)
 add_executable(port_ax_ucode_test tests/ax_ucode_test.cpp runtime/hle/ax_ucode.cpp)
 target_include_directories(port_ax_ucode_test PRIVATE runtime/hle)
 target_compile_features(port_ax_ucode_test PRIVATE cxx_std_17)
@@ -901,6 +927,32 @@ add_custom_command(TARGET melee_port POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_DXR_DXIL}"
           "$<TARGET_FILE_DIR:melee_port>/dxr_pathtrace.dxil"
   VERBATIM)
+# The path tracer's geometry pass (rtx_scene.cpp): compute, so Shader Model 6.0 is enough.
+set(MELEE_RTX_TRANSFORM_DXIL "${CMAKE_CURRENT_BINARY_DIR}/rtx_transform.dxil")
+add_custom_command(OUTPUT "${MELEE_RTX_TRANSFORM_DXIL}"
+  COMMAND "${MELEE_DXC_EXECUTABLE}" -T cs_6_0 -HV 2021 -O3
+          -Fo "${MELEE_RTX_TRANSFORM_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_transform.hlsl"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_transform.hlsl"
+  VERBATIM)
+# The path tracer's ray-traced passes (rtx_tracer.cpp): DXR 1.1 for GeometryIndex().
+set(MELEE_RTX_TRACE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/rtx_trace.dxil")
+add_custom_command(OUTPUT "${MELEE_RTX_TRACE_DXIL}"
+  COMMAND "${MELEE_DXC_EXECUTABLE}" -T lib_6_5 -HV 2021 -O3
+          -Fo "${MELEE_RTX_TRACE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
+  VERBATIM)
+add_custom_target(melee_rtx_shaders DEPENDS "${MELEE_RTX_TRANSFORM_DXIL}" "${MELEE_RTX_TRACE_DXIL}")
+foreach(rtx_exe melee_port melee_source)
+  add_dependencies(${rtx_exe} melee_rtx_shaders melee_dxr_shader)
+  add_custom_command(TARGET ${rtx_exe} POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRANSFORM_DXIL}"
+            "$<TARGET_FILE_DIR:${rtx_exe}>/rtx_transform.dxil"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRACE_DXIL}"
+            "$<TARGET_FILE_DIR:${rtx_exe}>/rtx_trace.dxil"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_DXR_DXIL}"
+            "$<TARGET_FILE_DIR:${rtx_exe}>/dxr_pathtrace.dxil"
+    VERBATIM)
+endforeach()
 if(MELEE_CPU_BASELINE STREQUAL "AVX2")
   target_compile_definitions(melee_port PRIVATE MELEE_NEEDS_AVX2)
 endif()

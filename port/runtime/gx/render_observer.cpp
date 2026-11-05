@@ -1,6 +1,7 @@
 // Guest execution remains authoritative. These hooks own host metadata only.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "render_observer.h"
+#include "rtx_semantics.h"
 #include "ppc.h"
 #include "gx_texture.h"
 #include "gx_retro.h"
@@ -52,7 +53,8 @@ uint8_t* guest_memory = nullptr;   // the last memory a joint was displayed from
 // Without that, flat colours alone treated a held item as stage art: Peach's turnip drew black.
 bool owners_wanted() {
   const LookLive& l = look_live();
-  return owner_tracking.load(std::memory_order_relaxed) || l.colours.load(std::memory_order_relaxed) != 0 ||
+  // The path tracer tells fighters from the stage by these too (rtx_semantics.h).
+  return owner_tracking.load(std::memory_order_relaxed) || rtx_semantics_enabled() || l.colours.load(std::memory_order_relaxed) != 0 ||
          l.effect_owners.load(std::memory_order_relaxed) || l.fighter.load(std::memory_order_relaxed) != 0 ||
          l.stage.load(std::memory_order_relaxed) != 0 || l.retro.load(std::memory_order_relaxed) ||
          // The Arcade look's 2D camera and background find the fighters by their skinned draws.

@@ -48,6 +48,10 @@
 #include "gx_dxr_scene.h"
 #include "gx_dxr_gpu_scene.h"
 #include "gx_dxr_path_tracer.h"
+#include "rtx_scene.h"
+#include "rtx_tracer.h"
+#include "rtx_semantics.h"
+#include "../abi/mu_rtx_tokens.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
 #include <system_error>
@@ -221,6 +225,12 @@ uint64_t texture_bytes(uint32_t w, uint32_t h, uint32_t levels) {
   const uint64_t base = (uint64_t)w * h * 4;
   return levels > 1 ? base + base / 3 : base;
 }
+
+// The path tracer's G-buffer targets (RTV slots 9 to 11), written by the G-buffer pipeline variant.
+constexpr DXGI_FORMAT kRtxAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;      // de-lit TEV colour
+constexpr DXGI_FORMAT kRtxNormalFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;  // view normal, linear depth
+constexpr DXGI_FORMAT kRtxIdFormat = DXGI_FORMAT_R32_UINT;                // draw index + 1
+constexpr UINT kRtxGbufferRtv = 9;
 
 struct PsoKey {
   uint64_t vs, ps;
@@ -511,6 +521,11 @@ class D3D12Backend : public Backend {
   // DLSS "bias current colour" hint: 1 where a flat 2D draw (HUD, text, player tags) wrote, so DLSS
   // keeps no history there. Without it a ticking timer or a tag following a fighter ghosted.
   ComPtr<ID3D12Resource> hud_mask_;
+  // The path tracer's G-buffer (kRtx*Format, RTV slots kRtxGbufferRtv..+2): made the first time a
+  // present captures the scene, written while rtx_gbuffer_ is set.
+  ComPtr<ID3D12Resource> rtx_albedo_, rtx_normal_, rtx_id_;
+  bool rtx_gbuffer_ = false;
+  bool rtx_ensure_gbuffer();
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
   bool dlss_hdr_active_ = false;
   bool dxr_path_logged_ = false;
@@ -662,6 +677,31 @@ class D3D12Backend : public Backend {
   DxrGpuScene dxr_gpu_scene_;
   DxrPathTracer dxr_path_tracer_;
   D3D12_RAYTRACING_TIER dxr_tier_ = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+  // The path tracer's GPU scene (rtx_scene.h). While a present captures it (rtx_capture_), every
+  // scene draw the raster issues is handed to it, and present_efb builds the structures from them.
+  RtxScene rtx_scene_;
+  RtxTracer rtx_tracer_;
+  uint32_t rtx_debug_uav_ = 0;       // srv_heap_ slot of the debug view's output UAV this present
+  bool rtx_debug_reserved_ = false;
+  uint64_t rtx_debug_draws_ = 0;
+  std::vector<uint32_t> rtx_camera_draws_;
+  uint64_t rtx_why_[7]{};   // presents wanted; not in match; skipped; no semantics; no cameras; no main camera; singular view
+  ID3D12Resource* rtx_debug_view();
+  bool rtx_capture_ = false;
+  int rtx_main_camera_ = -1;          // index into the frame's semantics cameras
+  float rtx_view_to_world_[12]{};     // inverse of that camera's view
+  uint32_t rtx_heap_generation_ = 0;  // bumped when srv_heap_ is replaced (texture indices go stale)
+  bool rtx_logged_ = false, rtx_failure_logged_ = false;
+  bool rtx_wanted() const;
+  void rtx_begin_present(const Frame& frame);
+  void rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12_GPU_VIRTUAL_ADDRESS vertices,
+                       D3D12_GPU_VIRTUAL_ADDRESS indices, uint32_t index_count, D3D12_GPU_VIRTUAL_ADDRESS vs_constants,
+                       D3D12_GPU_DESCRIPTOR_HANDLE textures, const DrawMatrices* override_matrices,
+                       const D3D12_VIEWPORT& viewport);
+  float rtx_projection_[16]{};        // the first scene draw's unjittered projection (row major)
+  D3D12_VIEWPORT rtx_viewport_{};     // and its viewport, in EFB pixels
+  bool rtx_have_camera_ = false;
+  bool rtx_build_scene();
   // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
   // pipeline library serialized at shutdown. First sessions compile; later ones load instantly.
   ComPtr<ID3D12PipelineLibrary> pipeline_library_;
@@ -902,7 +942,7 @@ void D3D12Backend::init() {
   create_swapchain(waitable_wanted() && !opts_.exclusive_fullscreen);
 
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
-  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 9;   // 8: the MSAA EFB
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 12;   // 8: the MSAA EFB; 9-11: the path tracer's G-buffer
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)), "rtv heap");
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; hd.NumDescriptors = 2;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)), "dsv heap");
@@ -930,6 +970,11 @@ void D3D12Backend::init() {
       g_dxr_path_available.store(false, std::memory_order_relaxed);
       host::log("dxr: path tracing unavailable: %s", dxr_error.c_str());
     }
+    std::string rtx_error;
+    if (rtx_scene_.initialize(dxr_device_.Get(), exe_dir_, &rtx_error)) host::log("rtx: GPU scene pass initialized");
+    else host::log("rtx: GPU scene unavailable: %s", rtx_error.c_str());
+    if (rtx_tracer_.initialize(dxr_device_.Get(), exe_dir_, &rtx_error)) host::log("rtx: ray-traced passes initialized");
+    else host::log("rtx: ray-traced passes unavailable: %s", rtx_error.c_str());
   } else {
     g_dxr_path_available.store(false, std::memory_order_relaxed);
   }
@@ -1267,6 +1312,7 @@ void D3D12Backend::create_efb() {
   }
   last_poses_.clear(); dlss_reset_ = true;
   efb_is_rt_ = true;
+  rtx_albedo_.Reset(); rtx_normal_.Reset(); rtx_id_.Reset();
 }
 
 // The MSAA the settings ask for, if this GPU has it for the EFB formats; 1 under DLSS/XeSS and path
@@ -1344,6 +1390,12 @@ void D3D12Backend::bind_efb_targets() {
     rtvs[0] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[0].ptr += 8 * rtv_size_;
     dsv.ptr += device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     list_->OMSetRenderTargets(1, rtvs, FALSE, &dsv);
+    return;
+  }
+  if (rtx_gbuffer_ && rtx_albedo_) {
+    D3D12_CPU_DESCRIPTOR_HANDLE all[6] = {rtvs[0], rtvs[1], rtvs[2], {}, {}, {}};
+    for (UINT i = 0; i < 3; ++i) { all[3 + i] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); all[3 + i].ptr += (kRtxGbufferRtv + i) * rtv_size_; }
+    list_->OMSetRenderTargets(6, all, FALSE, &dsv);
     return;
   }
   list_->OMSetRenderTargets(dlss_active_ ? 3 : 1, rtvs, FALSE, &dsv);
@@ -1743,6 +1795,20 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
     pd.BlendState.RenderTarget[2] = D3D12_RENDER_TARGET_BLEND_DESC{};
     pd.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
   }
+  if (key.mvec & 2) {
+    // The path tracer's G-buffer (gx_shader.cpp, motion_vectors bit 2): albedo, view normal + linear
+    // depth, draw id. The surface in the depth buffer owns these pixels, as with motion vectors, so
+    // only depth-writing draws write them.
+    pd.NumRenderTargets = 6;
+    pd.RTVFormats[3] = kRtxAlbedoFormat;
+    pd.RTVFormats[4] = kRtxNormalFormat;
+    pd.RTVFormats[5] = kRtxIdFormat;
+    const bool gbuffer_writes = bits(zm, 0, 1) && bits(zm, 4, 1);
+    for (int i = 3; i < 6; ++i) {
+      pd.BlendState.RenderTarget[i] = D3D12_RENDER_TARGET_BLEND_DESC{};
+      pd.BlendState.RenderTarget[i].RenderTargetWriteMask = gbuffer_writes ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+    }
+  }
   pd.SampleDesc.Count = std::max(1u, key.mvec >> 4);   // MSAA sample count rides in mvec's high bits (0 when off)
 }
 
@@ -2034,14 +2100,15 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   // wire state is part of the cached owner too (a wire draw used to look its pipeline up every time).
   // Four ids a backend keeps these far below the D3D11 backend's id base, so the two spaces stay disjoint.
   const uint32_t wire = look_wire(lightweight_filter_, dc) ? 4u : 0u;
-  const uint64_t owner = backend_id_ * 4 + (dlss_active_ ? 2u : 0u) + (wire ? 1u : 0u);
+  const uint32_t gbuffer = rtx_gbuffer_ ? 2u : 0u;   // the path tracer's G-buffer variant
+  const uint64_t owner = backend_id_ * 8 + (gbuffer ? 4u : 0u) + (dlss_active_ ? 2u : 0u) + (wire ? 1u : 0u);
   if (dc.cached_pipeline && dc.cached_pipeline_owner == owner) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
   Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
-  vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
+  vsu.motion_vectors = psu.motion_vectors = (dlss_active_ ? 1u : 0u) | gbuffer;
   uint64_t vh = vsu.hash(), ph = psu.hash();
-  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, (dlss_active_ ? 1u : 0u) | (msaa_on() ? msaa_samples_ << 4 : 0u)};
+  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, (dlss_active_ ? 1u : 0u) | gbuffer | (msaa_on() ? msaa_samples_ << 4 : 0u)};
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
@@ -2370,7 +2437,7 @@ void D3D12Backend::rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE type) {
   check(device_->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&replacement)), "descriptor rollover");
   heap = std::move(replacement);
   if (sampler) { sampler_sets_.clear(); sampler_slots_used_ = 0; }
-  else { srv_cursor_ = 0; texture_sets_.clear(); }
+  else { srv_cursor_ = 0; texture_sets_.clear(); ++rtx_heap_generation_; }
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
 }
@@ -2635,6 +2702,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     }
     if (!ps_cache_filled_[draw_index]) { fill_ps_constants(dc, ps_cache_[draw_index], scale_); ps_cache_filled_[draw_index] = 1; }
     std::memcpy(ccpu, &ps_cache_[draw_index], sizeof(PSConstants));
+    if (rtx_gbuffer_) { const int32_t id = (int32_t)draw_index + 1; std::memcpy(ccpu + offsetof(PSConstants, flags), &id, sizeof id); }
   } else {
     PSConstants ps_constants;   // a copy of a draw, not the frame's own
     fill_ps_constants(dc, ps_constants, scale_);
@@ -2682,6 +2750,248 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   list_->IASetPrimitiveTopology(prim);
   list_->DrawIndexedInstanced((UINT)index_count, 1, 0, 0, 0);
   g_prof[5] += sw.lap();   // state + draw calls
+  if (rtx_capture_ && topo == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)
+    rtx_record_draw(frame, dc, vgpu, igpu, index_count, vs_gpu, srvs, override_matrices, viewport);
+}
+
+// ---------------- path tracing: the GPU scene (rtx_scene.h) ----------------
+bool D3D12Backend::rtx_wanted() const {
+  // Development switch until the Video setting ships (plan milestone S5).
+  static const bool env = [] { const char* v = std::getenv("MELEE_RTX"); return v && v[0] == '1'; }();
+  return env && rtx_scene_.ready();
+}
+
+void D3D12Backend::rtx_begin_present(const Frame& frame) {
+  const bool wanted = rtx_wanted();
+  gx::set_rtx_semantics(wanted);   // the native game sends its render semantics from its next frame
+  rtx_capture_ = false;
+  rtx_gbuffer_ = false;
+  rtx_have_camera_ = false;
+  rtx_main_camera_ = -1;
+  rtx_scene_.begin_frame();
+  if (wanted) {
+    ++rtx_why_[0];
+    if (!in_match_) ++rtx_why_[1];
+    if (skip_present_) ++rtx_why_[2];
+    if (!frame.rtx.present) ++rtx_why_[3];
+    if (frame.rtx.cameras.empty()) ++rtx_why_[4];
+  }
+  if (!wanted || !in_match_ || skip_present_ || !frame.rtx.present || frame.rtx.cameras.empty()) return;
+  // The match camera is the one the fighters' models are drawn with. The HUD's camera, the shadow
+  // pass's offscreen camera and a reflection's mirrored view are other entries and stay out.
+  for (const DrawCall& d : frame.draws)
+    if (d.skinned && d.owner_player < 4 && d.rtx.camera >= 0) { rtx_main_camera_ = d.rtx.camera; break; }
+  if (rtx_main_camera_ < 0) {
+    // No fighter on screen: the perspective camera that draws the most. Melee renders every pass,
+    // the match too, as HSD's offscreen pass, so the pass does not tell them apart.
+    rtx_camera_draws_.assign(frame.rtx.cameras.size(), 0);
+    for (const DrawCall& d : frame.draws)
+      if (d.rtx.camera >= 0 && (size_t)d.rtx.camera < rtx_camera_draws_.size() && d.xf_regs[0x26] == 0)
+        ++rtx_camera_draws_[(size_t)d.rtx.camera];
+    uint32_t best = 0;
+    for (size_t k = 0; k < rtx_camera_draws_.size(); ++k)
+      if (rtx_camera_draws_[k] > best && frame.rtx.cameras[k].projection != 3) { best = rtx_camera_draws_[k]; rtx_main_camera_ = (int)k; }
+  }
+  if (rtx_main_camera_ < 0 || rtx_main_camera_ >= (int)frame.rtx.cameras.size()) {
+    if (rtx_why_[5]++ < 2) {
+      std::vector<uint32_t> per(frame.rtx.cameras.size() + 1, 0), skinned(frame.rtx.cameras.size() + 1, 0), persp(frame.rtx.cameras.size() + 1, 0);
+      for (const DrawCall& d : frame.draws) {
+        const size_t k = d.rtx.camera >= 0 ? (size_t)d.rtx.camera : frame.rtx.cameras.size();
+        ++per[k]; if (d.skinned) ++skinned[k]; if (d.xf_regs[0x26] == 0) ++persp[k];
+      }
+      for (size_t k = 0; k < frame.rtx.cameras.size(); ++k)
+        host::log("rtx: camera %zu pass %u proj %u id %08X: %u draws, %u skinned, %u perspective", k, frame.rtx.cameras[k].render_pass,
+                  frame.rtx.cameras[k].projection, frame.rtx.cameras[k].identity, per[k], skinned[k], persp[k]);
+      host::log("rtx: %u draws before any camera", per.back());
+    }
+    return;
+  }
+  if (!rtx_invert_affine(frame.rtx.cameras[(size_t)rtx_main_camera_].view, rtx_view_to_world_)) { ++rtx_why_[6]; return; }
+  rtx_capture_ = true;
+  // The G-buffer rides on the motion-vector targets, so it needs DLSS's layout (Ray Reconstruction
+  // needs DLSS anyway); MSAA is off while path tracing.
+  rtx_gbuffer_ = dlss_active_ && !xess_active() && !msaa_on() && rtx_ensure_gbuffer();
+}
+
+void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12_GPU_VIRTUAL_ADDRESS vertices,
+                                   D3D12_GPU_VIRTUAL_ADDRESS indices, uint32_t index_count,
+                                   D3D12_GPU_VIRTUAL_ADDRESS vs_constants, D3D12_GPU_DESCRIPTOR_HANDLE textures,
+                                   const DrawMatrices* override_matrices, const D3D12_VIEWPORT& viewport) {
+  if (dc.rtx.camera != rtx_main_camera_ || index_count < 3 || !vertices || !indices || !vs_constants) return;
+  if (&dc < frame.draws.data() || &dc >= frame.draws.data() + frame.draws.size()) return;
+  if (!rtx_have_camera_) {
+    // Primary rays (the debug view) are cast through exactly the projection and viewport the raster
+    // drew the scene with, sub-frame zoom included.
+    build_projection(dc, rtx_projection_, override_matrices && override_matrices->has_projection ? override_matrices->projection : nullptr);
+    rtx_viewport_ = viewport;
+    rtx_have_camera_ = true;
+  }
+  RtxDrawInput in;
+  in.vertices = vertices;
+  in.indices = indices;
+  in.index_count = index_count;
+  in.vs_constants = vs_constants;
+  in.components = dc.components;
+  in.num_texgens = dc.xf_regs[0x3F] & 15;
+  in.dual_tex = dc.xf_regs[0x12] & 1;
+  in.chan_color0 = dc.xf_regs[0x0E];
+  in.chan_alpha0 = dc.xf_regs[0x10];
+  for (int k = 0; k < 4; ++k) { in.texgen[k] = dc.xf_regs[0x40 + k]; in.post[k] = dc.xf_regs[0x50 + k]; }
+  in.draw_index = (uint32_t)(&dc - frame.draws.data());
+  in.material = dc.rtx.material;
+  in.texture_set = (uint32_t)((textures.ptr - srv_heap_->GetGPUDescriptorHandleForHeapStart().ptr) / srv_size_);
+  in.texture_heap = rtx_heap_generation_;
+  // The class: what rays may do with the surface. Blended or depth-less draws (glows, smoke,
+  // shields, particles) are translucent; an alpha compare that can fail cuts holes (foliage).
+  const uint32_t bm = dc.bp.blendmode(), zm = dc.bp.zmode(), at = dc.bp.alpha_test();
+  const bool blended = bits(bm, 0, 1) != 0;
+  const bool additive = blended && bits(bm, 5, 3) == 1;   // destination factor ONE
+  const bool writes_depth = bits(zm, 0, 1) && bits(zm, 4, 1);
+  const uint32_t comp0 = bits(at, 16, 3), comp1 = bits(at, 19, 3), logic = bits(at, 22, 2);
+  const bool alpha_always = logic == 0 ? (comp0 == 7 && comp1 == 7) : logic == 1 ? (comp0 == 7 || comp1 == 7) : false;
+  const RtxMaterial* material = dc.rtx.material >= 0 && (size_t)dc.rtx.material < frame.rtx.materials.size()
+                                    ? &frame.rtx.materials[(size_t)dc.rtx.material] : nullptr;
+  const bool xlu = material && (material->rendermode & (1u << 30));   // RENDER_XLU
+  const bool particle = dc.rtx.pass == MU_RTX_PASS_PARTICLES;
+  if (particle || blended || xlu || !writes_depth) in.cls = kRtxTranslucent;
+  else if (!alpha_always) in.cls = kRtxAlphaTested;
+  else in.cls = kRtxOpaque;
+  if (dc.skinned) in.flags |= kRtxGeometrySkinned;
+  if (dc.owner_player < 6) in.flags |= kRtxGeometryFighter;
+  if (particle) in.flags |= kRtxGeometryParticle;
+  if (additive) in.flags |= kRtxGeometryAdditive;
+  if (!(dc.components & VB_HAS_NRM0)) in.flags |= kRtxGeometryNoNormals;
+  rtx_scene_.add(in);
+}
+
+bool D3D12Backend::rtx_ensure_gbuffer() {
+  if (rtx_albedo_ && rtx_normal_ && rtx_id_) return true;
+  D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+  D3D12_RESOURCE_DESC rd{};
+  rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = efb_w_; rd.Height = efb_h_; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+  rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  const DXGI_FORMAT formats[3] = {kRtxAlbedoFormat, kRtxNormalFormat, kRtxIdFormat};
+  ComPtr<ID3D12Resource>* targets[3] = {&rtx_albedo_, &rtx_normal_, &rtx_id_};
+  for (UINT i = 0; i < 3; ++i) {
+    rd.Format = formats[i];
+    D3D12_CLEAR_VALUE cv{formats[i], {0, 0, 0, 0}};
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv,
+                                                IID_PPV_ARGS(targets[i]->ReleaseAndGetAddressOf())))) {
+      rtx_albedo_.Reset(); rtx_normal_.Reset(); rtx_id_.Reset();
+      host::log("rtx: the G-buffer could not be made (%dx%d)", efb_w_, efb_h_);
+      return false;
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += (kRtxGbufferRtv + i) * rtv_size_;
+    device_->CreateRenderTargetView(targets[i]->Get(), nullptr, h);
+  }
+  host::log("rtx: G-buffer %dx%d", efb_w_, efb_h_);
+  return true;
+}
+
+// Builds this present's acceleration structures from the draws recorded above. Called from
+// present_efb, after the scene's draws and before the upscaler.
+bool D3D12Backend::rtx_build_scene() {
+  static_assert(FRAME_SLOTS <= (int)RtxScene::kFrameSlots, "one scene slot per frame slot");
+  if (!rtx_capture_ || !dxr_list_ || !rtx_scene_.pending_draws()) return false;
+  // Descriptor slots this present needs are taken before the build: taking one can replace a full
+  // heap, and the build marks draws whose texture indices point into a replaced heap.
+  static const int debug_mode = [] { const char* v = std::getenv("MELEE_RTX_DEBUG"); return v ? std::atoi(v) : 0; }();
+  rtx_debug_reserved_ = debug_mode > 0 && rtx_tracer_.ready();
+  if (rtx_debug_reserved_) rtx_debug_uav_ = reserve_srvs(4);   // output UAV, then the G-buffer's three SRVs
+  std::string error;
+  const bool built = rtx_scene_.build(dxr_list_.Get(), (unsigned)slot_, rtx_view_to_world_,
+                                      rtx_heap_generation_, &error);
+  if (built && !rtx_logged_) {
+    host::log("rtx: scene built (%u geometries, %u triangles)", rtx_scene_.geometry_count((unsigned)slot_),
+              rtx_scene_.vertex_count((unsigned)slot_) / 3);
+    rtx_logged_ = true;
+  } else if (!built && !rtx_failure_logged_) {
+    host::log("rtx: scene build skipped: %s", error.c_str());
+    rtx_failure_logged_ = true;
+  }
+  if (frame_counter_ % 600 == 0 && rtx_scene_.stats().builds) {
+    const RtxScene::Stats& s = rtx_scene_.stats();
+    host::log("rtx: %llu scene builds, %.1f draws and %.0f triangles each, %.3f ms CPU to record",
+              (unsigned long long)s.builds, (double)s.draws / s.builds, (double)s.triangles / s.builds, s.record_ms / s.builds);
+  }
+  // The compute work changed the pipeline and root signature; the present blit sets its own, but
+  // the descriptor heaps it relies on are put back explicitly.
+  ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+  list_->SetDescriptorHeaps(2, heaps);
+  return built;
+}
+
+// The scene debug view (MELEE_RTX_DEBUG=1 draw colours, 2 normals, 3 textured vertex colour):
+// primary rays through the raster's projection, shown in place of the raster picture. Milestone F2's
+// gate compares its silhouettes with the raster's.
+ID3D12Resource* D3D12Backend::rtx_debug_view() {
+  static const int mode = [] { const char* v = std::getenv("MELEE_RTX_DEBUG"); return v ? std::atoi(v) : 0; }();
+  if (mode <= 0 || !rtx_debug_reserved_ || !rtx_have_camera_ || !rtx_scene_.tlas((unsigned)slot_)) {
+    static int logged = 0;
+    if (mode > 0 && logged++ < 3)
+      host::log("rtx: debug view not drawn (reserved %d, camera %d, scene %d, slot %d)", rtx_debug_reserved_ ? 1 : 0,
+                rtx_have_camera_ ? 1 : 0, rtx_scene_.tlas((unsigned)slot_) ? 1 : 0, slot_);
+    return nullptr;
+  }
+  {
+    static bool shown = false;
+    if (!shown) { host::log("rtx: debug view %d drawn (%ux%u)", mode, (unsigned)efb_w_, (unsigned)efb_h_); shown = true; }
+  }
+  ++rtx_debug_draws_;
+  RtxTracer::DebugInputs in;
+  const unsigned slot = (unsigned)slot_;
+  in.tlas = rtx_scene_.tlas(slot);
+  in.vertices = rtx_scene_.vertices(slot);
+  in.records = rtx_scene_.geometry_records(slot);
+  in.heap_start = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+  in.output_uav_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+  in.output_uav_cpu.ptr += (SIZE_T)rtx_debug_uav_ * srv_size_;
+  in.output_uav_gpu = in.heap_start;
+  in.output_uav_gpu.ptr += (UINT64)rtx_debug_uav_ * srv_size_;
+  in.gbuffer_srvs = in.output_uav_gpu;
+  in.gbuffer_srvs.ptr += srv_size_;
+  {
+    // The G-buffer, or null views of the right formats when this present has none.
+    ID3D12Resource* g[3] = {rtx_gbuffer_ ? rtx_albedo_.Get() : nullptr, rtx_gbuffer_ ? rtx_normal_.Get() : nullptr,
+                            rtx_gbuffer_ ? rtx_id_.Get() : nullptr};
+    const DXGI_FORMAT f[3] = {kRtxAlbedoFormat, kRtxNormalFormat, kRtxIdFormat};
+    for (UINT i = 0; i < 3; ++i) {
+      D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+      sd.Format = f[i]; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; sd.Texture2D.MipLevels = 1;
+      D3D12_CPU_DESCRIPTOR_HANDLE h = in.output_uav_cpu; h.ptr += (SIZE_T)(1 + i) * srv_size_;
+      device_->CreateShaderResourceView(g[i], &sd, h);
+    }
+  }
+  in.width = (uint32_t)efb_w_;
+  in.height = (uint32_t)efb_h_;
+  std::memcpy(in.view_to_world, rtx_view_to_world_, sizeof in.view_to_world);
+  if (!rtx_invert4x4(rtx_projection_, in.clip_to_view)) return nullptr;
+  in.viewport[0] = rtx_viewport_.TopLeftX; in.viewport[1] = rtx_viewport_.TopLeftY;
+  in.viewport[2] = rtx_viewport_.Width; in.viewport[3] = rtx_viewport_.Height;
+  in.orthographic = rtx_projection_[15] == 1.0f;
+  in.mode = (uint32_t)mode;
+  D3D12_RESOURCE_BARRIER gb[3]{};
+  if (rtx_gbuffer_) {
+    ID3D12Resource* g[3] = {rtx_albedo_.Get(), rtx_normal_.Get(), rtx_id_.Get()};
+    for (int i = 0; i < 3; ++i) {
+      gb[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      gb[i].Transition = {g[i], 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+    }
+    list_->ResourceBarrier(3, gb);
+  }
+  std::string error;
+  const bool drawn = rtx_tracer_.debug_view(dxr_list_.Get(), slot, in, &error);
+  if (rtx_gbuffer_) {
+    for (auto& b : gb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+    list_->ResourceBarrier(3, gb);
+  }
+  if (!drawn) {
+    static bool logged = false;
+    if (!logged) { host::log("rtx: debug view skipped: %s", error.c_str()); logged = true; }
+    return nullptr;
+  }
+  return rtx_tracer_.output(slot);
 }
 
 void D3D12Backend::clear_efb(const EfbCopy& c) {
@@ -2791,8 +3101,9 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
 
 void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   resolve_efb();
+  const bool rtx_built = rtx_build_scene();
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
-  ID3D12Resource* path_color = nullptr;
+  ID3D12Resource* path_color = rtx_built ? rtx_debug_view() : nullptr;
   if (opts_.path_tracing && dxr_scene && dxr_path_tracer_.ready()) {
     D3D12_RESOURCE_BARRIER to_trace{};
     to_trace.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -3578,6 +3889,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                 (unsigned long long)frame_counter_);
     }
   }
+  rtx_begin_present(frame);
   bind_efb_targets();
   if (dlss_active_) {
     D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
@@ -3585,6 +3897,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
     D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
     list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
+    if (rtx_gbuffer_ && rtx_albedo_) {
+      for (UINT i = 0; i < 3; ++i) {
+        D3D12_CPU_DESCRIPTOR_HANDLE g = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); g.ptr += (kRtxGbufferRtv + i) * rtv_size_;
+        list_->ClearRenderTargetView(g, zero, 0, nullptr);
+      }
+    }
     if (!xess_active() && !reflex_token_) streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
     // Prefer the fighter camera: TM-CE can submit its perspective HUD before the world.
@@ -3825,6 +4143,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     capture_sequence_ = frame.sequence;
     if (opts_.capture_sim_frame && !opts_.capture_frame && frame.sequence >= opts_.capture_sim_frame) opts_.capture_frame = frames_presented_;
     bool burst = opts_.capture_burst && opts_.capture_frame && frames_presented_ >= opts_.capture_frame && frames_presented_ < opts_.capture_frame + opts_.capture_burst;
+    if (frames_presented_ == opts_.capture_frame && (rtx_wanted() || rtx_capture_))
+      host::log("rtx: capture present: capture %d, scene %d, gbuffer %d, debug views so far %llu", rtx_capture_ ? 1 : 0,
+                rtx_scene_.tlas((unsigned)slot_) ? 1 : 0, rtx_gbuffer_ ? 1 : 0, (unsigned long long)rtx_debug_draws_);
+    if (frames_presented_ == opts_.capture_frame && (rtx_wanted() || rtx_capture_))
+      host::log("rtx: presents %llu, not in match %llu, skipped %llu, no semantics %llu, no cameras %llu, no main camera %llu, singular view %llu",
+                (unsigned long long)rtx_why_[0], (unsigned long long)rtx_why_[1], (unsigned long long)rtx_why_[2], (unsigned long long)rtx_why_[3],
+                (unsigned long long)rtx_why_[4], (unsigned long long)rtx_why_[5], (unsigned long long)rtx_why_[6]);
     if (frames_presented_ == opts_.capture_frame && !burst) capture_backbuffer();
     else if (burst || (opts_.capture_every && frames_presented_ % opts_.capture_every == 0)) {
       std::string saved = opts_.capture_path;
