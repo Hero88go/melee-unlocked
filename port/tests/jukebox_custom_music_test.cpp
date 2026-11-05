@@ -42,7 +42,7 @@ namespace host {
 const double tsc_seconds = 1.0;
 void sim_cost_add(int, double) {}
 void log(const char* format, ...) {
-  if (!std::getenv("MELEE_TEST_JUKEBOX_FILE")) return;
+
   va_list args;
   va_start(args, format);
   std::printf("  log: ");
@@ -98,7 +98,8 @@ int main() {
     }
   }
   bool heard = false;
-  for (int attempt = 0; attempt < (timed ? 4000 : 200) && !heard; ++attempt) {
+  // This checks decoding and mixing, not decoder startup speed under host load.
+  for (int attempt = 0; attempt < 4000 && !heard; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     int16_t samples[512]{};
     slippi::jukebox::mix(samples, 256, 1.0);
