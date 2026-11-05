@@ -127786,7 +127786,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..4043024d7 100644
+index 536bb3b2b..b726578c5 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -127999,16 +127999,128 @@ index 536bb3b2b..4043024d7 100644
      } else {
          OSReport("not found mirror image desc! "
                   "(GrdIzumi_cd_wt_GrdIzumiDummy1_1_image_desc)\n");
-@@ -738,7 +819,7 @@ HSD_GObj* grIzumi_801CCD98(void)
+@@ -738,7 +819,119 @@ HSD_GObj* grIzumi_801CCD98(void)
      return gobj;
  }
  
 -void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
++#ifdef MU_NATIVE
++/* The retail reflection has a 256x128 picture of the trees and towers. Draw
++ * their real models with the reflected camera when full reflections are on.
++ * Keep the reflection-only platform/fountain geometry and hide only that
++ * picture, for this draw alone. Unknown stage-skin layouts keep their artwork. */
++typedef struct MuFodScenery {
++    HSD_JObj* background;
++    HSD_DObj* panorama;
++    HSD_JObj* landmarks[16];
++    int count;
++} MuFodScenery;
++
++static int mu_fod_joint_uses_image(HSD_JObj* joint, void* image)
++{
++    HSD_DObj* dobj;
++    if (image == NULL || (joint->flags & (JOBJ_PTCL | JOBJ_SPLINE | JOBJ_INSTANCE)))
++        return 0;
++    for (dobj = joint->u.dobj; dobj != NULL; dobj = dobj->next) {
++        HSD_TObj* tex = dobj->mobj != NULL ? dobj->mobj->tobj : NULL;
++        for (; tex != NULL; tex = tex->next)
++            if (tex->imagedesc != NULL && DP(tex->imagedesc->image_ptr) == image)
++                return 1;
++    }
++    return 0;
++}
++
++static int mu_fod_scenery_plan(MuFodScenery* plan)
++{
++    UnkArchiveStruct* archive = grDatFiles_801C6330(3);
++    HSD_GObj* background = Ground_GetMapGObj(1);
++    HSD_GObj* mirror = Ground_GetMapGObj(2);
++    HSD_GObj* stage = Ground_GetMapGObj(3);
++    HSD_JObj* joint;
++    void* panorama;
++    void* column;
++    void* star;
++    plan->count = 0;
++    plan->panorama = NULL;
++    plan->background = NULL;
++    if (archive == NULL || background == NULL || mirror == NULL || stage == NULL ||
++        background->obj_kind != HSD_GObj_JObjKind || mirror->obj_kind != HSD_GObj_JObjKind ||
++        stage->obj_kind != HSD_GObj_JObjKind ||
++        background->hsd_obj == NULL || mirror->hsd_obj == NULL || stage->hsd_obj == NULL)
++        return 0;
++    panorama = HSD_ArchiveGetPublicAddress(archive->unk0, "GrdIzumiKyoumen1_CMPR_image");
++    column = HSD_ArchiveGetPublicAddress(archive->unk0, "GrdIzumiShrine1_CMPR_image");
++    star = HSD_ArchiveGetPublicAddress(archive->unk0, "GrdIzumiStar1_CMPR_image");
++    if (panorama == NULL || column == NULL || star == NULL)
++        return 0;
++    if (((HSD_JObj*) mirror->hsd_obj)->child == NULL ||
++        ((HSD_JObj*) stage->hsd_obj)->child == NULL) return 0;
++    for (joint = ((HSD_JObj*) mirror->hsd_obj)->child->child; joint != NULL; joint = joint->next) {
++        if (mu_fod_joint_uses_image(joint, panorama)) {
++            HSD_DObj* dobj;
++            for (dobj = joint->u.dobj; dobj != NULL; dobj = dobj->next) {
++                HSD_TObj* tex = dobj->mobj != NULL ? dobj->mobj->tobj : NULL;
++                for (; tex != NULL; tex = tex->next)
++                    if (tex->imagedesc != NULL && DP(tex->imagedesc->image_ptr) == panorama)
++                        plan->panorama = dobj;
++            }
++        }
++    }
++    for (joint = ((HSD_JObj*) stage->hsd_obj)->child->child; joint != NULL; joint = joint->next) {
++        if (mu_fod_joint_uses_image(joint, column) || mu_fod_joint_uses_image(joint, star)) {
++            if (plan->count == 16) return 0;
++            plan->landmarks[plan->count++] = joint;
++        }
++    }
++    plan->background = background->hsd_obj;
++    return plan->panorama != NULL && !(plan->panorama->flags & DOBJ_HIDDEN) &&
++           plan->count >= 3;
++}
++
++static void mu_fod_draw_scenery(const MuFodScenery* plan)
++{
++    int pass;
++    for (pass = 0; pass < 3; ++pass) {
++        int i;
++        u32 flags = HSD_GObj_80390EB8(pass);
++        HSD_StateInvalidate(-1);
++        HSD_JObjDispAll(plan->background, NULL, flags, 0);
++        for (i = 0; i < plan->count; ++i)
++            HSD_JObjDisp(plan->landmarks[i], NULL, flags, 0);
++    }
++}
++
++static void mu_fod_render_reflection_scene(HSD_GObj* camera, int hq)
++{
++    MuFodScenery scenery;
++    u32 panorama_flags = 0;
++    int live = hq && Camera_80030AC4() && mu_fod_scenery_plan(&scenery);
++    Camera_80031074(1);
++    if (live) {
++        panorama_flags = scenery.panorama->flags;
++        scenery.panorama->flags |= DOBJ_HIDDEN;
++        camera->gxlink_prios = 1;
++        HSD_GObj_80390ED0(camera, 3);
++        mu_fod_draw_scenery(&scenery);
++    }
++    camera->gxlink_prios = 0x25;
++    HSD_GObj_80390ED0(camera, 3);
++    Camera_80031074(0);
++    camera->gxlink_prios = 0x70;
++    HSD_GObj_80390ED0(camera, 7);
++    HSD_FogSet(0);
++    camera->gxlink_prios = 0x80;
++    HSD_GObj_80390ED0(camera, 7);
++    if (live)
++        scenery.panorama->flags = panorama_flags;
++}
++#endif
++
 +void grIzumi_801CCEA0(HSD_GObj* gobj, intptr_t renderpass)
  {
      Mtx mtx;
      Vec3 vec;
-@@ -751,6 +832,10 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+@@ -751,6 +944,10 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
  
      if (refl->image != NULL) {
          cobj = GET_COBJ(gobj);
@@ -128019,7 +128131,7 @@ index 536bb3b2b..4043024d7 100644
          ftDrawCommon_80081140();
          Camera_8002A4AC(Camera_80030A50());
  
-@@ -762,7 +847,21 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+@@ -762,7 +959,21 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
                  HSD_CObjSetNear(dst, HSD_CObjGetNear(src));
                  HSD_CObjSetFar(dst, HSD_CObjGetFar(src));
                  HSD_CObjSetFov(dst, HSD_CObjGetFov(src));
@@ -128041,7 +128153,21 @@ index 536bb3b2b..4043024d7 100644
                  HSD_CObjGetEyePosition(src, &vec);
                  vec.y = -vec.y;
                  HSD_CObjSetEyePosition(dst, &vec);
-@@ -788,10 +887,20 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+@@ -776,6 +987,9 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+             HSD_CObjEraseScreen(cobj, 1, 0, 0);
+             HSD_LObjDeleteCurrentAll(0);
+             Camera_800310A0(0);
++#ifdef MU_NATIVE
++            mu_fod_render_reflection_scene(gobj, ReflectCObjDesc.viewport.xmax != 80);
++#else
+             Camera_80031074(1);
+             gobj->gxlink_prios = 0x25;
+             HSD_GObj_80390ED0(gobj, 3);
+@@ -785,13 +999,24 @@ void grIzumi_801CCEA0(HSD_GObj* gobj, int renderpass)
+             HSD_FogSet(0);
+             gobj->gxlink_prios = 0x80;
+             HSD_GObj_80390ED0(gobj, 7);
++#endif
              HSD_CObjEndCurrent();
          }
          lb_800122C8(refl->image, 0, 0, 1);
@@ -128062,7 +128188,7 @@ index 536bb3b2b..4043024d7 100644
          ftDrawCommon_80081118();
      }
  }
-@@ -849,12 +958,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -849,12 +1074,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -128084,7 +128210,7 @@ index 536bb3b2b..4043024d7 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +996,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +1112,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }

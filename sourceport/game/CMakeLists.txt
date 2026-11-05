@@ -584,6 +584,8 @@ endfunction()
 mu_boundary_fixture(hud_nana "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_hud_scale.c" mu_live_fighter mu_nana_damage)
 mu_boundary_fixture(stage_item_link "${D}/src/melee/it/kinds/itwhitebea.c" mu_whitebea_block_alive mu_whitebea_validate_block)
 mu_boundary_fixture(envelope_ready "${D}/src/sysdolphin/baselib/pobj.c" PObjNativeEnvelopeReady)
+mu_boundary_fixture(fod_scenery "${D}/src/melee/gr/grizumi.c"
+  mu_fod_joint_uses_image mu_fod_scenery_plan mu_fod_draw_scenery mu_fod_render_reflection_scene)
 
 add_test(NAME native_collision_geometry
   COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/check_collision_geometry.py" "${D}/src/melee/lb/lbcollision.c")

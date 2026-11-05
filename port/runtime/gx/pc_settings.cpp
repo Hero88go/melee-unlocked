@@ -9093,7 +9093,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
          "Shown hitboxes carry a line along their knockback angle."},
         {MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS, "Full Fountain of Dreams reflections",
          "With Fountain of Dreams reflections on: the reflection at full resolution with full\n"
-         "models. Applies from the next match on the stage."},
+         "fighter models and live background scenery. Applies from the next match on the stage.\n"
+         "Stage skins with a different reflection layout keep their own background artwork."},
       };
       for (const Code& c : kCodes) {
         bool on = (options.community_codes & c.bit) != 0;

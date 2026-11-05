@@ -1141,6 +1141,14 @@ target_compile_definitions(port_lab_view_test PRIVATE NOMINMAX _CRT_SECURE_NO_WA
 add_test(NAME port_lab_view COMMAND port_lab_view_test)
 set_tests_properties(port_lab_view PROPERTIES TIMEOUT 30)
 
+add_executable(port_coming_soon_overlay_test tests/coming_soon_overlay_test.cpp runtime/gx/coming_soon_overlay.cpp
+  third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
+target_include_directories(port_coming_soon_overlay_test PRIVATE runtime/gx third_party/imgui)
+target_compile_features(port_coming_soon_overlay_test PRIVATE cxx_std_17)
+add_test(NAME port_coming_soon_overlay COMMAND port_coming_soon_overlay_test)
+set_tests_properties(port_coming_soon_overlay PROPERTIES TIMEOUT 10)
+
 # NVIDIA Streamline (DLSS): optional, enabled only when the headers, import library, and core
 # redistributable DLLs are all present. A source archive may intentionally omit proprietary runtime
 # binaries; that must produce a normal non-Streamline build rather than a post-link copy failure.

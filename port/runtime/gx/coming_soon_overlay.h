@@ -10,7 +10,7 @@ namespace coming_soon_overlay {
 // The online menu's first page is on screen this frame. Game thread.
 void showing();
 // UI thread, once per presented frame: draws the stickers while the page is showing. The game
-// picture is the rectangle x0,y0 to x1,y1 in the window.
+// picture is the rectangle x0,y0 to x1,y1 in the window. Badges stay below settings and dialogs.
 void draw(float x0, float y0, float x1, float y1);
 
 }  // namespace coming_soon_overlay
