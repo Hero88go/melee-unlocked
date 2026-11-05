@@ -395,8 +395,15 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
     if (!all.count(*it)) it = used.erase(it);
     else ++it;
   }
-  // Coverage describes appearance; it is not a gameplay-equivalence test.
-  // The proof above decides whether the online form can be served.
+  // Gameplay equivalence alone cannot establish that this is a usable skin.
+  // Dropping unmatched geometry produced invisible floors/scenery online. Keep
+  // the standard stage when this conversion cannot retain every skin mesh.
+  // Offline the caller still serves the original, unconverted skin.
+  if (used.size() != all.size()) {
+    *note = "incomplete visual conversion (" + std::to_string(used.size()) + " of the skin's " +
+            std::to_string(all.size()) + " meshes retained); using the standard stage online";
+    return false;
+  }
   *out = std::move(file);
   *note = std::to_string(shown) + " joints show the skin, " + std::to_string(hidden) + " the skin removed, " +
           std::to_string(kept) + " keep the original mesh; " + std::to_string(used.size()) + " of the skin's " +

@@ -17,7 +17,9 @@ with a single effect choice per DAT migrate that choice to its move slot.
 Stage replacements are checked against the exact ISO. Texture-only replacements and supported
 model replacements with matching gameplay data can remain active online. The model check preserves
 collision, platform transforms, stage parameters, and animation data. Unsupported archive layouts
-and replacements that change gameplay remain available offline. Online
+and replacements that change gameplay remain available offline. A conversion must retain every
+mesh in the skin: incomplete conversions use the standard stage online and show the retained mesh
+count in the Mods tab, rather than displaying missing geometry. Online
 disc reads for those stage slots use the clean resource. Profile changes are frozen while an online
 search or match is active, and all changes require a restart to affect the running asset snapshot.
 

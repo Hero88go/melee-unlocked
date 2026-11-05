@@ -1791,6 +1791,8 @@ bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vect
 // The full sentence stays in the log.
 std::string online_reason_short(const std::string& detail) {
   if (detail.empty()) return "the standard file could not be read";
+  const size_t incomplete = detail.rfind("incomplete visual conversion (");
+  if (incomplete != std::string::npos) return detail.substr(incomplete);
   if (detail.find("joints match") != std::string::npos) return detail;
   // "Skeleton joint 12 ... (moved)." names the bone, so a player knows which one to put back, and
   // the bracket (what changed, or the two joint counts) is carried over as written.

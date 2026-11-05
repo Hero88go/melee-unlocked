@@ -233,6 +233,9 @@ bool presenter_self_test(SDL_Window* window, const std::filesystem::path& cache)
   auto stats = presenter_stats(*backend);
   stats.simulation -= baseline.simulation; stats.presentation -= baseline.presentation;
   stats.subframes -= baseline.subframes; stats.posed -= baseline.posed;
+  std::fprintf(stderr, "Linux presenter test counts: %llu source, %llu display, %llu subframes, %llu re-posed draws\n",
+    static_cast<unsigned long long>(stats.simulation), static_cast<unsigned long long>(stats.presentation),
+    static_cast<unsigned long long>(stats.subframes), static_cast<unsigned long long>(stats.posed));
   if (stats.simulation != 8 || stats.presentation <= stats.simulation || !stats.subframes || !stats.posed)
     throw std::runtime_error("Linux authored presenter self-test did not produce sampled subframes");
   std::fprintf(stderr, "Linux authored presenter self-test: %llu source, %llu display, %llu re-posed draws\n",

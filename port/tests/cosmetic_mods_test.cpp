@@ -675,6 +675,9 @@ int main(int argc, char** argv) {
     check(costume_draw_safe(envelope_dat(true), &why), "costume mesh: blended bones with bind matrices are drawn");
     // A stage's models are drawn by the same code: the same defect in a stage file is refused too.
     using host::cosmetics::stage_draw_safe;
+    check(online_reason_short("stage joint hierarchy differs; incomplete visual conversion (19 of the skin's 54 meshes retained); using the standard stage online") ==
+              "incomplete visual conversion (19 of the skin's 54 meshes retained); using the standard stage online",
+          "stage conversion: missing geometry is explained in the Mods tab");
     check(stage_draw_safe(envelope_dat(true, 0.5f, true), &why), "stage mesh: blended bones with bind matrices are drawn");
     check(!stage_draw_safe(envelope_dat(false, 0.5f, true), &why) && why.find("no bind matrix") != std::string::npos,
           "stage mesh: a blended bone without a bind matrix is refused");

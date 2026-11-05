@@ -112,9 +112,9 @@ int main(int argc,char** argv) {
     std::vector<uint8_t> out; std::string note;
     const bool grafted=graft_visuals(clean,skin,&out,&note);
     reason=note;
-    check(grafted,"appearance coverage alone does not disable a gameplay-safe skin");
-    check(note.find("1 of the skin's 2 meshes")!=std::string::npos,"partial coverage remains accurately reported");
-    check(matches(clean,out,&reason),"partial visual coverage still requires full gameplay equivalence");
+    check(!grafted,"a conversion missing skin geometry is refused");
+    check(note.find("1 of the skin's 2 meshes")!=std::string::npos,"missing geometry is explained");
+    check(out.empty(),"an incomplete skin cannot be served online");
   }
   {
     // Append one draw-only sibling without moving any original joint or gameplay object.
