@@ -567,6 +567,24 @@ target_include_directories(mu_sis_state_stack_test PRIVATE "${CMAKE_CURRENT_BINA
 target_compile_options(mu_sis_state_stack_test PRIVATE -UNDEBUG)
 add_test(NAME native_sis_state_stack COMMAND mu_sis_state_stack_test)
 
+function(mu_boundary_fixture name source)
+  set(bodies)
+  foreach(fn IN LISTS ARGN)
+    set(body "${CMAKE_CURRENT_BINARY_DIR}/${fn}_body.h")
+    add_custom_command(OUTPUT "${body}"
+      COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/native_major_fixture.py" "${source}" "${body}" --function "${fn}"
+      DEPENDS "${source}" "${REPO}/tools/native_major_fixture.py" VERBATIM)
+    list(APPEND bodies "${body}")
+  endforeach()
+  add_executable(mu_${name}_test EXCLUDE_FROM_ALL tests/${name}.c ${bodies})
+  target_include_directories(mu_${name}_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_compile_options(mu_${name}_test PRIVATE -UNDEBUG)
+  add_test(NAME native_${name} COMMAND mu_${name}_test)
+endfunction()
+mu_boundary_fixture(hud_nana "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_hud_scale.c" mu_live_fighter mu_nana_damage)
+mu_boundary_fixture(stage_item_link "${D}/src/melee/it/kinds/itwhitebea.c" mu_whitebea_block_alive mu_whitebea_validate_block)
+mu_boundary_fixture(envelope_ready "${D}/src/sysdolphin/baselib/pobj.c" PObjNativeEnvelopeReady)
+
 # Build every registered executable fixture, including normally excluded targets, before CTest.
 get_property(MU_GAME_DIRECTORY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 set(MU_GAME_TEST_TARGETS)

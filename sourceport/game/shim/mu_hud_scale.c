@@ -98,6 +98,15 @@ static int mu_live_fighter(const HSD_GObj* gobj)
     return 0;
 }
 
+static int mu_nana_damage(int slot)
+{
+    HSD_GObj* gobj = Player_GetEntityAtIndex(slot, 1);
+    Fighter* fp = mu_live_fighter(gobj) ? gobj->user_data : NULL;
+    /* transformed[1] can alias the main fighter for non-Climbers. It is not proof of a partner. */
+    return fp != NULL && fp->kind == Ft_Kind_Nana && fp->is_sub_fighter && fp->player_idx == slot
+               ? (int) fp->dmg.x1830_percent : -1;
+}
+
 void mu_hud_report(void)
 {
     int slot;
@@ -124,9 +133,7 @@ void mu_hud_report(void)
         }
         /* The community codes' overlays (Nana's percent, the teammate marker): read only. */
         {
-            HSD_GObj* nana = present ? Player_GetEntityAtIndex(slot, 1) : NULL;
-            Fighter* np = mu_live_fighter(nana) ? nana->user_data : NULL;
-            mu_hud_extras_abi(slot, np != NULL ? (int) np->dmg.x1830_percent : -1,
+            mu_hud_extras_abi(slot, present ? mu_nana_damage(slot) : -1,
                               present && gm_8016B168() ? Player_GetTeam(slot) : -1);
         }
     }

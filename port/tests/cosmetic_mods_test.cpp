@@ -1690,6 +1690,12 @@ int main(int argc, char** argv) {
     check(pick.ok && host::cosmetics::applied_asset(retail_at).empty(), "random never chooses a malformed stage table");
     check(!host::cosmetics::assets().empty(), "the rejected random skin remains listed for explicit selection");
     host::cosmetics::set_random_stage_skins(false, &error);
+    const auto malformed_assets = host::cosmetics::assets();
+    check(host::cosmetics::select_variant("GrNBa.dat", malformed_assets.front().id, &error),
+          "a malformed skin's existing selection can be loaded");
+    const auto fixed_pick = host::cosmetics::republish_stage(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat");
+    check(fixed_pick.ok && host::cosmetics::applied_asset(retail_at).empty(),
+          "an explicitly selected malformed stage also serves the standard stage");
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 

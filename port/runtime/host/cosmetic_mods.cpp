@@ -5631,12 +5631,22 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
       bool online_allowed = true;
       std::string online_reason;   // kept for the Mods tab: the verdict is never only in the log
       if (asset->info.kind == "stage_visual") {
+        // A selected skin needs readable gameplay tables offline too. An old explicit selection
+        // bypassed the random picker check and reached Ground's missing-lightset assertion.
         std::vector<uint8_t> clean(disc_file.size);
+        const bool clean_read = host::disc_read(disc_file.start, clean.data(), disc_file.size);
+        stage_safety::Archive original{clean}, readable{served};
+        if (clean_read && original.parse() && !readable.parse()) {
+          host::log("cosmetics: stage %s rejected: malformed stage tables; using the standard stage",
+                    disc_file.path.c_str());
+          runtime_errors.push_back(asset->info.name + ": malformed stage tables; using the standard stage.");
+          continue;
+        }
         std::string validation_error;
         // A skin that does not match the original as it is: offline it is served as it is, and
         // online (and in replays) its meshes drawn over the original stage (stage_online_form). The
         // two are given one length, the longer one's, since the game is told one length per file.
-        online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
+        online_allowed = clean_read &&
                          stage_online_form(clean, served, &online_form, &validation_error, disc_file.path);
         // The English twin of a skin made from the .dat: the skin carries the Japanese text (the two
         // files differ only in their SIS text, the Stadium jumbotron's). When the skin drawn over the

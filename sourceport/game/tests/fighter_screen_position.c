@@ -4,11 +4,12 @@
 #include <stddef.h>
 
 typedef struct { float x, y, z; } Vec3;
-typedef struct HSD_GObj { struct HSD_GObj* next; void* user_data; void* hsd_obj; } HSD_GObj;
+typedef struct HSD_GObj { struct HSD_GObj* next; void* user_data; void* hsd_obj; int obj_kind; } HSD_GObj;
+static int HSD_GObj_CameraKind = 3;
 enum { Gm_Player_NumMax = 6, Gm_PKind_NA = 3, HSD_GOBJ_PLINK_FIGHTER = 8 };
 static HSD_GObj fighter, other, camera;
 static HSD_GObj* active;
-static HSD_GObj* heads[16];
+static HSD_GObj* heads[32];
 static HSD_GObj** HSD_GObjPLinkHead = heads;
 static int kind, state, stocks, coordinate_reads, height_reads, projections;
 static Vec3 position;
@@ -35,6 +36,7 @@ static void reset(void)
     fighter = (HSD_GObj){0}; other = (HSD_GObj){0}; camera = (HSD_GObj){0};
     fighter.user_data = &fighter; camera.user_data = &camera; camera.hsd_obj = &camera;
     active = &fighter; HSD_GObjPLinkHead = heads; heads[HSD_GOBJ_PLINK_FIGHTER] = &fighter;
+    heads[0x12] = &camera; camera.obj_kind = HSD_GObj_CameraKind;
     kind = 0; state = 1; stocks = 4; position = (Vec3){10, 20, 0};
     coordinate_reads = height_reads = projections = 0;
 }
@@ -58,6 +60,8 @@ int main(void)
     reset(); stocks = 0; hidden(0);
     reset(); camera.user_data = NULL; hidden(0);
     reset(); camera.hsd_obj = NULL; hidden(0);
+    reset(); heads[0x12] = NULL; camera.hsd_obj = (void*)1; hidden(0);
+    reset(); camera.obj_kind = 0; camera.hsd_obj = (void*)1; hidden(0);
     reset(); hidden(-1); hidden(Gm_Player_NumMax);
     reset(); position.x = NAN; hidden(0);
     reset(); position.y = INFINITY; hidden(0);
