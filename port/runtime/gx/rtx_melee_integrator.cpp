@@ -16,7 +16,7 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-enum Root : UINT { kFrame = 0, kScene, kLights, kDrawTable, kRecords, kInputs, kOutputs, kRootCount };
+enum Root : UINT { kFrame = 0, kScene, kLights, kDrawTable, kRecords, kInputs, kOutputs, kVertices, kTextures, kRootCount };
 
 struct FrameConstants {        // cbuffer Frame in rtx_direct.hlsl
   float view_to_world[12];
@@ -29,14 +29,20 @@ struct FrameConstants {        // cbuffer Frame in rtx_direct.hlsl
   uint32_t orthographic;
   float ao_radius;
   float light_scale;
+  uint32_t main_light_count;
+  float look;
+  uint32_t switches;          // 1 shadows, 2 ambient occlusion, 4 fighters' shadows on baked stages
+  uint32_t still_frames;      // photo mode
 };
-static_assert(sizeof(FrameConstants) == 160, "Frame layout");
+static_assert(sizeof(FrameConstants) == 176, "Frame layout");
 
 constexpr DXGI_FORMAT kOutputFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr D3D12_RESOURCE_STATES kShaderRead =
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 constexpr unsigned kSlots = 3;
 constexpr UINT kInputCount = 6;   // G-buffer albedo, normal + depth, id; raster; overlay; transmittance
+constexpr UINT kOutputCount = 5;  // colour; Ray Reconstruction's diffuse albedo, specular albedo, normal + roughness; photo-mode accumulation
+constexpr UINT kSlotTargets = 4;  // the per-slot ones (the accumulation is one, kept across presents)
 
 bool read_binary(const std::wstring& path, std::vector<uint8_t>& out) {
   std::ifstream file(std::filesystem::path(path), std::ios::binary | std::ios::ate);
@@ -61,7 +67,7 @@ class MeleeIntegrator final : public RtxIntegrator {
       return false;
     }
     D3D12_DESCRIPTOR_RANGE inputs{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kInputCount, 4, 0, 0};   // t4..t9
-    D3D12_DESCRIPTOR_RANGE outputs{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};   // u0
+    D3D12_DESCRIPTOR_RANGE outputs{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kOutputCount, 0, 0, 0};   // u0 colour, u1..u3 RR guides
     D3D12_ROOT_PARAMETER p[kRootCount]{};
     p[kFrame].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     p[kFrame].Descriptor = {0, 0};
@@ -75,10 +81,24 @@ class MeleeIntegrator final : public RtxIntegrator {
     p[kInputs].DescriptorTable = {1, &inputs};
     p[kOutputs].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     p[kOutputs].DescriptorTable = {1, &outputs};
+    // Surfaces rays hit: the scene's vertices and every texture in the renderer's heap.
+    p[kVertices].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    p[kVertices].Descriptor = {10, 0};
+    D3D12_DESCRIPTOR_RANGE textures{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 1, 0};
+    p[kTextures].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    p[kTextures].DescriptorTable = {1, &textures};
     for (auto& x : p) x.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_STATIC_SAMPLER_DESC sampler{};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_ROOT_SIGNATURE_DESC rd{};
     rd.NumParameters = kRootCount;
     rd.pParameters = p;
+    rd.NumStaticSamplers = 1;
+    rd.pStaticSamplers = &sampler;
     ComPtr<ID3DBlob> blob, diag;
     if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &diag)) ||
         FAILED(device_->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root_)))) {
@@ -98,9 +118,9 @@ class MeleeIntegrator final : public RtxIntegrator {
 
   bool render(const RtxFrameInputs& in, RtxFrameOutputs* out, std::string* error) override {
     if (error) error->clear();
-    if (!pso_ || !in.list || in.slot >= kSlots || !in.tlas || !in.lights || !in.draws || !in.records ||
+    if (!pso_ || !in.list || in.slot >= kSlots || !in.tlas || !in.lights || !in.draws || !in.records || !in.vertices ||
         !in.albedo || !in.normal_depth || !in.draw_id || !in.raster_color || !in.overlay || !in.transmittance || !in.heap ||
-        in.free_slot_count < kInputCount + 1 ||
+        in.free_slot_count < kInputCount + kOutputCount ||
         !in.width || !in.height) {
       if (error) *error = "direct-light inputs are incomplete";
       return false;
@@ -120,24 +140,40 @@ class MeleeIntegrator final : public RtxIntegrator {
         return false;
       }
     }
-    if (!s.output || s.output->GetDesc().Width != in.width || s.output->GetDesc().Height != in.height) {
-      s.output.Reset();
-      s.shader_read = false;
+    if (!accum_ || accum_->GetDesc().Width != in.width || accum_->GetDesc().Height != in.height) {
+      accum_.Reset();
       D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
       D3D12_RESOURCE_DESC d{};
       d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width = in.width; d.Height = in.height; d.DepthOrArraySize = 1;
       d.MipLevels = 1; d.Format = kOutputFormat; d.SampleDesc.Count = 1; d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
       if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                                  IID_PPV_ARGS(&s.output)))) {
-        if (error) *error = "direct-light output could not be made";
+                                                  IID_PPV_ARGS(&accum_)))) {
+        if (error) *error = "photo-mode accumulation could not be made";
         return false;
       }
     }
+    if (!s.targets[0] || s.targets[0]->GetDesc().Width != in.width || s.targets[0]->GetDesc().Height != in.height) {
+      for (auto& t : s.targets) t.Reset();
+      s.shader_read = false;
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC d{};
+      d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width = in.width; d.Height = in.height; d.DepthOrArraySize = 1;
+      d.MipLevels = 1; d.Format = kOutputFormat; d.SampleDesc.Count = 1; d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      for (auto& t : s.targets)
+        if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                    IID_PPV_ARGS(&t)))) {
+          for (auto& x : s.targets) x.Reset();
+          if (error) *error = "direct-light outputs could not be made";
+          return false;
+        }
+    }
     if (s.shader_read) {
-      D3D12_RESOURCE_BARRIER b{};
-      b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      b.Transition = {s.output.Get(), 0, kShaderRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
-      in.list->ResourceBarrier(1, &b);
+      D3D12_RESOURCE_BARRIER b[kSlotTargets]{};
+      for (UINT i = 0; i < kSlotTargets; ++i) {
+        b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[i].Transition = {s.targets[i].Get(), 0, kShaderRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+      }
+      in.list->ResourceBarrier(kSlotTargets, b);
       s.shader_read = false;
     }
 
@@ -157,7 +193,11 @@ class MeleeIntegrator final : public RtxIntegrator {
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
     uav.Format = kOutputFormat;
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device_->CreateUnorderedAccessView(s.output.Get(), nullptr, &uav, uav_cpu);
+    for (UINT i = 0; i < kOutputCount; ++i) {
+      D3D12_CPU_DESCRIPTOR_HANDLE h = uav_cpu;
+      h.ptr += (SIZE_T)i * in.descriptor_size;
+      device_->CreateUnorderedAccessView(i < kSlotTargets ? s.targets[i].Get() : accum_.Get(), nullptr, &uav, h);
+    }
     D3D12_GPU_DESCRIPTOR_HANDLE uav_gpu = gpu;
     uav_gpu.ptr += (UINT64)kInputCount * in.descriptor_size;
 
@@ -175,6 +215,11 @@ class MeleeIntegrator final : public RtxIntegrator {
     // neighbouring building black.
     k.ao_radius = 8.0f;
     k.light_scale = in.light_scale;
+    k.main_light_count = in.main_light_count;
+    k.look = in.look;
+    k.still_frames = in.still_frames;
+    k.switches = (in.shadows ? 1u : 0u) | (in.ambient_occlusion ? 2u : 0u) | (in.fighter_shadows ? 4u : 0u) |
+                 (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u);
     std::memcpy(s.constants_cpu, &k, sizeof k);
 
     in.list->SetComputeRootSignature(root_.Get());
@@ -186,28 +231,39 @@ class MeleeIntegrator final : public RtxIntegrator {
     in.list->SetComputeRootShaderResourceView(kRecords, in.records->GetGPUVirtualAddress());
     in.list->SetComputeRootDescriptorTable(kInputs, gpu);
     in.list->SetComputeRootDescriptorTable(kOutputs, uav_gpu);
+    in.list->SetComputeRootShaderResourceView(kVertices, in.vertices->GetGPUVirtualAddress());
+    in.list->SetComputeRootDescriptorTable(kTextures, in.heap->GetGPUDescriptorHandleForHeapStart());
     in.list->Dispatch((in.width + 7) / 8, (in.height + 7) / 8, 1);
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition = {s.output.Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kShaderRead};
-    in.list->ResourceBarrier(1, &b);
+    D3D12_RESOURCE_BARRIER b[kSlotTargets + 1]{};
+    for (UINT i = 0; i < kSlotTargets; ++i) {
+      b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      b[i].Transition = {s.targets[i].Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kShaderRead};
+    }
+    b[kSlotTargets].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;   // next present reads what this one wrote
+    b[kSlotTargets].UAV.pResource = accum_.Get();
+    in.list->ResourceBarrier(kSlotTargets + 1, b);
     s.shader_read = true;
     if (out) {
       *out = {};
-      out->color = s.output.Get();
+      out->color = s.targets[0].Get();
+      out->diffuse_albedo = s.targets[1].Get();
+      out->specular_albedo = s.targets[2].Get();
+      out->normal_roughness = s.targets[3].Get();
     }
     return true;
   }
 
  private:
   struct Slot {
-    ComPtr<ID3D12Resource> output, constants;
+    ComPtr<ID3D12Resource> targets[kSlotTargets];   // colour, then the three guides
+    ComPtr<ID3D12Resource> constants;
     uint8_t* constants_cpu = nullptr;
     bool shader_read = false;
   };
   ComPtr<ID3D12Device5> device_;
   ComPtr<ID3D12RootSignature> root_;
   ComPtr<ID3D12PipelineState> pso_;
+  ComPtr<ID3D12Resource> accum_;   // photo mode
   Slot slots_[kSlots];
 };
 

@@ -28,7 +28,8 @@ struct RtxLightRecord {
   float radiance[3];          // linear RGB of the game's colour (0..1 per channel before any scale)
   float radius;               // soft-shadow size: sphere radius (point, spot) or angular radius (directional)
   float attenuation[3];       // GX distance attenuation k0 + k1 d + k2 d^2 (point, spot)
-  uint32_t flags;             // HSD_LObj flags (LOBJ_DIFFUSE 0x4, LOBJ_SPECULAR 0x8)
+  uint32_t flags;             // HSD_LObj flags (LOBJ_DIFFUSE 0x4, LOBJ_SPECULAR 0x8) in the low 24 bits; the GX
+                              // light slot HSD loaded it into for diffuse light in bits 24-31 (0xFF none)
 };
 static_assert(sizeof(RtxLightRecord) == 64, "light record layout");
 
@@ -43,7 +44,8 @@ void rtx_build_lights(const RtxFrameSemantics& semantics, int set, std::vector<R
 // The surface response the integrators use for an HSD material: specular colour (RGBA8, r in the low
 // byte) and perceptual roughness. RENDER_SPECULAR gives the material's specular colour and a
 // roughness from its shininess; a reflection-mapped texture (TEX_COORD_REFLECTION) makes the surface
-// glossy, its fake reflection replaced by a traced one; everything else is a rough dielectric.
+// glossy, reflecting in its own colour: its specular colour is then a tint (sRGB) the integrators
+// multiply by the albedo; everything else is a rough dielectric.
 void rtx_material_params(const RtxMaterial* material, uint32_t* specular_rgba, float* roughness);
 
 // GXInitLightDistAttn: the k coefficients for a reference distance and brightness and a falloff kind

@@ -95,6 +95,9 @@ bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList* list, const RayRecon
 // thread. Frame generation needs the upscaler running (it reuses DLSS's depth and motion vectors)
 // and always runs with Reflex on, as NVIDIA requires.
 bool frame_generation_available();
+// Frame generation's UI layer for this frame (colour premultiplied by alpha, window size), read at
+// Present: generated frames take the HUD from it instead of interpolating it.
+void tag_frame_generation_ui(ID3D12GraphicsCommandList* list, ID3D12Resource* ui, uint32_t state, uint32_t width, uint32_t height);
 bool reflex_available();
 void frame_generation_after_present(); // query asynchronous DLSS-G state on the presenting thread
 // Maximum inserted-frame count reported by the driver (1 means 2x, 5 means 6x). It is 1 until

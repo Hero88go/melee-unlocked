@@ -73,6 +73,7 @@ bool set_constants(const FrameConstants&) { return false; }
 bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false; }
 bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList*, const RayReconstructionInputs&) { return false; }
 bool frame_generation_available() { return false; }
+void tag_frame_generation_ui(ID3D12GraphicsCommandList*, ID3D12Resource*, uint32_t, uint32_t, uint32_t) {}
 void frame_generation_after_present() {}
 bool reflex_available() { return false; }
 uint32_t frame_generation_max_multiplier() { return 1; }
@@ -480,6 +481,15 @@ bool set_constants(const FrameConstants& c) {
 }
 
 bool frame_generation_available() { return g_ready && g_fg_ok; }
+void tag_frame_generation_ui(ID3D12GraphicsCommandList* list, ID3D12Resource* ui, uint32_t state, uint32_t width, uint32_t height) {
+  if (!frame_generation_available() || !g_token || !list || !ui) return;
+  sl::Resource resource(sl::ResourceType::eTex2d, ui, state);
+  sl::Extent extent{0, 0, width, height};
+  sl::ResourceTag tag(&resource, sl::kBufferTypeUIColorAndAlpha, sl::ResourceLifecycle::eValidUntilPresent, &extent);
+  const sl::Result result = driver_call([&] { return slSetTagForFrame(*g_token, g_viewport, &tag, 1, list); });
+  static bool logged = false;
+  if (!logged) { logged = true; host::log("dlss-g: HUD handed to frame generation as its UI layer (%d)", (int)result); }
+}
 bool reflex_available() { return g_ready && g_reflex_ok; }
 std::atomic<float> g_latency_ms{0.0f};
 void set_reflex(int mode, uint32_t frame_limit_us) {

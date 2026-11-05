@@ -2373,6 +2373,19 @@ void load_pc_settings(RenderOptions& options, int& volume) {
         options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
       else if (key == "rayreconstruction")
         options.ray_reconstruction = RenderOptions::kPathTracingAvailable && value == "1";
+      else if (key == "rtxlook") { int n = std::stoi(value); if (n >= 0 && n <= 100) options.rtx_look = n; }
+      else if (key == "rtxshadows") options.rtx_shadows = value == "1";
+      else if (key == "rtxao") options.rtx_ao = value == "1";
+      else if (key == "rtxfightershadows") options.rtx_fighter_shadows = value == "1";
+      else if (key == "rtxbounce") options.rtx_bounce = value == "1";
+      else if (key == "rtxreflections") options.rtx_reflections = value == "1";
+      else if (key == "rtxskin") options.rtx_skin = value == "1";
+      else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
+      else if (key == "rtxradiancecache") options.rtx_radiance_cache = value == "1";
+      else if (key == "hdroutput") options.hdr_output = value == "1";
+      else if (key == "hdrpaperwhite") { int n = std::stoi(value); if (n >= 80 && n <= 500) options.hdr_paper_white = n; }
+      else if (key == "hdrpeak") { int n = std::stoi(value); if (n >= 0 && n <= 10000) options.hdr_peak = n; }
+      else if (key == "rtxintegrator") { int n = std::stoi(value); if (n >= 0 && n <= 1) options.rtx_integrator = n; }
 #ifdef GX_DLSS5
       else if (key == "dlss5") options.dlss5 = value == "1";
       else if (key == "dlss5intensity") dlss5_float(value, options.dlss5_tuning.intensity, 0.0f, 10.0f);
@@ -3427,7 +3440,11 @@ struct PcSettingsUI::Impl {
   SettingsState state;
 };
 
-PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options)
+namespace { float g_settings_hdr_nits = 0.0f; }
+void PcSettingsUI::set_hdr_paper_white(float nits) { g_settings_hdr_nits = nits; }
+
+PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options,
+                           int rtv_format)
     : impl_(std::make_unique<Impl>()) {
   auto& state = *impl_;
   const bool open = options.settings_open || settings_fills_window();
@@ -3443,7 +3460,7 @@ PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueu
   if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&state.heap)))) host::die("PC settings descriptor heap creation failed");
   state.stride = device->GetDescriptorHandleIncrementSize(desc.Type);
   ImGui_ImplDX12_InitInfo info{}; info.Device = device; info.CommandQueue = queue; info.NumFramesInFlight = 3;
-  info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; info.DSVFormat = DXGI_FORMAT_UNKNOWN;
+  info.RTVFormat = (DXGI_FORMAT)rtv_format; info.DSVFormat = DXGI_FORMAT_UNKNOWN;
   info.SrvDescriptorHeap = state.heap.Get(); info.UserData = &state;
   info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* i, D3D12_CPU_DESCRIPTOR_HANDLE* cpu, D3D12_GPU_DESCRIPTOR_HANDLE* gpu) {
     auto& s = *(Impl*)i->UserData;
@@ -4240,6 +4257,14 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nlagtestnext " << (options.lossless_lag_test ? 1 : 0)
        << "\npathtracing " << (options.path_tracing ? 1 : 0)
        << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
+       << "\nrtxlook " << options.rtx_look << "\nrtxshadows " << (options.rtx_shadows ? 1 : 0)
+       << "\nrtxao " << (options.rtx_ao ? 1 : 0) << "\nrtxfightershadows " << (options.rtx_fighter_shadows ? 1 : 0)
+       << "\nrtxintegrator " << options.rtx_integrator
+       << "\nrtxbounce " << (options.rtx_bounce ? 1 : 0) << "\nrtxreflections " << (options.rtx_reflections ? 1 : 0)
+       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
+       << "\nrtxradiancecache " << (options.rtx_radiance_cache ? 1 : 0)
+       << "\nhdroutput " << (options.hdr_output ? 1 : 0) << "\nhdrpaperwhite " << options.hdr_paper_white
+       << "\nhdrpeak " << options.hdr_peak
 #ifdef GX_DLSS5
        << "\ndlss5 " << (options.dlss5 ? 1 : 0) << "\ndlss5intensity " << options.dlss5_tuning.intensity
        << "\ndlss5detail " << options.dlss5_tuning.detail << "\ndlss5tone " << options.dlss5_tuning.tone
@@ -6693,14 +6718,101 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       // The flash indicator for latency analyzers is under Advanced, at the bottom of this tab.
     }
     if (d3d11) { ImGui::EndDisabled(); settings_hint("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
-    // DXR path tracing: its switches are under Advanced. What cannot apply is cleared here, whether
-    // or not that group is open, so what the panel shows and what the renderer does agree.
-    const bool path_available = RenderOptions::kPathTracingAvailable && !d3d11 && options.dlss_mode < 6 &&
-                                dxr_path_tracing_available();
+    // Ray tracing. What cannot apply is cleared here, so what the panel shows and what the renderer
+    // does agree. The path tracer's G-buffer rides on DLSS's motion vectors: DLSS or DLAA must be on.
+    const bool path_available = RenderOptions::kPathTracingAvailable && !d3d11 && options.dlss_mode >= 1 &&
+                                options.dlss_mode <= 5 && rtx_path_tracing_ready();
     if (!path_available && options.path_tracing) { options.path_tracing = false; changed = true; }
-    const bool rr_available = path_available && options.path_tracing && options.dlss_mode > 0 &&
-                              streamline::ray_reconstruction_available();
+    const bool rr_available = path_available && options.path_tracing && streamline::ray_reconstruction_available();
     if (!rr_available && options.ray_reconstruction) { options.ray_reconstruction = false; changed = true; }
+    {
+      // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=raytracing): bring HDR and Ray tracing into view once.
+      static int scroll_frames = 0;
+      if (scroll_frames < 30) {
+        const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+        if (target && std::strcmp(target, "raytracing") == 0) ImGui::SetScrollHereY(0.0f);
+        ++scroll_frames;
+      }
+    }
+    ImGui::SeparatorText("HDR");
+    ImGui::BeginDisabled(d3d11 || !hdr_display_available());
+    if (settings_toggle("HDR output", &options.hdr_output)) changed = true;
+    ImGui::EndDisabled();
+    if (d3d11) settings_hint("Needs Direct3D 12.");
+    else if (!hdr_display_available()) settings_hint("Turn on HDR in Windows display settings for this screen.");
+    if (options.hdr_output && hdr_display_available()) {
+      if (settings_slider("Paper white", &options.hdr_paper_white, 80, 500, "%d nits")) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How bright the game's white (and the menus) is in HDR.");
+      if (settings_slider("Peak brightness", &options.hdr_peak, 0, 4000, options.hdr_peak ? "%d nits" : "From Windows")) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("The brightest highlights (path tracing). From Windows uses the display's own value.");
+    }
+    ImGui::SeparatorText("Ray tracing");
+    ImGui::BeginDisabled(!path_available);
+    if (settings_toggle("Path tracing", &options.path_tracing)) changed = true;
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Lights matches with ray tracing from the game's own lights: soft shadows, ambient\n"
+                        "occlusion, highlights. Menus stay as drawn. Display only: replays and online are untouched.");
+    if (!path_available)
+      settings_hint(d3d11 ? "Needs Direct3D 12 and an RTX GPU." :
+                    !rtx_path_tracing_ready() ? "Needs an RTX (ray-tracing) GPU and the Source Port." :
+                    "Turn on DLSS or DLAA above: path tracing uses its motion vectors.");
+    if (options.path_tracing) {
+      if (settings_slider("Look", &options.rtx_look, 0, 100, options.rtx_look >= 100 ? "Remastered" :
+                          options.rtx_look <= 0 ? "Faithful" : "%d%% remastered")) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Faithful: the game's own lighting, with ray-traced shadows on top.\n"
+                          "Remastered: physically based light (deeper shade, real highlights).");
+      if (settings_toggle("Ray-traced shadows", &options.rtx_shadows)) changed = true;
+      if (settings_toggle("Ambient occlusion", &options.rtx_ao)) changed = true;
+      if (settings_toggle("Bounce light", &options.rtx_bounce)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Light reflected off the stage onto the fighters and lit surfaces: colour from the\n"
+                          "ground and walls, shade that is not flat.");
+      if (settings_toggle("Reflections", &options.rtx_reflections)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Glossy and mirror-like surfaces reflect the real scene (fighters, stage, effects).");
+      if (settings_toggle("Soft skin", &options.rtx_skin)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Light scatters under the fighters' matte surfaces: softer shading and a warm\n"
+                          "edge where light turns to shadow (Kirby, Jigglypuff, Yoshi, faces).");
+      {
+        // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=rtxlighting): bring the lower rows into view once.
+        static int scroll_frames = 0;
+        if (scroll_frames < 30) {
+          const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+          if (target && std::strcmp(target, "rtxlighting") == 0) ImGui::SetScrollHereY(0.0f);
+          ++scroll_frames;
+        }
+      }
+      if (settings_toggle("Photo mode", &options.rtx_photo_mode)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pause the match and the picture keeps refining for a few seconds, to a clean\n"
+                          "image with every ray averaged in. Moving again resets it at once.");
+      ImGui::BeginDisabled(!options.rtx_shadows);
+      if (settings_toggle("Fighter shadows on the stage", &options.rtx_fighter_shadows)) changed = true;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Most stages have their light painted in. This casts the fighters' real shadows\n"
+                          "onto them from the stage's sun.");
+      if (rtx_nvidia_integrator_available()) {
+        const char* integrators[] = {"Melee Unlocked", "NVIDIA RTXDI (this PC only)"};
+        if (settings_combo("Lighting", &options.rtx_integrator, integrators, 2)) changed = true;
+        if (options.rtx_integrator == 1) {
+          ImGui::BeginDisabled(!options.rtx_bounce);
+          if (settings_toggle("Radiance cache (SHaRC)", &options.rtx_radiance_cache)) changed = true;
+          ImGui::EndDisabled();
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("NVIDIA's world-space radiance cache: bounce light carries every further bounce.\n"
+                              "Neural Radiance Cache needs NVIDIA driver 617.42 or newer.");
+        }
+      }
+      ImGui::BeginDisabled(!rr_available);
+      if (settings_toggle("NVIDIA Ray Reconstruction", &options.ray_reconstruction)) changed = true;
+      ImGui::EndDisabled();
+      if (!rr_available)
+        settings_hint("Needs the DLSS Ray Reconstruction runtime (sl.dlss_d.dll and nvngx_dlssd.dll).");
+    }
 #ifdef GX_DLSS5
     {
       // EXPERIMENTAL: DLSS 5 rides on the DLSS/DLAA pass (it needs its depth and motion vectors).
@@ -7323,21 +7435,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "filenames a replacement has to use. Only useful if you are making a pack.");
       ImGui::SameLine();
       if (ImGui::SmallButton("Open texture dump")) texpack::open_dump_folder();
-      if (RenderOptions::kPathTracingAvailable) {
-        ImGui::BeginDisabled(!path_available);
-        if (settings_toggle("DXR diffuse path tracing (experimental)", &options.path_tracing)) changed = true;
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", kExperimentalNote);
-        if (options.path_tracing)
-          settings_hint("Adds three low-sample diffuse bounces to the raster image. High GPU cost; match scenes only.");
-        if (!path_available)
-          settings_hint("DXR needs Direct3D 12, a ray-tracing capable GPU, and Native, DLAA, or DLSS selected.");
-        ImGui::BeginDisabled(!rr_available);
-        if (settings_toggle("NVIDIA Ray Reconstruction", &options.ray_reconstruction)) changed = true;
-        ImGui::EndDisabled();
-        if (!rr_available)
-          settings_hint("Needs DXR path tracing, an NVIDIA DLSS mode, and the signed DLSS Ray Reconstruction runtime.");
-      }
 #ifdef GX_DLSS5
       // The DLSS 5 internals, while DLSS 5 is on (it is switched off above whenever it cannot run).
       if (options.dlss5) {
@@ -10572,6 +10669,30 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         const uint32_t alpha = (vertex.col >> IM_COL32_A_SHIFT) & 0xff;
         const uint32_t scaled = (uint32_t)std::lround(alpha * alpha_scale);
         vertex.col = (vertex.col & ~IM_COL32_A_MASK) | (scaled << IM_COL32_A_SHIFT);
+      }
+    }
+  }
+  // HDR10 output: the panel's sRGB colours as PQ at paper white (BT.2020), so it reads the same
+  // as on an SDR screen.
+  if (g_settings_hdr_nits > 0.0f) {
+    auto pq = [](float nits) {
+      const float y = std::pow(std::clamp(nits / 10000.0f, 0.0f, 1.0f), 0.1593017578125f);
+      return std::pow((0.8359375f + 18.8515625f * y) / (1.0f + 18.6875f * y), 78.84375f);
+    };
+    auto decode = [](uint32_t v) {
+      const float c = v / 255.0f;
+      return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    ImDrawData* data = ImGui::GetDrawData();
+    for (int list_index = 0; data && list_index < data->CmdListsCount; ++list_index) {
+      for (ImDrawVert& vertex : data->CmdLists[list_index]->VtxBuffer) {
+        const float r = decode((vertex.col >> IM_COL32_R_SHIFT) & 0xff), g = decode((vertex.col >> IM_COL32_G_SHIFT) & 0xff),
+                    b = decode((vertex.col >> IM_COL32_B_SHIFT) & 0xff);
+        const float r2 = 0.6274f * r + 0.3293f * g + 0.0433f * b, g2 = 0.0691f * r + 0.9195f * g + 0.0114f * b,
+                    b2 = 0.0164f * r + 0.0880f * g + 0.8956f * b;
+        auto q = [&](float lin) { return (uint32_t)std::lround(pq(lin * g_settings_hdr_nits) * 255.0f); };
+        vertex.col = (vertex.col & IM_COL32_A_MASK) | (q(r2) << IM_COL32_R_SHIFT) | (q(g2) << IM_COL32_G_SHIFT) |
+                     (q(b2) << IM_COL32_B_SHIFT);
       }
     }
   }

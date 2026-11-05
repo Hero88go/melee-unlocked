@@ -285,7 +285,7 @@ std::string generate_vertex_shader(const VSUid& uid) {
     } else {
       // A lit channel's material source (the vertex colour or the material register) is what the
       // light multiplies: the path tracer lights it itself. A specular channel adds light, not
-      // surface colour, so its unlit value is nothing.
+      // surface colour (XF attenuation function 1: GX_AF_SPEC), so its unlit value is nothing.
       for (uint32_t j = 0; j < 2; ++j) {
         if (j >= numColorChans) { o.w("o.rtxUnlit1 = o.colors_1;\n"); continue; }
         const uint32_t cc = uid.xf_regs[0x0E + j], ac = uid.xf_regs[0x10 + j];
@@ -297,8 +297,8 @@ std::string generate_vertex_shader(const VSUid& uid) {
           }
           return j ? "(materials[3] / 255.0)" : "(materials[2] / 255.0)";
         };
-        const std::string rgb = lit_enable(cc) && lit_attnfunc(cc) == 0 ? std::string("float3(0.0, 0.0, 0.0)") : source(cc) + ".rgb";
-        const std::string a = lit_enable(ac) && lit_attnfunc(ac) == 0 ? std::string("0.0") : source(ac) + ".a";
+        const std::string rgb = lit_enable(cc) && lit_attnfunc(cc) == 1 ? std::string("float3(0.0, 0.0, 0.0)") : source(cc) + ".rgb";
+        const std::string a = lit_enable(ac) && lit_attnfunc(ac) == 1 ? std::string("0.0") : source(ac) + ".a";
         o.w("o.rtxUnlit%u = float4(%s, %s);\n", j, rgb.c_str(), a.c_str());
       }
     }
@@ -706,10 +706,13 @@ std::string generate_pixel_shader(const PSUid& uid) {
     RegState albedo_rs;
     emit_tev_stages(albedo_rs);
     o.w("oalbedo = float4(saturate(float3(prev.rgb) / 255.0), saturate(asfloat(flags.y)));\n");
+    // The normal GX lit the surface with, as the model has it (a few face away from the camera on
+    // purpose: Mario's shoes are dark that way); only one made from the triangle faces the camera.
     o.w("float3 rtx_n = rtxViewNrm;\n"
-        "if (dot(rtx_n, rtx_n) < 1e-8) rtx_n = cross(ddx(rtxViewPos), ddy(rtxViewPos));\n"
+        "const bool rtx_derived = dot(rtx_n, rtx_n) < 1e-8;\n"
+        "if (rtx_derived) rtx_n = cross(ddx(rtxViewPos), ddy(rtxViewPos));\n"
         "rtx_n = dot(rtx_n, rtx_n) > 1e-20 ? normalize(rtx_n) : float3(0.0, 0.0, 1.0);\n"
-        "if (dot(rtx_n, rtxViewPos) > 0.0) rtx_n = -rtx_n;\n"
+        "if (rtx_derived && dot(rtx_n, rtxViewPos) > 0.0) rtx_n = -rtx_n;\n"
         "onormal = float4(rtx_n, -rtxViewPos.z);\noid = uint(flags.x);\n");
     // The overlay over the G-buffer's surface (flags.z, the renderer's RtxLayer): the surface itself
     // clears it (overlay 0, transmittance 1); a blended draw gives its colour to both targets, whose

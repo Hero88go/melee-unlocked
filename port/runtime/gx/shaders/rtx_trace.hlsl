@@ -23,6 +23,8 @@ struct GeometryRecord {    // rtx_scene.h RtxGeometryRecord
   float roughness;
   uint ambient;    // GX ambient register, RGBA8
   uint channel;    // kRtxChannel*
+  uint light_first;
+  uint light_count;
 };
 
 RaytracingAccelerationStructure Scene : register(t0);
@@ -102,6 +104,7 @@ void RayGen() {
     float3 g = float3(0, 0, 0);
     if (mode == 4) g = GAlbedo[px].rgb;
     else if (mode == 5) { const float4 n = GNormal[px]; if (n.w > 0.0) g = n.xyz * 0.5 + 0.5; }
+    else if (mode == 7) { const uint id = GId[px]; g = float3((id & 0xFFu) / 255.0, ((id >> 8) & 0xFFu) / 255.0, 0.0); }   // raw draw id
     else { const uint id = GId[px]; if (id != 0u) g = hash_colour((id - 1u) * 2654435761u + 1u); }
     Output[px] = float4(g, 1);
     return;
@@ -129,8 +132,8 @@ void RayGen() {
   p.record = 0;
   p.primitive = 0;
   p.barycentrics = float2(0, 0);
-  // Opaque and cut-out surfaces; ray type 0; the geometry index does not pick the hit group.
-  TraceRay(Scene, RAY_FLAG_NONE, 0x03, 0, 0, 0, ray, p);
+  // Opaque, cut-out and fighter surfaces; ray type 0; the geometry index does not pick the hit group.
+  TraceRay(Scene, RAY_FLAG_NONE, 0x0B, 0, 0, 0, ray, p);
   if (p.t < 0.0) {
     Output[px] = float4(0.04, 0.04, 0.07, 1);
     return;

@@ -20,13 +20,15 @@ namespace gx {
 
 // Instance classes, one bottom-level structure each.
 enum RtxClass : uint8_t {
-  kRtxOpaque = 0,        // opaque stage and fighter surfaces
+  kRtxOpaque = 0,        // opaque stage surfaces
   kRtxAlphaTested = 1,   // cut-out surfaces (foliage, fences): any-hit alpha test
   kRtxTranslucent = 2,   // blended surfaces and particles: lit and emissive, never block shadow rays
-  kRtxClassCount = 3,
+  kRtxFighter = 3,       // opaque surfaces a player owns (fighters, their items): the moving shadow casters
+  kRtxClassCount = 4,
 };
-// TraceRay instance inclusion masks.
-constexpr uint8_t kRtxMaskOpaque = 0x01, kRtxMaskAlphaTested = 0x02, kRtxMaskTranslucent = 0x04;
+// TraceRay instance inclusion masks. Shadow rays take opaque | alpha-tested | fighter; on a stage
+// whose light is baked in, only fighter, so the stage's own baked shadows are not doubled.
+constexpr uint8_t kRtxMaskOpaque = 0x01, kRtxMaskAlphaTested = 0x02, kRtxMaskTranslucent = 0x04, kRtxMaskFighter = 0x08;
 // Ray types (TraceRay RayContributionToHitGroupIndex): 0 surface (closest hit), 1 visibility. The
 // hit group of a hit is class * kRtxRayTypes + ray type (the instance contributes class * types).
 constexpr uint32_t kRtxRayTypes = 2;
@@ -37,12 +39,16 @@ enum : uint32_t {
   kRtxGeometryParticle = 1u << 2,   // the particle system's
   kRtxGeometryAdditive = 1u << 3,   // blended additively: light, not surface
   kRtxGeometryNoNormals = 1u << 4,  // shade with the triangle's own normal
+  kRtxGeometryTintedReflection = 1u << 5,   // its colour comes from the game's environment map: its
+                                            // traced reflection takes that colour, as a metal's does
 };
 // RtxGeometryRecord::channel: the draw's GX colour channel 0 (XF 0x100E).
 enum : uint32_t {
   kRtxChannelLit = 1u << 0,         // GX lighting on: the integrators relight the surface
   kRtxChannelAmbientVertex = 1u << 1,  // ambient from the vertex colour, not the register
   kRtxChannelMaterialVertex = 1u << 2, // material colour from the vertex colour
+  // Bits 8-15: the channel's GX light mask (lights 0-7); bit 16 set when the mask is known.
+  kRtxChannelMaskKnown = 1u << 16,
 };
 
 // One raster draw handed over by execute_draw.
@@ -63,6 +69,7 @@ struct RtxDrawInput {
   float roughness = 0.85f;
   uint32_t ambient = 0;            // the GX ambient register of channel 0, RGBA8 (r in the low byte)
   uint32_t channel = 0;            // kRtxChannel*
+  uint32_t light_first = 0, light_count = 0;   // the draw's own light set in the frame's light table
   uint8_t cls = kRtxOpaque;
 };
 // RtxGeometryRecord::texture_set when the draw's textures cannot be read (its heap was replaced).
@@ -83,8 +90,12 @@ struct RtxGeometryRecord {
   // brightness the integrators keep.
   uint32_t ambient;
   uint32_t channel;
+  // The lights GX lit this draw with (its HSD light set), a run of the frame's light table: fighters
+  // keep their own lights, the stage its own.
+  uint32_t light_first;
+  uint32_t light_count;
 };
-static_assert(sizeof(RtxGeometryRecord) == 40, "hit shader record layout");
+static_assert(sizeof(RtxGeometryRecord) == 48, "hit shader record layout");
 
 // The compute pass writes this per vertex (shaders/rtx_transform.hlsl RtVertex).
 constexpr uint32_t kRtxVertexStride = 64;

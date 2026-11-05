@@ -70,12 +70,22 @@ int main() {
   shiny.specular[0] = shiny.specular[1] = shiny.specular[2] = 200;
   shiny.shininess = 50.0f;
   gx::rtx_material_params(&shiny, &spec, &rough);
-  check((spec & 0xFF) == 200 && rough > 0.4f && rough < 0.5f, "specular material");
+  check((spec & 0xFF) == 42 && rough > 0.4f && rough < 0.5f, "specular material (dielectric F0 from highlight strength)");
+  gx::RtxMaterial leather = shiny;   // the same highlight, kept to part of the surface by a specular map
+  leather.tobj_count = 1;
+  leather.tobjs[0].flags = 1u << 5;
+  float leather_rough = 0;
+  gx::rtx_material_params(&leather, &spec, &leather_rough);
+  check((spec & 0xFF) < 42 && leather_rough > rough + 0.15f, "specular-mapped material (softer, weaker sheen)");
   gx::RtxMaterial mirror;
   mirror.tobj_count = 1;
   mirror.tobjs[0].coord = 1;    // TEX_COORD_REFLECTION
   gx::rtx_material_params(&mirror, &spec, &rough);
-  check(rough <= 0.25f && (spec & 0xFF) == 140, "reflection-mapped material");
+  check(rough <= 0.35f && (spec & 0xFFFFFF) == 0xFFFFFF, "reflection-mapped material (glossy, tinted by its colour)");
+  mirror.rendermode = 1u << 3;  // with a brown highlight: that tint
+  mirror.specular[0] = 0x91; mirror.specular[1] = 0x5F; mirror.specular[2] = 0x1B;
+  gx::rtx_material_params(&mirror, &spec, &rough);
+  check((spec & 0xFFFFFF) == 0x1B5F91u, "reflection-mapped material with a highlight colour");
 
   if (g_failures) return 1;
   std::printf("rtx lights test passed\n");

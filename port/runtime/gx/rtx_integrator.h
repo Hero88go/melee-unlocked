@@ -69,6 +69,16 @@ struct RtxFrameInputs {
   const RtxLightRecord* light_records = nullptr;
   uint32_t light_count = 0;
   float light_scale = 1.0f;                       // overall light multiplier (exposure), 1 = the game's own
+  uint32_t main_light_count = 0;                  // the main light set: lights[0 .. main_light_count)
+  // Video > Ray tracing: look 0 = Faithful (GX's own lighting, with ray-traced visibility) .. 1 =
+  // Remastered (physically based); shadows, ambient occlusion, and fighters' shadows on stages whose
+  // light is baked in.
+  float look = 1.0f;
+  bool shadows = true, ambient_occlusion = true, fighter_shadows = true;
+  bool bounce = true, reflections = true;         // bounce light (one diffuse bounce), traced reflections
+  bool skin = true;                               // soft skin: subsurface approximation on fighters
+  uint32_t still_frames = 0;                      // photo mode: presents the scene has stood still (0: moving or off)
+  bool radiance_cache = true;                     // a world-space radiance cache for multi-bounce light (NVIDIA: SHaRC)
   ID3D12Resource* draws = nullptr;                // per draw index: material record for the G-buffer
   uint32_t draw_count = 0;
 };

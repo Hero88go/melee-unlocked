@@ -90,6 +90,11 @@ namespace gx {
 std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f}, g_vram_total{0.0f};
 std::atomic<bool> g_dxr_path_available{false};
 bool dxr_path_tracing_available() { return g_dxr_path_available.load(std::memory_order_relaxed); }
+namespace { std::atomic<bool> g_rtx_ready{false}, g_rtx_nvidia{false}; }
+bool rtx_path_tracing_ready() { return g_rtx_ready.load(std::memory_order_relaxed); }
+bool rtx_nvidia_integrator_available() { return g_rtx_nvidia.load(std::memory_order_relaxed); }
+namespace { std::atomic<bool> g_hdr_display{false}; }
+bool hdr_display_available() { return g_hdr_display.load(std::memory_order_relaxed); }
 bool vram_usage(float* used_gb, float* total_gb) {
   *used_gb = g_vram_used.load(std::memory_order_relaxed); *total_gb = g_vram_total.load(std::memory_order_relaxed);
   return *total_gb > 0.0f;
@@ -706,9 +711,12 @@ class D3D12Backend : public Backend {
   // scene draw the raster issues is handed to it, and present_efb builds the structures from them.
   RtxScene rtx_scene_;
   RtxTracer rtx_tracer_;
-  // The lighting (rtx_integrator.h): the Melee integrator, or with MELEE_RTX_INTEGRATOR=nvidia and a
-  // local build that has it, the module made from NVIDIA's SDKs.
-  std::unique_ptr<RtxIntegrator> rtx_integrator_;
+  // The lighting (rtx_integrator.h): the Melee integrator and, in a local build that has it, the
+  // module made from NVIDIA's SDKs. Settings pick one per present (RenderOptions::rtx_integrator).
+  std::unique_ptr<RtxIntegrator> rtx_integrator_, rtx_nvidia_;
+  RtxIntegrator* rtx_active_integrator() const;
+  const RtxIntegrator* rtx_last_integrator_ = nullptr;
+  RtxFrameOutputs rtx_outputs_{};   // this present's lit picture and Ray Reconstruction guides
   ComPtr<ID3D12Resource> rtx_light_buffer_[3];
   uint8_t* rtx_light_cpu_[3]{};
   uint32_t rtx_integrator_slot_ = 0;   // srv_heap_ slots reserved for it this present
@@ -722,7 +730,19 @@ class D3D12Backend : public Backend {
   std::vector<uint32_t> rtx_camera_draws_;
   uint32_t rtx_frame_draws_ = 0;
   int rtx_light_set_ = -1;
-  std::vector<RtxLightRecord> rtx_lights_;
+  // The frame's light table: the main set first, then every other set a main-camera draw was lit
+  // with; rtx_light_ranges_[set] = {first, count} in it ({0, 0}: not in the table).
+  std::vector<RtxLightRecord> rtx_lights_, rtx_set_lights_;
+  std::vector<std::pair<uint32_t, uint32_t>> rtx_light_ranges_;
+  uint32_t rtx_main_light_count_ = 0;
+  // Lit draws' own lights, from their XF light registers: a key of the registers in use and the
+  // channel's light mask -> their run of the light table, so draws sharing lights share it.
+  std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> rtx_gx_light_ranges_;
+  std::pair<uint32_t, uint32_t> rtx_gx_lights(const DrawCall& dc, uint32_t light_mask, uint32_t set_first, uint32_t set_count);
+  // Photo mode: a hash of the main camera and every main-camera draw's matrices; the presents in a
+  // row it has not changed.
+  uint64_t rtx_scene_hash_ = 0;
+  uint32_t rtx_still_frames_ = 0;
   bool rtx_lights_logged_ = false;
   bool rtx_prev_view_valid_ = false;
   uint64_t rtx_why_[7]{};   // presents wanted; not in match; skipped; no semantics; no cameras; no main camera; singular view
@@ -773,6 +793,18 @@ class D3D12Backend : public Backend {
   UINT swapchain_flags() const { return DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | (swapchain_waitable_ ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0); }
   ComPtr<ID3D12DescriptorHeap> rtv_heap_, dsv_heap_, srv_heap_, sampler_heap_;
   ComPtr<ID3D12Resource> backbuffers_[3];
+  // HDR10 output (Video > HDR): the swap chain format and colour space follow it; the presenter has
+  // HDR variants of its pipelines.
+  DXGI_FORMAT backbuffer_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
+  bool hdr_active_ = false;
+  float hdr_display_peak_ = 1000.0f;
+  uint64_t hdr_checked_frame_ = ~0ull;
+  ComPtr<ID3D12PipelineState> blit_hdr_pso_, crt_hdr_pso_;
+  // Frame generation's UI layer (PS_UI): the HUD with its mask as alpha, at the window size.
+  ComPtr<ID3D12PipelineState> fg_ui_pso_;
+  ComPtr<ID3D12Resource> fg_ui_;
+  bool fg_ui_read_ = false;
+  void update_hdr();
   ComPtr<ID3D12Resource> efb_color_, efb_depth_;
   // MSAA (Anti-aliasing 2x/4x/8x MSAA): the draws go to these, resolved into efb_color_/efb_depth_
   // (colour averaged, depth from sample 0) before anything reads the EFB. 1 = off.
@@ -982,7 +1014,7 @@ void D3D12Backend::init() {
   create_swapchain(waitable_wanted() && !opts_.exclusive_fullscreen);
 
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
-  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 14;   // 8: the MSAA EFB; 9-13: the path tracer's G-buffer and overlay
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 15;   // 8: the MSAA EFB; 9-13: the path tracer's G-buffer and overlay; 14: frame generation's UI layer
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)), "rtv heap");
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; hd.NumDescriptors = 2;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)), "dsv heap");
@@ -1016,15 +1048,18 @@ void D3D12Backend::init() {
     if (rtx_tracer_.initialize(dxr_device_.Get(), exe_dir_, &rtx_error)) host::log("rtx: ray-traced passes initialized");
     else host::log("rtx: ray-traced passes unavailable: %s", rtx_error.c_str());
     {
-      const char* which = std::getenv("MELEE_RTX_INTEGRATOR");
-#ifdef MELEE_RTX_LOCAL_NVIDIA
-      if (which && std::string(which) == "nvidia") rtx_integrator_ = make_nvidia_integrator();
-#endif
-      if (!rtx_integrator_) rtx_integrator_ = make_melee_integrator();
+      rtx_integrator_ = make_melee_integrator();
       if (rtx_integrator_->initialize(dxr_device_.Get(), exe_dir_, &rtx_error))
         host::log("rtx: %s integrator initialized", rtx_integrator_->name());
       else { host::log("rtx: %s integrator unavailable: %s", rtx_integrator_->name(), rtx_error.c_str()); rtx_integrator_.reset(); }
-      (void)which;
+#ifdef MELEE_RTX_LOCAL_NVIDIA
+      rtx_nvidia_ = make_nvidia_integrator();
+      if (rtx_nvidia_->initialize(dxr_device_.Get(), exe_dir_, &rtx_error))
+        host::log("rtx: %s integrator initialized", rtx_nvidia_->name());
+      else { host::log("rtx: %s integrator unavailable: %s", rtx_nvidia_->name(), rtx_error.c_str()); rtx_nvidia_.reset(); }
+#endif
+      g_rtx_ready.store(rtx_integrator_ && rtx_scene_.ready(), std::memory_order_relaxed);
+      g_rtx_nvidia.store(rtx_nvidia_ != nullptr, std::memory_order_relaxed);
     }
   } else {
     g_dxr_path_available.store(false, std::memory_order_relaxed);
@@ -1086,7 +1121,7 @@ void D3D12Backend::init() {
   D3D12_ROOT_PARAMETER bp[2]{};
   bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask, t3 depth
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 28; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 32; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;   // 28 + the HDR lane
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
@@ -1104,6 +1139,27 @@ void D3D12Backend::init() {
   pd.NumRenderTargets = 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.SampleDesc.Count = 1;
   check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&blit_pso_)), "blit pso");
   blit_vs_blob_ = bvs; blit_ps_blob_ = bps;
+  {
+    // Frame generation's UI layer.
+    ComPtr<ID3DBlob> ups, uerr;
+    if (SUCCEEDED(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "PS_UI", "ps_5_0", 0, 0, &ups, &uerr))) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC ud = pd;
+      ud.PS = {ups->GetBufferPointer(), ups->GetBufferSize()};
+      ud.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+      if (FAILED(device_->CreateGraphicsPipelineState(&ud, IID_PPV_ARGS(&fg_ui_pso_)))) host::log("d3d12: frame generation UI pipeline failed");
+    } else host::log("d3d12: frame generation UI shader failed: %s", uerr ? (const char*)uerr->GetBufferPointer() : "?");
+  }
+  {
+    // The HDR10 variant: the same shader with its HDR lane, into the 10-bit swap chain.
+    const std::string hdr_src = std::string("#define PRESENT_HDR 1\n") + blit;
+    ComPtr<ID3DBlob> hps, herr;
+    if (SUCCEEDED(D3DCompile(hdr_src.c_str(), hdr_src.size(), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &hps, &herr))) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC hd = pd;
+      hd.PS = {hps->GetBufferPointer(), hps->GetBufferSize()};
+      hd.RTVFormats[0] = DXGI_FORMAT_R10G10B10A2_UNORM;
+      if (FAILED(device_->CreateGraphicsPipelineState(&hd, IID_PPV_ARGS(&blit_hdr_pso_)))) host::log("d3d12: HDR present pipeline failed");
+    } else host::log("d3d12: HDR present shader failed: %s", herr ? (const char*)herr->GetBufferPointer() : "?");
+  }
   {
     // MSAA depth resolve (resolve_efb): sample 0 of the multisampled depth into the EFB depth.
     const char* dr = "Texture2DMS<float> msdepth : register(t0);\n"
@@ -1132,6 +1188,16 @@ void D3D12Backend::init() {
   check(D3DCompile(crt_src.data(), crt_src.size(), nullptr, nullptr, nullptr, "PS_CRT", "ps_5_0", 0, 0, &cps, &err), "crt ps");
   pd.PS = {cps->GetBufferPointer(), cps->GetBufferSize()};
   check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&crt_pso_)), "crt pso");
+  {
+    const std::string hdr_crt = std::string("#define PRESENT_HDR 1\n") + crt_src;
+    ComPtr<ID3DBlob> hps, herr;
+    if (SUCCEEDED(D3DCompile(hdr_crt.c_str(), hdr_crt.size(), nullptr, nullptr, nullptr, "PS_CRT", "ps_5_0", 0, 0, &hps, &herr))) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC hd = pd;
+      hd.PS = {hps->GetBufferPointer(), hps->GetBufferSize()};
+      hd.RTVFormats[0] = DXGI_FORMAT_R10G10B10A2_UNORM;
+      if (FAILED(device_->CreateGraphicsPipelineState(&hd, IID_PPV_ARGS(&crt_hdr_pso_)))) host::log("d3d12: HDR CRT pipeline failed");
+    } else host::log("d3d12: HDR CRT shader failed: %s", herr ? (const char*)herr->GetBufferPointer() : "?");
+  }
 }
 
 // Creates the swap chain, with the frame latency waitable object when `waitable` is set and the
@@ -1143,7 +1209,7 @@ void D3D12Backend::create_swapchain(bool waitable) {
   if (frame_latency_waitable_) { CloseHandle(frame_latency_waitable_); frame_latency_waitable_ = nullptr; }
   waitable_timeouts_ = 0;
   DXGI_SWAP_CHAIN_DESC1 sd{};
-  sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
+  sd.Width = client_w_; sd.Height = client_h_; sd.Format = backbuffer_format_; sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   // No DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH: with it, going exclusive changes the display mode
   // to match the window, so the desktop resolution became whatever "Window size" was set to.
@@ -1196,7 +1262,7 @@ void D3D12Backend::wait_frame_latency() {
 void D3D12Backend::create_swapchain_targets(bool resize) {
   for (auto& b : backbuffers_) b.Reset();
   if (resize) {
-    const HRESULT hr = swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, swapchain_flags());
+    const HRESULT hr = swapchain_->ResizeBuffers(3, client_w_, client_h_, backbuffer_format_, swapchain_flags());
     // DXGI refuses a resize in the middle of a fullscreen change (seen on a laptop in exclusive
     // fullscreen) with INVALID_CALL and leaves the old buffers as they were. Keep drawing at their
     // size; the next size change asks again. Anything else (a lost device) still stops.
@@ -1750,7 +1816,7 @@ void D3D12Backend::pause_frame_generation_for_resize() {
   // even when the player's generation multiplier did not change.
   if (fg_applied_ > 0) {
     streamline::set_frame_generation(0, (uint32_t)efb_w_, (uint32_t)efb_h_,
-      (uint32_t)client_w_, (uint32_t)client_h_, 3, (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM,
+      (uint32_t)client_w_, (uint32_t)client_h_, 3, (uint32_t)backbuffer_format_,
       (uint32_t)DXGI_FORMAT_R16G16_FLOAT, (uint32_t)DXGI_FORMAT_R32_FLOAT);
   }
   fg_applied_ = -1;
@@ -2857,9 +2923,19 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
 
 // ---------------- path tracing: the GPU scene (rtx_scene.h) ----------------
 bool D3D12Backend::rtx_wanted() const {
-  // Development switch until the Video setting ships (plan milestone S5).
+  // Video > Ray tracing > Path tracing; MELEE_RTX=1 forces it for test runs.
   static const bool env = [] { const char* v = std::getenv("MELEE_RTX"); return v && v[0] == '1'; }();
-  return env && rtx_scene_.ready();
+  return (env || opts_.path_tracing) && rtx_scene_.ready() && rtx_integrator_;
+}
+
+RtxIntegrator* D3D12Backend::rtx_active_integrator() const {
+  // MELEE_RTX_INTEGRATOR=nvidia|melee forces one for test runs; otherwise the setting.
+  static const int env = [] {
+    const char* v = std::getenv("MELEE_RTX_INTEGRATOR");
+    return !v ? -1 : std::string(v) == "nvidia" ? 1 : 0;
+  }();
+  const int which = env >= 0 ? env : opts_.rtx_integrator;
+  return which == 1 && rtx_nvidia_ ? rtx_nvidia_.get() : rtx_integrator_.get();
 }
 
 void D3D12Backend::rtx_begin_present(const Frame& frame) {
@@ -2915,7 +2991,33 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
   if (!rtx_invert_affine(frame.rtx.cameras[(size_t)rtx_main_camera_].view, rtx_view_to_world_)) { ++rtx_why_[6]; return; }
   rtx_capture_ = true;
   rtx_light_set_ = rtx_main_light_set(frame, rtx_main_camera_);
-  rtx_build_lights(frame.rtx, rtx_light_set_, rtx_lights_);
+  rtx_lights_.clear();
+  rtx_light_ranges_.assign(frame.rtx.light_sets.size(), {0u, 0u});
+  constexpr size_t kMaxTableLights = 64;
+  auto add_set = [&](int set) {
+    if (set < 0 || (size_t)set >= rtx_light_ranges_.size() || rtx_light_ranges_[(size_t)set].second) return;
+    rtx_build_lights(frame.rtx, set, rtx_set_lights_);
+    if (rtx_set_lights_.empty() || rtx_lights_.size() + rtx_set_lights_.size() > kMaxTableLights) return;
+    rtx_light_ranges_[(size_t)set] = {(uint32_t)rtx_lights_.size(), (uint32_t)rtx_set_lights_.size()};
+    rtx_lights_.insert(rtx_lights_.end(), rtx_set_lights_.begin(), rtx_set_lights_.end());
+  };
+  add_set(rtx_light_set_);
+  rtx_main_light_count_ = (uint32_t)rtx_lights_.size();
+  {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* p, size_t n) {
+      const uint8_t* b = (const uint8_t*)p;
+      for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    };
+    mix(frame.rtx.cameras[(size_t)rtx_main_camera_].view, sizeof frame.rtx.cameras[(size_t)rtx_main_camera_].view);
+    for (const DrawCall& d : frame.draws)
+      if (d.rtx.camera == rtx_main_camera_) mix(d.posMatrices, 12 * sizeof(float));
+    rtx_still_frames_ = h == rtx_scene_hash_ ? rtx_still_frames_ + 1 : 0;
+    rtx_scene_hash_ = h;
+  }
+  for (const DrawCall& d : frame.draws)
+    if (d.rtx.camera == rtx_main_camera_) add_set(d.rtx.light_set);
+  rtx_gx_light_ranges_.clear();   // lit draws add the GX lights they use (rtx_record_draw)
   if (!rtx_lights_logged_ && !rtx_lights_.empty()) {
     rtx_lights_logged_ = true;
     if (rtx_light_set_ >= 0) {
@@ -2987,19 +3089,106 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
   const bool particle = dc.rtx.pass == MU_RTX_PASS_PARTICLES;
   if (particle || blended || xlu || !writes_depth) in.cls = kRtxTranslucent;
   else if (!alpha_always) in.cls = kRtxAlphaTested;
-  else in.cls = kRtxOpaque;
+  else in.cls = dc.owner_player < 6 ? kRtxFighter : kRtxOpaque;   // what a player owns moves and casts shadows
+  // Its lights: for a lit draw the GX lights its channel uses (below); otherwise its HSD light set
+  // (the sun its baked surface is shadowed from), else the main set.
+  in.light_first = 0;
+  in.light_count = rtx_main_light_count_;
+  if (dc.rtx.light_set >= 0 && (size_t)dc.rtx.light_set < rtx_light_ranges_.size() &&
+      rtx_light_ranges_[(size_t)dc.rtx.light_set].second) {
+    in.light_first = rtx_light_ranges_[(size_t)dc.rtx.light_set].first;
+    in.light_count = rtx_light_ranges_[(size_t)dc.rtx.light_set].second;
+  }
   if (dc.skinned) in.flags |= kRtxGeometrySkinned;
   if (dc.owner_player < 6) in.flags |= kRtxGeometryFighter;
   if (particle) in.flags |= kRtxGeometryParticle;
   if (additive) in.flags |= kRtxGeometryAdditive;
   if (!(dc.components & VB_HAS_NRM0)) in.flags |= kRtxGeometryNoNormals;
+  // Melee colours shiny parts with an environment map (Mario's brown shoes, gold buttons): the map
+  // stays in the albedo, and the traced reflection is tinted by it.
+  for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t)
+    if (material->tobjs[t].coord == 1) in.flags |= kRtxGeometryTintedReflection;
   rtx_material_params(material, &in.specular, &in.roughness);
   // GX's own lighting of the draw (channel 0): its ambient register and whether it is lit at all.
   const uint32_t amb = dc.xf_regs[0x0A], chan = dc.xf_regs[0x0E];
   in.ambient = ((amb >> 24) & 0xFF) | (((amb >> 16) & 0xFF) << 8) | (((amb >> 8) & 0xFF) << 16) | ((amb & 0xFF) << 24);
   in.channel = ((dc.xf_regs[0x09] & 3) && ((chan >> 1) & 1) ? kRtxChannelLit : 0u) |
                (((chan >> 6) & 1) ? kRtxChannelAmbientVertex : 0u) | ((chan & 1) ? kRtxChannelMaterialVertex : 0u);
+  // The lights GX lights it with: the channel's light mask (XF colour control bits 2-5, 11-14).
+  const uint32_t light_mask = ((chan >> 2) & 0xFu) | (((chan >> 11) & 0xFu) << 4);
+  in.channel |= (light_mask << 8) | kRtxChannelMaskKnown;
+  if (in.channel & kRtxChannelLit) {
+    const std::pair<uint32_t, uint32_t> range = rtx_gx_lights(dc, light_mask, in.light_first, in.light_count);
+    if (range.second) { in.light_first = range.first; in.light_count = range.second; }
+  }
   rtx_scene_.add(in);
+}
+
+// The GX lights a lit draw used: its XF light blocks (gx_shader.cpp fill_vs_constants layout: colour
+// at 12, then cos attenuation, distance attenuation, position, all in the draw's view space) for the
+// slots its channel's mask enables, as world-space light records, then the ambient light of its HSD
+// set (`set_first`, `set_count`: the sky its bounce and reflection rays see). HSD puts an infinite
+// light far out along its direction (position * 2^20): those are suns.
+std::pair<uint32_t, uint32_t> D3D12Backend::rtx_gx_lights(const DrawCall& dc, uint32_t light_mask, uint32_t set_first,
+                                                         uint32_t set_count) {
+  uint64_t key = (1469598103934665603ull ^ light_mask ^ ((uint64_t)set_first << 8) ^ ((uint64_t)set_count << 20)) * 1099511628211ull;
+  for (uint32_t slot = 0; slot < 8; ++slot) {
+    if (!((light_mask >> slot) & 1u)) continue;
+    for (int b = 12; b < 52; ++b) { key ^= dc.lights[slot][b]; key *= 1099511628211ull; }
+  }
+  const auto it = rtx_gx_light_ranges_.find(key);
+  if (it != rtx_gx_light_ranges_.end()) return it->second;
+  constexpr size_t kMaxTableLights = 64;
+  const uint32_t first = (uint32_t)rtx_lights_.size();
+  for (uint32_t slot = 0; slot < 8 && rtx_lights_.size() < kMaxTableLights; ++slot) {
+    if (!((light_mask >> slot) & 1u)) continue;
+    const uint8_t* L = dc.lights[slot];
+    uint32_t colour;
+    std::memcpy(&colour, L + 12, 4);
+    float f[9];
+    std::memcpy(f, L + 16, sizeof f);   // cos attenuation, distance attenuation, position (view space)
+    RtxLightRecord r{};
+    const float rgb[3] = {((colour >> 24) & 0xFF) / 255.0f, ((colour >> 16) & 0xFF) / 255.0f, ((colour >> 8) & 0xFF) / 255.0f};
+    for (int c = 0; c < 3; ++c)
+      r.radiance[c] = rgb[c] <= 0.04045f ? rgb[c] / 12.92f : std::pow((rgb[c] + 0.055f) / 1.055f, 2.4f);
+    if (r.radiance[0] + r.radiance[1] + r.radiance[2] <= 0.0f) continue;
+    const float* m = rtx_view_to_world_;
+    const float px = f[6], py = f[7], pz = f[8];
+    const float dist = std::sqrt(px * px + py * py + pz * pz);
+    if (dist > 1.0e5f) {
+      // A sun: its light travels from that far point toward the scene.
+      const float wx = m[0] * px + m[1] * py + m[2] * pz, wy = m[4] * px + m[5] * py + m[6] * pz, wz = m[8] * px + m[9] * py + m[10] * pz;
+      const float len = std::sqrt(wx * wx + wy * wy + wz * wz);
+      if (len <= 0.0f) continue;
+      r.type = kRtxLightDirectional;
+      r.direction[0] = -wx / len; r.direction[1] = -wy / len; r.direction[2] = -wz / len;
+      r.radius = 0.03f;
+    } else {
+      r.type = kRtxLightPoint;
+      r.position[0] = m[0] * px + m[1] * py + m[2] * pz + m[3];
+      r.position[1] = m[4] * px + m[5] * py + m[6] * pz + m[7];
+      r.position[2] = m[8] * px + m[9] * py + m[10] * pz + m[11];
+      r.attenuation[0] = f[3]; r.attenuation[1] = f[4]; r.attenuation[2] = f[5];
+      if (r.attenuation[0] + r.attenuation[1] + r.attenuation[2] <= 0.0f) r.attenuation[0] = 1.0f;
+      r.radius = 1.5f;
+    }
+    r.cos_cutoff = -1.0f;
+    r.flags = slot << 24;
+    static int logged = 0;
+    if (logged < 4) {
+      ++logged;
+      host::log("rtx: gx light slot %u type %u colour %.3f %.3f %.3f dir %.2f %.2f %.2f pos %.1f %.1f %.1f (mask %X)", slot, r.type,
+                r.radiance[0], r.radiance[1], r.radiance[2], r.direction[0], r.direction[1], r.direction[2],
+                r.position[0], r.position[1], r.position[2], light_mask);
+    }
+    rtx_lights_.push_back(r);
+  }
+  if (rtx_lights_.size() == first) return {0, 0};   // no GX light to add: the set stays
+  for (uint32_t j = set_first; j < set_first + set_count && j < first && rtx_lights_.size() < kMaxTableLights; ++j)
+    if (rtx_lights_[j].type == kRtxLightAmbient) { const RtxLightRecord a = rtx_lights_[j]; rtx_lights_.push_back(a); }
+  const std::pair<uint32_t, uint32_t> range{first, (uint32_t)rtx_lights_.size() - first};
+  rtx_gx_light_ranges_.emplace(key, range);
+  return range;
 }
 
 bool D3D12Backend::rtx_ensure_gbuffer() {
@@ -3165,7 +3354,7 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   const unsigned slot = (unsigned)slot_;
   if (!rtx_scene_.tlas(slot) || !rtx_scene_.draw_table(slot)) return nullptr;
   // The light table, in this slot's upload buffer (16 lights is more than any stage sets up).
-  constexpr size_t kMaxLights = 16;
+  constexpr size_t kMaxLights = 64;
   if (!rtx_light_buffer_[slot]) {
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
     D3D12_RESOURCE_DESC d{};
@@ -3224,13 +3413,26 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.lights = rtx_light_buffer_[slot].Get();
   in.light_records = rtx_lights_.data();
   in.light_count = (uint32_t)light_count;
+  in.main_light_count = std::min(rtx_main_light_count_, (uint32_t)light_count);
+  // Video > Ray tracing.
+  in.look = std::clamp(opts_.rtx_look, 0, 100) / 100.0f;
+  in.shadows = opts_.rtx_shadows;
+  in.ambient_occlusion = opts_.rtx_ao;
+  in.fighter_shadows = opts_.rtx_fighter_shadows;
+  in.bounce = opts_.rtx_bounce;
+  in.reflections = opts_.rtx_reflections;
+  in.skin = opts_.rtx_skin;
+  in.still_frames = opts_.rtx_photo_mode ? rtx_still_frames_ : 0;
+  in.radiance_cache = opts_.rtx_radiance_cache;
   in.draws = rtx_scene_.draw_table(slot);
   in.draw_count = rtx_scene_.draw_table_size(slot);
   in.overlay = rtx_overlay_.Get();
   in.transmittance = rtx_trans_.Get();
   RtxFrameOutputs out;
+  rtx_outputs_ = {};
   std::string error;
-  ok = ok && rtx_integrator_->render(in, &out, &error);
+  RtxIntegrator* integrator = rtx_active_integrator();
+  ok = ok && integrator->render(in, &out, &error);
   for (auto& x : b) std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
   list_->ResourceBarrier(kReads, b);
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
@@ -3239,10 +3441,15 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   rtx_prev_view_valid_ = true;
   if (!ok || !out.color) {
     static int logged = 0;
-    if (logged++ < 3) host::log("rtx: %s integrator skipped this present: %s", rtx_integrator_->name(), error.c_str());
+    if (logged++ < 3) host::log("rtx: %s integrator skipped this present: %s", integrator->name(), error.c_str());
     return nullptr;
   }
-  if (rtx_frames_lit_++ == 0) host::log("rtx: %s integrator lit its first frame (%u lights)", rtx_integrator_->name(), (unsigned)light_count);
+  if (integrator != rtx_last_integrator_) {
+    rtx_last_integrator_ = integrator;
+    host::log("rtx: %s integrator lit a frame (%u lights, %u in the main set)", integrator->name(), (unsigned)light_count, in.main_light_count);
+  }
+  ++rtx_frames_lit_;
+  rtx_outputs_ = out;
   return out.color;
 }
 
@@ -3360,7 +3567,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
   ID3D12Resource* path_color = rtx_built ? rtx_debug_view() : nullptr;
   if (rtx_built && !path_color) path_color = rtx_light_frame();
-  if (opts_.path_tracing && dxr_scene && dxr_path_tracer_.ready()) {
+  if (!path_color && opts_.path_tracing && dxr_scene && dxr_path_tracer_.ready()) {   // the legacy pass (MELEE_DXR_LEGACY)
     D3D12_RESOURCE_BARRIER to_trace{};
     to_trace.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     to_trace.Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -3427,11 +3634,14 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
         rr.color_in = path_color; rr.color_state = in.color_state;
         rr.depth = in.depth; rr.depth_state = in.depth_state;
         rr.mvec = in.mvec; rr.mvec_state = in.mvec_state;
-        rr.albedo = dxr_path_tracer_.albedo((unsigned)slot_);
+        // The path tracer's guides (rtx_integrator.h), else the legacy pass's.
+        const bool rtx_guides = path_color == rtx_outputs_.color && rtx_outputs_.diffuse_albedo &&
+                                rtx_outputs_.specular_albedo && rtx_outputs_.normal_roughness;
+        rr.albedo = rtx_guides ? rtx_outputs_.diffuse_albedo : dxr_path_tracer_.albedo((unsigned)slot_);
         rr.albedo_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        rr.specular_albedo = dxr_path_tracer_.specular_albedo((unsigned)slot_);
+        rr.specular_albedo = rtx_guides ? rtx_outputs_.specular_albedo : dxr_path_tracer_.specular_albedo((unsigned)slot_);
         rr.specular_albedo_state = rr.albedo_state;
-        rr.normal_roughness = dxr_path_tracer_.normal_roughness((unsigned)slot_);
+        rr.normal_roughness = rtx_guides ? rtx_outputs_.normal_roughness : dxr_path_tracer_.normal_roughness((unsigned)slot_);
         rr.normal_roughness_state = rr.albedo_state;
         rr.color_out = dlss_out_.Get(); rr.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         rr.in_left = in.in_left; rr.in_top = in.in_top; rr.in_w = in.in_w; rr.in_h = in.in_h;
@@ -3573,6 +3783,8 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       if (art_ph > (float)client_h_) { art_ph = (float)client_h_; art_pw = art_ph * art_aspect; }
       const float art_px = ((float)client_w_ - art_pw) * 0.5f, art_py = ((float)client_h_ - art_ph) * 0.5f;
       const float art_reach = std::clamp(std::max(art_px, art_py) * 0.6f, 12.0f, 160.0f);
+      const float hdr_lane[4] = {hdr_active_ ? 1.0f : 0.0f, (float)opts_.hdr_paper_white,
+                                  opts_.hdr_peak > 0 ? (float)opts_.hdr_peak : hdr_display_peak_, 0.0f};
       const float art_rect[28] = {sx, art_reversed ? -sy : sy, (1.0f - sx) * 0.5f, art_reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f,
                                   1.0f / art->width, 1.0f / art->height, 0, 0,
                                   1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0,
@@ -3582,10 +3794,11 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
       list_->RSSetViewports(1, &art_vp);
       list_->RSSetScissorRects(1, &art_sc);
-      list_->SetPipelineState(blit_pso_.Get());
+      list_->SetPipelineState(hdr_active_ && blit_hdr_pso_ ? blit_hdr_pso_.Get() : blit_pso_.Get());
       list_->SetGraphicsRootSignature(blit_root_.Get());
       list_->SetGraphicsRootDescriptorTable(0, art_gpu);
       list_->SetGraphicsRoot32BitConstants(1, 28, art_rect, 0);
+      list_->SetGraphicsRoot32BitConstants(1, 4, hdr_lane, 28);
       list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       list_->DrawInstanced(3, 1, 0, 0);
       // Root constants stay set: the draws after this one set only the first twenty, and must not
@@ -3650,13 +3863,17 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     list_->RSSetViewports(1, &vp);
     list_->RSSetScissorRects(1, &sc);
   }
-  list_->SetPipelineState(crt_on ? crt_pso_.Get() : blit_pso_.Get());
+  list_->SetPipelineState(hdr_active_ && (crt_on ? crt_hdr_pso_ : blit_hdr_pso_)
+                              ? (crt_on ? crt_hdr_pso_.Get() : blit_hdr_pso_.Get())
+                              : crt_on ? crt_pso_.Get() : blit_pso_.Get());
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
   // In-place DLAA leaves a full-size EFB image, so it is presented exactly like the un-upscaled EFB:
   // same displayed sub-region, same box filter when the render is larger than the window.
   const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
+  const float hdr_lane[4] = {hdr_active_ ? 1.0f : 0.0f, (float)opts_.hdr_paper_white,
+                              opts_.hdr_peak > 0 ? (float)opts_.hdr_peak : hdr_display_peak_, 0.0f};
   float rect[28] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), path_color ? 1.0f : 0.0f,
                     1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
@@ -3690,15 +3907,55 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     rect[9] = (float)std::clamp((int)std::lround((fills_output ? (double)dlss_out_h_ : (double)c.src_h * scale_) / shader_h), 1, 4);
   }
   list_->SetGraphicsRoot32BitConstants(1, 28, rect, 0);
+  list_->SetGraphicsRoot32BitConstants(1, 4, hdr_lane, 28);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
+  if (fg_applied_ > 0 && hud_composite && fg_ui_pso_) {
+    // Frame generation's UI layer: the same picture placement, the HUD alone with its mask as alpha.
+    if (!fg_ui_ || fg_ui_->GetDesc().Width != (UINT64)client_w_ || fg_ui_->GetDesc().Height != (UINT)client_h_) {
+      fg_ui_.Reset();
+      fg_ui_read_ = false;
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC rd{};
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = (UINT64)client_w_; rd.Height = (UINT)client_h_;
+      rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+      rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+      D3D12_CLEAR_VALUE cv{DXGI_FORMAT_R8G8B8A8_UNORM, {0, 0, 0, 0}};
+      if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv,
+                                                  IID_PPV_ARGS(&fg_ui_)))) fg_ui_.Reset();
+      if (fg_ui_) {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += 14 * rtv_size_;
+        device_->CreateRenderTargetView(fg_ui_.Get(), nullptr, h);
+      }
+    }
+    if (fg_ui_) {
+      constexpr D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+      D3D12_RESOURCE_BARRIER ub{};
+      ub.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      if (fg_ui_read_) {
+        ub.Transition = {fg_ui_.Get(), 0, kRead, D3D12_RESOURCE_STATE_RENDER_TARGET};
+        list_->ResourceBarrier(1, &ub);
+      }
+      D3D12_CPU_DESCRIPTOR_HANDLE ui_rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); ui_rtv.ptr += 14 * rtv_size_;
+      const float clear[4] = {0, 0, 0, 0};
+      list_->ClearRenderTargetView(ui_rtv, clear, 0, nullptr);
+      list_->OMSetRenderTargets(1, &ui_rtv, FALSE, nullptr);
+      list_->SetPipelineState(fg_ui_pso_.Get());
+      list_->DrawInstanced(3, 1, 0, 0);
+      ub.Transition = {fg_ui_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, kRead};
+      list_->ResourceBarrier(1, &ub);
+      fg_ui_read_ = true;
+      streamline::tag_frame_generation_ui(list_.Get(), fg_ui_.Get(), (uint32_t)kRead, (uint32_t)client_w_, (uint32_t)client_h_);
+      list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    }
+  }
   if (shader_on) {
     D3D12_RESOURCE_BARRIER to_source{};
     to_source.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     to_source.Transition = {shader_source_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
     list_->ResourceBarrier(1, &to_source);
     const user_shader::Target where{vp.TopLeftX, vp.TopLeftY, (uint32_t)std::max(vw, 1.0f), (uint32_t)std::max(vh, 1.0f)};
-    user_shader::d3d12_draw(list_.Get(), shader_source_.Get(), rtv.ptr, (int)DXGI_FORMAT_R8G8B8A8_UNORM,
+    user_shader::d3d12_draw(list_.Get(), shader_source_.Get(), rtv.ptr, (int)backbuffer_format_,
                             (uint32_t)client_w_, (uint32_t)client_h_, where, (size_t)frame_counter_);
     // The preset's passes leave their own heaps, pipeline, targets and viewport on the list.
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
@@ -3842,8 +4099,51 @@ void D3D12Backend::swap_in_ready_replacements() {
   if (dropped) texture_sets_.clear();
 }
 
+// HDR10 output: whether the screen the window is on has Windows HDR on (checked every 60 presents),
+// and the swap chain in the format and colour space the setting asks for. A change rebuilds the
+// swap chain's buffers in place and the settings panel for the new format.
+void D3D12Backend::update_hdr() {
+  if (!swapchain_) return;
+  if (hdr_checked_frame_ == ~0ull || frame_counter_ - hdr_checked_frame_ >= 60) {
+    hdr_checked_frame_ = frame_counter_;
+    bool display_hdr = false;
+    ComPtr<IDXGIOutput> output;
+    ComPtr<IDXGIOutput6> output6;
+    if (SUCCEEDED(swapchain_->GetContainingOutput(&output)) && SUCCEEDED(output.As(&output6))) {
+      DXGI_OUTPUT_DESC1 desc{};
+      if (SUCCEEDED(output6->GetDesc1(&desc))) {
+        display_hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        if (desc.MaxLuminance > 100.0f) hdr_display_peak_ = desc.MaxLuminance;
+      }
+    }
+    g_hdr_display.store(display_hdr, std::memory_order_relaxed);
+  }
+  // A RetroArch shader preset draws SDR into the swap chain itself: HDR waits until it is off.
+  const bool want = opts_.hdr_output && hdr_display_available() && blit_hdr_pso_ && opts_.shader_preset.empty();
+  if (want == hdr_active_) return;
+  wait_gpu();
+  hdr_active_ = want;
+  backbuffer_format_ = want ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+  create_swapchain_targets(true);
+  ComPtr<IDXGISwapChain3> sc3;
+  if (SUCCEEDED(swapchain_.As(&sc3))) {
+    const DXGI_COLOR_SPACE_TYPE space = want ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    UINT support = 0;
+    if (SUCCEEDED(sc3->CheckColorSpaceSupport(space, &support)) && (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+      sc3->SetColorSpace1(space);
+  }
+#ifdef GX_PC_SETTINGS
+  PcSettingsUI::set_hdr_paper_white(want ? (float)opts_.hdr_paper_white : 0.0f);
+  if (settings_ui_) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd_, device_.Get(), queue_.Get(), opts_, (int)backbuffer_format_);
+#endif
+  if (fg_applied_ > 0) fg_applied_ = -1;   // frame generation picks up the new format at the next present
+  host::log("d3d12: HDR10 output %s (paper white %d nits, peak %.0f nits)", want ? "on" : "off", opts_.hdr_paper_white,
+            opts_.hdr_peak > 0 ? (float)opts_.hdr_peak : hdr_display_peak_);
+}
+
 void D3D12Backend::capture_backbuffer() {
   // Read back the last presented back buffer into a PPM (development aid).
+  if (backbuffer_format_ != DXGI_FORMAT_R8G8B8A8_UNORM) { host::log("capture: skipped (HDR10 output is on)"); return; }
   UINT bb = (swapchain_->GetCurrentBackBufferIndex() + 2) % 3;
   ID3D12Resource* src = backbuffers_[bb].Get();
   D3D12_RESOURCE_DESC desc = src->GetDesc();
@@ -4111,23 +4411,28 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   swap_in_ready_replacements();
   trim_textures();
   check(allocators_[slot_]->Reset(), "allocator reset");
+  update_hdr();   // before recording: switching it rebuilds the swap chain's buffers
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
   if (timer_heap_) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 4);   // frame start, for the "gpu:" line
   DxrScene dxr_scene;
   bool dxr_scene_ready = false;
+  // The 0.7 DXR pass (CPU-rebuilt scene, a few fps in matches) is replaced by the path tracer
+  // (rtx_*); MELEE_DXR_LEGACY=1 runs it again for comparison.
+  static const bool legacy_dxr = [] { const char* v = std::getenv("MELEE_DXR_LEGACY"); return v && v[0] == '1'; }();
+  const bool legacy_path = legacy_dxr && opts_.path_tracing;
   if (dxr_device_ && dxr_list_ && dxr_path_tracer_.ready() && in_match_ &&
-      (opts_.path_tracing || dxr_scene_diag_frame)) {
+      (legacy_path || dxr_scene_diag_frame)) {
     if (build_dxr_scene(frame, dxr_scene, overrides)) {
       std::string error;
       dxr_scene_ready = dxr_gpu_scene_.build(dxr_scene, (unsigned)slot_, dxr_device_.Get(), dxr_list_.Get(), &error);
-      if (opts_.path_tracing && dxr_scene_ready && !dxr_scene_logged_) {
+      if (legacy_path && dxr_scene_ready && !dxr_scene_logged_) {
         host::log("dxr: match scene captured (%zu draw batches, %zu triangles)",
                   dxr_scene.geometries.size(), dxr_scene.indices.size() / 3);
         dxr_scene_logged_ = true;
       }
-      if (opts_.path_tracing && !dxr_scene_ready && !dxr_scene_failure_logged_) {
+      if (legacy_path && !dxr_scene_ready && !dxr_scene_failure_logged_) {
         host::log("dxr: match scene acceleration-structure build failed: %s", error.c_str());
         dxr_scene_failure_logged_ = true;
       }
@@ -4219,7 +4524,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (want_reflex && (frame_counter_ % 600) == 0) host::log("reflex: render latency %.2f ms", streamline::reflex_latency_ms());
     if (want_fg != fg_applied_) {
       streamline::set_frame_generation(want_fg, (uint32_t)efb_w_, (uint32_t)efb_h_, (uint32_t)client_w_,
-                                       (uint32_t)client_h_, 3, (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM,
+                                       (uint32_t)client_h_, 3, (uint32_t)backbuffer_format_,
                                        (uint32_t)DXGI_FORMAT_R16G16_FLOAT, (uint32_t)DXGI_FORMAT_R32_FLOAT);
       fg_applied_ = want_fg;
       // mode 1..3 = 2x..4x, 5 = 5x, 6 = 6x; Dynamic (4) and off leave the rendered rate alone.

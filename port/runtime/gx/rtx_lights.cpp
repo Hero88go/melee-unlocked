@@ -42,18 +42,38 @@ void rtx_material_params(const RtxMaterial* m, uint32_t* specular_rgba, float* r
   float rough = 0.85f;
   if (m) {
     constexpr uint32_t kRenderSpecular = 1u << 3;
-    bool reflective = false;
-    for (uint32_t i = 0; i < m->tobj_count && i < 8; ++i) reflective = reflective || m->tobjs[i].coord == 1;
+    constexpr uint32_t kLightmapSpecular = 1u << 5;   // TEX_LIGHTMAP_SPECULAR (tobj.h)
+    bool reflective = false, specular_map = false;
+    for (uint32_t i = 0; i < m->tobj_count && i < 8; ++i) {
+      reflective = reflective || m->tobjs[i].coord == 1;
+      specular_map = specular_map || (m->tobjs[i].flags & kLightmapSpecular) != 0;
+    }
+    // HSD's specular colour is a Phong highlight's strength, not a reflectance: everything stays a
+    // dielectric, F0 0.04 to 0.20 with that strength (mapped straight across, a brown shoe with a
+    // highlight came out chrome).
+    float f0 = 0.04f;
     if (m->rendermode & kRenderSpecular) {
-      for (int c = 0; c < 3; ++c) spec[c] = m->specular[c];
+      const float strength = (0.2126f * m->specular[0] + 0.7152f * m->specular[1] + 0.0722f * m->specular[2]) / 255.0f;
+      f0 = 0.04f + 0.16f * strength;
       // Blinn-Phong exponent to GGX: alpha = sqrt(2 / (n + 2)), perceptual roughness = sqrt(alpha).
       const float n = m->shininess > 0.0f ? m->shininess : 1.0f;
       const float alpha = std::sqrt(2.0f / (n + 2.0f));
       rough = std::fmin(std::fmax(std::sqrt(alpha), 0.08f), 0.95f);
+      // A specular map keeps the highlight to part of the surface (the stitched leather of Mario's
+      // and Luigi's shoes): over the whole surface, a softer and weaker sheen.
+      if (specular_map) {
+        rough = std::fmin(rough + 0.2f, 0.95f);
+        f0 = 0.04f + 0.5f * (f0 - 0.04f);
+      }
     }
+    spec[0] = spec[1] = spec[2] = (uint8_t)std::lround(f0 * 255.0f);
     if (reflective) {
-      rough = std::fmin(rough, 0.25f);
-      if (spec[0] < 64 && spec[1] < 64 && spec[2] < 64) spec[0] = spec[1] = spec[2] = 140;
+      // The game faked a sheen with an environment map, which also gives the surface its colour
+      // (Mario's gold buttons; his brown shoes add a brown highlight): glossy, reflecting in the
+      // surface colour times the highlight colour (white without one). The integrators multiply
+      // this by the albedo (kRtxGeometryTintedReflection).
+      rough = std::fmin(rough, 0.35f);
+      for (int c = 0; c < 3; ++c) spec[c] = (m->rendermode & kRenderSpecular) ? m->specular[c] : 255;
     }
   }
   *specular_rgba = (uint32_t)spec[0] | ((uint32_t)spec[1] << 8) | ((uint32_t)spec[2] << 16) | (0xFFu << 24);
@@ -96,7 +116,7 @@ void rtx_build_lights(const RtxFrameSemantics& semantics, int set, std::vector<R
     const RtxLight& l = semantics.lights[ls.first + i];
     RtxLightRecord r{};
     r.type = l.type;
-    r.flags = l.flags;
+    r.flags = (l.flags & 0x00FFFFFFu) | ((uint32_t)l.diffuse_slot << 24);
     r.cos_cutoff = -1.0f;
     for (int c = 0; c < 3; ++c) r.radiance[c] = srgb_to_linear(l.color[c]);
     r.attenuation[0] = 1.0f;

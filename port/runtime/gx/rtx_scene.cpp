@@ -33,7 +33,7 @@ struct TransformConstants {
 static_assert(sizeof(TransformConstants) == 64, "DrawBlock layout");
 constexpr UINT kTransformConstantWords = sizeof(TransformConstants) / 4;
 
-constexpr uint8_t kClassMask[kRtxClassCount] = {kRtxMaskOpaque, kRtxMaskAlphaTested, kRtxMaskTranslucent};
+constexpr uint8_t kClassMask[kRtxClassCount] = {kRtxMaskOpaque, kRtxMaskAlphaTested, kRtxMaskTranslucent, kRtxMaskFighter};
 
 uint64_t align_up(uint64_t value, uint64_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
 
@@ -260,6 +260,8 @@ bool RtxScene::build(ID3D12GraphicsCommandList4* list, unsigned slot, const floa
     r.roughness = d.roughness;
     r.ambient = d.ambient;
     r.channel = d.channel;
+    r.light_first = d.light_first;
+    r.light_count = d.light_count;
     if (d.draw_index < frame_draws) ((uint32_t*)s.draw_table_cpu)[d.draw_index] = (uint32_t)n;
     base += count;
     triangles += count / 3;
@@ -277,7 +279,7 @@ bool RtxScene::build(ID3D12GraphicsCommandList4* list, unsigned slot, const floa
     D3D12_RAYTRACING_GEOMETRY_DESC& g = geometry_descs_[n];
     g = {};
     g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    g.Flags = d.cls == kRtxOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
+    g.Flags = d.cls == kRtxOpaque || d.cls == kRtxFighter ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
                                   : D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION;
     g.Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
     g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;

@@ -44,7 +44,12 @@ class PcSettingsUI {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 public:
-  PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options);
+  // rtv_format: the swap chain's DXGI_FORMAT (28 R8G8B8A8_UNORM; 24 R10G10B10A2_UNORM while HDR10
+  // output is on).
+  PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options,
+               int rtv_format = 28);
+  // HDR10 output: the panel's colours are PQ-encoded at this paper white (nits); 0 = SDR.
+  static void set_hdr_paper_white(float nits);
   ~PcSettingsUI();
   bool begin(RenderOptions& options); // returns true when render configuration changed
   void draw(ID3D12GraphicsCommandList* list);

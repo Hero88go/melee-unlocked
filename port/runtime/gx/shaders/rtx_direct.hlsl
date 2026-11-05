@@ -17,6 +17,8 @@ struct GeometryRecord {    // rtx_scene.h RtxGeometryRecord
   float roughness;
   uint ambient;            // GX ambient register of channel 0, RGBA8 (r low)
   uint channel;            // 1 lit, 2 ambient from vertex, 4 material from vertex
+  uint light_first;        // the draw's own light set in Lights
+  uint light_count;
 };
 
 struct Light {             // rtx_lights.h RtxLightRecord
@@ -41,6 +43,10 @@ Texture2D<float4> Raster : register(t7);                  // the picture as GX d
 Texture2D<float4> Overlay : register(t8);                 // what the raster drew over the surface
 Texture2D<float4> Trans : register(t9);                   // and how much of the surface shows through it
 RWTexture2D<float4> Output : register(u0);
+RWTexture2D<float4> GuideDiffuse : register(u1);
+RWTexture2D<float4> GuideSpecular : register(u2);
+RWTexture2D<float4> GuideNormal : register(u3);
+RWTexture2D<float4> Accum : register(u4);                 // photo mode: the picture so far while the scene is still
 
 cbuffer Frame : register(b0) {
   float4 view_to_world[3];
@@ -53,7 +59,12 @@ cbuffer Frame : register(b0) {
   uint orthographic;
   float ao_radius;           // world units the ambient occlusion rays reach
   float light_scale;         // the game's light colours to radiance
+  uint main_light_count;     // the main light set: Lights[0 .. main_light_count)
+  float look;                // 0 Faithful (GX's lighting with ray-traced visibility) .. 1 Remastered
+  uint switches;             // 1 shadows, 2 ambient occlusion, 4 fighters' shadows on baked stages
+  uint still_frames;         // photo mode: presents the scene has stood still (0 moving or off)
 };
+static const uint kShadows = 1u, kAmbientOcclusion = 2u, kFighterShadows = 4u, kBounce = 8u, kReflections = 16u, kSkin = 32u;
 
 static const float kPi = 3.14159265;
 static const uint kNone = 0xFFFFFFFFu;
@@ -113,18 +124,21 @@ float3 cone_direction(float3 d, float angle, inout uint rng) {
   return normalize(t * (cos(phi) * sin_t) + b * (sin(phi) * sin_t) + d * cos_t);
 }
 
-// True when nothing opaque lies between `origin` and `origin + dir * length`.
-bool visible(float3 origin, float3 dir, float length) {
+// True when nothing in `mask` lies between `origin` and `origin + dir * length`. Shadow casters are
+// opaque, cut-out and fighter surfaces (0x0B); fighters alone are 0x08.
+bool visible(float3 origin, float3 dir, float length, uint mask) {
   RayDesc ray;
   ray.Origin = origin;
   ray.Direction = dir;
   ray.TMin = 0.0;
   ray.TMax = length;
   RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE> q;
-  q.TraceRayInline(Scene, RAY_FLAG_NONE, 0x03, ray);   // opaque and cut-out surfaces cast shadows
+  q.TraceRayInline(Scene, RAY_FLAG_NONE, mask, ray);
   q.Proceed();
   return q.CommittedStatus() == COMMITTED_NOTHING;
 }
+static const uint kCasters = 0x0Bu, kFighterCasters = 0x08u;
+
 
 float3 ggx_specular(float3 n, float3 v, float3 l, float roughness, float3 f0) {
   const float3 h = normalize(v + l);
@@ -139,11 +153,130 @@ float3 ggx_specular(float3 n, float3 v, float3 l, float roughness, float3 f0) {
 }
 
 float3 unpack_rgb8(uint c) { return float3(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF) / 255.0; }
+// Whether GX lit the draw with this light: its slot in the channel's light mask (rtx_scene.h channel
+// bits 8-16, rtx_lights.h flags bits 24-31).
+bool in_light_mask(uint channel, Light l) {
+  if ((channel & 0x10000u) == 0u) return true;
+  const uint slot = l.flags >> 24;
+  return slot < 8u && ((channel >> (8u + slot)) & 1u) != 0u;
+}
+
+// ---------------------------------------------------------------- surfaces rays hit
+struct RtVertex {          // shaders/rtx_transform.hlsl
+  float3 position;
+  float3 normal;
+  uint color;
+  uint flags;
+  float2 uv[4];
+};
+StructuredBuffer<RtVertex> Vertices : register(t10);
+Texture2D<float4> Textures[] : register(t0, space1);   // the renderer's whole shader-visible heap
+SamplerState LinearWrap : register(s0);
+static const uint kNoTextures = 0xFFFFFFFFu;
+static const uint kGeometryNoNormals = 1u << 4;
+static const uint kGeometryTintedReflection = 1u << 5;   // the env map's colour tints its reflection
+
+struct Hit {
+  bool found;
+  float3 position;
+  float3 normal;           // facing the ray
+  float3 albedo;           // linear: texture 0 times the vertex colour (as GX drew it for baked draws)
+  bool lit;                // GX lights it (else its light is baked into the albedo)
+  float3 ambient;          // its GX ambient (linear)
+};
+
+float4 unpack_rgba8(uint word) { return float4(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu, word >> 24) / 255.0; }
+
+Hit trace_surface(float3 origin, float3 dir, float tmax) {
+  Hit h = (Hit)0;
+  RayDesc ray;
+  ray.Origin = origin;
+  ray.Direction = dir;
+  ray.TMin = 0.0;
+  ray.TMax = tmax;
+  RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+  q.TraceRayInline(Scene, RAY_FLAG_NONE, kCasters, ray);
+  q.Proceed();
+  if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return h;
+  const GeometryRecord r = Records[q.CommittedInstanceID() + q.CommittedGeometryIndex()];
+  const uint first = r.first_vertex + q.CommittedPrimitiveIndex() * 3;
+  const RtVertex v0 = Vertices[first], v1 = Vertices[first + 1], v2 = Vertices[first + 2];
+  const float2 bc = q.CommittedTriangleBarycentrics();
+  const float3 w = float3(1.0 - bc.x - bc.y, bc.x, bc.y);
+  float3 nrm = v0.normal * w.x + v1.normal * w.y + v2.normal * w.z;
+  if ((r.flags & kGeometryNoNormals) != 0u || dot(nrm, nrm) < 1e-12)
+    nrm = cross(v1.position - v0.position, v2.position - v0.position);
+  nrm = normalize(nrm);
+  if (dot(nrm, dir) > 0.0) nrm = -nrm;
+  const float4 c = unpack_rgba8(v0.color) * w.x + unpack_rgba8(v1.color) * w.y + unpack_rgba8(v2.color) * w.z;
+  const float2 uv = v0.uv[0] * w.x + v1.uv[0] * w.y + v2.uv[0] * w.z;
+  float4 t = float4(1, 1, 1, 1);
+  if (r.texture_set != kNoTextures) t = Textures[NonUniformResourceIndex(r.texture_set)].SampleLevel(LinearWrap, uv, 2);
+  const bool vertex_colour = (r.channel & 4u) != 0u || (r.channel & 1u) == 0u;
+  h.found = true;
+  h.position = origin + dir * q.CommittedRayT();
+  h.normal = nrm;
+  h.albedo = srgb_to_linear(saturate((vertex_colour ? c.rgb : 1.0) * t.rgb));
+  h.lit = (r.channel & 1u) != 0u;
+  h.ambient = srgb_to_linear(unpack_rgb8(r.ambient));
+  return h;
+}
+
+// The light leaving a hit toward the ray: a lit surface under the sun (one shadow ray) and its
+// ambient, at the game's brightness; a baked surface as GX drew it.
+float3 hit_radiance(Hit h, float3 sky, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
+  if (!h.found) return sky;
+  if (!h.lit) return h.albedo;
+  float3 light = h.ambient;
+  const float3 to_sun = cone_direction(-sun_dir, sun_radius, rng);
+  const float nl = dot(h.normal, to_sun);
+  if (nl > 0.0 && any(sun > 0.0) && visible(h.position + h.normal * 0.05, to_sun, 1.0e6, kCasters)) light += sun * nl;
+  const float3 total = h.ambient + sun;
+  return h.albedo * light / max(1.0, max(total.r, max(total.g, total.b)));
+}
+
+// A GGX-distributed reflection direction around the mirror direction (visible normals would be
+// better; this is the plain half-vector sample).
+float3 glossy_direction(float3 n, float3 v, float roughness, inout uint rng) {
+  const float a = max(roughness * roughness, 0.002);
+  const float u = rand01(rng), w = rand01(rng);
+  const float phi = 2.0 * kPi * u;
+  const float cos_t = sqrt((1.0 - w) / (1.0 + (a * a - 1.0) * w)), sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+  float3 t, b;
+  basis(n, t, b);
+  const float3 h = normalize(t * (cos(phi) * sin_t) + b * (sin(phi) * sin_t) + n * cos_t);
+  return reflect(-v, h);
+}
+
+// Ray Reconstruction's guides (rtx_integrator.h RtxFrameOutputs), at the render size: the surface's
+// diffuse albedo, its specular albedo (the split-sum environment response), and its view-space
+// normal with roughness (Streamline's packed layout; the renderer passes identity camera matrices,
+// so view space is the space RR reads). Pixels with no surface get albedo 1 and no normal.
+float3 specular_albedo(float3 f0, float nv, float roughness) {
+  const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022), c1 = float4(1.0, 0.0425, 1.04, -0.04);
+  const float4 r = roughness * c0 + c1;
+  const float a004 = min(r.x * r.x, exp2(-9.28 * nv)) * r.x + r.y;
+  const float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
+  return saturate(f0 * ab.x + ab.y);
+}
+void write_guides(uint2 px, float3 diffuse, float3 specular, float3 view_normal, float roughness) {
+  GuideDiffuse[px] = float4(saturate(diffuse), 1);
+  GuideSpecular[px] = float4(specular, 1);
+  GuideNormal[px] = float4(view_normal, roughness);
+}
+
 
 // Out to the presenter, which takes linear light (it encodes for the display).
-void emit(uint2 px, float3 lit) {
+void emit(uint2 px, float3 lit, float3 albedo) {
+  // Photo mode: a still scene averages every present's light (up to 256 presents), so the picture
+  // refines to a clean, converged image while paused. The light is averaged apart from the surface
+  // colour, so textures stay as sharp as the raster under the camera's sub-pixel jitter.
+  const float3 base = max(albedo, 0.02);
+  float3 light = lit / base;
+  if (still_frames > 0u) light = lerp(Accum[px].rgb, light, 1.0 / (float)(min(still_frames, 255u) + 1u));
+  Accum[px] = float4(light, 1);
   // What the raster drew over the surface goes back on top, composed as GX blended it (encoded).
-  const float3 shown = linear_to_srgb(lit) * Trans[px].rgb + Overlay[px].rgb;
+  const float3 shown = linear_to_srgb(light * base) * Trans[px].rgb + Overlay[px].rgb;
   Output[px] = float4(srgb_to_linear(shown), 1);
 }
 
@@ -155,6 +288,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float4 nd = GNormal[px];
   if (draw == 0u || nd.w <= 0.0) {
     Output[px] = float4(srgb_to_linear(Raster[px].rgb), 1);
+    write_guides(px, 1.0, 0.0, 0.0, 1.0);
     return;
   }
 
@@ -174,42 +308,113 @@ void main(uint3 id : SV_DispatchThreadID) {
     view_dir = d;
   }
   const float3 p = to_world_point(view_pos);
-  const float3 n = normalize(to_world_direction(nd.xyz));
+  // GX's normal lights the surface directly (as the game does: a part whose normals face away from
+  // the camera stays dark); rays leave from the side the camera sees.
   const float3 v = -normalize(to_world_direction(view_dir));
+  const float3 n_gx = normalize(to_world_direction(nd.xyz));
+  const float3 n = dot(n_gx, v) < 0.0 ? -n_gx : n_gx;
   const float3 albedo = srgb_to_linear(GAlbedo[px].rgb);
+  const bool shadows = (switches & kShadows) != 0u;
+  uint rng = hash32(px.x + px.y * 4099u + frame_index * 0x9e3779b9u);
+  const float3 origin = p + n * (0.02 + nd.w * 0.0004);   // off the surface, more so far away
 
-  // The scene's ambient light and sun, for surfaces with no record of their own.
-  float3 ambient_light = 0, sun = 0;
-  for (uint j = 0; j < light_count; ++j) {
-    if (Lights[j].type == 0u) ambient_light += Lights[j].radiance;
-    if (Lights[j].type == 1u) sun += Lights[j].radiance;
-  }
-
+  // The draw's material and its own light set (fighters keep theirs, the stage its own).
   float roughness = 0.85;
   float3 f0 = 0.04;
-  float3 ambient = ambient_light;
-  bool lit_by_gx = true;
+  uint first = 0, count = min(main_light_count, light_count);
+  bool lit_by_gx = true, own_ambient = false;
+  uint channel = 0;
+  float3 ambient_gx = 0;   // GX's ambient register, as GX uses it (encoded)
   const uint record = draw - 1u < draw_count ? DrawRecords[draw - 1u] : kNone;
   if (record != kNone) {
     const GeometryRecord r = Records[record];
     roughness = r.roughness;
     f0 = unpack_rgb8(r.specular);
-    if ((r.channel & 2u) == 0u) ambient = srgb_to_linear(unpack_rgb8(r.ambient));   // the draw's own GX ambient
+    if ((r.flags & kGeometryTintedReflection) != 0u) f0 = albedo * srgb_to_linear(f0);   // its own colour, tinted
     lit_by_gx = (r.channel & 1u) != 0u;
+    own_ambient = (r.channel & 2u) == 0u;
+    channel = r.channel;
+    ambient_gx = unpack_rgb8(r.ambient);
+    if (r.light_count) { first = r.light_first; count = r.light_count; }
   }
+
+  write_guides(px, albedo, specular_albedo(f0, saturate(dot(n, v)), roughness), nd.xyz, roughness);
+
+  // The set's ambient light and sun.
+  float3 ambient_light = 0, sun = 0;
+  float3 sun_dir = float3(0, -1, 0);
+  float sun_radius = 0.03;
+  for (uint j = first; j < first + count; ++j) {
+    const Light l = Lights[j];
+    if (l.type == 0u) ambient_light += l.radiance;
+    if (l.type == 1u && (in_light_mask(channel, l) || !lit_by_gx)) { sun += l.radiance; sun_dir = l.direction; sun_radius = l.radius; }
+  }
+
   if (!lit_by_gx) {
-    // GX does not light this draw (its light is baked in): it stays as drawn.
-    emit(px, albedo);
+    // GX does not light this draw: its light is baked in, and it stays as drawn, except where a
+    // fighter stands between it and the stage's sun (the stage's own shadows are already baked).
+    float3 baked = albedo;
+    if (shadows && (switches & kFighterShadows) != 0u && any(sun > 0.0)) {
+      const float3 to_sun = cone_direction(-sun_dir, sun_radius, rng);
+      if (dot(n, to_sun) > 0.0 && !visible(origin, to_sun, 1.0e6, kFighterCasters)) {
+        // As dark as the stage's own shade: GX's share of ambient in its light (Faithful, softened),
+        // or the physical one (Remastered).
+        const float3 amb_e = linear_to_srgb(ambient_light), sun_e = linear_to_srgb(sun);
+        const float3 faithful = saturate(amb_e / max(amb_e + sun_e, 1e-3) + 0.25);
+        const float3 remastered = saturate(ambient_light / max(ambient_light + sun, 1e-3));
+        baked *= lerp(faithful, remastered, look);
+      }
+    }
+    if ((switches & kReflections) != 0u && roughness <= 0.3) {
+      // The game faked this surface's shine with an environment map; a traced reflection of the
+      // real scene goes over it.
+      const float3 dir = glossy_direction(n, v, roughness, rng);
+      const Hit h = trace_surface(origin, dir, 1.0e5);
+      baked += 0.5 * specular_albedo(f0, saturate(dot(n, v)), roughness) *
+               hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng);
+    }
+    emit(px, baked, albedo);
     return;
   }
 
-  uint rng = hash32(px.x + px.y * 4099u + frame_index * 0x9e3779b9u);
-  const float3 origin = p + n * (0.02 + nd.w * 0.0004);   // off the surface, more so far away
-  // Ambient: the light from everywhere, shadowed by what is close around the surface.
-  float3 lit = albedo * ambient * (visible(origin, cosine_direction(n, rng), ao_radius) ? 1.0 : 0.0);
-  for (uint i = 0; i < light_count; ++i) {
+  const float3 ambient = own_ambient ? srgb_to_linear(ambient_gx) : ambient_light;
+  // HSD lights a material with a white channel and gives it its own ambient colour (the material's
+  // ambient times the scene's ambient light: state.c HSD_SetupRenderMode), so a fighter's skin tone
+  // can live there rather than in its albedo. That colour over the ambient light is how the surface
+  // answers light from everywhere, sky or bounced alike.
+  const float3 ambient_reflect = own_ambient && any(ambient_light > 1e-3) ? saturate(ambient / max(ambient_light, 1e-3)) : 1.0;
+  // The light from everywhere. Bounce light: one cosine-weighted ray; what it hits sends its own
+  // light back (a lit surface under the sun, a baked one as drawn), what it misses the ambient sky.
+  // Without bounce light, ambient occlusion: the ambient light where the ray reaches open sky within
+  // ao_radius.
+  float ao = 1.0;
+  float3 indirect = ambient;
+  float3 bounce_extra = 0;
+  const float3 gather = cosine_direction(n, rng);
+  if ((switches & kBounce) != 0u) {
+    const Hit h = trace_surface(origin, gather, 1.0e5);
+    const float3 from_hit = hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng) * ambient_reflect;
+    indirect = h.found && (switches & kAmbientOcclusion) == 0u ? max(from_hit, ambient) : from_hit;
+    if (h.found) bounce_extra = from_hit;
+    ao = h.found && length(h.position - p) < ao_radius ? 0.0 : 1.0;
+  } else if ((switches & kAmbientOcclusion) != 0u) {
+    ao = visible(origin, gather, ao_radius, kCasters) ? 1.0 : 0.0;
+    indirect = ambient * ao;
+  }
+  // Remastered: physically based (linear light). Faithful: GX's own sum (encoded colours, clamped
+  // per channel), with the same ray-traced visibility, and bounce light on top.
+  // HSD keeps a fighter's skin and cloth tone in its ambient colour, so occlusion darkens that
+  // light at most by half: faces keep their colour in the folds and under a cap.
+  const bool fighter = record != kNone && (Records[record].flags & 2u) != 0u;
+  if (fighter && own_ambient) indirect = max(indirect, 0.5 * ambient);
+  float3 pbr = albedo * indirect;
+  float3 gx_sum = (own_ambient ? ambient_gx : linear_to_srgb(ambient_light)) * (fighter ? max(ao, 0.5) : ao);
+  // Soft skin: light scatters under a fighter's surface, so it wraps past the shadow line and the
+  // terminator warms (wrap lighting with a subsurface tint; matte fighter surfaces only).
+  const bool skin = (switches & kSkin) != 0u && record != kNone && (Records[record].flags & 1u) != 0u && roughness > 0.5;
+  for (uint i = first; i < first + count; ++i) {
     const Light l = Lights[i];
-    if (l.type == 0u) continue;
+    if (l.type == 0u || !in_light_mask(channel, l)) continue;
     float3 to_light;
     float distance;
     float falloff = 1.0;
@@ -233,17 +438,32 @@ void main(uint3 id : SV_DispatchThreadID) {
         falloff *= saturate((c - l.cos_cutoff) / max(1.0 - l.cos_cutoff, 1e-3));
       }
     }
-    const float nl = dot(n, to_light);
-    if (nl <= 0.0 || falloff <= 0.0) continue;
-    if (!visible(origin, to_light, distance)) continue;
+    const float nl = dot(n_gx, to_light);
+    const float nl_diffuse = skin ? saturate((nl + 0.4) / 1.4) : nl;
+    if (nl_diffuse <= 0.0 || falloff <= 0.0) continue;
+    if (shadows && !visible(origin, to_light, distance, kCasters)) continue;
     // GX lights a surface with colour * N.L, a Lambert surface under an irradiance of pi * colour;
     // the highlight gets the same irradiance.
-    lit += l.radiance * falloff * (albedo * nl + kPi * ggx_specular(n, v, to_light, roughness, f0));
+    const float3 scatter = skin ? lerp(float3(1.0, 0.78, 0.66), 1.0, saturate(nl * 2.0)) : 1.0;
+    pbr += l.radiance * falloff * (albedo * nl_diffuse * scatter + kPi * ggx_specular(n_gx, v, to_light, roughness, f0));
+    gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0);
   }
   // GX clamps ambient plus lights at 1 per channel, so a surface facing the sun shows exactly its
-  // material colour however far past 1 they add up. Scaling by that sum keeps the game's brightness
-  // there; shade and shadow come out darker than GX's flat ambient, as light really falls off.
-  const float3 total = ambient + sun;
-  lit *= light_scale / max(1.0, max(total.r, max(total.g, total.b)));
-  emit(px, lit);
+  // material colour however far past 1 they add up; the same scale keeps the game's brightness.
+  float3 total = ambient;
+  for (uint k = first; k < first + count; ++k)
+    if (Lights[k].type != 0u && in_light_mask(channel, Lights[k])) total += Lights[k].radiance;
+  pbr *= 1.0 / max(1.0, max(total.r, max(total.g, total.b)));
+  // Reflections: a glossy surface (roughness up to 0.5) sees the real scene in its highlight.
+  float3 reflection = 0;
+  if ((switches & kReflections) != 0u && roughness <= 0.5) {
+    const float3 dir = glossy_direction(n, v, roughness, rng);
+    if (dot(dir, n) > 0.0) {
+      const Hit h = trace_surface(origin, dir, 1.0e5);
+      reflection = specular_albedo(f0, saturate(dot(n, v)), roughness) * hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng);
+    }
+  }
+  float3 faithful = srgb_to_linear(GAlbedo[px].rgb * saturate(gx_sum));
+  faithful += 0.5 * albedo * bounce_extra;
+  emit(px, (lerp(faithful, pbr, look) + reflection) * light_scale, albedo);
 }

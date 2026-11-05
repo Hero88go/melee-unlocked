@@ -211,10 +211,9 @@ struct RenderOptions {
   // Source Port mod profiles and offline 20XX TE options are available under Mods in 0.8.5.
   static constexpr bool kModFeaturesAvailable = true;
   static bool mod_features_available() { return kModFeaturesAvailable && !host::gameplay::vanilla_only(); }
-  // DXR path tracing and Ray Reconstruction: not offered in 0.8. They rebuild the whole stage's
-  // ray tracing geometry every frame, which dropped the picture to a few frames per second in
-  // matches. Hidden and forced off (saved values ignored) until that is reworked.
-  static constexpr bool kPathTracingAvailable = false;
+  // Path tracing (Video > Ray tracing): the rtx_* path tracer on the GPU scene. The 0.7 pass that
+  // rebuilt the stage on the CPU every frame is retired (MELEE_DXR_LEGACY=1 for comparison).
+  static constexpr bool kPathTracingAvailable = true;
   // Content views (source_host.cpp): with a mod profile, Direct uses the mod when this is on (the
   // default), the retail game otherwise; Unranked, Teams and Party always use the retail game.
   bool mods_in_direct = true;
@@ -382,8 +381,21 @@ struct RenderOptions {
   float crt_curve = 1.0f;     // the home television's screen curve, 1 as designed, 0 flat to 3 (crt_look)
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   float screen_space_ao = 0.0f; // 0..1 depth-based contact shading; display-only, not ray traced
-  bool path_tracing = false;       // D3D12 DXR diffuse indirect bounce, display-only and off by default
-  bool ray_reconstruction = false; // DLSS-RR denoising of the path-traced HDR input; needs NVIDIA runtime
+  bool path_tracing = false;       // Video > Ray tracing: the path tracer, matches only, display-only, off by default
+  bool ray_reconstruction = true;  // DLSS-RR denoising of the path-traced HDR input (on with path tracing); needs NVIDIA runtime
+  int rtx_look = 100;              // 0 Faithful (the game's own lighting, ray-traced visibility) .. 100 Remastered
+  bool rtx_shadows = true;         // ray-traced shadows from the game's lights
+  bool rtx_ao = true;              // ray-traced ambient occlusion
+  bool rtx_fighter_shadows = true; // fighters' shadows on stages whose light is baked in
+  bool rtx_bounce = true;          // bounce light: light reflected off the stage onto everything lit
+  bool rtx_reflections = true;     // traced reflections on glossy and mirror-like surfaces
+  bool rtx_skin = true;            // soft skin: light scattering under fighters' matte surfaces
+  bool rtx_photo_mode = true;      // a still (paused) scene keeps refining to a clean, converged picture
+  bool rtx_radiance_cache = true;  // multi-bounce light from a world-space radiance cache (NVIDIA build: SHaRC)
+  bool hdr_output = false;         // HDR10 output when Windows HDR is on (Direct3D 12)
+  int hdr_paper_white = 200;       // nits of the game's white in HDR (80..500)
+  int hdr_peak = 0;                // the display's peak nits for highlights; 0 = what Windows reports
+  int rtx_integrator = 0;          // 0 Melee Unlocked's, 1 NVIDIA RTXDI (local builds that have it)
   float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;
   int anisotropy = 4;         // texture anisotropic filtering 1..16 (4: the High preset, the default)
   int msaa = 1;               // multisampling: 1 off, 2/4/8 samples (EFB drawn multisampled, resolved before every read)
