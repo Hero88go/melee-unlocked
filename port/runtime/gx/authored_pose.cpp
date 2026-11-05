@@ -51,9 +51,9 @@ void diagnose_first_s8(size_t index, size_t chain_size, int matrix_index, double
   for (const auto& track : current.tracks) {
     std::fprintf(stderr, "[M8-S8-TRACK] channel=%u start=%d value_format=%u slope_format=%u bytes=%zu data=",
                  track.channel, track.start_frame, track.value_format, track.slope_format,
-                 track.bytes.size());
-    const size_t bytes = std::min<size_t>(track.bytes.size(), 16);
-    for (size_t k = 0; k < bytes; ++k) std::fprintf(stderr, "%02X", track.bytes[k]);
+                 track.size());
+    const size_t bytes = std::min<size_t>(track.size(), 16);
+    for (size_t k = 0; k < bytes; ++k) std::fprintf(stderr, "%02X", track.data()[k]);
     std::fputc('\n', stderr);
   }
   std::fflush(stderr);
@@ -70,7 +70,7 @@ bool inverse(const Matrix& m,Matrix& o) {
   return true;
 }
 bool same_track(const NativeMelee::PackedTrack& a,const NativeMelee::PackedTrack& b) {
-  return a.start_frame==b.start_frame&&a.channel==b.channel&&a.value_format==b.value_format&&a.slope_format==b.slope_format&&a.bytes==b.bytes;
+  return a.start_frame==b.start_frame&&a.channel==b.channel&&a.value_format==b.value_format&&a.slope_format==b.slope_format&&NativeMelee::SameBytes(a,b);
 }
 // Inverse-transpose of the 3x3 part (the GX normal matrix), row-major 3x3 output.
 bool normal_matrix(const Matrix& m, float out[9]) {

@@ -59,8 +59,10 @@ bool valid_joints(const MuNativePoseSnapshot& snapshot) {
   return expected_track == snapshot.track_count;
 }
 
-// One joint of a snapshot that passed valid_joints, with its tracks.
-AuthoredJoint copy_joint(const MuNativePoseSnapshot& snapshot, const MuNativePoseJoint& source) {
+// One joint of a snapshot that passed valid_joints, with its tracks. Their bytes are copied to
+// `storage` (the chain's buffer, AuthoredPose::track_bytes), which advances past them; the tracks
+// are views into it.
+AuthoredJoint copy_joint(const MuNativePoseSnapshot& snapshot, const MuNativePoseJoint& source, uint8_t*& storage) {
   AuthoredJoint joint;
   joint.generation = source.generation;
   joint.flags = source.flags;
@@ -84,10 +86,12 @@ AuthoredJoint copy_joint(const MuNativePoseSnapshot& snapshot, const MuNativePos
     track.value_format = source_track.value_format;
     track.slope_format = source_track.slope_format;
     if (source_track.byte_length != 0) {
-      const uint8_t* begin = snapshot.track_bytes + source_track.byte_offset;
-      track.bytes.assign(begin, begin + source_track.byte_length);
+      std::memcpy(storage, snapshot.track_bytes + source_track.byte_offset, source_track.byte_length);
+      track.view = storage;
+      track.view_size = source_track.byte_length;
+      storage += source_track.byte_length;
     }
-    joint.tracks.push_back(std::move(track));
+    joint.tracks.push_back(track);
   }
   return joint;
 }
@@ -112,9 +116,9 @@ bool same_joint(const AuthoredJoint& a, const MuNativePoseSnapshot& snapshot, co
     const MuNativePoseTrack& source_track = snapshot.tracks[source.first_track + t];
     if (track.start_frame != source_track.start_frame || track.channel != source_track.channel ||
         track.value_format != source_track.value_format || track.slope_format != source_track.slope_format ||
-        track.bytes.size() != source_track.byte_length ||
+        track.size() != source_track.byte_length ||
         (source_track.byte_length &&
-         std::memcmp(track.bytes.data(), snapshot.track_bytes + source_track.byte_offset, source_track.byte_length)))
+         std::memcmp(track.data(), snapshot.track_bytes + source_track.byte_offset, source_track.byte_length)))
       return false;
   }
   return true;
@@ -153,9 +157,19 @@ std::shared_ptr<const AuthoredPose> intern_chain(const MuNativePoseSnapshot& sna
     for (uint32_t i = 0; equal && i < count; ++i) equal = same_joint(existing->joints[i], snapshot, snapshot.joints[joint(i)]);
     if (equal) return existing;
   }
+  // One allocation for every track byte of the chain (valid_joints bounded each range), not one per track.
+  size_t byte_count = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const MuNativePoseJoint& source = snapshot.joints[joint(i)];
+    for (uint32_t t = 0; t < source.track_count; ++t) byte_count += snapshot.tracks[source.first_track + t].byte_length;
+  }
   auto chain = std::make_shared<AuthoredPose>();
+  std::shared_ptr<uint8_t[]> buffer;   // built from `new` directly: it frees the bytes if it cannot allocate
+  if (byte_count) buffer = std::shared_ptr<uint8_t[]>(new uint8_t[byte_count]);
+  uint8_t* storage = buffer.get();
+  chain->track_bytes = std::move(buffer);
   chain->joints.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) chain->joints.push_back(copy_joint(snapshot, snapshot.joints[joint(i)]));
+  for (uint32_t i = 0; i < count; ++i) chain->joints.push_back(copy_joint(snapshot, snapshot.joints[joint(i)], storage));
   bucket.push_back(chain);
   return chain;
 }

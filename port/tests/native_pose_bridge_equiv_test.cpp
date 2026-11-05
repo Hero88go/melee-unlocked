@@ -83,7 +83,7 @@ bool copy_joints(const MuNativePoseSnapshot& snapshot, std::vector<AuthoredJoint
 }
 bool same_track(const NativeMelee::PackedTrack& a, const NativeMelee::PackedTrack& b) {
   return a.start_frame == b.start_frame && a.channel == b.channel && a.value_format == b.value_format &&
-         a.slope_format == b.slope_format && a.bytes == b.bytes;
+         a.slope_format == b.slope_format && NativeMelee::SameBytes(a, b);
 }
 bool same_joint(const AuthoredJoint& a, const AuthoredJoint& b) {
   if (a.generation != b.generation || a.flags != b.flags || a.anim_flags != b.anim_flags ||
@@ -248,7 +248,7 @@ bool same_joint_value(const AuthoredJoint& a, const AuthoredJoint& b) {
   for (size_t t = 0; t < a.tracks.size(); ++t) {
     const auto &x = a.tracks[t], &y = b.tracks[t];
     if (x.start_frame != y.start_frame || x.channel != y.channel || x.value_format != y.value_format ||
-        x.slope_format != y.slope_format || x.bytes != y.bytes)
+        x.slope_format != y.slope_format || !NativeMelee::SameBytes(x, y))
       return false;
   }
   return true;
