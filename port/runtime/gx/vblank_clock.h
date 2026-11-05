@@ -106,7 +106,7 @@ class VBlankClock {
     running_ = true;
     thread_ = std::thread([this, output] {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);   // it only sleeps in the wait
-      double last_wake = 0;
+      WakeFilter filter;   // vblank_model.h: returns that are not blanks (a display asleep or off)
       while (running_.load(std::memory_order_relaxed)) {
         const HRESULT hr = output->WaitForVBlank();
         const double now = host::now_seconds();
@@ -115,13 +115,9 @@ class VBlankClock {
           Sleep(5);
           continue;
         }
-        // A display that is asleep or switched off returns from the wait at once instead of waiting
-        // for a blank (seen 2026-11-05: millions of wakes a second, a core spinning at this thread's
-        // priority). No display refreshes faster than about every 1.7 ms (600 Hz), so a return within
-        // a millisecond of the last is not a blank: it is not counted, and the thread sleeps instead.
-        // The time after the sleep is the reference, so the next immediate return is caught too.
-        if (now - last_wake < 0.001) { Sleep(10); last_wake = host::now_seconds(); continue; }
-        last_wake = now;
+        const WakeFilter::Verdict verdict = filter.add(now);
+        if (verdict == WakeFilter::kSleep) { Sleep(10); filter.slept(host::now_seconds()); continue; }
+        if (verdict == WakeFilter::kSkip) continue;
         wakes_.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(mutex_);
         model_.add(now);

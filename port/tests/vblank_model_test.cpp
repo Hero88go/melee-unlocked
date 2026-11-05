@@ -50,6 +50,51 @@ int main() {
     double p = 0, last = 0;
     check(!m.fit(&p, &last), "10 Hz refused");
   }
+  using gx::WakeFilter;
+  {
+    // A display that refreshes: every return is a blank, at 60 Hz and at 500 Hz.
+    for (double hz : {60.0, 500.0}) {
+      WakeFilter f;
+      int blanks = 0;
+      for (int i = 0; i < 200; ++i) blanks += f.add(start + i / hz) == WakeFilter::kBlank;
+      check(blanks == 200, "every refresh is a blank");
+    }
+  }
+  {
+    // 360 Hz, the thread woke 2.2 ms late once: the blank right after it is skipped, nothing sleeps,
+    // and the waits after it count again.
+    const double p = 1.0 / 360.0;
+    WakeFilter f;
+    int blanks = 0, skips = 0, sleeps = 0;
+    for (int i = 0; i < 100; ++i) {
+      const double t = start + i * p + (i == 50 ? 0.0022 : 0.0);
+      const WakeFilter::Verdict v = f.add(t);
+      blanks += v == WakeFilter::kBlank; skips += v == WakeFilter::kSkip; sleeps += v == WakeFilter::kSleep;
+    }
+    check(sleeps == 0, "a late wake never sleeps the thread");
+    check(skips == 1 && blanks == 99, "only the return right after the late wake is skipped");
+  }
+  {
+    // A display asleep: the wait returns every few microseconds. Within a few returns the thread
+    // sleeps, and after a sleep the next immediate return sleeps it again (no spinning).
+    WakeFilter f;
+    double t = start;
+    int counted = 0, before_sleep = 0;
+    WakeFilter::Verdict v = WakeFilter::kBlank;
+    while ((v = f.add(t)) != WakeFilter::kSleep && before_sleep < 100) { counted += v == WakeFilter::kBlank; ++before_sleep; t += 0.000003; }
+    check(v == WakeFilter::kSleep && before_sleep <= 4, "an asleep display sleeps the thread within a few returns");
+    check(counted <= 1, "immediate returns are not counted as blanks");
+    t += 0.010; f.slept(t);
+    check(f.add(t + 0.000003) == WakeFilter::kSleep, "after a sleep, the next immediate return sleeps again");
+    // The display wakes: blanks at 144 Hz resume from a moment unrelated to the sleep's end.
+    t += 0.0004; f.slept(t);
+    int resumed_at = -1;
+    for (int i = 0; i < 20; ++i) if (f.add(t + 0.0003 + i * period) == WakeFilter::kBlank && resumed_at < 0) resumed_at = i;
+    check(resumed_at >= 0 && resumed_at <= 1, "blanks count again once the display refreshes");
+    int later = 0;
+    for (int i = 20; i < 60; ++i) later += f.add(t + 0.0003 + i * period) == WakeFilter::kBlank;
+    check(later == 40, "and every blank after that counts");
+  }
   if (failures) return 1;
   std::printf("vblank model: all checks passed\n");
   return 0;
