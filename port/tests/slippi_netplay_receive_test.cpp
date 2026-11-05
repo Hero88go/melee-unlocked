@@ -124,6 +124,39 @@ void normal_order() {
   check(oversized.pad(129).error == receive::PadError::TooMany && oversized.pads.empty() && oversized.sender_ack == 0,
         "oversized input batch is refused without ACK");
 }
+
+void teams_rematch() {
+  for (const auto order : {std::array<int, 3>{0, 1, 2}, std::array<int, 3>{2, 0, 1}}) {
+    Receiver peers[3];
+    bool shared_running = true;
+    for (auto& peer : peers) { peer.pad(90); peer.speculative(91); }
+    // Reproduce the former production call: only the first remote is cleared.
+    for (int i : order)
+      receive::Selections(selection(), peers[i].merged, shared_running, peers[i].pads, peers[i].early);
+    check(peers[order[0]].pads.empty() && peers[order[1]].pads.size() == 90 && peers[order[2]].pads.size() == 90,
+          "shared match flag leaves two opponents' old inputs in doubles");
+
+    std::array<bool, REMOTE_PLAYER_MAX> running;
+    running.fill(true);
+    for (auto& peer : peers) { peer.pads.clear(); peer.sender_ack = 0; peer.pad(90); peer.speculative(91); }
+    for (int i : order) {
+      auto& peer = peers[i];
+      receive::Selections(selection(), peer.merged, running, i, peer.pads, peer.early);
+      check(peer.pads.empty() && peer.early.entries().empty() && !running[i],
+            "each remote's rematch selection discards its own stale inputs");
+      peer.sender_ack = 0;
+      check(peer.pad(3).error == receive::PadError::None && peer.pads.size() == 3,
+            "each doubles opponent can restart confirmed frame numbering");
+      peer.speculative(4);
+      receive::Selections(selection(), peer.merged, running, i, peer.pads, peer.early);
+      check(peer.pads.size() == 3 && peer.early.entries().size() == 1,
+            "repeated pre-start selection preserves that opponent's new inputs");
+    }
+    for (const auto& peer : peers)
+      check(peer.pads.size() == 3 && peer.pads.front()->frame == 3,
+            "later opponents' selections preserve already accepted rematch inputs");
+  }
+}
 } // namespace
 
 int main() {
@@ -131,6 +164,7 @@ int main() {
   late_prestart_selection();
   identical_rematch_clears_stale();
   normal_order();
-  if (!failures) std::puts("PASS: legacy_failure_proof, late_prestart_selection, identical_rematch_clears_stale, normal_order");
+  teams_rematch();
+  if (!failures) std::puts("PASS: legacy_failure_proof, late_prestart_selection, identical_rematch_clears_stale, normal_order, teams_rematch");
   return failures ? 1 : 0;
 }

@@ -18,6 +18,14 @@ inline void Selections(const PlayerSelections& incoming, PlayerSelections& merge
   running = false;
 }
 
+// Each opponent crosses the rematch boundary independently. Consuming one
+// shared flag lets only the first selection discard its previous game's pads.
+inline void Selections(const PlayerSelections& incoming, PlayerSelections& merged,
+    std::array<bool, REMOTE_PLAYER_MAX>& running, size_t peer,
+    std::deque<std::unique_ptr<Pad>>& pads, host::early_input::Buffer& early) {
+  Selections(incoming, merged, running[peer], pads, early);
+}
+
 enum class PadError { None, TooSmall, TooMany };
 struct PadResult { int64_t inputs; PadError error; };
 

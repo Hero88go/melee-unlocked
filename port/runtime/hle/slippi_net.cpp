@@ -573,8 +573,9 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         host::log("slippi: received selections from player %u (char %u color %u stage %u)", s->player_idx, s->character_id, s->character_color, s->stage_id);
         {
           std::scoped_lock lock(selection_mutex_, timing_mutex_, pad_mutex_);
-          receive::Selections(*s, match_info_.remote[idx], has_game_started_,
+          receive::Selections(*s, match_info_.remote[idx], remote_game_started_, idx,
             remote_pad_queue_[idx], early_pads_[idx]);
+          has_game_started_ = false;
         }
       }
       break;
@@ -1120,6 +1121,7 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
   {
     std::lock_guard<std::mutex> lk(timing_mutex_);
     has_game_started_ = true;
+    remote_game_started_.fill(true);
     for (int i = 0; i < remote_player_count_; ++i) last_frame_timing_[i] = {frame, t};
   }
   {

@@ -289,6 +289,7 @@ class NetplayClient {
   uint8_t remote_player_count_ = 0;
   std::atomic<bool> do_loop_{true};
   bool is_decider_ = false, has_game_started_ = false;
+  std::array<bool, REMOTE_PLAYER_MAX> remote_game_started_{};   // under timing_mutex_
   uint8_t player_idx_ = 0;
   std::unordered_map<std::string, std::map<_ENetPeer*, ActiveConnectionInfo>> active_connections_;
   std::atomic<bool> player_active_[PLAYER_COUNT_MAX] = {};

@@ -182,10 +182,10 @@ bool presenter_self_test(SDL_Window* window, const std::filesystem::path& cache)
   auto backend = create_threaded(window, cache, 1, 240, false);
   double start = 0;
   PresenterStats baseline;
-  for (unsigned source = 0; source < 9; ++source) {
-    const bool warmup = source == 0;
-    const unsigned tick = warmup ? 0 : source - 1;
-    gx::Frame frame; frame.sequence = source + 1; frame.time = warmup ? seconds() : start + tick / 60.0;
+  for (unsigned source = 0; source < 10; ++source) {
+    const bool warmup = source < 2;
+    const unsigned tick = source, measured_tick = warmup ? 0 : source - 2;
+    gx::Frame frame; frame.sequence = source + 1; frame.time = warmup ? seconds() : start + measured_tick / 60.0;
     frame.scene_major = 2; frame.scene_minor = 2;
     gx::DrawCall draw{}; draw.identity = 1; draw.object_generation = 1; draw.primitive = 0x90; draw.vertex_count = 3;
     draw.components = gx::VB_HAS_COL0;
@@ -222,12 +222,13 @@ bool presenter_self_test(SDL_Window* window, const std::filesystem::path& cache)
     backend->submit_and_recycle(frame);
     if (warmup) {
       // A cold HLSL->SPIR-V->GLSL compile can exceed the entire fixture's
-      // measurement span. Complete the same shader and GPU path first, then
+      // measurement span. Warm both the source-only and the two-frame authored
+      // override path (the latter needs a previous frame), then
       // start the independent clocks with a clean statistics baseline.
       dynamic_cast<Presenter&>(*backend).synchronize();
       baseline = presenter_stats(*backend); start = seconds(); continue;
     }
-    std::this_thread::sleep_until(Clock::time_point(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(start + (tick + 1) / 60.0))));
+    std::this_thread::sleep_until(Clock::time_point(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(start + (measured_tick + 1) / 60.0))));
   }
   dynamic_cast<Presenter&>(*backend).synchronize();
   auto stats = presenter_stats(*backend);
