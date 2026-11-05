@@ -170,6 +170,16 @@ def read_symbols(path=SYMBOLS):
             continue
         out.append(Symbol(name, section, addr, int(size.group(1), 16)))
     out.sort(key=lambda s: s.addr)
+    # The native collision renderer keeps this complete 48-vertex array together.
+    # Retail symbols split it after 128 bytes, in the middle of vertex 21. Keep
+    # Gecko's same console byte range mapped to that one native allocation too.
+    for i, s in enumerate(out[:-1]):
+        tail = out[i + 1]
+        if s.name == "lbColl_CylinderPositions" and tail.name == "lbColl_UnknownData":
+            assert s.size == 0x80 and tail.size == 0xA0 and tail.addr == s.addr + s.size
+            s.size += tail.size
+            del out[i + 1]
+            break
     return out
 
 

@@ -585,6 +585,9 @@ mu_boundary_fixture(hud_nana "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_hud_scale.c" m
 mu_boundary_fixture(stage_item_link "${D}/src/melee/it/kinds/itwhitebea.c" mu_whitebea_block_alive mu_whitebea_validate_block)
 mu_boundary_fixture(envelope_ready "${D}/src/sysdolphin/baselib/pobj.c" PObjNativeEnvelopeReady)
 
+add_test(NAME native_collision_geometry
+  COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/check_collision_geometry.py" "${D}/src/melee/lb/lbcollision.c")
+
 # Build every registered executable fixture, including normally excluded targets, before CTest.
 get_property(MU_GAME_DIRECTORY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 set(MU_GAME_TEST_TARGETS)

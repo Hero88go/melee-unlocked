@@ -58,7 +58,7 @@ class YouGame0965MergeTest(unittest.TestCase):
             with self.subTest(name=name):
                 body = function(net, name)
                 self.assertRegex(body, r"^\s*if \(!yougame::session\(\) && !local_peer.enabled\) \{")
-                check = body.split("if (!user_ || !user_->CheckOnlineCompatibility(&error)) {", 1)[1]
+                check = body.split("if (!user_ || !user_->CheckSessionCompatibility(&error)) {", 1)[1]
                 self.assertIn("fail(", check.split("}", 1)[0])
                 self.assertIn("return;", check.split("}", 1)[0])
                 self.assertIn("if (is_mm_terminated_ || state_ != " + state + ") return;", check)
