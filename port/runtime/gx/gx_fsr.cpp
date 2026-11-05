@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <d3d12.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include "../../third_party/fsr/api/include/ffx_api.h"
 #include "../../third_party/fsr/api/include/dx12/ffx_api_dx12.h"
 #include "../../third_party/fsr/upscalers/include/ffx_upscale.h"
+#include "../../third_party/fsr/framegeneration/include/ffx_framegeneration.h"
 
 namespace gx {
 namespace fsr {
@@ -20,6 +22,7 @@ namespace {
 HMODULE g_module = nullptr;
 PfnFfxCreateContext p_create = nullptr;
 PfnFfxDestroyContext p_destroy = nullptr;
+PfnFfxConfigure p_configure = nullptr;
 PfnFfxQuery p_query = nullptr;
 PfnFfxDispatch p_dispatch = nullptr;
 ID3D12Device* g_device = nullptr;
@@ -28,6 +31,13 @@ bool g_ok = false;
 int g_mode = 0;
 uint32_t g_out_w = 0, g_out_h = 0;
 std::string g_provider;
+// Frame generation: its own context, the picture size it was made for, and the frame number AMD's
+// library wants raised by exactly one per frame.
+ffxContext g_fg_ctx = nullptr;
+bool g_fg_ok = false;
+uint32_t g_fg_w = 0, g_fg_h = 0;
+uint64_t g_fg_frame = 0;
+std::string g_fg_provider;
 
 uint32_t quality_of(int mode) {
   switch (mode) {
@@ -97,6 +107,7 @@ bool init(const std::wstring& exe_dir, ID3D12Device* device) {
   if (!g_module) { host::log("fsr: cannot load amd_fidelityfx_loader_dx12.dll (%lu)", GetLastError()); return false; }
   p_create = (PfnFfxCreateContext)(void*)GetProcAddress(g_module, "ffxCreateContext");
   p_destroy = (PfnFfxDestroyContext)(void*)GetProcAddress(g_module, "ffxDestroyContext");
+  p_configure = (PfnFfxConfigure)(void*)GetProcAddress(g_module, "ffxConfigure");
   p_query = (PfnFfxQuery)(void*)GetProcAddress(g_module, "ffxQuery");
   p_dispatch = (PfnFfxDispatch)(void*)GetProcAddress(g_module, "ffxDispatch");
   if (!p_create || !p_destroy || !p_query || !p_dispatch) { host::log("fsr: the FSR loader is missing entry points"); return false; }
@@ -106,12 +117,21 @@ bool init(const std::wstring& exe_dir, ID3D12Device* device) {
   destroy_context();
   g_ok = true;
   host::log("fsr: available (%s)", g_provider.empty() ? "provider not reported" : g_provider.c_str());
+  // Frame generation, the same way, when its DLL is there too.
+  const std::wstring framegen = exe_dir + L"\\amd_fidelityfx_framegeneration_dx12.dll";
+  if (p_configure && GetFileAttributesW(framegen.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    g_fg_ok = true;   // fg_create checks it
+    if (fg_create(1280, 720, 1280, 720)) host::log("fsr: frame generation available (%s)", g_fg_provider.empty() ? "provider not reported" : g_fg_provider.c_str());
+    else { g_fg_ok = false; host::log("fsr: frame generation is not supported on this GPU"); }
+    fg_destroy();
+  }
   return true;
 }
 
 void shutdown() {
+  fg_destroy();
   destroy_context();
-  g_ok = false; g_mode = 0; g_out_w = g_out_h = 0;
+  g_ok = false; g_fg_ok = false; g_mode = 0; g_out_w = g_out_h = 0;
 }
 
 bool available() { return g_ok; }
@@ -173,6 +193,102 @@ bool evaluate(ID3D12GraphicsCommandList* list, const Inputs& in) {
     return false;
   }
   return true;
+}
+
+bool fg_available() { return g_ok && g_fg_ok; }
+std::string fg_provider() { return g_fg_provider; }
+bool fg_ready() { return g_fg_ctx != nullptr; }
+
+void fg_destroy() {
+  if (g_fg_ctx && p_destroy) p_destroy(&g_fg_ctx, nullptr);
+  g_fg_ctx = nullptr; g_fg_w = g_fg_h = 0;
+}
+
+bool fg_create(uint32_t w, uint32_t h, uint32_t max_render_w, uint32_t max_render_h) {
+  if (!g_fg_ok || !g_device) return false;
+  if (g_fg_ctx && g_fg_w == w && g_fg_h == h) return true;
+  fg_destroy();
+  ffxCreateBackendDX12Desc backend{};
+  backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+  backend.device = g_device;
+  // The version link enables the current interface (the PrepareV2 and generation dispatches below).
+  ffxCreateContextDescFrameGenerationVersion version{};
+  version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION;
+  version.version = FFX_FRAMEGENERATION_VERSION;
+  version.header.pNext = &backend.header;
+  ffxCreateContextDescFrameGeneration desc{};
+  desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
+  desc.header.pNext = &version.header;
+  // Reversed depth and render-resolution motion vectors, as the upscaler is given them.
+  desc.flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED;
+  desc.displaySize = {w, h};
+  desc.maxRenderSize = {std::max(max_render_w, 1u), std::max(max_render_h, 1u)};
+  desc.backBufferFormat = FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+  const ffxReturnCode_t r = p_create(&g_fg_ctx, &desc.header, nullptr);
+  if (r != FFX_API_RETURN_OK) { host::log("fsr: frame generation context for %ux%u refused (%u)", w, h, (unsigned)r); g_fg_ctx = nullptr; return false; }
+  ffxQueryGetProviderVersion pv{};
+  pv.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
+  if (p_query(&g_fg_ctx, &pv.header) == FFX_API_RETURN_OK && pv.versionName) g_fg_provider = pv.versionName;
+  g_fg_w = w; g_fg_h = h;
+  return true;
+}
+
+bool fg_generate(ID3D12GraphicsCommandList* list, const FrameInputs& in) {
+  if (!g_fg_ctx || !p_configure) return false;
+  static const float mv_scale = env_float("MELEE_FSR_MV_SCALE", 1.0f);
+  const uint64_t id = ++g_fg_frame;
+  const FfxApiRect2D whole{0, 0, (int32_t)g_fg_w, (int32_t)g_fg_h};
+  auto failed = [](const char* what, ffxReturnCode_t r) {
+    static int logged = 0;
+    if (logged++ < 5) host::log("fsr: frame generation %s failed (%u)", what, (unsigned)r);
+    return false;
+  };
+  // No swap chain of AMD's: only generate, leave presenting to the renderer.
+  ffxConfigureDescFrameGeneration config{};
+  config.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+  config.swapChain = nullptr;
+  config.frameGenerationEnabled = true;
+  config.allowAsyncWorkloads = false;
+  config.flags = FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY;
+  config.onlyPresentGenerated = false;
+  config.generationRect = whole;
+  config.frameID = id;
+  if (const ffxReturnCode_t r = p_configure(&g_fg_ctx, &config.header); r != FFX_API_RETURN_OK) return failed("configure", r);
+  // This frame's depth and motion: what the next generated frame is made from.
+  ffxDispatchDescFrameGenerationPrepareV2 prepare{};
+  prepare.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;
+  prepare.frameID = id;
+  prepare.flags = 0;
+  prepare.commandList = list;
+  prepare.renderSize = {in.render_w, in.render_h};
+  prepare.jitterOffset = {in.jitter_x, in.jitter_y};
+  prepare.motionVectorScale = {mv_scale, mv_scale};   // render pixels, as for the upscaler
+  prepare.frameTimeDelta = in.frame_ms > 0.0f && in.frame_ms < 100.0f ? in.frame_ms : 1000.0f / 60.0f;
+  prepare.reset = in.reset;
+  // The camera as the upscaler is told it (see evaluate). Melee's camera position and axes are not
+  // tracked here; a camera at the origin looking down -z is the neutral answer.
+  prepare.cameraNear = 1.0f;
+  prepare.cameraFar = 20000.0f;
+  prepare.cameraFovAngleVertical = 0.5f;
+  prepare.viewSpaceToMetersFactor = 1.0f;
+  prepare.depth = ffxApiGetResourceDX12(in.depth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+  prepare.motionVectors = ffxApiGetResourceDX12(in.mvec, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+  prepare.cameraUp[1] = 1.0f; prepare.cameraRight[0] = 1.0f; prepare.cameraForward[2] = -1.0f;
+  if (const ffxReturnCode_t r = p_dispatch(&g_fg_ctx, &prepare.header); r != FFX_API_RETURN_OK) return failed("prepare", r);
+  // The frame between the previous picture and this one.
+  ffxDispatchDescFrameGeneration generate{};
+  generate.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
+  generate.commandList = list;
+  generate.presentColor = ffxApiGetResourceDX12(in.color, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+  generate.outputs[0] = ffxApiGetResourceDX12(in.out, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+  generate.numGeneratedFrames = 1;
+  generate.reset = in.reset;
+  generate.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
+  generate.minMaxLuminance[0] = 0.0f; generate.minMaxLuminance[1] = 1.0f;
+  generate.generationRect = whole;
+  generate.frameID = id;
+  if (const ffxReturnCode_t r = p_dispatch(&g_fg_ctx, &generate.header); r != FFX_API_RETURN_OK) return failed("dispatch", r);
+  return !in.reset;
 }
 
 }  // namespace fsr

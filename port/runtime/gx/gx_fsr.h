@@ -44,6 +44,30 @@ struct Inputs {
 // so a region that does not start at (0, 0) is refused (false: the frame is presented natively).
 bool evaluate(ID3D12GraphicsCommandList* list, const Inputs& in);
 
+// Frame generation (amd_fidelityfx_framegeneration_dx12.dll beside the loader, the same download;
+// AMD's library runs FSR Frame Generation 4.0 on Radeon RX 9000 and FidelityFX Frame Generation
+// 3.1.6 on other GPUs). Used without AMD's frame interpolation swap chain: the generated picture is
+// written into a texture of the renderer's, which presents it itself between two rendered frames,
+// so the renderer's own pacing (the waitable swap chain, the presentation loop's deadlines) stays.
+bool fg_available();
+std::string fg_provider();
+// A context for this picture size (the upscaled picture, before the present pass) and the largest
+// render size. Made again for a new size; destroyed when generation stops. The GPU must be idle.
+bool fg_create(uint32_t w, uint32_t h, uint32_t max_render_w, uint32_t max_render_h);
+void fg_destroy();
+bool fg_ready();
+struct FrameInputs {
+  ID3D12Resource* depth; ID3D12Resource* mvec;   // NON_PIXEL_SHADER_RESOURCE, as for evaluate
+  ID3D12Resource* color;                          // this frame's upscaled picture, NON_PIXEL_SHADER_RESOURCE
+  ID3D12Resource* out;                            // the generated picture, UNORDERED_ACCESS, the picture's size
+  uint32_t render_w, render_h;
+  float jitter_x, jitter_y, frame_ms;             // as for evaluate
+  bool reset;                                     // the previous call's picture is not this one's predecessor
+};
+// Records the picture halfway between the previous call's and this one into `out`. False when
+// nothing showable was made: the first frame after a reset or a pause, or a failed dispatch.
+bool fg_generate(ID3D12GraphicsCommandList* list, const FrameInputs& in);
+
 // The render size a mode asks for at an output size (AMD's per-axis ratios), for either renderer.
 inline void render_size_for(int mode, uint32_t out_w, uint32_t out_h, uint32_t* rw, uint32_t* rh) {
   const float k = mode == 11 ? 1.0f : mode == 12 ? 1.5f : mode == 13 ? 1.7f : mode == 14 ? 2.0f : 3.0f;

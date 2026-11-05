@@ -1021,6 +1021,7 @@ struct FsrFile { const char* name; const char* sha256; };
 constexpr FsrFile kFsrFiles[] = {
     {"amd_fidelityfx_loader_dx12.dll", "e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb"},
     {"amd_fidelityfx_upscaler_dx12.dll", "aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace"},
+    {"amd_fidelityfx_framegeneration_dx12.dll", "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6"},
     {"amd_fidelityfx_loader_vk.dll", "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9"},
     {"amd_fidelityfx_upscaler_vk.dll", "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7"},
 };

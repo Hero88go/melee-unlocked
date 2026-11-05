@@ -3445,7 +3445,7 @@ PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueu
   desc.NumDescriptors = (UINT)state.used.size(); desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&state.heap)))) host::die("PC settings descriptor heap creation failed");
   state.stride = device->GetDescriptorHandleIncrementSize(desc.Type);
-  ImGui_ImplDX12_InitInfo info{}; info.Device = device; info.CommandQueue = queue; info.NumFramesInFlight = 3;
+  ImGui_ImplDX12_InitInfo info{}; info.Device = device; info.CommandQueue = queue; info.NumFramesInFlight = 6;   // FSR frame generation draws the overlay twice per frame (two presents)
   info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; info.DSVFormat = DXGI_FORMAT_UNKNOWN;
   info.SrvDescriptorHeap = state.heap.Get(); info.UserData = &state;
   info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* i, D3D12_CPU_DESCRIPTOR_HANDLE* cpu, D3D12_GPU_DESCRIPTOR_HANDLE* gpu) {
@@ -6549,7 +6549,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (false)
 #endif
     {
-    // Vulkan is offered only where a Vulkan 1.3 GPU is present; it draws without DLSS and XeSS (and shader presets for now).
+    // Vulkan is offered only where a Vulkan 1.3 GPU is present; it draws without DLSS and XeSS (FSR upscaling runs on it).
     const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)", "Vulkan (experimental)"};
     int api_index = options.api == RenderApi::D3D11 ? 1 : options.api == RenderApi::Vulkan ? 2 : 0;
     if (settings_combo("Graphics backend", &api_index, backends, vulkan_available() ? 3 : 2)) {
@@ -6650,6 +6650,37 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "GPU costs subtracted out -- an estimate, not a separate measurement.");
     }
     if (d3d11 && vk_fsr) ImGui::BeginDisabled();   // Vulkan: frame generation and Reflex stay Direct3D 12 features
+#ifdef _WIN32
+    // With an FSR mode, frame generation is AMD's (the FSR download): 2x, on any graphics card,
+    // Direct3D 12. It reuses FSR's depth and motion vectors as DLSS's reuses DLSS's.
+    if (fsr::is_fsr_mode(options.dlss_mode) && !d3d11) {
+      const char* fsr_fg_modes[] = {"Off", "2x (AMD FSR)"};
+      int fsr_fg = options.frame_generation_mode > 0 ? 1 : 0;
+      // Installed is enough to choose it (the launcher's settings window never loads AMD's library);
+      // only a game that loaded it and found frame generation unsupported keeps the row closed.
+      bool fsr_installed = fsr::available();
+      if (!fsr_installed) {
+        wchar_t module[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+        if (length > 0 && length < MAX_PATH) fsr_installed = host::updater::fsr_present(std::filesystem::path(module).parent_path().u8string());
+      }
+      const bool fg_unsupported = fsr::available() && !fsr::fg_available();
+      ImGui::BeginDisabled(!fsr_installed || fg_unsupported);
+      ImGui::SetNextItemWidth(160.0f);
+      if (settings_combo("Frame generation", &fsr_fg, fsr_fg_modes, 2)) { options.frame_generation_mode = fsr_fg; changed = true; }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("AMD FSR Frame Generation: a generated frame between each pair of rendered frames,\n"
+                          "in matches. It adds input delay, so use it for solo play rather than competitive\n"
+                          "online matches. Needs an FSR upscaling mode; menus are shown as rendered.");
+      if (!fsr_installed) settings_hint("Frame generation with FSR needs the AMD FSR download above.");
+      else if (fg_unsupported) settings_hint("AMD's frame generation did not start on this graphics card.");
+      else if (!fsr::available() && options.frame_generation_mode > 0) settings_hint("Frame generation starts with the game.");
+      else if (options.frame_generation_mode > 0 && !fsr::fg_provider().empty())
+        settings_hint("AMD's library runs %s on this graphics card.", fsr::fg_provider().c_str());
+    } else
+#endif
+    {
     // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode. Build the
     // list from Streamline's present-thread capability query: RTX 40 usually reports 2x, while newer
     // RTX 50 drivers can expose fixed multipliers through 6x and Dynamic.
@@ -6709,7 +6740,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("NVIDIA DLSS Frame Generation (RTX 40 series and newer): generated frames between\n"
                         "rendered frames. RTX 50 Multi Frame Generation can offer up to 6x when the\n"
                         "driver reports support. It adds input delay, so use it for solo play rather\n"
-                        "than competitive online matches. Needs DLSS upscaling; Reflex turns on with it.");
+                        "than competitive online matches. Needs DLSS upscaling; Reflex turns on with it.\n"
+                        "With an FSR mode, AMD's frame generation is offered here instead (any card).");
+    }
     // NVIDIA Reflex, laid out the way games offer it.
     {
       const char* modes[] = {"Off", "On", "On + Boost"};

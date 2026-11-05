@@ -347,6 +347,7 @@ class D3D12Backend : public Backend {
     set_arcade_display(ArcadeSource::Settings, arcade_settings_bits(opts_)); set_shield_colors(opts_.shield_color, opts_.shield_color_online);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
+    fg_presenter_wait(); fg_presenter_stop();
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");
     user_shader::d3d12_release();   // the GPU is idle: the preset's resources can go before the device
     if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr); texpack::report();
@@ -658,6 +659,104 @@ class D3D12Backend : public Backend {
   // The chosen upscaler's library is loaded and runs on this GPU.
   bool upscaler_available() const { return xess_active() ? xess::available() : fsr_active() ? fsr::available() : streamline::available(); }
   double fsr_last_time_ = 0;   // the previous FSR upscale, for its frame time
+  // AMD FSR frame generation (fsr::fg_generate), without AMD's swap chain. Each rendered frame in a
+  // match is presented twice: first the generated picture (halfway from the previous frame), then,
+  // half a frame later, the rendered one. Both present passes are recorded in the frame's own list,
+  // the generated picture into the back buffer and the rendered one into fg_real_ (the EFB is
+  // cleared after the present pass, and the pass reads the HUD from it); a small second list copies
+  // fg_real_ into the next back buffer after the first present.
+  ComPtr<ID3D12Resource> fg_out_;    // the generated picture, the upscaled picture's size (UAV)
+  ComPtr<ID3D12Resource> fg_real_;   // the rendered frame's finished window picture (COPY_SOURCE between uses)
+  ComPtr<ID3D12GraphicsCommandList> fg_list_;
+  ComPtr<ID3D12CommandAllocator> fg_allocators_[2];
+  bool fsr_fg_on_ = false;          // this frame generates (decided in submit_frame before the draws)
+  bool fsr_fg_generated_ = false;   // this frame has a generated picture to show first
+  bool fsr_fg_running_ = false;     // resources made and the loop told the 2x rate
+  uint64_t fsr_fg_prev_frame_ = ~0ull;   // frames_presented_ of the last generating frame (continuity)
+  double fsr_fg_last_present_ = 0, fsr_fg_interval_ = 0;   // the rendered frames' cadence, for the halfway present
+  uint64_t fsr_fg_shown_ = 0;   // generated frames presented (logged every 600)
+  bool fsr_fg_failed_ = false;  // a start failed: not tried again this session
+  // The second present of each generated pair, issued at its time by a thread of its own (as AMD's
+  // and NVIDIA's frame generation present from theirs), so the thread drawing frames (with
+  // sub-frames off, the simulation's too) never waits half a frame for it. Anything that picks or
+  // replaces a back buffer waits for a pending one first (fg_presenter_wait).
+  std::thread fg_presenter_;
+  std::mutex fg_mutex_;
+  std::condition_variable fg_cv_;
+  bool fg_pending_ = false, fg_quit_ = false;
+  double fg_due_ = 0;
+  UINT fg_interval_ = 0, fg_flags_ = 0;
+  void fg_presenter_wait() {
+    if (!fg_presenter_.joinable()) return;
+    std::unique_lock<std::mutex> lock(fg_mutex_);
+    fg_cv_.wait(lock, [&] { return !fg_pending_; });
+  }
+  void fg_presenter_post(double due, UINT interval, UINT flags) {
+    if (!fg_presenter_.joinable()) { fg_quit_ = false; fg_presenter_ = std::thread([this] { fg_presenter_run(); }); }
+    { std::lock_guard<std::mutex> lock(fg_mutex_); fg_due_ = due; fg_interval_ = interval; fg_flags_ = flags; fg_pending_ = true; }
+    fg_cv_.notify_all();
+  }
+  void fg_presenter_stop() {
+    if (!fg_presenter_.joinable()) return;
+    { std::lock_guard<std::mutex> lock(fg_mutex_); fg_quit_ = true; }
+    fg_cv_.notify_all();
+    fg_presenter_.join();
+  }
+  void fg_presenter_run() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    for (;;) {
+      double due; UINT interval, flags;
+      {
+        std::unique_lock<std::mutex> lock(fg_mutex_);
+        fg_cv_.wait(lock, [&] { return fg_pending_ || fg_quit_; });
+        if (!fg_pending_) break;   // asked to stop with nothing left to present
+        due = fg_due_; interval = fg_interval_; flags = fg_flags_;
+      }
+      // Its own place in the display queue (one frame at most), as the first present took one.
+      if (frame_latency_waitable_) WaitForSingleObjectEx(frame_latency_waitable_, 100, FALSE);
+      for (;;) {
+        const double remaining = due - Stopwatch::now();
+        if (remaining <= 0) break;
+        if (timer && remaining > 0.0004) {
+          LARGE_INTEGER t; t.QuadPart = -(LONGLONG)((remaining - 0.0002) * 1e7);
+          if (SetWaitableTimer(timer, &t, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+          else SwitchToThread();
+        } else YieldProcessor();
+      }
+      swapchain_->Present(interval, flags);
+      { std::lock_guard<std::mutex> lock(fg_mutex_); fg_pending_ = false; }
+      fg_cv_.notify_all();
+    }
+    if (timer) CloseHandle(timer);
+  }
+  // MELEE_D3D12_VALIDATION=1: the debug layer's message queue, read after every frame; each message
+  // kind is logged once (at most 200 kinds).
+  bool validation_wanted_ = false;
+  ComPtr<ID3D12InfoQueue> info_queue_;
+  std::unordered_set<int> validation_seen_;
+  void poll_validation() {
+    if (!info_queue_) return;
+    const UINT64 n = info_queue_->GetNumStoredMessages();
+    std::vector<uint8_t> buffer;
+    for (UINT64 i = 0; i < n; ++i) {
+      SIZE_T size = 0;
+      if (FAILED(info_queue_->GetMessage(i, nullptr, &size)) || !size) continue;
+      buffer.resize(size);
+      auto* m = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
+      if (FAILED(info_queue_->GetMessage(i, m, &size))) continue;
+      if (m->Severity > D3D12_MESSAGE_SEVERITY_WARNING) continue;
+      if (!validation_seen_.insert((int)m->ID).second || validation_seen_.size() > 200) continue;
+      host::log("d3d12 validation %s: %.*s", m->Severity <= D3D12_MESSAGE_SEVERITY_ERROR ? "ERROR" : "warning",
+                (int)std::min<SIZE_T>(m->DescriptionByteLength, 700), m->pDescription ? m->pDescription : "");
+    }
+    info_queue_->ClearStoredMessages();
+  }
+  bool fsr_fg_wanted() const;
+  void update_fsr_frame_generation();
+  void release_fsr_frame_generation();
+  void present_pass(const EfbCopy& c, bool upscaled, ID3D12Resource* path_color, ID3D12Resource* picture,
+                    ID3D12Resource* target, D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_RESOURCE_STATES target_state);
   // The name of the upscaling mode for the log, whichever vendor it belongs to.
   const char* upscaler_name() const { return xess_active() ? xess::mode_name(opts_.dlss_mode) : fsr_active() ? fsr::mode_name(opts_.dlss_mode) : dlss_mode_name((DlssMode)opts_.dlss_mode); }   // draws with motion history (diagnostic, logged with DLSS on)
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
@@ -814,6 +913,14 @@ class D3D12Backend : public Backend {
 void D3D12Backend::init() {
 #ifdef _DEBUG
   { ComPtr<ID3D12Debug> dbg; if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer(); }
+#else
+  // MELEE_D3D12_VALIDATION=1 (tests): Direct3D 12's debug layer (Windows' Graphics Tools), its
+  // errors and warnings in the log (poll_validation), as MELEE_VULKAN_VALIDATION does for Vulkan.
+  if (const char* v = std::getenv("MELEE_D3D12_VALIDATION"); v && *v == '1') {
+    ComPtr<ID3D12Debug> dbg;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) { dbg->EnableDebugLayer(); validation_wanted_ = true; }
+    else host::log("d3d12: validation asked for, but the debug layer is not installed (Graphics Tools)");
+  }
 #endif
   {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -823,7 +930,8 @@ void D3D12Backend::init() {
     // so a slow driver or DLSS start never looks like a hang.
     host::loading_show(L"Starting NVIDIA DLSS and Reflex", 1, 4);
     if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0)
-    streamline::init(dir, opts_.frame_generation_mode > 0);
+    // DLSS Frame Generation's plugin only for a DLSS mode: with an FSR mode, frame generation is AMD's.
+    streamline::init(dir, opts_.frame_generation_mode > 0 && !fsr::is_fsr_mode(opts_.dlss_mode));
     host::loading_show(L"Starting the graphics device", 2, 4);
   }
   ComPtr<IDXGIFactory4> factory;
@@ -870,6 +978,10 @@ void D3D12Backend::init() {
   }
   }
   if (!device_) host::die("D3D12: no adapter");
+  if (validation_wanted_) {
+    if (SUCCEEDED(device_.As(&info_queue_))) host::log("d3d12: validation layer on");
+    else host::log("d3d12: validation layer on, but its messages cannot be read from this device");
+  }
   g_check_device = device_.Get();
   g_check_settings_path = opts_.settings_path;
   {
@@ -910,7 +1022,7 @@ void D3D12Backend::init() {
   create_swapchain(waitable_wanted() && !opts_.exclusive_fullscreen);
 
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
-  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 9;   // 8: the MSAA EFB
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 10;   // 8: the MSAA EFB; 9: FSR frame generation's rendered picture
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)), "rtv heap");
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; hd.NumDescriptors = 2;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)), "dsv heap");
@@ -1052,6 +1164,7 @@ void D3D12Backend::init() {
 // driver does not give us the object the swap chain simply presents with the default queue, with
 // one log line saying so. Any previous swap chain must already be released by the caller.
 void D3D12Backend::create_swapchain(bool waitable) {
+  fg_presenter_wait();
   if (frame_latency_waitable_) { CloseHandle(frame_latency_waitable_); frame_latency_waitable_ = nullptr; }
   waitable_timeouts_ = 0;
   DXGI_SWAP_CHAIN_DESC1 sd{};
@@ -1106,6 +1219,7 @@ void D3D12Backend::wait_frame_latency() {
 }
 
 void D3D12Backend::create_swapchain_targets(bool resize) {
+  fg_presenter_wait();
   for (auto& b : backbuffers_) b.Reset();
   if (resize) {
     const HRESULT hr = swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, swapchain_flags());
@@ -1131,6 +1245,7 @@ void D3D12Backend::create_swapchain_targets(bool resize) {
 }
 
 void D3D12Backend::apply_fullscreen_mode() {
+  fg_presenter_wait();
   if (!swapchain_) return;
   BOOL was_exclusive = FALSE;
   swapchain_->GetFullscreenState(&was_exclusive, nullptr);
@@ -1665,6 +1780,82 @@ void D3D12Backend::pause_frame_generation_for_resize() {
       (uint32_t)DXGI_FORMAT_R16G16_FLOAT, (uint32_t)DXGI_FORMAT_R32_FLOAT);
   }
   fg_applied_ = -1;
+}
+
+// FSR frame generation runs with an FSR mode in Direct3D 12, Frame generation on, AMD's frame
+// generation DLL loaded, and the 8-bit picture (not the path tracer's floating-point one).
+bool D3D12Backend::fsr_fg_wanted() const {
+  return opts_.frame_generation_mode > 0 && fsr_active() && dlss_active_ && dlss_out_ && fsr::fg_available() &&
+         !opts_.path_tracing && !fsr_fg_failed_;
+}
+
+// Each frame before the draws: makes the generated picture, the rendered picture and AMD's context
+// for the current picture and window sizes (the GPU idle first, only when one changes), releases
+// them when generation stops, and decides whether this frame generates (a match, a shown frame).
+void D3D12Backend::update_fsr_frame_generation() {
+  fsr_fg_generated_ = false;   // set by this frame's upscale (present_efb) when it generates
+  if (!fsr_fg_wanted()) {
+    if (fsr_fg_running_) release_fsr_frame_generation();
+    fsr_fg_on_ = false;
+    if (fsr_active()) fg_multiplier_.store(1, std::memory_order_relaxed);
+    return;
+  }
+  const bool sized = fg_out_ && fg_real_ && fsr::fg_ready() &&
+                     fg_out_->GetDesc().Width == dlss_out_w_ && fg_out_->GetDesc().Height == dlss_out_h_ &&
+                     fg_real_->GetDesc().Width == (UINT64)client_w_ && fg_real_->GetDesc().Height == (UINT)client_h_;
+  if (!sized) {
+    fg_presenter_wait();
+    wait_gpu();
+    fg_out_.Reset(); fg_real_.Reset();
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+    rd.Width = dlss_out_w_; rd.Height = dlss_out_h_;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    const bool out_ok = SUCCEEDED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&fg_out_)));
+    rd.Width = (UINT64)client_w_; rd.Height = (UINT)client_h_;   // the swap chain's size and format, for the copy
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    const bool real_ok = out_ok && SUCCEEDED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr, IID_PPV_ARGS(&fg_real_)));
+    bool list_ok = fg_list_ != nullptr;
+    if (real_ok && !list_ok) {
+      static_assert(sizeof(fg_allocators_) / sizeof(fg_allocators_[0]) == FRAME_SLOTS, "one allocator per frame slot");
+      list_ok = true;
+      for (auto& a : fg_allocators_) list_ok = list_ok && SUCCEEDED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)));
+      list_ok = list_ok && SUCCEEDED(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, fg_allocators_[0].Get(), nullptr, IID_PPV_ARGS(&fg_list_)));
+      if (list_ok) fg_list_->Close();
+      else fg_list_.Reset();
+    }
+    if (!real_ok || !list_ok || !fsr::fg_create(dlss_out_w_, dlss_out_h_, (uint32_t)efb_w_, (uint32_t)efb_h_)) {
+      host::log("fsr: frame generation could not start for a %ux%u picture; it stays off this session", dlss_out_w_, dlss_out_h_);
+      fsr_fg_failed_ = true;
+      release_fsr_frame_generation();
+      return;
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE real_rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); real_rtv.ptr += 9 * rtv_size_;
+    device_->CreateRenderTargetView(fg_real_.Get(), nullptr, real_rtv);
+    fsr_fg_prev_frame_ = ~0ull;
+    fsr_fg_interval_ = 0; fsr_fg_last_present_ = 0;
+    if (!fsr_fg_running_)
+      host::log("fsr: frame generation 2x (%s) for a %ux%u picture in a %dx%d window", fsr::fg_provider().empty() ? "AMD FSR" : fsr::fg_provider().c_str(),
+                dlss_out_w_, dlss_out_h_, client_w_, client_h_);
+    fsr_fg_running_ = true;
+  }
+  // Only a running match is generated: menus and results show exactly what was drawn, at the
+  // rendered rate. Nor a frame that is not shown, or a window that cannot be seen.
+  fsr_fg_on_ = in_match_ && dlss_in_match_ && !skip_present_ && !occluded_;
+  fg_multiplier_.store(fsr_fg_on_ ? 2 : 1, std::memory_order_relaxed);
+}
+
+void D3D12Backend::release_fsr_frame_generation() {
+  fg_presenter_wait(); fg_presenter_stop();
+  wait_gpu();
+  fsr::fg_destroy();
+  fg_out_.Reset(); fg_real_.Reset();
+  if (fsr_fg_running_) host::log("fsr: frame generation off");
+  fsr_fg_running_ = fsr_fg_on_ = fsr_fg_generated_ = false;
+  fsr_fg_prev_frame_ = ~0ull;
+  fg_multiplier_.store(1, std::memory_order_relaxed);
 }
 void D3D12Backend::wait_gpu() {
   ++fence_value_;
@@ -2806,6 +2997,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
 }
 
 void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
+  fg_presenter_wait();   // the previous frame's second present (FSR frame generation) is out first
   resolve_efb();
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
   ID3D12Resource* path_color = nullptr;
@@ -2887,6 +3079,25 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
                      fsr_jitter * jitter_x_ * opts_.dlss_jitter_sign, fsr_jitter * jitter_y_ * opts_.dlss_jitter_sign, frame_ms, xess_reset_};
       xess_reset_ = false;   // the history restart flag both of these vendors' upscalers share
       upscaled = fsr::evaluate(list_.Get(), fi);
+      // Frame generation from the same depth and motion (still readable by compute here) and the
+      // picture just upscaled: the frame between the previous picture and this one, into fg_out_.
+      // A frame that does not follow the last generating one starts the generator over.
+      fsr_fg_generated_ = false;
+      if (upscaled && fsr_fg_on_ && fg_out_) {
+        D3D12_RESOURCE_BARRIER pic{};
+        pic.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        pic.Transition = {dlss_out_.Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+        list_->ResourceBarrier(1, &pic);
+        const bool follows = fsr_fg_prev_frame_ + 1 == (uint64_t)frames_presented_;
+        const fsr::FrameInputs gi{efb_depth_.Get(), mvec_.Get(), dlss_out_.Get(), fg_out_.Get(), in.in_w, in.in_h,
+                                  fi.jitter_x, fi.jitter_y, frame_ms, fi.reset || !follows};
+        fsr_fg_generated_ = fsr::fg_generate(list_.Get(), gi);
+        fsr_fg_prev_frame_ = (uint64_t)frames_presented_;
+        std::swap(pic.Transition.StateBefore, pic.Transition.StateAfter);
+        D3D12_RESOURCE_BARRIER after[2] = {pic, {}};
+        after[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; after[1].UAV.pResource = fg_out_.Get();
+        list_->ResourceBarrier(2, after);
+      }
       for (auto& b : fb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
       list_->ResourceBarrier(3, fb);
     } else {
@@ -2983,8 +3194,27 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   static const bool debug_show_input = [] { const char* e = std::getenv("MELEE_DEBUG_DLSS_INPUT_ODD"); return e && e[0] == '1'; }();
   if (debug_show_input && upscaled && dlss_in_place_ && (frames_presented_ & 1)) upscaled = false;
   if (opts_.flicker_scan) record_flicker_scan();
-  ID3D12Resource* source = upscaled ? dlss_out_.Get() : (path_color ? path_color : efb_color_.Get());
-  D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
+  D3D12_CPU_DESCRIPTOR_HANDLE back_rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); back_rtv.ptr += bb * rtv_size_;
+  if (fsr_fg_generated_ && upscaled && fg_out_ && fg_real_) {
+    // FSR frame generation: the generated picture into the back buffer, shown first; the rendered
+    // frame into fg_real_, copied into the next back buffer after that present (submit_frame).
+    present_pass(c, upscaled, path_color, fg_out_.Get(), backbuffers_[bb].Get(), back_rtv, D3D12_RESOURCE_STATE_PRESENT);
+    D3D12_CPU_DESCRIPTOR_HANDLE real_rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); real_rtv.ptr += 9 * rtv_size_;
+    present_pass(c, upscaled, path_color, nullptr, fg_real_.Get(), real_rtv, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  } else {
+    fsr_fg_generated_ = false;
+    present_pass(c, upscaled, path_color, nullptr, backbuffers_[bb].Get(), back_rtv, D3D12_RESOURCE_STATE_PRESENT);
+  }
+}
+
+// The present pass: border art, the picture (upscaled or the EFB, or `picture` in its place: FSR
+// frame generation's generated one, the upscaled picture's size) with the HUD composite, colour and
+// CRT or the shader preset, and the settings overlay, into `target` (the back buffer, or FSR frame
+// generation's rendered picture), which is in `target_state` before and after.
+void D3D12Backend::present_pass(const EfbCopy& c, bool upscaled, ID3D12Resource* path_color, ID3D12Resource* picture,
+                                ID3D12Resource* target, D3D12_CPU_DESCRIPTOR_HANDLE rtv, D3D12_RESOURCE_STATES target_state) {
+  ID3D12Resource* source = picture ? picture : upscaled ? dlss_out_.Get() : (path_color ? path_color : efb_color_.Get());
+  D3D12_RESOURCE_STATES source_state = picture || upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
       path_color ? (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) : D3D12_RESOURCE_STATE_RENDER_TARGET;
   // With DLSS the current EFB and the HUD mask are read too (HUD composite).
   const bool hud_composite = upscaled && hud_mask_;
@@ -2992,7 +3222,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {source, 0, source_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  b[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  b[1].Transition = {target, 0, target_state, D3D12_RESOURCE_STATE_RENDER_TARGET};
   b[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[2].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   b[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -3017,7 +3247,6 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     depth_srv.Texture2D.MipLevels = 1;
     device_->CreateShaderResourceView(efb_depth_.Get(), &depth_srv, h3); }
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
-  D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
   float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars (black, as on Dolphin and a TV)
   list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   list_->ClearRenderTargetView(rtv, border, 0, nullptr);
@@ -3189,7 +3418,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   back[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[0].Transition = {source, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, source_state};
   back[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  back[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT};
+  back[1].Transition = {target, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, target_state};
   back[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[2].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
   back[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -3311,6 +3540,7 @@ void D3D12Backend::swap_in_ready_replacements() {
 }
 
 void D3D12Backend::capture_backbuffer() {
+  fg_presenter_wait();
   // Read back the last presented back buffer into a PPM (development aid).
   UINT bb = (swapchain_->GetCurrentBackBufferIndex() + 2) % 3;
   ID3D12Resource* src = backbuffers_[bb].Get();
@@ -3662,12 +3892,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   {
     // DLSS-G is only valid while Melee is drawing a running 3D match. Keep it off during
     // menus, loading screens, and results; those frames do not have usable motion/depth inputs.
-    const int want_fg = opts_.frame_generation_mode > 0 && in_match_ && dlss_active_ && !xess_active() && streamline::frame_generation_available()
+    // With an FSR mode chosen, frame generation is AMD's (update_fsr_frame_generation below).
+    const int want_fg = opts_.frame_generation_mode > 0 && in_match_ && dlss_active_ && !xess_active() && !fsr_active() &&
+                        streamline::frame_generation_available()
                         ? opts_.frame_generation_mode : 0;
     {
       // Why frame generation is held off in a match while it is chosen: logged once per reason.
       static int logged_reason = -1;
-      const int reason = opts_.frame_generation_mode <= 0 || !in_match_ ? 0
+      const int reason = opts_.frame_generation_mode <= 0 || !in_match_ || fsr_active() ? 0
                        : !dlss_active_ ? 1 : xess_active() ? 2 : !streamline::frame_generation_available() ? 3 : 0;
       if (reason != logged_reason) {
         logged_reason = reason;
@@ -3693,6 +3925,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                            std::memory_order_relaxed);
     }
   }
+  update_fsr_frame_generation();
   if (!reflex_token_) streamline::pcl_marker(0);   // under Reflex pacing it was set after the sleep
   streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
@@ -3803,7 +4036,8 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // tearing. A 0.8.99 player with a 240 Hz G-Sync screen and V-Sync off saw tearing.
       // Not while DLSS frame generation runs: it paces its own frames and needs V-Sync off in the
       // game (NVIDIA: V-Sync for it belongs in the driver).
-      const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
+      // FSR frame generation paces its two presents itself (the second one below), as DLSS's does.
+      const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0 && !fsr_fg_generated_);
       const double present_call = Stopwatch::now();
       // While the window cannot be seen (minimized, or alt-tabbed out of exclusive fullscreen),
       // only test whether it can again, as DXGI asks. Presenting on regardless fed screen capture
@@ -3827,6 +4061,45 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       opts_.dlss_mode = 0;
       fg_applied_ = 0;
     }
+    // MELEE_FSR_FG_SHOW_GENERATED=1 (tests): only the generated pictures are shown, so a capture
+    // holds one to set beside the rendered frames around it.
+    static const bool show_generated_only = [] { const char* v = std::getenv("MELEE_FSR_FG_SHOW_GENERATED"); return v && *v == '1'; }();
+    if (fsr_fg_generated_ && !show_generated_only) {
+      // FSR frame generation: the generated picture is on its way; the rendered frame follows half
+      // a rendered frame later (the cadence measured at these presents, at most 50 ms apart), from
+      // fg_real_ into the next back buffer, presented by the presenter thread at that time.
+      const double shown = Stopwatch::now();
+      if (fsr_fg_last_present_ > 0) {
+        const double gap = shown - fsr_fg_last_present_;
+        if (gap > 0 && gap < 0.1) fsr_fg_interval_ = fsr_fg_interval_ > 0 ? fsr_fg_interval_ * 0.9 + gap * 0.1 : gap;
+      }
+      fsr_fg_last_present_ = shown;
+      const double halfway = shown + 0.5 * std::min(fsr_fg_interval_, 0.05);
+      check(fg_allocators_[slot_]->Reset(), "frame generation allocator reset");
+      check(fg_list_->Reset(fg_allocators_[slot_].Get(), nullptr), "frame generation list reset");
+      const UINT next = swapchain_->GetCurrentBackBufferIndex();
+      D3D12_RESOURCE_BARRIER to_copy{};
+      to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      to_copy.Transition = {backbuffers_[next].Get(), 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST};
+      fg_list_->ResourceBarrier(1, &to_copy);
+      fg_list_->CopyResource(backbuffers_[next].Get(), fg_real_.Get());
+      std::swap(to_copy.Transition.StateBefore, to_copy.Transition.StateAfter);
+      fg_list_->ResourceBarrier(1, &to_copy);
+      check(fg_list_->Close(), "frame generation list close");
+      ID3D12CommandList* fg_lists[] = {fg_list_.Get()};
+      queue_->ExecuteCommandLists(1, fg_lists);
+      // The present itself is the presenter thread's (fg_presenter_run), at its time, so this
+      // thread (with sub-frames off, the simulation's as well) goes on with the next frame.
+      // V-Sync on: issued half a refresh early, so it is shown at the blank nearest halfway.
+      // The refresh the presentation loop reports every frame (60 without it: test runs only).
+      const double hz = vrr_nominal_hz_ > 0 ? vrr_nominal_hz_ : 60.0;
+      fg_presenter_post(opts_.vsync ? halfway - 0.5 / std::max(hz, 30.0) : halfway, opts_.vsync ? 1u : 0u,
+                        (!opts_.vsync && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0u);
+      ++fsr_fg_shown_;
+      if (fsr_fg_shown_ % 600 == 0)
+        host::log("fsr: frame generation, %llu generated frames shown, rendered frames %.2f ms apart",
+                  (unsigned long long)fsr_fg_shown_, fsr_fg_interval_ * 1000.0);
+    }
     diag("swapchain Present and pacing");
     g_prof[10] += present_sw.lap();
     streamline::pcl_marker(5);
@@ -3836,6 +4109,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     streamline::frame_generation_after_present();
     if (frames_presented_ % 600 == 0) streamline::log_frame_generation();
   }
+  poll_validation();
   // Signal, do not wait: the next frames render while the GPU finishes this one.
   ++fence_value_;
   queue_->Signal(fence_.Get(), fence_value_);

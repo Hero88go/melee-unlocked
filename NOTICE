@@ -99,8 +99,9 @@ Shipped beside the program under their own terms, not covered by the GPL:
   SDKs License); third-party notices: docs/licenses/nvidia-dlss-third-party.txt
 - NVIDIA Reflex (sl.reflex.dll, sl.pcl.dll): port/third_party/streamline/reflex.license.txt
 - Intel XeSS (libxess.dll, Intel Simplified Software License): port/third_party/xess/LICENSE.txt
-- AMD FSR (amd_fidelityfx_loader_dx12/vk.dll, amd_fidelityfx_upscaler_dx12/vk.dll, AMD's signed
-  binaries, fetched by the game from AMD's repository when the player asks): port/third_party/fsr/LICENSE.md
+- AMD FSR (amd_fidelityfx_loader_dx12/vk.dll, amd_fidelityfx_upscaler_dx12/vk.dll,
+  amd_fidelityfx_framegeneration_dx12.dll, AMD's signed binaries, fetched by the game from AMD's
+  repository when the player asks): port/third_party/fsr/LICENSE.md
 - onnxruntime (onnxruntime.dll, MIT): port/third_party/onnxruntime/LICENSE; third-party notices:
   port/third_party/onnxruntime/ThirdPartyNotices.txt
 - Phillip's trained policies (ProAI\*.onnx, MIT, from huggingface.co/vladfi/phillip-models):
