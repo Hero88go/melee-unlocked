@@ -152,6 +152,11 @@ with L/R on character select. The importer reads `mexSelectChr`'s CSP stride and
 external fighter ID and index to attach its matching portrait automatically. Reduced-size CI8
 and CI4 portraits and independent image/palette animation tracks are supported. The pack's code
 is never executed. This imports costumes of existing fighters; it does not add custom fighter code.
+For added colors that rename their skeleton and material exports, the importer uses the pack's
+declared visibility slot and export symbols to adapt those names for the existing native slot.
+Model bytes and source files stay unchanged. The original source hash is verified before adapting
+the served archive, including after a restart. A separate `mexSelectChr.dat` takes precedence over
+the older character-select archive when the pack supplies both.
 
 Existing disc catalogs rescan once after this update, preserving selections and manually assigned
 portraits. An alternate without an explicit mapping keeps the standard picture. Unsupported model

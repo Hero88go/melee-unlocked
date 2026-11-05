@@ -77,6 +77,8 @@ public:
 struct MexCostume {
   std::string family;
   uint32_t external = 0, costume = 0;
+  std::string joint, matanim;
+  uint32_t visibility = 0;
 };
 using MexCostumes = std::map<std::string, MexCostume>;  // lower-case file name -> explicit costume row
 
@@ -111,12 +113,56 @@ inline bool mex_costumes(const std::vector<uint8_t>& bytes, MexCostumes* out) {
       // Names select a file already found in this pack; never open a path supplied by the archive.
       if (file.size() < 7 || file.find_first_of("/\\:") != std::string::npos || file.find("..") != std::string::npos) continue;
       for (char& c : file) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-      const auto inserted = found.emplace(file, MexCostume{codes[ext], ext, costume});
+      MexCostume row{codes[ext], ext, costume};
+      row.visibility = dat.word(list + costume * 16 + 12);
+      for (const auto field : {std::make_pair(4u, &row.joint), std::make_pair(8u, &row.matanim)}) {
+        uint32_t symbol;
+        if (dat.pointer(list + costume * 16 + field.first, &symbol) && !dat.string(symbol, field.second)) return false;
+      }
+      const auto inserted = found.emplace(file, std::move(row));
       if (!inserted.second && (inserted.first->second.external != ext || inserted.first->second.costume != costume)) ambiguous.insert(file);
     }
   }
   for (const auto& file : ambiguous) found.erase(file);
   *out = std::move(found);
+  return true;
+}
+
+// Only the archive's exported names change. Data, model objects, relocations and external
+// references keep their original values; the source ISO is never modified.
+inline bool alias_roots(const std::vector<uint8_t>& bytes, const std::map<std::string, std::string>& aliases,
+                        std::vector<uint8_t>* out) {
+  out->clear();
+  Archive dat(bytes);
+  if (aliases.empty() || aliases.size() > 2 || !dat.parse()) return false;
+  auto raw = [&](size_t at) {
+    const uint8_t* p = bytes.data() + at;
+    return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  };
+  const uint64_t roots = raw(12), references = raw(16);
+  const uint64_t table = 32ull + raw(4) + uint64_t(raw(8)) * 4, names = table + (roots + references) * 8;
+  std::vector<uint8_t> rewritten(bytes.begin(), bytes.begin() + size_t(names));
+  auto put = [&](size_t at, uint32_t value) {
+    for (int i = 0; i < 4; ++i) rewritten[at + i] = uint8_t(value >> (24 - i * 8));
+  };
+  std::set<std::string> exports, used;
+  for (uint64_t i = 0; i < roots + references; ++i) {
+    const uint64_t at = names + raw(size_t(table + i * 8 + 4));
+    if (at >= bytes.size()) return false;
+    const char* name = reinterpret_cast<const char*>(bytes.data() + at);
+    const size_t length = strnlen(name, bytes.size() - size_t(at));
+    if (!length || length > 255 || length == bytes.size() - at) return false;
+    std::string symbol(name, length);
+    const auto alias = aliases.find(symbol);
+    if (i < roots && alias != aliases.end()) { used.insert(symbol); symbol = alias->second; }
+    if (symbol.empty() || symbol.size() > 255 || (i < roots && !exports.insert(symbol).second)) return false;
+    for (unsigned char c : symbol) if (c < 32 || c > 126) return false;
+    put(size_t(table + i * 8 + 4), uint32_t(rewritten.size() - names));
+    rewritten.insert(rewritten.end(), symbol.begin(), symbol.end()); rewritten.push_back(0);
+  }
+  if (used.size() != aliases.size() || rewritten.size() > 64ull * 1024 * 1024) return false;
+  put(0, uint32_t(rewritten.size()));
+  *out = std::move(rewritten);
   return true;
 }
 

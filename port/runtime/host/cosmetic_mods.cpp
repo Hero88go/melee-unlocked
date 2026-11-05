@@ -75,6 +75,7 @@ struct AssetRecord {
   std::string source_member;
   std::string source_id;
   std::vector<Companion> companions;
+  std::map<std::string, std::string> costume_aliases;  // m-ex exports -> native slot exports, applied after source hash verification
   // A skin that lives inside a mod disc or a files pack (source_kind "disc"): no copy is kept. The
   // bytes are read from disc_path at disc_offset when the skin is applied, and checked against the
   // catalog's SHA-256 then. disc_size and disc_mtime are the container's size and time at the scan,
@@ -452,6 +453,14 @@ void load_disc_fields(const json& item, AssetRecord* asset) {
   if (asset->disc_path.empty() || !asset->disc_length || asset->disc_length > kMaxAssetBytes)
     throw std::runtime_error("disc");
   asset->info.variant = item.value("variant", std::string());
+  const auto aliases = item.find("costume_aliases");
+  if (aliases != item.end()) {
+    asset->costume_aliases = aliases->get<std::map<std::string, std::string>>();
+    if (asset->costume_aliases.size() > 2) throw std::runtime_error("costume aliases");
+    for (const auto& alias : asset->costume_aliases)
+      if (alias.first.empty() || alias.second.empty() || alias.first.size() > 255 || alias.second.size() > 255)
+        throw std::runtime_error("costume alias");
+  }
   const auto online = item.find("online");
   // A verdict saved under an older online rule is worked out again (kOnlineRule).
   if (online != item.end() && online->is_object() && online->value("rule", 0) == kOnlineRule) {
@@ -488,6 +497,7 @@ json catalog_json_locked() {
       item["disc"] = {{"path", asset.disc_path}, {"offset", asset.disc_offset}, {"length", asset.disc_length},
                       {"size", asset.disc_size}, {"mtime", asset.disc_mtime}};
     if (!asset.info.variant.empty()) item["variant"] = asset.info.variant;
+    if (!asset.costume_aliases.empty()) item["costume_aliases"] = asset.costume_aliases;
     if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}, {"rule", kOnlineRule}};
     item["companions"] = json::array();
     for (const auto& companion : asset.companions) {
@@ -3380,6 +3390,13 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
     }
   }
   if (asset.info.kind == "character_costume") {
+    if (!asset.costume_aliases.empty()) {
+      std::vector<uint8_t> renamed;
+      if (!disc_metadata::alias_roots(bytes, asset.costume_aliases, &renamed)) {
+        *error = asset.info.name + ": costume export names no longer match the catalog."; return {};
+      }
+      bytes = std::move(renamed);
+    }
     auto dat = inspect_dat_impl(bytes);
     if (!dat.ok || dat.target_path != asset.info.target_path) {
       *error = asset.info.name + ": stored DAT identity no longer matches its catalog target."; return {};
@@ -3540,14 +3557,17 @@ bool disc_stage_member(const std::string& raw, std::string* target, std::string*
   return false;
 }
 
-// A pack's character select file, where its portraits are: the English MnSlChr.usd when the pack
-// has one (it is the one this game loads), otherwise MnSlChr.dat.
+// m-ex's exported portrait symbol file when present, otherwise the English character select file
+// and then the other supported menu filenames. Only data is read from these archives.
 void note_select_screen(const std::string& name, const fs::path& file, uint64_t offset, uint64_t length,
                         DiscCandidate* screen) {
   const std::string wanted = lower(name);
+  // Modern m-ex loads this exported symbol file directly; when present it is authoritative.
+  if (wanted == "mexselectchr.dat") { *screen = {name, file, offset, length}; return; }
+  if (lower(screen->member) == "mexselectchr.dat") return;
   if (wanted == "mnslchr.usd" ||
       (wanted == "mnslchr.dat" && lower(screen->member) != "mnslchr.usd") ||
-      ((wanted == "mexselectchr.dat" || wanted == "mnslchr.0sd") && screen->member.empty()))
+      (wanted == "mnslchr.0sd" && screen->member.empty()))
     *screen = {name, file, offset, length};
 }
 
@@ -3876,6 +3896,39 @@ std::vector<uint8_t> rgba_png(const std::vector<uint8_t>& rgba, uint32_t width, 
 // slot, when that picture differs from the game's own. The picture is written beside the catalog as
 // the skin's "csp" companion. m-ex names each costume's portrait with its external fighter ID,
 // costume index and CSP stride; its extra costumes must not use the retail animation's columns.
+// m-ex also renames the exported skeleton/material symbols for new colors. Map those names to
+// the native costume whose visibility tables the pack explicitly chose; model data stays intact.
+bool prepare_mex_costume(const disc_metadata::MexCostume& row, std::vector<uint8_t>* bytes,
+                         testing::DatInspection* inspected, std::map<std::string, std::string>* aliases) {
+  *inspected = inspect_dat_impl(*bytes);
+  if (inspected->ok) return inspected->target_path.substr(2, 2) == row.family;
+  for (const auto& family : families) {
+    if (row.family != family.file_code) continue;
+    const std::string prefix = std::string("Ply") + family.root_name + "5K";
+    const std::string suffix = "_Share_joint";
+    if (row.joint.size() < prefix.size() + suffix.size() || row.joint.compare(0, prefix.size(), prefix) ||
+        row.joint.compare(row.joint.size() - suffix.size(), suffix.size(), suffix)) return false;
+    std::istringstream colors(family.colors);
+    std::string color;
+    if (row.visibility > 15) return false;
+    for (uint32_t i = 0; i <= row.visibility; ++i) if (!(colors >> color)) return false;
+    const std::string joint = prefix + (color == "Nr" ? "" : color) + suffix;
+    (*aliases)[row.joint] = joint;
+    if (!row.matanim.empty()) {
+      const std::string expected = row.joint.substr(0, row.joint.size() - 6) + "_matanim_joint";
+      if (row.matanim != expected) return false;
+      (*aliases)[row.matanim] = joint.substr(0, joint.size() - 6) + "_matanim_joint";
+    }
+    std::vector<uint8_t> renamed;
+    if (!disc_metadata::alias_roots(*bytes, *aliases, &renamed)) return false;
+    *inspected = inspect_dat_impl(renamed);
+    if (!inspected->ok || inspected->target_path != std::string("Pl") + family.file_code + color + ".dat") return false;
+    *bytes = std::move(renamed);
+    return true;
+  }
+  return false;
+}
+
 size_t pack_portraits_locked(const DiscCandidate& screen, const disc_metadata::MexCostumes& costumes,
                             std::map<std::string, AssetRecord>* fresh) {
   if (screen.member.empty()) return 0;
@@ -3978,9 +4031,11 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     if (!stage && !sound_file && !ordinary_costume && !added_costume) continue;
     if (!read_range(candidate.file, candidate.offset, candidate.length, &bytes)) { ++skipped; continue; }
     testing::DatInspection added;
+    std::map<std::string, std::string> aliases;
+    std::string source_digest;
     if (added_costume) {
-      added = inspect_dat_impl(bytes);
-      if (!added.ok || added.target_path.substr(2, 2) != mex->second.family) { ++skipped; continue; }
+      source_digest = sha256(bytes);
+      if (!prepare_mex_costume(mex->second, &bytes, &added, &aliases)) { ++skipped; continue; }
       variant = "m-ex costume " + std::to_string(mex->second.costume + 1);
     }
     // An alternate costume is compared with the slot's own costume on the game disc: that is the
@@ -3994,7 +4049,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     }
     retail.resize(retail_size);
     if (!host::disc_read(retail_offset, retail.data(), retail_size)) { ++skipped; continue; }
-    if (bytes == retail) { ++same; continue; }
+    if (bytes == retail && !added_costume) { ++same; continue; }
     if (sound_file) {
       std::vector<uint8_t> safe;
       std::string detail;
@@ -4073,7 +4128,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     const auto dat = added_costume ? added : inspect_dat_impl(bytes);
     const std::string slot_name = added_costume ? added.target_path : candidate.member.substr(0, 6) + ".dat";
     if (!dat.ok || lower(dat.target_path) != lower(slot_name)) { ++skipped; continue; }
-    const std::string digest = sha256(bytes);
+    const std::string digest = source_digest.empty() ? sha256(bytes) : source_digest;
     if (digest.empty()) { ++skipped; continue; }
     const std::string fresh_key = dat.target_path + "\n" + variant;
     const auto have = fresh.find(fresh_key);
@@ -4084,6 +4139,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     asset.info.id = "disc-" + sha256_text(key + "\n" + lower(candidate.member));
     asset.info.name = dat.character + " " + dat.costume + ": from " + pack_name + (variant.empty() ? "" : " (" + variant + ")");
     asset.info.variant = variant;
+    asset.costume_aliases = std::move(aliases);
     {
       std::string detail;
       asset.online_known = true;

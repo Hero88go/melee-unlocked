@@ -389,8 +389,8 @@ std::vector<uint8_t> mex_archive(std::vector<uint8_t> out, const std::vector<uin
   return out;
 }
 
-std::vector<uint8_t> mex_marth_metadata(const std::vector<std::string>& files) {
-  std::vector<uint8_t> out(32 + 0x600);
+std::vector<uint8_t> mex_marth_metadata(const std::vector<std::string>& files, bool renamed = false) {
+  std::vector<uint8_t> out(32 + 0x1000);
   std::vector<uint32_t> pointers;
   auto point = [&](uint32_t at, uint32_t to) { be32(out, 32 + at, to); pointers.push_back(at); };
   point(0, 0x40); point(8, 0x80);
@@ -403,6 +403,11 @@ std::vector<uint8_t> mex_marth_metadata(const std::vector<std::string>& files) {
   for (uint32_t i = 0; i < files.size(); ++i) {
     point(0x240 + i * 16, 0x400 + i * 32);
     std::memcpy(out.data() + 32 + 0x400 + i * 32, files[i].c_str(), files[i].size() + 1);
+    if (renamed && i >= 5) {
+      const std::string symbol = "PlyMars5K" + std::string(i == 5 ? "Ye" : i == 6 ? "La" : "Or") + "_Share_joint";
+      point(0x240 + i * 16 + 4, 0x600 + i * 64);
+      std::memcpy(out.data() + 32 + 0x600 + i * 64, symbol.c_str(), symbol.size() + 1);
+    }
   }
   return mex_archive(std::move(out), pointers, "mexData");
 }
@@ -2485,6 +2490,45 @@ int main(int argc, char** argv) {
     for (const auto& skin : host::cosmetics::assets()) no_bad_pictures &= skin.preview_path.empty();
     check(bad_scan.ok && host::cosmetics::assets().size() == 8 && no_bad_pictures,
           "a truncated portrait animation is refused while the eight valid costumes remain available");
+
+    // Akaneia-style colors rename internal exports too. The native file is a read-time view of
+    // the same model with the existing slot's export names, never a write to the pack.
+    write_file(mex_folder / L"MxDt.dat", mex_marth_metadata(files, true));
+    write_file(mex_folder / L"MnSlChr.usd", retail_screen);
+    write_file(mex_folder / L"mexSelectChr.dat", mex_screen);
+    for (uint32_t i = 5; i < 8; ++i) {
+      const std::string symbol = "PlyMars5K" + std::string(i == 5 ? "Ye" : i == 6 ? "La" : "Or") + "_Share_joint";
+      write_file(mex_folder / fs::u8path(files[i]), skeleton_dat(0x2 | 0x10, 5.0f, false, symbol));
+    }
+    const auto original_extra = read_file(mex_folder / fs::u8path(files[5]));
+    const fs::path renamed_settings = portrait_folder / L"mex-renamed" / L"settings.ini";
+    host::cosmetics::configure(renamed_settings.string());
+    const auto renamed_scan = host::cosmetics::scan_disc_skins(mex_folder.string(), "Renamed colors", &error);
+    std::string renamed_id;
+    size_t renamed_pictures = 0;
+    for (const auto& skin : host::cosmetics::assets()) {
+      renamed_pictures += !skin.preview_path.empty();
+      if (skin.variant == "m-ex costume 6") renamed_id = skin.id;
+    }
+    check(renamed_scan.ok && host::cosmetics::assets().size() == 8 && renamed_pictures == 8 && !renamed_id.empty(),
+          "renamed m-ex colors import with all eight portraits from the authoritative symbol file");
+    check(host::cosmetics::select_variant(files[0], renamed_id, &error), "select an extra costume with renamed exports");
+    host::cosmetics::configure(renamed_settings.string());   // aliases and the choice survive a restart
+    auto renamed_fst = one_file_fst(g_disc_table[files[0]].first, g_disc_table[files[0]].second, files[0]);
+    host::cosmetics::apply_to_fst(renamed_fst.data(), (uint32_t)renamed_fst.size());
+    std::vector<uint8_t> renamed_model(read_be32(renamed_fst.data() + 20));
+    const auto renamed_read = host::cosmetics::read(g_disc_table[files[0]].first, 0, renamed_model.data(), (uint32_t)renamed_model.size());
+    const auto renamed_identity = host::cosmetics::testing::inspect_dat(renamed_model);
+    check(renamed_read == host::cosmetics::OverrideRead::Success && renamed_identity.ok && renamed_identity.target_path == files[0] &&
+              std::equal(original_extra.begin() + 32, original_extra.begin() + 32 + read_be32(original_extra.data() + 4), renamed_model.begin() + 32) &&
+              read_file(mex_folder / fs::u8path(files[5])) == original_extra && host::cosmetics::active_companions().size() == 1,
+          "after restart, the renamed model is served with its portrait, preserving every model byte and the source file");
+    auto changed_extra = original_extra;
+    changed_extra[32 + 4] ^= 1;
+    write_file(mex_folder / fs::u8path(files[5]), changed_extra);
+    std::string thumbnail;
+    check(!host::cosmetics::costume_file(renamed_id, &renamed_model, &thumbnail),
+          "renamed costumes still verify the original source hash before adapting exports");
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 
