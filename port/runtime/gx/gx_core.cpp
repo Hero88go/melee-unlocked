@@ -28,6 +28,7 @@ namespace gx { void settings_guest_options_frame(uint8_t menu, uint16_t selectio
 #include <new>
 #include <vector>
 #include <unordered_map>
+#include "frame_table.h"
 
 namespace gx {
 
@@ -173,8 +174,12 @@ inline size_t incomplete(size_t need) { g_parse_need = need; return 0; }
 // Draw identity bookkeeping (reset per frame).
 uint32_t g_dl_addr = 0, g_dl_draw_ordinal = 0, g_dl_call_ordinal = 0;
 bool g_merge_next_primitive = false;
-std::unordered_map<uint32_t, uint32_t> g_dl_calls;        // display list address -> calls this frame
-std::unordered_map<uint64_t, uint32_t> g_immediate_draws;  // (tex0, count, prim) -> ordinal this frame
+// The per-frame tables below are emptied at every frame end and refilled with about as many keys
+// (one per display list call, immediate draw kind and drawn PObj, ~1500 a frame), so they take their
+// nodes from a pool (frame_table.h). Only the simulation thread touches them.
+FramePool g_frame_table_pool;
+FrameTable<uint32_t, uint32_t> g_dl_calls = frame_table<FrameTable<uint32_t, uint32_t>>(g_frame_table_pool);        // display list address -> calls this frame
+FrameTable<uint64_t, uint32_t> g_immediate_draws = frame_table<FrameTable<uint64_t, uint32_t>>(g_frame_table_pool);  // (tex0, count, prim) -> ordinal this frame
 uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
 uint64_t g_dl_draws = 0, g_dl_vertices = 0;   // the part of g_draws / g_vertices that came from display lists
 uint32_t g_efb_copies = 0;
@@ -191,7 +196,7 @@ std::vector<uint32_t> g_native_pose_scope_ids;
 // with the outgoing ones and flew in between two frames.
 struct NativeDrawScope { uint32_t object, piece, ordinal, draws; };
 std::vector<NativeDrawScope> g_native_draw_scopes;
-std::unordered_map<uint32_t, uint32_t> g_native_object_scopes;   // PObj -> scopes begun this frame
+FrameTable<uint32_t, uint32_t> g_native_object_scopes = frame_table<FrameTable<uint32_t, uint32_t>>(g_frame_table_pool);   // PObj -> scopes begun this frame
 NativePoseBridgeStats g_native_pose_stats{};
 // Native game: draw owners arrive in the stream (token 0xF1), not from the render observer.
 bool g_native_owner_source = false;

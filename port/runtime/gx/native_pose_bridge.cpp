@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
+#include "frame_table.h"
 #include <utility>
 
 namespace gx {
@@ -118,7 +119,11 @@ bool same_joint(const AuthoredJoint& a, const MuNativePoseSnapshot& snapshot, co
 // to build a new chain per PObj, so every skinned piece and every rigid PObj of a joint sampled the
 // same bones again on every presented frame. Chains equal in every captured field now share one
 // object for the simulation frame; a joint whose state changed between two draws stays separate.
-std::unordered_map<uint64_t, std::vector<std::shared_ptr<const AuthoredPose>>> g_chains;
+// Emptied every frame end and refilled, so its nodes and buckets come from a pool (frame_table.h;
+// simulation thread only, like every caller of this file).
+using ChainBucket = FrameVector<std::shared_ptr<const AuthoredPose>>;
+FramePool g_chain_pool;
+FrameTable<uint64_t, ChainBucket> g_chains = frame_table<FrameTable<uint64_t, ChainBucket>>(g_chain_pool);
 
 // The chain of `count` joints whose i-th joint is snapshot.joints[joint(i)]: this frame's equal chain
 // when there is one, else a copy (which later equal snapshots of the frame then share).
@@ -134,7 +139,7 @@ std::shared_ptr<const AuthoredPose> intern_chain(const MuNativePoseSnapshot& sna
     std::memcpy(&frame_bits, &j.frame, sizeof frame_bits);
     mix(j.generation); mix(j.flags); mix(frame_bits);
   }
-  std::vector<std::shared_ptr<const AuthoredPose>>& bucket = g_chains[h];
+  ChainBucket& bucket = g_chains[h];
   for (const auto& existing : bucket) {
     if (existing->joints.size() != count) continue;
     bool equal = true;
