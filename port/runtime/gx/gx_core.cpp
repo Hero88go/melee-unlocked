@@ -25,7 +25,10 @@ namespace gx { void settings_guest_options_frame(uint8_t menu, uint16_t selectio
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
+#include <mutex>
 #include <new>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include "frame_table.h"
@@ -304,12 +307,15 @@ const uint8_t* array_ptr(uint32_t array, uint32_t index) {
 // register reads and an out-of-line host::ptr range check each, ~47,000 calls a frame in a match).
 // An index inside the region reads base + stride * index directly; anything else takes array_ptr,
 // which wraps and fails exactly as before, so the bytes read are the same either way.
-struct ArrayView { const uint8_t* base = nullptr; uint64_t avail = 0; uint32_t stride = 0, array = 0; };
+// The view keeps the array's base register too: an index outside the region is resolved the way
+// array_ptr resolves it, from the registers as they were when the draw was parsed.
+struct ArrayView { const uint8_t* base = nullptr; uint64_t avail = 0; uint32_t stride = 0, array = 0, base_reg = 0; };
 ArrayView array_view(uint32_t array) {
   ArrayView v;
   v.array = array;
   v.stride = g_cp.array_stride(array);
-  const uint32_t off = g_cp.array_base(array) & 0x3FFFFFFFu;
+  v.base_reg = g_cp.array_base(array);
+  const uint32_t off = v.base_reg & 0x3FFFFFFFu;
   if (const uint8_t* p = host::try_ptr(0x80000000u | off, 1)) {
     v.base = p;
     if (p >= host::ram && p < host::ram + host::ram_size) v.avail = (uint64_t)(host::ram + host::ram_size - p);
@@ -322,34 +328,57 @@ ArrayView array_view(uint32_t array) {
 inline const uint8_t* array_at(const ArrayView& v, uint32_t index, uint32_t bytes) {
   const uint64_t at = (uint64_t)v.stride * index;
   if (v.base && at + bytes <= v.avail) return v.base + at;
-  return array_ptr(v.array, index);
+  return host::ptr(0x80000000u | ((v.base_reg + v.stride * index) & 0x3FFFFFFFu));   // array_ptr's arithmetic
 }
 
-// Decodes `count` vertices of format `fmt` from `src` into the frame. Returns components mask.
-uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count, uint32_t fmt) {
-  uint32_t components = 0;
-  uint32_t mia = g_cp.matrix_index_a(), mib = g_cp.matrix_index_b();
-  static const uint32_t csize[] = {2, 3, 4, 2, 3, 4, 4, 4};
-  // Arrays and the bytes each attribute reads from them, resolved once for the whole call.
+// Everything a decode reads besides the vertex bytes and the arrays' contents, taken when the draw
+// is parsed: the format, the matrix indices a vertex without its own takes from the CP registers,
+// and where each array lives.
+struct DecodeState {
+  VertexDesc d;
+  uint32_t mia, mib;
   ArrayView pos_view, nrm_view, col_view[2], tex_view[8];
-  const uint32_t pos_bytes = comp_bytes(d.pos.format) * (d.pos.count ? 3 : 2);
-  const uint32_t nrm_bytes = comp_bytes(d.nrm.format) * 3;
-  if (d.pos.type >= 2) pos_view = array_view(d.pos.array);
-  if (d.nrm.type >= 2) nrm_view = array_view(1);
-  for (int i = 0; i < 2; ++i) if (d.col[i].type >= 2) col_view[i] = array_view(d.col[i].array);
-  for (int i = 0; i < 8; ++i) if (d.tex[i].type >= 2) tex_view[i] = array_view(d.tex[i].array);
-  // Everything that depends only on the format is worked out once per call: the components mask,
-  // the matrix indices a vertex without its own takes from the CP registers, and the texture
-  // coordinate sets that are present. Vertices are decoded straight into the frame's storage
-  // (value-initialised, as `Vertex out{}` was), not built on the stack and copied in.
+};
+DecodeState capture_decode(const VertexDesc& d) {
+  DecodeState s;
+  s.d = d;
+  s.mia = g_cp.matrix_index_a(); s.mib = g_cp.matrix_index_b();
+  if (d.pos.type >= 2) s.pos_view = array_view(d.pos.array);
+  if (d.nrm.type >= 2) s.nrm_view = array_view(1);
+  for (int i = 0; i < 2; ++i) if (d.col[i].type >= 2) s.col_view[i] = array_view(d.col[i].array);
+  for (int i = 0; i < 8; ++i) if (d.tex[i].type >= 2) s.tex_view[i] = array_view(d.tex[i].array);
+  return s;
+}
+
+// The components mask of format `d`: which attributes its vertices carry (not their values).
+uint32_t vertex_components(const VertexDesc& d) {
+  uint32_t components = 0;
   if (d.posmtx) components |= VB_HAS_POSMTXIDX;
-  uint8_t default_texmtx[8];
-  for (int i = 0; i < 8; ++i) {
-    default_texmtx[i] = (uint8_t)(i < 4 ? bits(mia, 6 + 6 * i, 6) : bits(mib, 6 * (i - 4), 6));
-    if (d.texmtx[i]) components |= VB_HAS_TEXMTXIDX0 << i;
-  }
+  for (int i = 0; i < 8; ++i) if (d.texmtx[i]) components |= VB_HAS_TEXMTXIDX0 << i;
   if (d.nrm.type) components |= VB_HAS_NRM0;
   for (int i = 0; i < 2; ++i) if (d.col[i].type) components |= i ? VB_HAS_COL1 : VB_HAS_COL0;
+  for (int i = 0; i < 8; ++i) if (d.tex[i].type) components |= VB_HAS_UV0 << i;
+  return components;
+}
+
+// Decodes `count` vertices from `src` into `outv` (value-initialised storage). Reads only `s`, `src`
+// and the arrays' memory, so it gives the same vertices on any thread.
+void decode_run(const DecodeState& s, const uint8_t* src, uint32_t count, Vertex* outv) {
+  const VertexDesc& d = s.d;
+  const uint32_t mia = s.mia, mib = s.mib;
+  const ArrayView &pos_view = s.pos_view, &nrm_view = s.nrm_view;
+  const ArrayView* col_view = s.col_view;
+  const ArrayView* tex_view = s.tex_view;
+  static const uint32_t csize[] = {2, 3, 4, 2, 3, 4, 4, 4};
+  const uint32_t pos_bytes = comp_bytes(d.pos.format) * (d.pos.count ? 3 : 2);
+  const uint32_t nrm_bytes = comp_bytes(d.nrm.format) * 3;
+  // Everything that depends only on the format is worked out once per call: the matrix indices a
+  // vertex without its own takes from the CP registers, and the texture coordinate sets that are
+  // present. Vertices are decoded straight into the frame's storage (value-initialised, as
+  // `Vertex out{}` was), not built on the stack and copied in.
+  uint8_t default_texmtx[8];
+  for (int i = 0; i < 8; ++i)
+    default_texmtx[i] = (uint8_t)(i < 4 ? bits(mia, 6 + 6 * i, 6) : bits(mib, 6 * (i - 4), 6));
   struct TexSet { int index; uint32_t n, cb, bytes; };
   TexSet tex_sets[8];
   int tex_count = 0;
@@ -357,16 +386,12 @@ uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count
     if (!d.tex[i].type) continue;
     const uint32_t n = d.tex[i].count ? 2 : 1, cb = comp_bytes(d.tex[i].format);
     tex_sets[tex_count++] = {i, n, cb, cb * n};
-    components |= VB_HAS_UV0 << i;
   }
   const uint32_t pos_n = d.pos.count ? 3 : 2, pos_cb = comp_bytes(d.pos.format);
   const uint32_t nrm_cb = comp_bytes(d.nrm.format);
   const uint32_t nrm_frac = d.nrm.format == 1 ? 6 : d.nrm.format == 3 ? 14 : d.nrm.format == 0 ? 7 : d.nrm.format == 2 ? 15 : 0;
   const uint32_t nrm_direct = nrm_cb * 3 * (d.nrm.count ? 3 : 1);
   const uint32_t nrm_skip8 = (d.nrm.count && d.nrm_index3) ? 3 : 1, nrm_skip16 = (d.nrm.count && d.nrm_index3) ? 6 : 2;
-  const size_t base = g_frame.vertices.size();
-  g_frame.vertices.resize(base + count);
-  Vertex* const outv = g_frame.vertices.data() + base;
   for (uint32_t v = 0; v < count; ++v) {
     Vertex& out = outv[v];
     const uint8_t* p = src + (size_t)v * d.size;
@@ -413,7 +438,132 @@ uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count
       if (q) for (uint32_t k = 0; k < set.n; ++k) out.uv[set.index][k] = read_component(q + k * set.cb, x.format, x.frac);
     }
   }
-  return components;
+}
+
+// Vertex decoding beside the simulation (Source Port only). A draw's vertices are not read by the
+// simulation thread after they are recorded: the renderer reads them once the frame is handed over.
+// So the draw's state is captured, its stream bytes are copied, and one worker thread decodes it
+// into the frame's storage while the game goes on, the way the console's GPU reads vertex data
+// after the CPU has moved on. The simulation thread waits for the worker (join) before the frame
+// is handed over, before the vertex storage could move, when a failed allocation trims the frame,
+// and when the game is told the GPU is done (draw-done and token interrupts), after which it may
+// rewrite vertex data. Four-vertex quads still decode in place: record_draw reads them
+// (frustum_backdrop). MELEE_TEST_DECODE_VERIFY=1 (tests) also decodes each job in place and
+// compares the worker's result byte for byte at the join.
+class VertexDecodeWorker {
+  struct Job { DecodeState state; size_t bytes_at; uint32_t count; Vertex* out; size_t verify_at; };
+  std::thread thread_;
+  std::mutex mutex_;
+  std::condition_variable wake_, done_;
+  std::vector<Job> jobs_;            // appended by the simulation thread; never reallocated while queued
+  std::vector<uint8_t> bytes_;       // the jobs' copied stream bytes, same rule
+  std::vector<Vertex> verify_;       // MELEE_TEST_DECODE_VERIFY: the in-place results
+  size_t published_ = 0, taken_ = 0, finished_ = 0;   // guarded by mutex_
+  size_t unpublished_vertices_ = 0;
+  bool stop_ = false, started_ = false;
+  bool verify_on_ = false;
+  uint64_t verified_jobs_ = 0, verify_mismatches_ = 0;
+
+  void run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+      wake_.wait(lock, [&] { return stop_ || taken_ < published_; });
+      if (taken_ == published_) return;   // stop_ with nothing left
+      const size_t begin = taken_, end = published_;
+      taken_ = end;
+      Job* const jobs = jobs_.data();
+      const uint8_t* const bytes = bytes_.data();
+      lock.unlock();
+      for (size_t i = begin; i < end; ++i) decode_run(jobs[i].state, bytes + jobs[i].bytes_at, jobs[i].count, jobs[i].out);
+      lock.lock();
+      finished_ = end;
+      done_.notify_all();
+    }
+  }
+  void publish_locked() {
+    if (published_ != jobs_.size()) { published_ = jobs_.size(); wake_.notify_one(); }
+    unpublished_vertices_ = 0;
+  }
+
+ public:
+  ~VertexDecodeWorker() {
+    if (!started_) return;
+    { std::lock_guard<std::mutex> lock(mutex_); stop_ = true; publish_locked(); }
+    thread_.join();
+  }
+  static bool wanted() { return host::game_image != nullptr; }
+  bool pending() const { return !jobs_.empty(); }
+  // Room for `count` more vertices in `frame` without moving its storage (else join first).
+  static bool fits(const Frame& frame, size_t count) { return frame.vertices.size() + count <= frame.vertices.capacity(); }
+  void submit(const DecodeState& state, const uint8_t* src, uint32_t count, Vertex* out) {
+    const size_t n = (size_t)count * state.d.size;
+    if (jobs_.size() == jobs_.capacity() || bytes_.size() + n > bytes_.capacity()) {
+      join();   // the worker reads both vectors: grow them only while it is idle
+      jobs_.reserve(std::max<size_t>(4096, jobs_.capacity() * 2));
+      bytes_.reserve(std::max(bytes_.capacity() * 2, std::max<size_t>(1 << 20, n)));
+    }
+    if (!started_) {
+      started_ = true;
+      static const bool verify = [] { const char* v = host::test_env::getenv("MELEE_TEST_DECODE_VERIFY"); return v && *v == '1'; }();
+      verify_on_ = verify;
+      thread_ = std::thread([this] { run(); });
+    }
+    Job job{state, bytes_.size(), count, out, verify_.size()};
+    bytes_.insert(bytes_.end(), src, src + n);
+    if (verify_on_) {
+      verify_.resize(verify_.size() + count);
+      decode_run(state, src, count, verify_.data() + job.verify_at);
+    }
+    jobs_.push_back(job);
+    unpublished_vertices_ += count;
+    // Hand work over in batches: waking a sleeping worker is a kernel call, so not one per draw.
+    if (jobs_.size() - published_ >= 32 || unpublished_vertices_ >= 4096) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      publish_locked();
+    }
+  }
+  // Waits until every submitted job is decoded; afterwards the frame's vertices are complete.
+  void join() {
+    if (jobs_.empty()) return;
+    {
+      host::SimCostScope cost(host::SIM_DECODE);
+      std::unique_lock<std::mutex> lock(mutex_);
+      publish_locked();
+      done_.wait(lock, [&] { return finished_ == published_; });
+    }
+    if (verify_on_) {
+      for (const Job& job : jobs_) {
+        ++verified_jobs_;
+        if (std::memcmp(job.out, verify_.data() + job.verify_at, job.count * sizeof(Vertex)) == 0) continue;
+        if (verify_mismatches_++ < 20)
+          host::log("decode verify: job of %u vertices (format size %u) differs from the in-place decode", job.count, job.state.d.size);
+      }
+      static uint64_t reported = 0;
+      if (verified_jobs_ - reported >= 100000) {
+        reported = verified_jobs_;
+        host::log("decode verify: %llu jobs compared, %llu differed", (unsigned long long)verified_jobs_, (unsigned long long)verify_mismatches_);
+      }
+      verify_.clear();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    jobs_.clear(); bytes_.clear();
+    published_ = taken_ = finished_ = 0;
+    unpublished_vertices_ = 0;
+  }
+};
+VertexDecodeWorker g_vertex_decoder;
+
+// Decodes `count` vertices of format `fmt` from `src` into the frame. Returns components mask.
+uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count, uint32_t fmt, bool in_place) {
+  (void)fmt;
+  const DecodeState state = capture_decode(d);
+  if (g_vertex_decoder.pending() && !VertexDecodeWorker::fits(g_frame, count)) g_vertex_decoder.join();
+  const size_t base = g_frame.vertices.size();
+  g_frame.vertices.resize(base + count);
+  Vertex* const outv = g_frame.vertices.data() + base;
+  if (!in_place && VertexDecodeWorker::wanted()) g_vertex_decoder.submit(state, src, count, outv);
+  else decode_run(state, src, count, outv);
+  return vertex_components(d);
 }
 
 // ---------------- draw snapshot ----------------
@@ -626,9 +776,12 @@ void bp_write(uint32_t value) {
   }
   switch (r) {
     case BP_SETDRAWDONE:
-      if (masked & 2) host::set_pe_finish_pending();
+      // The game learns the GPU is done and may then rewrite vertex data: every queued draw is
+      // decoded first, as the console's GPU had read it.
+      if (masked & 2) { g_vertex_decoder.join(); host::set_pe_finish_pending(); }
       break;
     case BP_PE_TOKEN_INT_ID:
+      g_vertex_decoder.join();   // as for draw done: past the token the game may reuse vertex data
       host::set_pe_token_pending((uint16_t)masked);
       break;
     case BP_LOADTLUT1: {
@@ -717,6 +870,7 @@ void bp_write(uint32_t value) {
         // A replay viewer on the way to a jump's target simulates frames nobody sees: they are not
         // handed to the renderer, and the next frame that is shown is not the last shown one's neighbour.
         const bool unseen = replay_control::skip_render();
+        g_vertex_decoder.join();   // the frame's vertices are complete before anyone else sees them
         if (g_backend && !unseen) {
           host::perf::Scope submit_cost(host::perf::Stage::Submit);
           g_backend->submit_and_recycle(g_frame);
@@ -856,9 +1010,12 @@ size_t parse_command(const uint8_t* d, size_t len) {
       // never allocates) and the game goes on; the next frame tries again.
       const size_t draws = g_frame.draws.size(), segments = g_frame.segments.size(), commands = g_frame.commands.size();
       try {
-        uint32_t components = decode_vertices(desc, d + 3, count, fmt);
+        // A four-vertex quad decodes in place: record_draw reads it (frustum_backdrop).
+        const bool in_place = (op & 0xF8) == 0x80 && count == 4;
+        uint32_t components = decode_vertices(desc, d + 3, count, fmt, in_place);
         record_draw(op & 0xF8, first, count, components);
       } catch (const std::bad_alloc&) {
+        g_vertex_decoder.join();   // its jobs write into the vertices about to be trimmed
         auto cut = [](auto& v, size_t n) { if (v.size() > n) v.erase(v.begin() + (ptrdiff_t)n, v.end()); };
         cut(g_frame.vertices, first);
         cut(g_frame.draws, draws);
@@ -1060,6 +1217,7 @@ uint32_t hud_scales_packed() {
 }
 
 void init(Backend* backend) {
+  g_vertex_decoder.join();
   g_backend = backend;
   std::memset(&g_bp, 0, sizeof g_bp);
   std::memset(&g_cp, 0, sizeof g_cp);
