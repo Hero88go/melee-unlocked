@@ -486,7 +486,8 @@ std::string generate_pixel_shader(const PSUid& uid) {
   const bool gbuffer = (uid.motion_vectors & 2) != 0;
   if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, out float ohud : SV_Target2, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
-  if (gbuffer) o.w(", out float4 oalbedo : SV_Target3, out float4 onormal : SV_Target4, out uint oid : SV_Target5");
+  if (gbuffer) o.w(", out float4 oalbedo : SV_Target3, out float4 onormal : SV_Target4, out uint oid : SV_Target5"
+                   ", out float4 oover : SV_Target6, out float4 otrans : SV_Target7");
   if (texture_depth) o.w(", out float odepth : SV_Depth");
   for (uint32_t i = 0; i < numTexgen; ++i) o.w(", in float3 uv%d : TEXCOORD%d", i, i);
   if (uid.motion_vectors) o.w(", in float4 clipPos : TEXCOORD%d, in float4 curPos : TEXCOORD%d, in float4 prevPos : TEXCOORD%d", numTexgen, numTexgen + 1, numTexgen + 2);
@@ -698,16 +699,25 @@ std::string generate_pixel_shader(const PSUid& uid) {
     // The path tracer's G-buffer. Albedo: the same TEV over GX lighting's material colours (the
     // textures were sampled once, above), before fog. Normal: the vertex normal in view space, or
     // the triangle's own where the draw has none, facing the camera; w the linear view depth. The id
-    // is the draw's (flags.x = draw index + 1, set by the renderer only in this variant).
+    // is the draw's (flags.x = draw index + 1, set by the renderer only in this variant), and the
+    // albedo's alpha its material's roughness (flags.y, float bits), so last present's surfaces carry
+    // their material too.
     o.w("col0 = rtxUnlit0;\ncol1 = rtxUnlit1;\nc0 = colors[1]; c1 = colors[2]; c2 = colors[3]; prev = colors[0];\n");
     RegState albedo_rs;
     emit_tev_stages(albedo_rs);
-    o.w("oalbedo = float4(saturate(float3(prev.rgb) / 255.0), 1.0);\n");
+    o.w("oalbedo = float4(saturate(float3(prev.rgb) / 255.0), saturate(asfloat(flags.y)));\n");
     o.w("float3 rtx_n = rtxViewNrm;\n"
         "if (dot(rtx_n, rtx_n) < 1e-8) rtx_n = cross(ddx(rtxViewPos), ddy(rtxViewPos));\n"
         "rtx_n = dot(rtx_n, rtx_n) > 1e-20 ? normalize(rtx_n) : float3(0.0, 0.0, 1.0);\n"
         "if (dot(rtx_n, rtxViewPos) > 0.0) rtx_n = -rtx_n;\n"
         "onormal = float4(rtx_n, -rtxViewPos.z);\noid = uint(flags.x);\n");
+    // The overlay over the G-buffer's surface (flags.z, the renderer's RtxLayer): the surface itself
+    // clears it (overlay 0, transmittance 1); a blended draw gives its colour to both targets, whose
+    // blend states compose it (gx_d3d12.cpp); any other draw replaces the pixel (overlay its colour,
+    // transmittance 0).
+    o.w("if (flags.z == 0) { oover = float4(0.0, 0.0, 0.0, 0.0); otrans = float4(1.0, 1.0, 1.0, 1.0); }\n"
+        "else if (flags.z == 1) { oover = ocol0; otrans = ocol0; }\n"
+        "else { oover = ocol0; otrans = float4(0.0, 0.0, 0.0, 0.0); }\n");
   }
   o.w("}\n");
   return o.s;

@@ -56,7 +56,7 @@ def main():
     for directory in ['ppc', 'hle', 'host', 'gx']:
         sources += sorted(Path('port/runtime', directory).glob('*.cpp'))
     removed = {'leaf_stencils', 'leaf_translator', 'ram_translator', 'gx_d3d11', 'gx_d3d12', 'gx_dlss5',
-               'gx_dlss5_scaling', 'gx_dxr_gpu_scene', 'gx_dxr_path_tracer', 'gx_streamline', 'gx_xess', 'rtx_scene', 'rtx_tracer',
+               'gx_dlss5_scaling', 'gx_dxr_gpu_scene', 'gx_dxr_path_tracer', 'gx_streamline', 'gx_xess', 'rtx_scene', 'rtx_tracer', 'rtx_melee_integrator',
                'gx_backend', 'pc_settings_dx11', 'audio'}
     sources = [p for p in sources if p.stem not in removed]
     sources += sorted(Path('port/runtime/mu_net').glob('*.cpp'))

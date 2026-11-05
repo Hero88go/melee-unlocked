@@ -19,7 +19,10 @@ struct GeometryRecord {    // rtx_scene.h RtxGeometryRecord
   int material;
   uint texture_set;
   uint flags;
-  uint2 reserved;
+  uint specular;   // RGBA8
+  float roughness;
+  uint ambient;    // GX ambient register, RGBA8
+  uint channel;    // kRtxChannel*
 };
 
 RaytracingAccelerationStructure Scene : register(t0);

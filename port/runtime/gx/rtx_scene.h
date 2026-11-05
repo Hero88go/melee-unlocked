@@ -38,6 +38,12 @@ enum : uint32_t {
   kRtxGeometryAdditive = 1u << 3,   // blended additively: light, not surface
   kRtxGeometryNoNormals = 1u << 4,  // shade with the triangle's own normal
 };
+// RtxGeometryRecord::channel: the draw's GX colour channel 0 (XF 0x100E).
+enum : uint32_t {
+  kRtxChannelLit = 1u << 0,         // GX lighting on: the integrators relight the surface
+  kRtxChannelAmbientVertex = 1u << 1,  // ambient from the vertex colour, not the register
+  kRtxChannelMaterialVertex = 1u << 2, // material colour from the vertex colour
+};
 
 // One raster draw handed over by execute_draw.
 struct RtxDrawInput {
@@ -53,6 +59,10 @@ struct RtxDrawInput {
   uint32_t texture_set = 0;        // first of the draw's 8 texture SRVs in the renderer's shader-visible heap
   uint32_t texture_heap = 0;       // which heap that index is in (the renderer replaces a full heap)
   uint32_t flags = 0;              // kRtxGeometry*
+  uint32_t specular = 0x0A0A0AFFu; // rtx_material_params: specular colour RGBA8
+  float roughness = 0.85f;
+  uint32_t ambient = 0;            // the GX ambient register of channel 0, RGBA8 (r in the low byte)
+  uint32_t channel = 0;            // kRtxChannel*
   uint8_t cls = kRtxOpaque;
 };
 // RtxGeometryRecord::texture_set when the draw's textures cannot be read (its heap was replaced).
@@ -66,9 +76,15 @@ struct RtxGeometryRecord {
   int32_t material;
   uint32_t texture_set;
   uint32_t flags;
-  uint32_t reserved[2];
+  uint32_t specular;         // RGBA8 specular colour
+  float roughness;           // perceptual
+  // GX's own lighting of the draw: the ambient its channel adds (HSD's material ambient times the
+  // scene's ambient light, RGBA8, r in the low byte) and kRtxChannel*. With GX's clamp they give the
+  // brightness the integrators keep.
+  uint32_t ambient;
+  uint32_t channel;
 };
-static_assert(sizeof(RtxGeometryRecord) == 32, "hit shader record layout");
+static_assert(sizeof(RtxGeometryRecord) == 40, "hit shader record layout");
 
 // The compute pass writes this per vertex (shaders/rtx_transform.hlsl RtVertex).
 constexpr uint32_t kRtxVertexStride = 64;
@@ -90,14 +106,17 @@ class RtxScene {
   // `view_to_world` is the inverse of the main camera's view matrix, row major 3x4; draws whose
   // texture_heap is not `heap_generation` lose their textures. Returns false when there was
   // nothing to build or a resource could not be made; `error` says which.
+  // `frame_draws` sizes the draw table (frame draw index -> record), read through the G-buffer's ids.
   bool build(ID3D12GraphicsCommandList4* list, unsigned slot, const float view_to_world[12],
-             uint32_t heap_generation, std::string* error);
+             uint32_t heap_generation, uint32_t frame_draws, std::string* error);
 
   D3D12_GPU_VIRTUAL_ADDRESS tlas(unsigned slot) const;
   ID3D12Resource* vertices(unsigned slot) const;
   ID3D12Resource* geometry_records(unsigned slot) const;
   uint32_t vertex_count(unsigned slot) const;
   uint32_t geometry_count(unsigned slot) const;
+  ID3D12Resource* draw_table(unsigned slot) const;   // uint per frame draw: record index, ~0u none
+  uint32_t draw_table_size(unsigned slot) const;
 
   struct Stats { uint64_t builds = 0, draws = 0, triangles = 0; double record_ms = 0; };
   const Stats& stats() const { return stats_; }
@@ -111,6 +130,9 @@ class RtxScene {
     Microsoft::WRL::ComPtr<ID3D12Resource> instances;          // D3D12_RAYTRACING_INSTANCE_DESC, upload heap
     Microsoft::WRL::ComPtr<ID3D12Resource> blas[kRtxClassCount], blas_scratch[kRtxClassCount];
     Microsoft::WRL::ComPtr<ID3D12Resource> tlas, tlas_scratch;
+    Microsoft::WRL::ComPtr<ID3D12Resource> draw_table;         // upload heap
+    uint8_t* draw_table_cpu = nullptr;
+    uint32_t draw_table_size = 0;
     uint8_t* records_cpu = nullptr;
     uint8_t* constants_cpu = nullptr;
     uint8_t* instances_cpu = nullptr;

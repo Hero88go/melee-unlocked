@@ -37,12 +37,21 @@ float4 downsample(float2 uv) {
       acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / float2(nx, ny) * foot - 0.5 * foot);
   return acc / (nx * ny);
 }
+// The EFB holds display values; a path-traced picture (sharp.w > 0.5) is linear light until
+// path_to_display, so an EFB sample composited into it is decoded first (else the HUD came out
+// encoded twice, washed out).
+float4 efb_as_source(float4 v) {
+  if (sharp.w <= 0.5) return v;
+  v.rgb = saturate(v.rgb);
+  v.rgb = lerp(v.rgb / 12.92, pow((v.rgb + 0.055) / 1.055, 2.4), step(0.04045, v.rgb));
+  return v;
+}
 float4 hud(float2 uv, float4 c) {
   if (box.z <= 0.0) return c;
   float2 e = uv * hudr.xy + hudr.zw;
   if (box.w > 0.0) return float4(hudmask.Sample(samp, e).rrr, 1);   // MELEE_DEBUG_HUDMASK
   float m = hudmask.Sample(samp, e).r;
-  return m > 0.0 ? lerp(c, efb.Sample(samp, e), saturate(m)) : c;
+  return m > 0.0 ? lerp(c, efb_as_source(efb.Sample(samp, e)), saturate(m)) : c;
 }
 // Optional screen-space ambient occlusion approximation. Melee uses reversed depth (clear = 0),
 // so nearer samples have larger depth. It darkens contact edges only and leaves cleared pixels
@@ -110,7 +119,7 @@ float3 crt_tap(float2 uv) {
   if (box.z > 0.0) {
     float2 e = uv * hudr.xy + hudr.zw;
     float m = hudmask.SampleLevel(samp, e, 0).r;
-    if (m > 0.0) c = lerp(c, efb.SampleLevel(samp, e, 0), saturate(m));
+    if (m > 0.0) c = lerp(c, efb_as_source(efb.SampleLevel(samp, e, 0)), saturate(m));
   }
   return sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb;
 }

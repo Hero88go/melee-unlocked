@@ -5,6 +5,18 @@ if(WIN32)
   include(tests/yougame_agent_root_win.cmake)
 endif()
 
+# Local builds only: a second path-tracing integrator (runtime/gx/rtx_integrator.h) built from
+# NVIDIA's RTXDI SDK, kept in a folder outside this repository because that SDK's licence does not
+# allow it here. -DMELEE_RTX_NVIDIA_DIR=<folder> includes <folder>/melee_integrator.cmake; empty (the
+# default, and every release) changes nothing.
+set(MELEE_RTX_NVIDIA_DIR "" CACHE PATH "Local-only NVIDIA RTXDI integrator module (never part of a release)")
+function(melee_add_local_nvidia_integrator runtime_target)
+  if(MELEE_RTX_NVIDIA_DIR)
+    set(melee_rtx_executables ${ARGN})
+    include("${MELEE_RTX_NVIDIA_DIR}/melee_integrator.cmake")
+  endif()
+endfunction()
+
 # A Source Port with no Slippi code compiled or linked: -DMELEE_NO_SLIPPI=ON in a build directory of
 # its own. Only melee_source is defined there, from the same runtime sources minus the Slippi layer
 # (runtime_ns), so the translated game, the playback build, the launcher and the tests, which all
@@ -133,13 +145,22 @@ if(MELEE_NO_SLIPPI)
             -Fo "${MELEE_RTX_TRACE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
     VERBATIM)
-  add_custom_target(melee_rtx_shaders DEPENDS "${MELEE_RTX_TRANSFORM_DXIL}" "${MELEE_RTX_TRACE_DXIL}")
+  # The Melee integrator (rtx_melee_integrator.cpp): compute with inline ray queries, Shader Model 6.5.
+  set(MELEE_RTX_DIRECT_DXIL "${CMAKE_CURRENT_BINARY_DIR}/rtx_direct.dxil")
+  add_custom_command(OUTPUT "${MELEE_RTX_DIRECT_DXIL}"
+    COMMAND "${MELEE_DXC_EXECUTABLE}" -T cs_6_5 -HV 2021 -O3
+            -Fo "${MELEE_RTX_DIRECT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_direct.hlsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_direct.hlsl"
+    VERBATIM)
+  add_custom_target(melee_rtx_shaders DEPENDS "${MELEE_RTX_TRANSFORM_DXIL}" "${MELEE_RTX_TRACE_DXIL}" "${MELEE_RTX_DIRECT_DXIL}")
   add_dependencies(melee_source melee_rtx_shaders)
   add_custom_command(TARGET melee_source POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRANSFORM_DXIL}"
             "$<TARGET_FILE_DIR:melee_source>/rtx_transform.dxil"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRACE_DXIL}"
             "$<TARGET_FILE_DIR:melee_source>/rtx_trace.dxil"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_DIRECT_DXIL}"
+            "$<TARGET_FILE_DIR:melee_source>/rtx_direct.dxil"
     VERBATIM)
 
   # Cache identity follows shader generation, constant layout and pipeline setup.
@@ -308,6 +329,7 @@ if(MELEE_NO_SLIPPI)
   target_compile_definitions(port_mu_net_ns_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_link_libraries(port_mu_net_ns_test PRIVATE runtime_ns)
   add_test(NAME port_mu_net_ns COMMAND port_mu_net_ns_test)
+  melee_add_local_nvidia_integrator(runtime_ns melee_source)
   return()
 endif()
 add_executable(port_launch_process_test tests/launch_process_test.cpp)
@@ -590,6 +612,10 @@ add_executable(port_rtx_semantics_test tests/rtx_semantics_test.cpp runtime/gx/r
 target_include_directories(port_rtx_semantics_test PRIVATE runtime/gx)
 target_compile_features(port_rtx_semantics_test PRIVATE cxx_std_17)
 add_test(NAME port_rtx_semantics COMMAND port_rtx_semantics_test)
+add_executable(port_rtx_lights_test tests/rtx_lights_test.cpp runtime/gx/rtx_lights.cpp)
+target_include_directories(port_rtx_lights_test PRIVATE runtime/gx)
+target_compile_features(port_rtx_lights_test PRIVATE cxx_std_17)
+add_test(NAME port_rtx_lights COMMAND port_rtx_lights_test)
 add_executable(port_ax_ucode_test tests/ax_ucode_test.cpp runtime/hle/ax_ucode.cpp)
 target_include_directories(port_ax_ucode_test PRIVATE runtime/hle)
 target_compile_features(port_ax_ucode_test PRIVATE cxx_std_17)
@@ -941,7 +967,14 @@ add_custom_command(OUTPUT "${MELEE_RTX_TRACE_DXIL}"
           -Fo "${MELEE_RTX_TRACE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_trace.hlsl"
   VERBATIM)
-add_custom_target(melee_rtx_shaders DEPENDS "${MELEE_RTX_TRANSFORM_DXIL}" "${MELEE_RTX_TRACE_DXIL}")
+# The Melee integrator (rtx_melee_integrator.cpp): compute with inline ray queries, Shader Model 6.5.
+set(MELEE_RTX_DIRECT_DXIL "${CMAKE_CURRENT_BINARY_DIR}/rtx_direct.dxil")
+add_custom_command(OUTPUT "${MELEE_RTX_DIRECT_DXIL}"
+  COMMAND "${MELEE_DXC_EXECUTABLE}" -T cs_6_5 -HV 2021 -O3
+          -Fo "${MELEE_RTX_DIRECT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_direct.hlsl"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/rtx_direct.hlsl"
+  VERBATIM)
+add_custom_target(melee_rtx_shaders DEPENDS "${MELEE_RTX_TRANSFORM_DXIL}" "${MELEE_RTX_TRACE_DXIL}" "${MELEE_RTX_DIRECT_DXIL}")
 foreach(rtx_exe melee_port melee_source)
   add_dependencies(${rtx_exe} melee_rtx_shaders melee_dxr_shader)
   add_custom_command(TARGET ${rtx_exe} POST_BUILD
@@ -949,6 +982,8 @@ foreach(rtx_exe melee_port melee_source)
             "$<TARGET_FILE_DIR:${rtx_exe}>/rtx_transform.dxil"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_TRACE_DXIL}"
             "$<TARGET_FILE_DIR:${rtx_exe}>/rtx_trace.dxil"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_RTX_DIRECT_DXIL}"
+            "$<TARGET_FILE_DIR:${rtx_exe}>/rtx_direct.dxil"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_DXR_DXIL}"
             "$<TARGET_FILE_DIR:${rtx_exe}>/dxr_pathtrace.dxil"
     VERBATIM)
@@ -1288,3 +1323,6 @@ add_executable(port_phob_test tests/phob_test.cpp runtime/host/phob.cpp runtime/
 target_include_directories(port_phob_test PRIVATE runtime/host)
 target_compile_features(port_phob_test PRIVATE cxx_std_17)
 add_test(NAME port_phob COMMAND port_phob_test)
+
+# The local-only NVIDIA integrator (see melee_add_local_nvidia_integrator at the top).
+melee_add_local_nvidia_integrator(runtime melee_port melee_source)

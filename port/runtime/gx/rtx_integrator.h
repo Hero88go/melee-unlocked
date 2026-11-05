@@ -20,6 +20,8 @@
 
 namespace gx {
 
+struct RtxLightRecord;   // rtx_lights.h
+
 struct RtxFrameInputs {
   ID3D12Device5* device = nullptr;
   ID3D12GraphicsCommandList4* list = nullptr;
@@ -39,12 +41,19 @@ struct RtxFrameInputs {
   UINT descriptor_size = 0;
   uint32_t free_slot = 0, free_slot_count = 0;
 
-  // The raster pass's targets at the EFB size, PIXEL|NON_PIXEL_SHADER_RESOURCE while rendering.
+  // The raster pass's targets at the EFB size, NON_PIXEL_SHADER_RESOURCE while rendering.
   ID3D12Resource* raster_color = nullptr;         // the picture as GX drew it (RGBA8)
   ID3D12Resource* albedo = nullptr;               // de-lit TEV colour (RGBA8)
   ID3D12Resource* normal_depth = nullptr;         // view normal xyz, linear view depth w (RGBA16F)
   ID3D12Resource* draw_id = nullptr;              // draw index + 1, 0 none (R32_UINT)
   ID3D12Resource* motion = nullptr;               // pixel motion, previous minus current (RG16F)
+  ID3D12Resource* prev_albedo = nullptr;          // the previous present's G-buffer (valid unless reset)
+  ID3D12Resource* prev_normal_depth = nullptr;
+  ID3D12Resource* prev_draw_id = nullptr;
+  // What the raster drew over the G-buffer's surface (RGBA16F): the picture is lit * transmittance +
+  // overlay wherever there is a surface.
+  ID3D12Resource* overlay = nullptr;
+  ID3D12Resource* transmittance = nullptr;
   uint32_t width = 0, height = 0;
 
   // The camera, as the raster drew this present.
@@ -54,9 +63,12 @@ struct RtxFrameInputs {
   bool orthographic = false;
   float prev_view_to_world[12]{};                 // last present's, for reprojection
 
-  // Lights and materials (the renderer's tables, upload heap).
+  // Lights and materials (the renderer's tables, upload heap). light_records is the same light table
+  // on the CPU, for integrators that reorder or split it.
   ID3D12Resource* lights = nullptr;
+  const RtxLightRecord* light_records = nullptr;
   uint32_t light_count = 0;
+  float light_scale = 1.0f;                       // overall light multiplier (exposure), 1 = the game's own
   ID3D12Resource* draws = nullptr;                // per draw index: material record for the G-buffer
   uint32_t draw_count = 0;
 };

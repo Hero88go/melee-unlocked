@@ -1,0 +1,218 @@
+// The Melee integrator (rtx_integrator.h): this project's own lighting for the path tracer. First
+// stage: direct light from the game's lights with ray-traced soft shadows and ambient occlusion
+// (shaders/rtx_direct.hlsl). ReSTIR and the radiance cache build on it.
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "rtx_integrator.h"
+
+#include <wrl/client.h>
+
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <vector>
+
+namespace gx {
+namespace {
+
+using Microsoft::WRL::ComPtr;
+
+enum Root : UINT { kFrame = 0, kScene, kLights, kDrawTable, kRecords, kInputs, kOutputs, kRootCount };
+
+struct FrameConstants {        // cbuffer Frame in rtx_direct.hlsl
+  float view_to_world[12];
+  float clip_to_view[16];
+  float viewport[4];
+  uint32_t size[2];
+  uint32_t frame_index;
+  uint32_t light_count;
+  uint32_t draw_count;
+  uint32_t orthographic;
+  float ao_radius;
+  float light_scale;
+};
+static_assert(sizeof(FrameConstants) == 160, "Frame layout");
+
+constexpr DXGI_FORMAT kOutputFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr D3D12_RESOURCE_STATES kShaderRead =
+    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+constexpr unsigned kSlots = 3;
+constexpr UINT kInputCount = 6;   // G-buffer albedo, normal + depth, id; raster; overlay; transmittance
+
+bool read_binary(const std::wstring& path, std::vector<uint8_t>& out) {
+  std::ifstream file(std::filesystem::path(path), std::ios::binary | std::ios::ate);
+  if (!file) return false;
+  const std::streamsize length = file.tellg();
+  if (length <= 0 || length > (std::streamsize)(16 * 1024 * 1024)) return false;
+  out.resize((size_t)length);
+  file.seekg(0);
+  return (bool)file.read((char*)out.data(), length);
+}
+
+class MeleeIntegrator final : public RtxIntegrator {
+ public:
+  const char* name() const override { return "Melee"; }
+
+  bool initialize(ID3D12Device5* device, const std::wstring& exe_dir, std::string* error) override {
+    if (error) error->clear();
+    device_ = device;
+    std::vector<uint8_t> dxil;
+    if (!device_ || !read_binary(exe_dir + L"\\rtx_direct.dxil", dxil)) {
+      if (error) *error = "rtx_direct.dxil is missing beside the executable";
+      return false;
+    }
+    D3D12_DESCRIPTOR_RANGE inputs{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kInputCount, 4, 0, 0};   // t4..t9
+    D3D12_DESCRIPTOR_RANGE outputs{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};   // u0
+    D3D12_ROOT_PARAMETER p[kRootCount]{};
+    p[kFrame].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    p[kFrame].Descriptor = {0, 0};
+    const UINT srv_registers[] = {0, 1, 2, 3};
+    const Root srv_roots[] = {kScene, kLights, kDrawTable, kRecords};
+    for (int i = 0; i < 4; ++i) {
+      p[srv_roots[i]].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+      p[srv_roots[i]].Descriptor = {srv_registers[i], 0};
+    }
+    p[kInputs].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    p[kInputs].DescriptorTable = {1, &inputs};
+    p[kOutputs].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    p[kOutputs].DescriptorTable = {1, &outputs};
+    for (auto& x : p) x.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC rd{};
+    rd.NumParameters = kRootCount;
+    rd.pParameters = p;
+    ComPtr<ID3DBlob> blob, diag;
+    if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &diag)) ||
+        FAILED(device_->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root_)))) {
+      if (error) *error = diag ? (const char*)diag->GetBufferPointer() : "direct-light root signature failed";
+      return false;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = root_.Get();
+    pd.CS = {dxil.data(), dxil.size()};
+    if (FAILED(device_->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso_)))) {
+      root_.Reset();
+      if (error) *error = "direct-light pipeline creation failed";
+      return false;
+    }
+    return true;
+  }
+
+  bool render(const RtxFrameInputs& in, RtxFrameOutputs* out, std::string* error) override {
+    if (error) error->clear();
+    if (!pso_ || !in.list || in.slot >= kSlots || !in.tlas || !in.lights || !in.draws || !in.records ||
+        !in.albedo || !in.normal_depth || !in.draw_id || !in.raster_color || !in.overlay || !in.transmittance || !in.heap ||
+        in.free_slot_count < kInputCount + 1 ||
+        !in.width || !in.height) {
+      if (error) *error = "direct-light inputs are incomplete";
+      return false;
+    }
+    Slot& s = slots_[in.slot];
+    if (!s.constants) {
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
+      D3D12_RESOURCE_DESC d{};
+      d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; d.Width = 256; d.Height = 1; d.DepthOrArraySize = 1; d.MipLevels = 1;
+      d.SampleDesc.Count = 1; d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      D3D12_RANGE none{0, 0};
+      if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                  IID_PPV_ARGS(&s.constants))) ||
+          FAILED(s.constants->Map(0, &none, (void**)&s.constants_cpu))) {
+        s.constants.Reset();
+        if (error) *error = "direct-light constants could not be made";
+        return false;
+      }
+    }
+    if (!s.output || s.output->GetDesc().Width != in.width || s.output->GetDesc().Height != in.height) {
+      s.output.Reset();
+      s.shader_read = false;
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC d{};
+      d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width = in.width; d.Height = in.height; d.DepthOrArraySize = 1;
+      d.MipLevels = 1; d.Format = kOutputFormat; d.SampleDesc.Count = 1; d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                  IID_PPV_ARGS(&s.output)))) {
+        if (error) *error = "direct-light output could not be made";
+        return false;
+      }
+    }
+    if (s.shader_read) {
+      D3D12_RESOURCE_BARRIER b{};
+      b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      b.Transition = {s.output.Get(), 0, kShaderRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+      in.list->ResourceBarrier(1, &b);
+      s.shader_read = false;
+    }
+
+    // Views in the renderer's heap: t4..t9 then u0.
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = in.heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += (SIZE_T)in.free_slot * in.descriptor_size;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = in.heap->GetGPUDescriptorHandleForHeapStart();
+    gpu.ptr += (UINT64)in.free_slot * in.descriptor_size;
+    ID3D12Resource* srvs[kInputCount] = {in.albedo, in.normal_depth, in.draw_id, in.raster_color, in.overlay, in.transmittance};
+    for (UINT i = 0; i < kInputCount; ++i) {
+      D3D12_CPU_DESCRIPTOR_HANDLE h = cpu;
+      h.ptr += (SIZE_T)i * in.descriptor_size;
+      device_->CreateShaderResourceView(srvs[i], nullptr, h);
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE uav_cpu = cpu;
+    uav_cpu.ptr += (SIZE_T)kInputCount * in.descriptor_size;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format = kOutputFormat;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    device_->CreateUnorderedAccessView(s.output.Get(), nullptr, &uav, uav_cpu);
+    D3D12_GPU_DESCRIPTOR_HANDLE uav_gpu = gpu;
+    uav_gpu.ptr += (UINT64)kInputCount * in.descriptor_size;
+
+    FrameConstants k{};
+    std::memcpy(k.view_to_world, in.view_to_world, sizeof k.view_to_world);
+    std::memcpy(k.clip_to_view, in.clip_to_view, sizeof k.clip_to_view);
+    std::memcpy(k.viewport, in.viewport, sizeof k.viewport);
+    k.size[0] = in.width;
+    k.size[1] = in.height;
+    k.frame_index = (uint32_t)in.frame_index;
+    k.light_count = in.light_count;
+    k.draw_count = in.draw_count;
+    k.orthographic = in.orthographic ? 1u : 0u;
+    // Contact-range occlusion: until bounce light comes in, a long reach turned walls facing a
+    // neighbouring building black.
+    k.ao_radius = 8.0f;
+    k.light_scale = in.light_scale;
+    std::memcpy(s.constants_cpu, &k, sizeof k);
+
+    in.list->SetComputeRootSignature(root_.Get());
+    in.list->SetPipelineState(pso_.Get());
+    in.list->SetComputeRootConstantBufferView(kFrame, s.constants->GetGPUVirtualAddress());
+    in.list->SetComputeRootShaderResourceView(kScene, in.tlas);
+    in.list->SetComputeRootShaderResourceView(kLights, in.lights->GetGPUVirtualAddress());
+    in.list->SetComputeRootShaderResourceView(kDrawTable, in.draws->GetGPUVirtualAddress());
+    in.list->SetComputeRootShaderResourceView(kRecords, in.records->GetGPUVirtualAddress());
+    in.list->SetComputeRootDescriptorTable(kInputs, gpu);
+    in.list->SetComputeRootDescriptorTable(kOutputs, uav_gpu);
+    in.list->Dispatch((in.width + 7) / 8, (in.height + 7) / 8, 1);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition = {s.output.Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kShaderRead};
+    in.list->ResourceBarrier(1, &b);
+    s.shader_read = true;
+    if (out) {
+      *out = {};
+      out->color = s.output.Get();
+    }
+    return true;
+  }
+
+ private:
+  struct Slot {
+    ComPtr<ID3D12Resource> output, constants;
+    uint8_t* constants_cpu = nullptr;
+    bool shader_read = false;
+  };
+  ComPtr<ID3D12Device5> device_;
+  ComPtr<ID3D12RootSignature> root_;
+  ComPtr<ID3D12PipelineState> pso_;
+  Slot slots_[kSlots];
+};
+
+}  // namespace
+
+std::unique_ptr<RtxIntegrator> make_melee_integrator() { return std::make_unique<MeleeIntegrator>(); }
+
+}  // namespace gx

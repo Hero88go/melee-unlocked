@@ -177,7 +177,7 @@ bool RtxScene::ensure_buffer(ComPtr<ID3D12Resource>& resource, uint64_t bytes, D
 }
 
 bool RtxScene::build(ID3D12GraphicsCommandList4* list, unsigned slot, const float view_to_world[12],
-                     uint32_t heap_generation, std::string* error) {
+                     uint32_t heap_generation, uint32_t frame_draws, std::string* error) {
   const auto started = std::chrono::steady_clock::now();
   if (error) error->clear();
   if (!ready() || !list || slot >= kFrameSlots) {
@@ -212,8 +212,12 @@ bool RtxScene::build(ID3D12GraphicsCommandList4* list, unsigned slot, const floa
       !ensure_buffer(s.frame_constants, 256, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ,
                      D3D12_RESOURCE_FLAG_NONE, &s.constants_cpu, error) ||
       !ensure_buffer(s.instances, kRtxClassCount * sizeof(D3D12_RAYTRACING_INSTANCE_DESC), D3D12_HEAP_TYPE_UPLOAD,
-                     D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, &s.instances_cpu, error))
+                     D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, &s.instances_cpu, error) ||
+      !ensure_buffer(s.draw_table, std::max<uint64_t>(frame_draws, 1) * sizeof(uint32_t), D3D12_HEAP_TYPE_UPLOAD,
+                     D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, &s.draw_table_cpu, error))
     return false;
+  std::memset(s.draw_table_cpu, 0xFF, std::max<size_t>(frame_draws, 1) * sizeof(uint32_t));
+  s.draw_table_size = frame_draws;
   if (!vertices_existed || old_vertices != s.vertices.Get()) s.vertices_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
   // 1. The raster's transform, once per index: world-space triangles.
@@ -252,7 +256,11 @@ bool RtxScene::build(ID3D12GraphicsCommandList4* list, unsigned slot, const floa
     r.material = d.material;
     r.texture_set = d.texture_heap == heap_generation ? d.texture_set : kRtxNoTextures;
     r.flags = d.flags;
-    r.reserved[0] = r.reserved[1] = 0;
+    r.specular = d.specular;
+    r.roughness = d.roughness;
+    r.ambient = d.ambient;
+    r.channel = d.channel;
+    if (d.draw_index < frame_draws) ((uint32_t*)s.draw_table_cpu)[d.draw_index] = (uint32_t)n;
     base += count;
     triangles += count / 3;
   }
@@ -364,6 +372,12 @@ ID3D12Resource* RtxScene::geometry_records(unsigned slot) const {
 }
 uint32_t RtxScene::vertex_count(unsigned slot) const {
   return slot < kFrameSlots && slots_[slot].built ? slots_[slot].vertex_count : 0;
+}
+ID3D12Resource* RtxScene::draw_table(unsigned slot) const {
+  return slot < kFrameSlots && slots_[slot].built ? slots_[slot].draw_table.Get() : nullptr;
+}
+uint32_t RtxScene::draw_table_size(unsigned slot) const {
+  return slot < kFrameSlots && slots_[slot].built ? slots_[slot].draw_table_size : 0;
 }
 uint32_t RtxScene::geometry_count(unsigned slot) const {
   return slot < kFrameSlots && slots_[slot].built ? slots_[slot].geometry_count : 0;
