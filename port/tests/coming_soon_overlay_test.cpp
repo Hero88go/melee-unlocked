@@ -4,11 +4,14 @@
 #include "practice_menu.h"
 #include <imgui.h>
 #include <imgui_internal.h>
-#include <chrono>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
-#include <thread>
+
+// Wall-clock scheduling must not expire the menu heartbeat during a slow build.
+// Only this isolated target supplies the clock; the shipped renderer uses steady_clock.
+static int64_t test_clock_ms=100000;
+int64_t melee_coming_soon_test_clock_ms() { return test_clock_ms; }
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"line %d: %s\n",__LINE__,#x); std::exit(1); } } while (0)
 
@@ -64,7 +67,7 @@ int main()
     // Keep the menu heartbeat alive until the badges finish popping in.
     for (int i=0;i<12;++i) {
         coming_soon_overlay::showing();
-        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        test_clock_ms+=60;
     }
     frame(nullptr);
     // ImGui measures a new auto-sized popup while hidden on its first frame.

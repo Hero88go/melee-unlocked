@@ -10,11 +10,21 @@
 #include <chrono>
 #include <cmath>
 
+#ifdef MELEE_COMING_SOON_TEST_CLOCK
+int64_t melee_coming_soon_test_clock_ms();
+#endif
+
 namespace coming_soon_overlay {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-int64_t now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count(); }
+int64_t now_ms() {
+#ifdef MELEE_COMING_SOON_TEST_CLOCK
+  return melee_coming_soon_test_clock_ms();
+#else
+  return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+#endif
+}
 
 std::atomic<int64_t> g_last_show{0};    // the last frame the page was showing
 std::atomic<int64_t> g_since{0};        // when it started showing (the pop-in runs from here)

@@ -1152,6 +1152,7 @@ add_executable(port_coming_soon_overlay_test tests/coming_soon_overlay_test.cpp 
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
 target_include_directories(port_coming_soon_overlay_test PRIVATE runtime/gx third_party/imgui)
 target_compile_features(port_coming_soon_overlay_test PRIVATE cxx_std_17)
+target_compile_definitions(port_coming_soon_overlay_test PRIVATE MELEE_COMING_SOON_TEST_CLOCK=1)
 add_test(NAME port_coming_soon_overlay COMMAND port_coming_soon_overlay_test)
 set_tests_properties(port_coming_soon_overlay PROPERTIES TIMEOUT 10)
 
