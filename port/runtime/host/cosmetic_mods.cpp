@@ -3,6 +3,7 @@
 #define NOMINMAX
 #include "test_env.h"
 #include "cosmetic_mods.h"
+#include "disc_costume_metadata.h"
 #include "gameplay_policy.h"
 #include "stage_dat_safety.h"
 #include "stage_read_pin.h"
@@ -99,8 +100,9 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // skeleton check reads the relocation table (a joint at data offset 0 is a joint) and its reason
 // names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
 // the game stops when it draws one. 6: stage skins. 7: fighter move sound archives. A disc scanned
-// under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 8;
+// under an older number is scanned again at the next boot. 9: m-ex costume filenames and the
+// portrait animation's own stride, dimensions and palette keys, including added costumes.
+constexpr uint32_t kScanRules = 9;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -3543,13 +3545,22 @@ bool disc_stage_member(const std::string& raw, std::string* target, std::string*
 void note_select_screen(const std::string& name, const fs::path& file, uint64_t offset, uint64_t length,
                         DiscCandidate* screen) {
   const std::string wanted = lower(name);
-  if (wanted == "mnslchr.usd" || (wanted == "mnslchr.dat" && screen->member.empty()))
+  if (wanted == "mnslchr.usd" ||
+      (wanted == "mnslchr.dat" && lower(screen->member) != "mnslchr.usd") ||
+      ((wanted == "mexselectchr.dat" || wanted == "mnslchr.0sd") && screen->member.empty()))
     *screen = {name, file, offset, length};
+}
+
+// m-ex gives additional costumes arbitrary DAT filenames. Only its validated costume table can
+// identify them; collect potential files here and let the table and model roots decide below.
+bool possible_mex_costume(const std::string& name) {
+  const std::string extension = lower(fs::u8path(name).extension().u8string());
+  return extension == ".dat" || extension == ".usd";
 }
 
 // Every file in a disc image whose name is a costume, fighter sound archive, or stage skin.
 // *screen gets the disc's character select file when it has one.
-bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, DiscCandidate* screen,
+bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, DiscCandidate* screen, DiscCandidate* metadata,
                         std::string* error) {
   std::vector<uint8_t> header;
   if (!read_range(iso, 0, 0x440, &header)) { *error = "The disc image could not be read."; return false; }
@@ -3565,14 +3576,15 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, Di
     const std::string name = slash == std::string::npos ? file.path : file.path.substr(slash + 1);
     std::string variant, stage, label;
     note_select_screen(name, iso, file.start, file.size, screen);
+    if (lower(name) == "mxdt.dat") *metadata = {name, iso, file.start, file.size};
     if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant) &&
-        !disc_fighter_sound_member(name)) continue;
+        !disc_fighter_sound_member(name) && !possible_mex_costume(name)) continue;
     out->push_back({name, iso, file.start, file.size});
   }
   return true;
 }
 
-void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out, DiscCandidate* screen) {
+void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out, DiscCandidate* screen, DiscCandidate* metadata) {
   std::error_code ec;
   for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
     if (!it->is_regular_file(ec)) continue;
@@ -3581,8 +3593,9 @@ void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out,
     const uint64_t length = it->file_size(ec);
     if (ec) continue;
     note_select_screen(name, it->path(), 0, length, screen);
+    if (lower(name) == "mxdt.dat") *metadata = {name, it->path(), 0, length};
     if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant) &&
-        !disc_fighter_sound_member(name)) continue;
+        !disc_fighter_sound_member(name) && !possible_mex_costume(name)) continue;
     out->push_back({name, it->path(), 0, length});
   }
 }
@@ -3594,8 +3607,10 @@ void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out,
 // (mn/mncharsel.c), so the keys, not the order of the table, name the picture of a slot. This is
 // the reading tools/companion_texture_diagnostic.py does to make companion_texture_map.h.
 constexpr uint32_t kPortraitWidth = 136, kPortraitHeight = 188, kPortraitFormat = 9;   // 8 bit palette indices
-constexpr uint32_t kPortraitBytes = (kPortraitWidth / 8) * (kPortraitHeight / 4) * 32;
-struct SelectPortrait { uint32_t pixels = 0, colors = 0, palette_format = 0, palette_entries = 0; };
+struct SelectPortrait {
+  uint32_t pixels = 0, colors = 0, palette_format = 0, palette_entries = 0;
+  uint32_t width = kPortraitWidth, height = kPortraitHeight, format = kPortraitFormat;
+};
 
 // Frame -> value of one animation track that holds whole-number keys. `block` is the archive's data
 // block; every read stays inside it.
@@ -3615,9 +3630,10 @@ bool texture_track_keys(const uint8_t* block, size_t size, uint32_t track, std::
   while (at < end) {
     uint8_t byte = block[at++];
     const uint32_t opcode = byte & 0xF;
+    if (opcode < 1 || opcode > 6) return false;
     uint32_t count = (byte >> 4) & 7, shift = 3;
     while (byte & 0x80) {
-      if (at >= size || shift > 24) return false;
+      if (at >= end || shift > 24) return false;
       byte = block[at++];
       count |= (uint32_t)(byte & 0x7F) << shift; shift += 7;
     }
@@ -3625,7 +3641,7 @@ bool texture_track_keys(const uint8_t* block, size_t size, uint32_t track, std::
       bool has_value = false;
       double value = 0;
       if (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4 || opcode == 6) {
-        if (size - at < sizes[kind]) return false;
+        if (end - at < sizes[kind]) return false;
         const uint8_t* raw = block + at;
         at += sizes[kind];
         switch (kind) {
@@ -3638,12 +3654,12 @@ bool texture_track_keys(const uint8_t* block, size_t size, uint32_t track, std::
         has_value = true;
       }
       if (opcode == 4 || opcode == 5) {
-        if (slope_kind > 4 || size - at < sizes[slope_kind]) return false;
+        if (slope_kind > 4 || end - at < sizes[slope_kind]) return false;
         at += sizes[slope_kind];
       }
       uint32_t wait = 0, wait_shift = 0;
       for (;;) {
-        if (at >= size || wait_shift > 28) return false;
+        if (at >= end || wait_shift > 28) return false;
         byte = block[at++];
         wait |= (uint32_t)(byte & 0x7F) << wait_shift; wait_shift += 7;
         if (!(byte & 0x80)) break;
@@ -3661,9 +3677,20 @@ bool texture_track_keys(const uint8_t* block, size_t size, uint32_t track, std::
 // Frame -> portrait of a character select file, from the first texture animation whose tables hold
 // portraits. False when the file has no such animation (not a character select file, or one built
 // another way): then no portrait is taken from it.
-bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortrait>* frames) {
+bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortrait>* frames, int* mex_stride = nullptr) {
   frames->clear();
-  if (dat.size() < 0x20) return false;
+  if (mex_stride) *mex_stride = 0;
+  disc_metadata::Archive archive(dat);
+  if (!archive.parse()) return false;
+  uint32_t mex_root = 0, mex_animation = UINT32_MAX;
+  int stride = 0;
+  if (archive.root("mexSelectChr", &mex_root)) {
+    uint32_t material;
+    if (!archive.bounds(mex_root, 20) || !archive.pointer(mex_root + 12, &material) ||
+        !archive.bounds(material, 12) || !archive.pointer(material + 8, &mex_animation)) return false;
+    stride = (int)archive.word(mex_root + 16);
+    if (stride < 26 || stride > 512) return false;
+  }
   const uint64_t data_size = be32(dat.data() + 4), relocations = be32(dat.data() + 8);
   if (0x20ull + data_size + relocations * 4ull > dat.size()) return false;
   const uint8_t* block = dat.data() + 0x20;
@@ -3678,47 +3705,77 @@ bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortr
     // {next, id, animation, image table, palette table, images (16 bit), palettes (16 bit)}
     if (pointer < 0xC || (uint64_t)pointer + 12 > data_size) continue;
     const uint32_t anim = pointer - 0xC;
+    if (stride && anim != mex_animation) continue;  // the named CSP animation, never an unrelated menu texture
     if (!relocated(pointer + 4) || !relocated(anim + 8)) continue;
     const uint32_t images = word(pointer), palettes = word(pointer + 4);
     const uint32_t image_count = be16(block + pointer + 8), palette_count = be16(block + pointer + 10);
-    if (image_count < 20 || image_count > 400 || image_count != palette_count) continue;
-    if ((uint64_t)images + 4ull * image_count > data_size || (uint64_t)palettes + 4ull * image_count > data_size) continue;
+    if (image_count < (stride ? 1u : 20u) || image_count > 4096 || !palette_count || palette_count > 4096) continue;
+    if ((uint64_t)images + 4ull * image_count > data_size || (uint64_t)palettes + 4ull * palette_count > data_size) continue;
     std::vector<SelectPortrait> entries(image_count);
     std::vector<bool> valid(image_count, false);
     size_t good = 0;
     bool broken = false;
     for (uint32_t i = 0; i < image_count; ++i) {
-      const uint32_t image = word(images + 4ull * i), palette = word(palettes + 4ull * i);
-      if ((uint64_t)image + 24 > data_size || (uint64_t)palette + 14 > data_size) { broken = true; break; }
+      const uint32_t image = word(images + 4ull * i);
+      if ((uint64_t)image + 24 > data_size) { broken = true; break; }
       SelectPortrait entry;
       entry.pixels = word(image);
-      if (be16(block + image + 4) != kPortraitWidth || be16(block + image + 6) != kPortraitHeight ||
-          word(image + 8) != kPortraitFormat || (uint64_t)entry.pixels + kPortraitBytes > data_size) continue;
-      entry.colors = word(palette);
-      entry.palette_format = word(palette + 4);
-      entry.palette_entries = be16(block + palette + 12);
-      if (entry.palette_format > 2 || !entry.palette_entries || entry.palette_entries > 256 ||
-          (uint64_t)entry.colors + 2ull * entry.palette_entries > data_size) continue;
+      entry.width = be16(block + image + 4); entry.height = be16(block + image + 6); entry.format = word(image + 8);
+      if (!entry.width || !entry.height || entry.width > 1024 || entry.height > 1024 ||
+          (!stride && (entry.width != kPortraitWidth || entry.height != kPortraitHeight)) ||
+          (entry.format != 8 && entry.format != 9) ||
+          (uint64_t)entry.pixels + gx_image_size(entry.width, entry.height, entry.format, 0, 0) > data_size) continue;
       entries[i] = entry; valid[i] = true; ++good;
     }
     if (broken || good * 5 < (size_t)image_count * 4) continue;
     // animation -> its first track; the image index track is type 1
     const uint32_t animation = word(anim + 8);
     if ((uint64_t)animation + 12 > data_size) continue;
-    std::map<int, int> keys;
-    bool have_keys = false;
+    std::map<int, int> keys, palette_keys;
+    bool have_keys = false, have_palette_keys = false, bad_track = false;
     uint32_t track = word(animation + 8);
     for (int guard = 0; track && guard < 64; ++guard) {
       if ((uint64_t)track + 0x14 > data_size) { have_keys = false; break; }
-      if (block[track + 0xC] == 1) have_keys = texture_track_keys(block, (size_t)data_size, track, &keys);
+      if (block[track + 0xC] == 1) {
+        have_keys = texture_track_keys(block, (size_t)data_size, track, &keys);
+        bad_track |= !have_keys;
+      }
+      if (block[track + 0xC] == 2) {
+        have_palette_keys = texture_track_keys(block, (size_t)data_size, track, &palette_keys);
+        bad_track |= !have_palette_keys;
+      }
       track = word(track);
     }
-    if (!have_keys) continue;
+    if (!have_keys || bad_track || track) continue;
     bool in_table = true;
     for (const auto& key : keys) in_table &= key.second >= 0 && (uint32_t)key.second < image_count;
     if (!in_table) continue;
-    for (const auto& key : keys)
-      if (valid[(size_t)key.second]) (*frames)[key.first] = entries[(size_t)key.second];
+    for (const auto& key : palette_keys) in_table &= key.second >= 0 && (uint32_t)key.second < palette_count;
+    if (!in_table || (!have_palette_keys && palette_count != 1 && palette_count != image_count)) continue;
+    std::set<int> keyframes;
+    for (const auto& key : keys) keyframes.insert(key.first);
+    for (const auto& key : palette_keys) keyframes.insert(key.first);
+    for (const int frame : keyframes) {
+      auto image_key = keys.upper_bound(frame);
+      if (image_key == keys.begin()) continue;
+      const int image_index = std::prev(image_key)->second;
+      if (!valid[(size_t)image_index]) continue;
+      int palette_index = palette_count == 1 ? 0 : image_index;
+      if (have_palette_keys) {
+        auto palette_key = palette_keys.upper_bound(frame);
+        if (palette_key == palette_keys.begin()) continue;
+        palette_index = std::prev(palette_key)->second;
+      }
+      const uint32_t palette = word(palettes + 4ull * palette_index);
+      if ((uint64_t)palette + 14 > data_size) continue;
+      SelectPortrait entry = entries[(size_t)image_index];
+      entry.colors = word(palette); entry.palette_format = word(palette + 4);
+      entry.palette_entries = be16(block + palette + 12);
+      if (entry.palette_format > 2 || !entry.palette_entries || entry.palette_entries > (entry.format == 8 ? 16u : 256u) ||
+          (uint64_t)entry.colors + 2ull * entry.palette_entries > data_size) continue;
+      (*frames)[frame] = entry;
+    }
+    if (mex_stride) *mex_stride = stride;
     return !frames->empty();
   }
   return false;
@@ -3743,13 +3800,17 @@ int portrait_frame(const SlotName& slot) {
 // One portrait as 8 bit RGBA, top row first. The image is rows of 8x4 texel blocks of palette
 // indices; the palette is 16 bit colors in one of the console's three palette formats.
 std::vector<uint8_t> decode_portrait(const uint8_t* block, const SelectPortrait& portrait) {
-  std::vector<uint8_t> rgba((size_t)kPortraitWidth * kPortraitHeight * 4, 0);
+  std::vector<uint8_t> rgba((size_t)portrait.width * portrait.height * 4, 0);
   const uint8_t* source = block + portrait.pixels;
-  for (uint32_t block_y = 0; block_y < kPortraitHeight; block_y += 4)
-    for (uint32_t block_x = 0; block_x < kPortraitWidth; block_x += 8)
-      for (uint32_t y = 0; y < 4; ++y)
+  const uint32_t block_height = portrait.format == 8 ? 8 : 4;
+  size_t texel = 0;
+  for (uint32_t block_y = 0; block_y < portrait.height; block_y += block_height)
+    for (uint32_t block_x = 0; block_x < portrait.width; block_x += 8)
+      for (uint32_t y = 0; y < block_height; ++y)
         for (uint32_t x = 0; x < 8; ++x) {
-          const uint32_t index = *source++;
+          const uint32_t index = portrait.format == 8 ? (source[texel / 2] >> (texel % 2 ? 0 : 4)) & 15 : source[texel];
+          ++texel;
+          if (block_x + x >= portrait.width || block_y + y >= portrait.height) continue;
           if (index >= portrait.palette_entries) continue;   // no such color: left transparent
           const uint32_t color = be16(block + portrait.colors + 2 * index);
           uint32_t r, g, b, a = 255;
@@ -3765,7 +3826,7 @@ std::vector<uint8_t> decode_portrait(const uint8_t* block, const SelectPortrait&
             a = (color >> 12) & 7; r = (color >> 8) & 15; g = (color >> 4) & 15; b = color & 15;
             a = (a << 5) | (a << 2) | (a >> 1); r *= 17; g *= 17; b *= 17;
           }
-          uint8_t* out = rgba.data() + ((size_t)(block_y + y) * kPortraitWidth + block_x + x) * 4;
+          uint8_t* out = rgba.data() + ((size_t)(block_y + y) * portrait.width + block_x + x) * 4;
           out[0] = (uint8_t)r; out[1] = (uint8_t)g; out[2] = (uint8_t)b; out[3] = (uint8_t)a;
         }
   return rgba;
@@ -3813,14 +3874,11 @@ std::vector<uint8_t> rgba_png(const std::vector<uint8_t>& rgba, uint32_t width, 
 
 // Gives each plain costume of a scan the portrait the pack's character select file shows for its
 // slot, when that picture differs from the game's own. The picture is written beside the catalog as
-// the skin's "csp" companion. Alternate sets are skipped: the file has one cell per slot, and it is
-// the plain costume's. Returns how many portraits were stored. The game disc's English file is the
-// one compared against, since its portraits are the ones the renderer replaces.
-size_t pack_portraits_locked(const DiscCandidate& screen, std::map<std::string, AssetRecord>* fresh) {
+// the skin's "csp" companion. m-ex names each costume's portrait with its external fighter ID,
+// costume index and CSP stride; its extra costumes must not use the retail animation's columns.
+size_t pack_portraits_locked(const DiscCandidate& screen, const disc_metadata::MexCostumes& costumes,
+                            std::map<std::string, AssetRecord>* fresh) {
   if (screen.member.empty()) return 0;
-  bool wanted = false;
-  for (const auto& item : *fresh) wanted |= item.second.info.variant.empty();
-  if (!wanted) return 0;
   uint32_t retail_offset = 0, retail_size = 0;
   std::vector<uint8_t> pack, retail;
   if (!host::disc_find_file("MnSlChr.usd", &retail_offset, &retail_size) || !retail_size || retail_size > kMaxAssetBytes ||
@@ -3828,18 +3886,27 @@ size_t pack_portraits_locked(const DiscCandidate& screen, std::map<std::string, 
   retail.resize(retail_size);
   if (!host::disc_read(retail_offset, retail.data(), retail_size) || pack == retail) return 0;
   std::map<int, SelectPortrait> ours, theirs;
-  if (!select_portraits(retail, &ours) || !select_portraits(pack, &theirs)) return 0;
+  int stride = 0;
+  if (!select_portraits(retail, &ours) || !select_portraits(pack, &theirs, &stride)) return 0;
   size_t stored = 0;
   for (auto& item : *fresh) {
     AssetRecord& asset = item.second;
     SlotName slot;
-    if (!asset.info.variant.empty() || !find_slot(asset.info.target_path, &slot)) continue;
-    const int frame = portrait_frame(slot);
-    const auto standard = ours.find(frame), picture = theirs.find(frame);
-    if (frame < 0 || standard == ours.end() || picture == theirs.end()) continue;
+    if (asset.info.kind != "character_costume" || !find_slot(asset.info.target_path, &slot)) continue;
+    const int standard_frame = portrait_frame(slot);
+    int frame = standard_frame;
+    const auto origin = costumes.find(lower(asset.source_member));
+    if (stride && origin != costumes.end() && origin->second.family == slot.family->file_code)
+      frame = (int)origin->second.external + stride * (int)origin->second.costume;
+    else if (!asset.info.variant.empty()) continue;  // no explicit picture for this alternate
+    else if (stride && frame >= 0)
+      frame = frame / 30 * stride + frame % 30 + (frame % 30 >= 19 ? 1 : 0);
+    const auto standard = ours.find(standard_frame), picture = theirs.find(frame);
+    if (frame < 0 || picture == theirs.end()) continue;
     const std::vector<uint8_t> rgba = decode_portrait(pack.data() + 0x20, picture->second);
-    if (rgba == decode_portrait(retail.data() + 0x20, standard->second)) continue;   // the game's own picture
-    const std::vector<uint8_t> png = rgba_png(rgba, kPortraitWidth, kPortraitHeight);
+    if (standard != ours.end() && picture->second.width == standard->second.width && picture->second.height == standard->second.height &&
+        rgba == decode_portrait(retail.data() + 0x20, standard->second)) continue;
+    const std::vector<uint8_t> png = rgba_png(rgba, picture->second.width, picture->second.height);
     AssetRecord::Companion companion;
     companion.kind = "csp";
     companion.sha256 = sha256(png);
@@ -3880,8 +3947,17 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       }
   std::vector<DiscCandidate> candidates;
   DiscCandidate select_screen;   // the pack's character select file, when it has one
-  if (folder) folder_costume_files(root, &candidates, &select_screen);
-  else if (!disc_costume_files(root, &candidates, &select_screen, error)) { result.message = *error; return result; }
+  DiscCandidate metadata;
+  if (folder) folder_costume_files(root, &candidates, &select_screen, &metadata);
+  else if (!disc_costume_files(root, &candidates, &select_screen, &metadata, error)) { result.message = *error; return result; }
+  disc_metadata::MexCostumes mex_costumes;
+  if (!metadata.member.empty()) {
+    std::vector<uint8_t> bytes;
+    const bool mapped = read_range(metadata.file, metadata.offset, metadata.length, &bytes) &&
+                        disc_metadata::mex_costumes(bytes, &mex_costumes);
+    host::log("cosmetics: %s m-ex costume metadata from %s (%zu mapped files)",
+              mapped ? "read" : "unsupported", key.c_str(), mex_costumes.size());
+  }
   // The plain .dat of a slot first, then its English .usd: when both differ from the game's and from
   // each other, the English one is the one this game loads, so it is the one listed.
   std::stable_sort(candidates.begin(), candidates.end(), [](const DiscCandidate& a, const DiscCandidate& b) {
@@ -3896,13 +3972,24 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     const bool stage = disc_stage_member(candidate.member, &stage_path, &stage_label, &variant);
     size_t sound_kind = 0; const char* sound_character = nullptr;
     const bool sound_file = fighter_sound_identity(candidate.member, &sound_kind, &sound_character);
-    if (!stage && !sound_file && !disc_skin_member(candidate.member, &variant)) { ++skipped; continue; }
+    const bool ordinary_costume = disc_skin_member(candidate.member, &variant);
+    const auto mex = mex_costumes.find(lower(candidate.member));
+    const bool added_costume = !stage && !sound_file && !ordinary_costume && mex != mex_costumes.end();
+    if (!stage && !sound_file && !ordinary_costume && !added_costume) continue;
+    if (!read_range(candidate.file, candidate.offset, candidate.length, &bytes)) { ++skipped; continue; }
+    testing::DatInspection added;
+    if (added_costume) {
+      added = inspect_dat_impl(bytes);
+      if (!added.ok || added.target_path.substr(2, 2) != mex->second.family) { ++skipped; continue; }
+      variant = "m-ex costume " + std::to_string(mex->second.costume + 1);
+    }
     // An alternate costume is compared with the slot's own costume on the game disc: that is the
     // file it replaces when chosen, and the skeleton it must keep. An alternate stage likewise.
     const std::string retail_name = stage ? stage_path : sound_file ? candidate.member :
+                                    added_costume ? added.target_path :
                                     variant.empty() ? candidate.member : candidate.member.substr(0, 6) + ".dat";
     if (!host::disc_find_file(retail_name, &retail_offset, &retail_size) || !retail_size ||
-        retail_size > kMaxAssetBytes || !read_range(candidate.file, candidate.offset, candidate.length, &bytes)) {
+        retail_size > kMaxAssetBytes) {
       ++skipped; continue;
     }
     retail.resize(retail_size);
@@ -3983,8 +4070,8 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       fresh[fresh_key] = std::move(asset);
       continue;
     }
-    const auto dat = inspect_dat_impl(bytes);
-    const std::string slot_name = candidate.member.substr(0, 6) + ".dat";
+    const auto dat = added_costume ? added : inspect_dat_impl(bytes);
+    const std::string slot_name = added_costume ? added.target_path : candidate.member.substr(0, 6) + ".dat";
     if (!dat.ok || lower(dat.target_path) != lower(slot_name)) { ++skipped; continue; }
     const std::string digest = sha256(bytes);
     if (digest.empty()) { ++skipped; continue; }
@@ -4029,7 +4116,10 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     if (!file_stamp(candidate.file, &asset.disc_size, &asset.disc_mtime)) { ++skipped; continue; }
     fresh[fresh_key] = std::move(asset);
   }
-  const size_t portraits = pack_portraits_locked(select_screen, &fresh);
+  const size_t portraits = pack_portraits_locked(select_screen, mex_costumes, &fresh);
+  const size_t costumes = std::count_if(fresh.begin(), fresh.end(), [](const auto& item) {
+    return item.second.info.kind == "character_costume";
+  });  // count before moving the records; portraits are costume companions, not entries to subtract
   // Replace this disc's earlier records: files that no longer differ go away, changed ones are
   // updated, and a name the player gave an entry is kept. Records of a disc that no longer exists
   // go too; they hold no data and a new scan brings them back.
@@ -4079,7 +4169,6 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     result.message = *error; return result;
   }
   result.ok = true;
-  const size_t costumes = fresh.size() - stages - fighter_sounds - portraits;
   result.message = std::to_string(costumes) + " skins" +
                    (stages ? " and " + std::to_string(stages) + " stage skins" : std::string()) +
                    (fighter_sounds ? " and " + std::to_string(fighter_sounds) + " fighter sound mods" : std::string()) + " from " + pack_name +

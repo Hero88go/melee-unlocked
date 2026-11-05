@@ -181,10 +181,11 @@ uint32_t voice_bank_count();
 // "<fighter> <color>: from <pack_name>" in that costume's list; nothing is selected. Needs the game
 // disc open (host::disc_open) to compare against. Scanning the same unchanged disc again does
 // nothing; a changed disc updates its entries and drops the ones that no longer differ.
-// A pack that carries its own character select file (MnSlChr.usd or .dat) also gives each of its
-// plain costumes the portrait that file shows for the slot, when it differs from the game's: it is
-// stored as the skin's "csp" picture, like the portrait an imported skin brings. A pack's
-// alternate sets have no cell of their own in that file and get none.
+// A pack's character select file supplies each costume's own "csp" picture. For m-ex, the MxDt
+// costume rows and mexSelectChr CSP stride identify both original and additional costumes and
+// their portraits. Additional costumes with supported retail model roots become choices for that
+// existing native costume slot, including cloned filenames such as PlMsNr2.dat. Unmapped alternate
+// sets get no guessed portrait. An older scan is refreshed automatically on the next boot.
 ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pack_name,
                              std::string* error = nullptr);
 // Exact looks ("Diet Classic", "Diet 64", "Crystal"): built once from the player's own retail disc and the

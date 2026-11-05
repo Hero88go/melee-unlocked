@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include "cosmetic_mods.h"
+#include "disc_costume_metadata.h"
 #include "stage_dat_safety.h"
 #include "../runtime/gx/companion_texture_match.h"
 
@@ -372,6 +373,93 @@ std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra
   be32(out, root, at[0]); be32(out, root + 4, 0);
   std::memcpy(out.data() + root + 8, name.c_str(), name.size() + 1);
   return out;
+}
+
+// m-ex's published MxDt costume tables and mexSelectChr portrait layout. Use a non-retail stride,
+// reduced non-block-aligned portraits, and palette keys independent of the image keys.
+std::vector<uint8_t> mex_archive(std::vector<uint8_t> out, const std::vector<uint32_t>& pointers, const std::string& name) {
+  const uint32_t size = (uint32_t)out.size() - 32;
+  const size_t table = out.size();
+  out.resize(table + pointers.size() * 4 + 8 + name.size() + 1);
+  be32(out, 0, (uint32_t)out.size()); be32(out, 4, size); be32(out, 8, (uint32_t)pointers.size()); be32(out, 12, 1);
+  for (size_t i = 0; i < pointers.size(); ++i) be32(out, table + i * 4, pointers[i]);
+  const size_t root = table + pointers.size() * 4;
+  be32(out, root, 0); be32(out, root + 4, 0);
+  std::memcpy(out.data() + root + 8, name.c_str(), name.size() + 1);
+  return out;
+}
+
+std::vector<uint8_t> mex_marth_metadata(const std::vector<std::string>& files) {
+  std::vector<uint8_t> out(32 + 0x600);
+  std::vector<uint32_t> pointers;
+  auto point = [&](uint32_t at, uint32_t to) { be32(out, 32 + at, to); pointers.push_back(at); };
+  point(0, 0x40); point(8, 0x80);
+  out[32 + 0x40] = 1; be32(out, 32 + 0x44, 33); be32(out, 32 + 0x48, 33);
+  point(0x8C, 0xA0); point(0x90, 0x110); point(0x94, 0x1A0);
+  std::fill(out.begin() + 32 + 0xA0, out.begin() + 32 + 0xA0 + 33 * 3, 0xFF);
+  out[32 + 0xA0 + 9 * 3] = 18;   // external Marth -> internal Marth
+  out[32 + 0x110 + 9 * 4] = (uint8_t)files.size();
+  point(0x1A0 + 18 * 4, 0x240);
+  for (uint32_t i = 0; i < files.size(); ++i) {
+    point(0x240 + i * 16, 0x400 + i * 32);
+    std::memcpy(out.data() + 32 + 0x400 + i * 32, files[i].c_str(), files[i].size() + 1);
+  }
+  return mex_archive(std::move(out), pointers, "mexData");
+}
+
+uint16_t mex_portrait_color(uint32_t i) { return uint16_t(0x8000 | ((i + 1) * 3 << 10) | ((i + 1) * 2 << 5) | i); }
+
+std::vector<uint8_t> mex_marth_portraits() {
+  std::vector<uint8_t> out(32 + 0x1800);
+  std::vector<uint32_t> pointers;
+  auto point = [&](uint32_t at, uint32_t to) { be32(out, 32 + at, to); pointers.push_back(at); };
+  point(12, 0x20); be32(out, 32 + 16, 33); point(0x28, 0x40);
+  point(0x48, 0x60); point(0x4C, 0x200); point(0x50, 0x240);
+  out[32 + 0x55] = out[32 + 0x57] = 8;
+  point(0x68, 0x80); point(0x80, 0xA0);
+  for (uint32_t t = 0; t < 2; ++t) {
+    const uint32_t track = t ? 0xA0 : 0x80, keys = t ? 0x140 : 0x100;
+    be32(out, 32 + track + 4, 20);
+    out[32 + track + 12] = (uint8_t)(t + 1); out[32 + track + 13] = 0x80;
+    point(track + 16, keys);
+    out[32 + keys] = 0x01; out[32 + keys + 2] = 9; out[32 + keys + 3] = 0x71;
+    for (uint32_t i = 0; i < 8; ++i) {
+      out[32 + keys + 4 + i * 2] = (uint8_t)(t ? i : 7 - i);
+      out[32 + keys + 5 + i * 2] = 33;
+    }
+  }
+  for (uint32_t i = 0; i < 8; ++i) {
+    const uint32_t image = 0x300 + i * 24, palette = 0x400 + i * 16;
+    point(0x200 + i * 4, image); point(0x240 + i * 4, palette);
+    point(image, 0x800 + i * 0x100);
+    out[32 + image + 5] = 9; out[32 + image + 7] = 11;
+    be32(out, 32 + image + 8, i == 0 ? 8 : 9);  // the final costume uses CI4 instead of CI8
+    std::fill_n(out.begin() + 32 + 0x800 + i * 0x100, 0x100, (uint8_t)(i == 0 ? 0x11 : 1));
+    point(palette, 0x500 + i * 32); be32(out, 32 + palette + 4, 2); out[32 + palette + 13] = 16;
+    const uint16_t color = mex_portrait_color(i);
+    for (uint32_t c = 0; c < 16; ++c) {
+      out[32 + 0x500 + i * 32 + c * 2] = uint8_t(color >> 8);
+      out[32 + 0x500 + i * 32 + c * 2 + 1] = uint8_t(color);
+    }
+  }
+  return mex_archive(std::move(out), pointers, "mexSelectChr");
+}
+
+std::vector<uint8_t> cosmetic_test_iso(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
+  std::vector<uint8_t> fst((files.size() + 1) * 12);
+  be32(fst, 0, 0x01000000); be32(fst, 8, (uint32_t)files.size() + 1);
+  std::vector<uint8_t> iso(0x1000);
+  uint32_t name_at = 0;
+  for (size_t i = 0; i < files.size(); ++i) {
+    be32(fst, (i + 1) * 12, name_at); be32(fst, (i + 1) * 12 + 4, (uint32_t)iso.size());
+    be32(fst, (i + 1) * 12 + 8, (uint32_t)files[i].second.size());
+    fst.insert(fst.end(), files[i].first.begin(), files[i].first.end()); fst.push_back(0);
+    name_at += (uint32_t)files[i].first.size() + 1;
+    iso.insert(iso.end(), files[i].second.begin(), files[i].second.end());
+  }
+  be32(iso, 0x424, 0x500); be32(iso, 0x428, (uint32_t)fst.size());
+  std::copy(fst.begin(), fst.end(), iso.begin() + 0x500);
+  return iso;
 }
 
 // The same three joints with a mesh on the root: one display object, one envelope polygon object,
@@ -1112,7 +1200,8 @@ int main(int argc, char** argv) {
   check(!host::cosmetics::import_stage_dat(named_stage_path.string(), "NotAStage.dat").ok,
         "manual stage import rejects an unknown target");
   auto disguised = visual_dat();
-  const auto name_at = std::search(disguised.begin(), disguised.end(), "map_head", "map_head" + 8);
+  static constexpr char stage_symbol[] = "map_head";
+  const auto name_at = std::search(disguised.begin(), disguised.end(), stage_symbol, stage_symbol + 8);
   if (name_at != disguised.end()) *name_at = 'x';
   write_file(folder / "not a stage.dat", disguised);
   check(!host::cosmetics::import_stage_dat((folder / "not a stage.dat").string(), "GrNBa.dat").ok,
@@ -1798,7 +1887,7 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 8");
+      const size_t at = text.find("\"rules\": 9");
       check(at != std::string::npos, "the scan records the rules it used");
       if (at != std::string::npos) text.replace(at, 10, "\"rules\": 5");
       std::ofstream out(state, std::ios::binary); out << text;
@@ -2256,6 +2345,146 @@ int main(int argc, char** argv) {
     }
     check(other_scan.ok && odd_scan.ok && other_listed && odd_listed && !extra_picture,
           "a picture equal to the game's is not stored, and a file that is not a character select file gives none");
+
+    // A common m-ex setup: five original Marth slots and three cloned neutral costumes, with
+    // filenames that the stock-only scanner never considered and a portrait stride of 33, not 30.
+    const std::vector<std::string> files{"PlMsNr.dat", "PlMsRe.dat", "PlMsGr.dat", "PlMsBk.dat", "PlMsWh.dat",
+                                          "PlMsNr2.dat", "PlMsNr3.dat", "PlMsNr4.dat"};
+    const std::vector<std::string> colors{"", "Re", "Gr", "Bk", "Wh"};
+    const auto metadata = mex_marth_metadata(files);
+    const auto mex_screen = mex_marth_portraits();
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> members{{"MxDt.dat", metadata}, {"MnSlChr.usd", mex_screen}};
+    std::vector<std::vector<uint8_t>> costumes;
+    constexpr uint32_t marth_screen_at = 0x1000;
+    g_disc_table.clear(); g_disc_bytes.assign(marth_screen_at + retail_screen.size(), 0);
+    std::copy(retail_screen.begin(), retail_screen.end(), g_disc_bytes.begin() + marth_screen_at);
+    g_disc_table["MnSlChr.usd"] = {marth_screen_at, (uint32_t)retail_screen.size()};
+    for (uint32_t i = 0; i < files.size(); ++i) {
+      const std::string symbol = "PlyMars5K" + colors[i < 5 ? i : 0] + "_Share_joint";
+      const auto clean = skeleton_dat(0x2, 5.0f, false, symbol);
+      if (i < 5) {
+        const uint32_t at = 0x100 + i * 0x200;
+        std::copy(clean.begin(), clean.end(), g_disc_bytes.begin() + at);
+        g_disc_table[files[i]] = {at, (uint32_t)clean.size()};
+      }
+      auto skin = skeleton_dat(0x2 | 0x10, 5.0f, false, symbol);
+      skin.push_back((uint8_t)(i + 1)); be32(skin, 0, (uint32_t)skin.size());
+      costumes.push_back(skin); members.push_back({files[i], skin});
+    }
+    // A valid model not named by the metadata must never become a costume just because it is a DAT.
+    members.push_back({"Unlisted.dat", costumes[0]});
+    const fs::path mex_folder = portrait_folder / L"mex";
+    fs::create_directories(mex_folder, ec);
+    for (const auto& file : members) write_file(mex_folder / fs::u8path(file.first), file.second);
+    host::cosmetics::configure((portrait_folder / L"mex-profile" / L"settings.ini").string());
+    auto mex_scan = host::cosmetics::scan_disc_skins(mex_folder.string(), "Eight Marths", &error);
+    auto marths = host::cosmetics::assets();
+    check(mex_scan.ok && marths.size() == 8 && mex_scan.message.find("8 skins from ") == 0,
+          "m-ex imports and reports all eight Marth costumes, excluding an unlisted DAT");
+    std::vector<std::string> ids(8), pictures(8);
+    for (size_t i = 0; i < files.size(); ++i) {
+      for (const auto& skin : marths) {
+        if ((i < 5 && skin.target_path == files[i] && skin.variant.empty()) ||
+            (i >= 5 && skin.variant == "m-ex costume " + std::to_string(i + 1))) {
+          ids[i] = skin.id; pictures[i] = skin.preview_path;
+        }
+      }
+      check(!ids[i].empty() && !pictures[i].empty(), "each Marth costume has its own imported portrait");
+      if (ids[i].empty() || pictures[i].empty()) continue;
+      const auto image = read_file(fs::u8path(pictures[i]));
+      const uint32_t color = mex_portrait_color((uint32_t)i), r = (color >> 10) & 31, g = (color >> 5) & 31, b = color & 31;
+      check(image.size() > 53 && read_be32(image.data() + 16) == 9 && read_be32(image.data() + 20) == 11 &&
+                image[49] == (r << 3 | r >> 2) && image[50] == (g << 3 | g >> 2) &&
+                image[51] == (b << 3 | b >> 2) && image[52] == 255,
+            "m-ex uses its own stride and palette track, preserving reduced CI8/CI4 portrait pixels");
+      check(host::cosmetics::restore_vanilla(&error) &&
+                host::cosmetics::select_variant(i < 5 ? files[i] : files[0], ids[i], &error),
+            "each of the eight Marth skins is selectable on its existing native costume slot");
+      const std::string target = i < 5 ? files[i] : files[0];
+      auto skin_fst = one_file_fst(g_disc_table[target].first, g_disc_table[target].second, target);
+      host::cosmetics::apply_to_fst(skin_fst.data(), (uint32_t)skin_fst.size());
+      const auto active = host::cosmetics::active_companions();
+      std::vector<uint8_t> model(costumes[i].size());
+      check(active.size() == 1 && active[0].target_path == target && active[0].path == pictures[i] &&
+                host::cosmetics::read(g_disc_table[target].first, 0, model.data(), (uint32_t)model.size()) ==
+                    host::cosmetics::OverrideRead::Success && model == costumes[i],
+            "the runtime serves each Marth model together with that model's matching portrait");
+    }
+    check(host::cosmetics::restore_vanilla(&error), "restore standard before live m-ex cycling");
+    auto marth_fst = one_file_fst(g_disc_table[files[0]].first, g_disc_table[files[0]].second, files[0]);
+    host::cosmetics::apply_to_fst(marth_fst.data(), (uint32_t)marth_fst.size());
+    std::set<std::string> cycled;
+    for (int i = 0; i < 5; ++i) {
+      const auto step = host::cosmetics::cycle_slot_live(files[0], 1);
+      const auto republished = host::cosmetics::republish_slot(marth_fst.data(), (uint32_t)marth_fst.size(), files[0]);
+      const auto active = host::cosmetics::active_companions();
+      cycled.insert(step.asset_id);
+      const auto skin = std::find_if(marths.begin(), marths.end(), [&](const auto& item) { return item.id == step.asset_id; });
+      check(step.ok && step.changed && republished.ok &&
+                (step.asset_id.empty() ? active.empty() : skin != marths.end() && active.size() == 1 && active[0].path == skin->preview_path),
+            "live L/R cycling switches the cloned Marth portraits with their skins and restores stock on wraparound");
+    }
+    check(cycled.size() == 5 && cycled.count(""), "live cycling includes all three extra neutral Marths and the original choices");
+
+    // Exercise the disc reader as well as extracted folders, then simulate an existing catalog
+    // written by the old rules. No manual reimport should be needed when the updated game boots.
+    const fs::path mex_iso = portrait_folder / L"eight-marths.iso";
+    write_file(mex_iso, cosmetic_test_iso(members));
+    const fs::path iso_settings = portrait_folder / L"mex-iso-profile" / L"settings.ini";
+    host::cosmetics::configure(iso_settings.string());
+    check(host::cosmetics::scan_disc_skins(mex_iso.string(), "Eight Marths ISO", &error).ok && host::cosmetics::assets().size() == 8,
+          "all eight costumes and portraits import directly from the ISO");
+    std::string iso_extra;
+    bool all_portraits = true;
+    for (const auto& skin : host::cosmetics::assets()) {
+      all_portraits &= !skin.preview_path.empty();
+      if (skin.variant == "m-ex costume 6") iso_extra = skin.id;
+    }
+    check(all_portraits && !iso_extra.empty(), "the ISO's extra costume entries also carry their portraits");
+    const fs::path custom_picture = portrait_folder / L"custom.png";
+    write_file(custom_picture, png(136, 188));
+    check(host::cosmetics::set_skin_portrait(iso_extra, custom_picture.string(), "csp").ok &&
+              host::cosmetics::select_variant(files[0], iso_extra, &error), "a player's picture and selected extra skin can be saved");
+    const fs::path state = iso_settings.parent_path() / L"CosmeticMods" / L"state.json";
+    auto state_bytes = read_file(state);
+    std::string state_text(state_bytes.begin(), state_bytes.end());
+    const auto rule = state_text.find("\"rules\": 9");
+    check(rule != std::string::npos, "m-ex scan writes its new rule version");
+    if (rule != std::string::npos) state_text.replace(rule, 10, "\"rules\": 8");
+    write_file(state, std::vector<uint8_t>(state_text.begin(), state_text.end()));
+    host::cosmetics::configure(iso_settings.string());
+    const auto upgraded = host::cosmetics::scan_disc_skins(mex_iso.string(), "Eight Marths ISO", &error);
+    bool choice_preserved = false;
+    for (const auto& skin : host::cosmetics::assets()) if (skin.id == iso_extra)
+      choice_preserved = skin.selected && skin.preview_path.find("csp-") != std::string::npos;
+    check(upgraded.ok && !upgraded.already_present && choice_preserved &&
+              host::cosmetics::scan_disc_skins(mex_iso.string(), "Eight Marths ISO", &error).already_present,
+          "old disc catalogs rescan once, preserving the selected extra costume and player's portrait");
+
+    // One held image with different palette-only keys is also a distinct portrait per costume.
+    auto held_screen = mex_screen;
+    be32(held_screen, 32 + 0x84, 3); held_screen[32 + 0x101] = 7;
+    write_file(mex_folder / L"MnSlChr.usd", held_screen);
+    host::cosmetics::configure((portrait_folder / L"mex-held-image" / L"settings.ini").string());
+    const auto held_scan = host::cosmetics::scan_disc_skins(mex_folder.string(), "Held image", &error);
+    std::set<std::vector<uint8_t>> held_pictures;
+    for (const auto& skin : host::cosmetics::assets()) if (!skin.preview_path.empty()) held_pictures.insert(read_file(fs::u8path(skin.preview_path)));
+    check(held_scan.ok && held_pictures.size() == 8, "palette-only keys keep eight distinct costume portraits while the image track holds");
+
+    auto bad_metadata = metadata;
+    be32(bad_metadata, 32 + 0x1A0 + 18 * 4, 0xFFFFFFF0);
+    host::cosmetics::disc_metadata::MexCostumes bad_rows;
+    check(!host::cosmetics::disc_metadata::mex_costumes(bad_metadata, &bad_rows) && bad_rows.empty(),
+          "out-of-bounds m-ex costume tables are rejected without partial mappings");
+    auto bad_screen = mex_screen;
+    be32(bad_screen, 32 + 0x84, 19);   // last wait is outside the track's declared length, but inside the archive
+    write_file(mex_folder / L"MnSlChr.usd", bad_screen);
+    host::cosmetics::configure((portrait_folder / L"mex-invalid-track" / L"settings.ini").string());
+    const auto bad_scan = host::cosmetics::scan_disc_skins(mex_folder.string(), "Bad portrait track", &error);
+    bool no_bad_pictures = true;
+    for (const auto& skin : host::cosmetics::assets()) no_bad_pictures &= skin.preview_path.empty();
+    check(bad_scan.ok && host::cosmetics::assets().size() == 8 && no_bad_pictures,
+          "a truncated portrait animation is refused while the eight valid costumes remain available");
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 

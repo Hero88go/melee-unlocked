@@ -145,6 +145,20 @@ again there. A picture added to the costume fills in where a skin has none, and 
 costume. This also holds for skins from a mod disc or a files pack; the picture is kept in the
 catalog and stays with the skin when the pack is scanned again.
 
+When scanning an m-ex ISO or extracted files pack, `MxDt.dat` identifies each retail fighter's
+costume files, including extra filenames such as `PlMsNr2.dat`. A costume whose model roots name
+a supported retail slot becomes another skin choice for that slot; select it in Mods or cycle it
+with L/R on character select. The importer reads `mexSelectChr`'s CSP stride and the costume's
+external fighter ID and index to attach its matching portrait automatically. Reduced-size CI8
+and CI4 portraits and independent image/palette animation tracks are supported. The pack's code
+is never executed. This imports costumes of existing fighters; it does not add custom fighter code.
+
+Existing disc catalogs rescan once after this update, preserving selections and manually assigned
+portraits. An alternate without an explicit mapping keeps the standard picture. Unsupported model
+roots or malformed metadata are not guessed. The eight-costume Marth regression covers the model,
+portrait, live cycling and catalog upgrade paths; compatibility with an unprovided custom ISO still
+requires testing that ISO.
+
 The active runtime map owns immutable byte buffers and is published before the guest initializes
 DVD. Settings changes affect only the desired on-disk profile. Restarting drops guest RAM, DVD
 requests, model data, and renderer textures before a different snapshot is published; Restore
