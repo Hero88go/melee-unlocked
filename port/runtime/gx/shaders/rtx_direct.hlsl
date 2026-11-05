@@ -64,7 +64,8 @@ cbuffer Frame : register(b0) {
   uint switches;             // 1 shadows, 2 ambient occlusion, 4 fighters' shadows on baked stages
   uint still_frames;         // photo mode: presents the scene has stood still (0 moving or off)
 };
-static const uint kShadows = 1u, kAmbientOcclusion = 2u, kFighterShadows = 4u, kBounce = 8u, kReflections = 16u, kSkin = 32u;
+static const uint kShadows = 1u, kAmbientOcclusion = 2u, kFighterShadows = 4u, kBounce = 8u, kReflections = 16u, kSkin = 32u,
+                  kStageShade = 64u, kGlossyFloors = 128u;
 
 static const float kPi = 3.14159265;
 static const uint kNone = 0xFFFFFFFFu;
@@ -138,6 +139,8 @@ bool visible(float3 origin, float3 dir, float length, uint mask) {
   return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 static const uint kCasters = 0x0Bu, kFighterCasters = 0x08u;
+static const float kBakedShadowReach = 250.0;   // painted surfaces take shadows from this close only
+static const float kShadowFill = 0.2;           // what a blocked light still gives (sky and bounce)
 
 
 float3 ggx_specular(float3 n, float3 v, float3 l, float roughness, float3 f0) {
@@ -259,6 +262,14 @@ float3 specular_albedo(float3 f0, float nv, float roughness) {
   const float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
   return saturate(f0 * ab.x + ab.y);
 }
+// Glossy stage floors: a polished floor (F0 0.10, roughness 0.10), the reflection up to half the
+// picture at a glancing view.
+static const float kFloorRoughness = 0.10;
+float3 floor_fresnel(float3 n, float3 v) { return min(2.0 * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), 0.5); }
+float3 floor_reflection(float3 origin, float3 n, float3 v, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
+  const float3 dir = glossy_direction(n, v, kFloorRoughness, rng);
+  return hit_radiance(trace_surface(origin, dir, 1.0e5), ambient_light, sun, sun_dir, sun_radius, rng);
+}
 void write_guides(uint2 px, float3 diffuse, float3 specular, float3 view_normal, float roughness) {
   GuideDiffuse[px] = float4(saturate(diffuse), 1);
   GuideSpecular[px] = float4(specular, 1);
@@ -354,14 +365,24 @@ void main(uint3 id : SV_DispatchThreadID) {
     // GX does not light this draw: its light is baked in, and it stays as drawn, except where a
     // fighter stands between it and the stage's sun (the stage's own shadows are already baked).
     float3 baked = albedo;
-    if (shadows && (switches & kFighterShadows) != 0u && any(sun > 0.0)) {
+    // Stage shadows and contact shade: the stage's own geometry casts the sun's shadow too, and a
+    // short ray finds the corners and contacts (softened: the painted light has some already).
+    const bool stage_shade = shadows && (switches & kStageShade) != 0u && nd.w < 800.0;   // not far backgrounds
+    if (stage_shade && (switches & kAmbientOcclusion) != 0u &&
+        !visible(origin, cosine_direction(n, rng), ao_radius, kCasters))
+      baked *= lerp(0.85, 0.7, look);
+    if (shadows && ((switches & kFighterShadows) != 0u || stage_shade) && any(sun > 0.0)) {
       const float3 to_sun = cone_direction(-sun_dir, sun_radius, rng);
-      if (dot(n, to_sun) > 0.0 && !visible(origin, to_sun, 1.0e6, kFighterCasters)) {
+      // Fighters' shadows reach kBakedShadowReach; the stage's own only its near parts (eaves,
+      // platforms, ledges), not across to a far backdrop.
+      const bool by_fighter = (switches & kFighterShadows) != 0u && !visible(origin, to_sun, kBakedShadowReach, kFighterCasters);
+      const bool by_stage = stage_shade && !visible(origin, to_sun, 100.0, kCasters);
+      if (dot(n, to_sun) > 0.0 && (by_fighter || by_stage)) {
         // As dark as the stage's own shade: GX's share of ambient in its light (Faithful, softened),
         // or the physical one (Remastered).
         const float3 amb_e = linear_to_srgb(ambient_light), sun_e = linear_to_srgb(sun);
         const float3 faithful = saturate(amb_e / max(amb_e + sun_e, 1e-3) + 0.25);
-        const float3 remastered = saturate(ambient_light / max(ambient_light + sun, 1e-3));
+        const float3 remastered = max(saturate(ambient_light / max(ambient_light + sun, 1e-3)), 0.3);
         baked *= lerp(faithful, remastered, look);
       }
     }
@@ -372,6 +393,12 @@ void main(uint3 id : SV_DispatchThreadID) {
       const Hit h = trace_surface(origin, dir, 1.0e5);
       baked += 0.5 * specular_albedo(f0, saturate(dot(n, v)), roughness) *
                hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng);
+    }
+    if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && n.y > 0.85 && nd.w < 800.0) {
+      // Glossy stage floors: a polished floor reflects the scene, more at a glancing view.
+      const float3 fresnel = floor_fresnel(n, v);
+      baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng);
+      write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
     }
     emit(px, baked, albedo);
     return;
@@ -392,23 +419,32 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 bounce_extra = 0;
   const float3 gather = cosine_direction(n, rng);
   if ((switches & kBounce) != 0u) {
+    // The game's ambient is its light from everywhere: open sky gives exactly that, a blocked
+    // contact ray takes some away (ambient occlusion), and a brighter surface the ray reaches adds
+    // its colour (bounce), so a dark scene never darkens what the game shows lit.
     const Hit h = trace_surface(origin, gather, 1.0e5);
     const float3 from_hit = hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng) * ambient_reflect;
-    indirect = h.found && (switches & kAmbientOcclusion) == 0u ? max(from_hit, ambient) : from_hit;
-    if (h.found) bounce_extra = from_hit;
     ao = h.found && length(h.position - p) < ao_radius ? 0.0 : 1.0;
+    const float3 base = (switches & kAmbientOcclusion) != 0u ? ambient * lerp(0.45, 1.0, ao) : ambient;
+    indirect = h.found ? max(base, lerp(base, from_hit, 0.6)) : ambient;
+    if (h.found) bounce_extra = max(from_hit - ambient, 0.0);
   } else if ((switches & kAmbientOcclusion) != 0u) {
     ao = visible(origin, gather, ao_radius, kCasters) ? 1.0 : 0.0;
-    indirect = ambient * ao;
+    indirect = ambient * lerp(0.45, 1.0, ao);
   }
-  // Remastered: physically based (linear light). Faithful: GX's own sum (encoded colours, clamped
-  // per channel), with the same ray-traced visibility, and bounce light on top.
+  // Remastered: the path tracer's light (linear: irradiance with every ray-traced shadow, contact
+  // shade and bounce, GGX highlights) taken as a ratio to the same light with nothing in the way,
+  // applied to GX's own unshadowed lighting, so the game's brightness stays and only what the rays
+  // change shows. Faithful: GX's own sum (encoded colours, clamped per channel), with the same
+  // ray-traced visibility, and bounce light on top.
   // HSD keeps a fighter's skin and cloth tone in its ambient colour, so occlusion darkens that
   // light at most by half: faces keep their colour in the folds and under a cap.
   const bool fighter = record != kNone && (Records[record].flags & 2u) != 0u;
   if (fighter && own_ambient) indirect = max(indirect, 0.5 * ambient);
-  float3 pbr = albedo * indirect;
-  float3 gx_sum = (own_ambient ? ambient_gx : linear_to_srgb(ambient_light)) * (fighter ? max(ao, 0.5) : ao);
+  float3 irradiance = indirect, irradiance_open = ambient, highlight = 0;
+  const float3 gx_ambient = own_ambient ? ambient_gx : linear_to_srgb(ambient_light);
+  float3 gx_sum = gx_ambient * (fighter ? max(ao, 0.5) : ao);
+  float3 gx_open = gx_ambient;
   // Soft skin: light scatters under a fighter's surface, so it wraps past the shadow line and the
   // terminator warms (wrap lighting with a subsurface tint; matte fighter surfaces only).
   const bool skin = (switches & kSkin) != 0u && record != kNone && (Records[record].flags & 1u) != 0u && roughness > 0.5;
@@ -438,14 +474,23 @@ void main(uint3 id : SV_DispatchThreadID) {
         falloff *= saturate((c - l.cos_cutoff) / max(1.0 - l.cos_cutoff, 1e-3));
       }
     }
-    const float nl = dot(n_gx, to_light);
+    // GX's diffuse function: none adds the light whatever the normal (no N.L).
+    const float nl = ((channel >> 17) & 3u) == 0u && (channel & 0x10000u) != 0u ? 1.0 : dot(n_gx, to_light);
     const float nl_diffuse = skin ? saturate((nl + 0.4) / 1.4) : nl;
     if (nl_diffuse <= 0.0 || falloff <= 0.0) continue;
-    if (shadows && !visible(origin, to_light, distance, kCasters)) continue;
     // GX lights a surface with colour * N.L, a Lambert surface under an irradiance of pi * colour;
     // the highlight gets the same irradiance.
     const float3 scatter = skin ? lerp(float3(1.0, 0.78, 0.66), 1.0, saturate(nl * 2.0)) : 1.0;
-    pbr += l.radiance * falloff * (albedo * nl_diffuse * scatter + kPi * ggx_specular(n_gx, v, to_light, roughness, f0));
+    const float3 direct = l.radiance * falloff * nl_diffuse * scatter;
+    irradiance_open += direct;
+    gx_open += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0);
+    // Fighters take shadows from everything; lit stage parts from the fighters (their lights were
+    // placed for a game without shadows). A low fill light (side or below) casts none.
+    const bool fill = l.type == 1u && to_light.y < 0.2;
+    const float lit = shadows && !fill && !visible(origin, to_light, distance, fighter ? kCasters : kFighterCasters) ? kShadowFill : 1.0;
+    irradiance += direct * lit;
+    if (lit < 1.0) { gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0) * kShadowFill; continue; }
+    highlight += l.radiance * falloff * kPi * ggx_specular(n_gx, v, to_light, roughness, f0);
     gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0);
   }
   // GX clamps ambient plus lights at 1 per channel, so a surface facing the sun shows exactly its
@@ -453,7 +498,9 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 total = ambient;
   for (uint k = first; k < first + count; ++k)
     if (Lights[k].type != 0u && in_light_mask(channel, Lights[k])) total += Lights[k].radiance;
-  pbr *= 1.0 / max(1.0, max(total.r, max(total.g, total.b)));
+  const float clamp_scale = 1.0 / max(1.0, max(total.r, max(total.g, total.b)));
+  const float3 gx_lit = srgb_to_linear(GAlbedo[px].rgb * saturate(gx_open));
+  const float3 pbr = gx_lit * min(irradiance / max(irradiance_open, 1e-4), 2.0) + highlight * clamp_scale;
   // Reflections: a glossy surface (roughness up to 0.5) sees the real scene in its highlight.
   float3 reflection = 0;
   if ((switches & kReflections) != 0u && roughness <= 0.5) {
@@ -465,5 +512,11 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
   float3 faithful = srgb_to_linear(GAlbedo[px].rgb * saturate(gx_sum));
   faithful += 0.5 * albedo * bounce_extra;
-  emit(px, (lerp(faithful, pbr, look) + reflection) * light_scale, albedo);
+  float3 shaded = lerp(faithful, pbr, look) + reflection;
+  if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0) {
+    const float3 fresnel = floor_fresnel(n, v);
+    shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng);
+    write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
+  }
+  emit(px, shaded * light_scale, albedo);
 }

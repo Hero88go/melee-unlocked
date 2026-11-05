@@ -77,6 +77,8 @@ struct RtxFrameInputs {
   bool shadows = true, ambient_occlusion = true, fighter_shadows = true;
   bool bounce = true, reflections = true;         // bounce light (one diffuse bounce), traced reflections
   bool skin = true;                               // soft skin: subsurface approximation on fighters
+  bool stage_shade = true;                        // baked stages: their own sun shadows and contact shade
+  bool glossy_floors = true;                      // the stage's floors reflect the scene
   uint32_t still_frames = 0;                      // photo mode: presents the scene has stood still (0: moving or off)
   bool radiance_cache = true;                     // a world-space radiance cache for multi-bounce light (NVIDIA: SHaRC)
   ID3D12Resource* draws = nullptr;                // per draw index: material record for the G-buffer

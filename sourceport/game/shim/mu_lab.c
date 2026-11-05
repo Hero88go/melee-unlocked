@@ -753,6 +753,25 @@ int mu_test_classic_stage(void)
     return *v == '\0' ? n : -1;
 }
 
+/* MELEE_TEST_VS_STAGE=<n> (tests only): VS mode goes straight to stage n, the external id the stage
+ * select would pick (32 Final Destination, 31 Battlefield, 28 Dream Land, 2 Fountain of Dreams,
+ * 3 Pokemon Stadium, 8 Yoshi's Story), so a hidden run reaches any stage. Unset: -1, the select. */
+int mu_test_vs_stage(void)
+{
+    const char* v = mu_test_getenv("MELEE_TEST_VS_STAGE");
+    int n = 0;
+    if (v == NULL || *v < '0' || *v > '9') {
+        return -1;
+    }
+    while (*v >= '0' && *v <= '9') {
+        n = n * 10 + (*v++ - '0');
+        if (n > 40) {
+            return -1;
+        }
+    }
+    return *v == '\0' ? n : -1;
+}
+
 /* MELEE_TEST_ADVENTURE_SCENE=<n> (tests only): Adventure starts at scene n, the decimal minor id
  * (stage * 8 + part: 33 is the Kirby team, 34 Giant Kirby, 25 the Zelda fight). Unset: -1. */
 int mu_test_adventure_scene(void)

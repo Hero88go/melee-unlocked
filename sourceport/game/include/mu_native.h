@@ -843,5 +843,6 @@ void mu_tmce_on_scene_change(void);         /* TM-CE OnSceneChange / OnStartMele
 void mu_tmce_on_start_melee(void);
 int mu_tmce_active(void);                    /* enabled and loaded: the hooks run */
 int mu_test_classic_stage(void);             /* MELEE_TEST_CLASSIC_STAGE, -1 when unset (tests only) */
+int mu_test_vs_stage(void);                  /* MELEE_TEST_VS_STAGE, -1 when unset (tests only) */
 int mu_test_adventure_scene(void);           /* MELEE_TEST_ADVENTURE_SCENE, -1 when unset (tests only) */
 #endif

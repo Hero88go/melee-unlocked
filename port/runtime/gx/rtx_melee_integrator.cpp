@@ -219,7 +219,8 @@ class MeleeIntegrator final : public RtxIntegrator {
     k.look = in.look;
     k.still_frames = in.still_frames;
     k.switches = (in.shadows ? 1u : 0u) | (in.ambient_occlusion ? 2u : 0u) | (in.fighter_shadows ? 4u : 0u) |
-                 (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u);
+                 (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u) |
+                 (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u);
     std::memcpy(s.constants_cpu, &k, sizeof k);
 
     in.list->SetComputeRootSignature(root_.Get());

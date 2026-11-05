@@ -2380,6 +2380,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rtxbounce") options.rtx_bounce = value == "1";
       else if (key == "rtxreflections") options.rtx_reflections = value == "1";
       else if (key == "rtxskin") options.rtx_skin = value == "1";
+      else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
+      else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
       else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
       else if (key == "rtxradiancecache") options.rtx_radiance_cache = value == "1";
       else if (key == "hdroutput") options.hdr_output = value == "1";
@@ -4261,7 +4263,9 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nrtxao " << (options.rtx_ao ? 1 : 0) << "\nrtxfightershadows " << (options.rtx_fighter_shadows ? 1 : 0)
        << "\nrtxintegrator " << options.rtx_integrator
        << "\nrtxbounce " << (options.rtx_bounce ? 1 : 0) << "\nrtxreflections " << (options.rtx_reflections ? 1 : 0)
-       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
+       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0)
+       << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0)
+       << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
        << "\nrtxradiancecache " << (options.rtx_radiance_cache ? 1 : 0)
        << "\nhdroutput " << (options.hdr_output ? 1 : 0) << "\nhdrpaperwhite " << options.hdr_paper_white
        << "\nhdrpeak " << options.hdr_peak
@@ -6772,6 +6776,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (settings_toggle("Reflections", &options.rtx_reflections)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Glossy and mirror-like surfaces reflect the real scene (fighters, stage, effects).");
+      ImGui::BeginDisabled(!options.rtx_reflections);
+      if (settings_toggle("Glossy stage floors", &options.rtx_glossy_floors)) changed = true;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The stage's floors reflect the fighters, effects and the stage's own lights,\n"
+                          "more at a glancing view, as polished floors do.");
       if (settings_toggle("Soft skin", &options.rtx_skin)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Light scatters under the fighters' matte surfaces: softer shading and a warm\n"
@@ -6795,6 +6805,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Most stages have their light painted in. This casts the fighters' real shadows\n"
                           "onto them from the stage's sun.");
+      ImGui::BeginDisabled(!options.rtx_shadows);
+      if (settings_toggle("Stage shadows and contact shade", &options.rtx_stage_shade)) changed = true;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
+                          "trees cast the sun's shadows, and corners and contacts get soft shade.");
       if (rtx_nvidia_integrator_available()) {
         const char* integrators[] = {"Melee Unlocked", "NVIDIA RTXDI (this PC only)"};
         if (settings_combo("Lighting", &options.rtx_integrator, integrators, 2)) changed = true;

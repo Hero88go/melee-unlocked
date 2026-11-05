@@ -49,6 +49,7 @@ enum : uint32_t {
   kRtxChannelMaterialVertex = 1u << 2, // material colour from the vertex colour
   // Bits 8-15: the channel's GX light mask (lights 0-7); bit 16 set when the mask is known.
   kRtxChannelMaskKnown = 1u << 16,
+  kRtxChannelDiffuseShift = 17,     // bits 17-18: GX's diffuse function (0 none: no N.L, 1 sign, 2 clamp)
 };
 
 // One raster draw handed over by execute_draw.

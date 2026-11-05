@@ -3116,7 +3116,7 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
                (((chan >> 6) & 1) ? kRtxChannelAmbientVertex : 0u) | ((chan & 1) ? kRtxChannelMaterialVertex : 0u);
   // The lights GX lights it with: the channel's light mask (XF colour control bits 2-5, 11-14).
   const uint32_t light_mask = ((chan >> 2) & 0xFu) | (((chan >> 11) & 0xFu) << 4);
-  in.channel |= (light_mask << 8) | kRtxChannelMaskKnown;
+  in.channel |= (light_mask << 8) | kRtxChannelMaskKnown | (((chan >> 7) & 3u) << kRtxChannelDiffuseShift);
   if (in.channel & kRtxChannelLit) {
     const std::pair<uint32_t, uint32_t> range = rtx_gx_lights(dc, light_mask, in.light_first, in.light_count);
     if (range.second) { in.light_first = range.first; in.light_count = range.second; }
@@ -3422,6 +3422,8 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.bounce = opts_.rtx_bounce;
   in.reflections = opts_.rtx_reflections;
   in.skin = opts_.rtx_skin;
+  in.stage_shade = opts_.rtx_stage_shade;
+  in.glossy_floors = opts_.rtx_glossy_floors;
   in.still_frames = opts_.rtx_photo_mode ? rtx_still_frames_ : 0;
   in.radiance_cache = opts_.rtx_radiance_cache;
   in.draws = rtx_scene_.draw_table(slot);

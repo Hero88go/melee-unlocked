@@ -100407,7 +100407,7 @@ index bdc4d71b6..e5541a3bf 100644
  typedef struct ChallengerData ChallengerData;
  typedef struct MatchEnd MatchEnd;
 diff --git a/src/melee/gm/gm_1601.c b/src/melee/gm/gm_1601.c
-index 7ad706ec1..45b723788 100644
+index 7ad706ec1..efd347774 100644
 --- a/src/melee/gm/gm_1601.c
 +++ b/src/melee/gm/gm_1601.c
 @@ -10,9 +10,9 @@
@@ -101553,7 +101553,24 @@ index 7ad706ec1..45b723788 100644
      if ((rules->score_display != 0) && (rules->mode == 0)) {
          vs_data->start.rules.x3_0 = 1;
          return;
-@@ -3850,54 +4034,69 @@ int gm_80168940(MatchEnd* match_end)
+@@ -3715,6 +3899,16 @@ void gm_80167FC4(SSSData* arg0)
+     PAD_STACK(8);
+ 
+     temp_r3 = gmMainLib_GetGameRules();
++#ifdef MU_NATIVE
++    {
++        /* Test runs only: straight to the stage MELEE_TEST_VS_STAGE names. */
++        const int test_stage = mu_test_vs_stage();
++        if (test_stage >= 0) {
++            arg0->force_stage_id = test_stage;
++            return;
++        }
++    }
++#endif
+     if (temp_r3->stage_sel == 1) {
+         arg0->force_stage_id = mnSelStageRandom();
+         return;
+@@ -3850,54 +4044,69 @@ int gm_80168940(MatchEnd* match_end)
  
  void gm_8016895C(HSD_JObj* arg0, DynamicModelDesc* arg1, int idx)
  {
@@ -101643,7 +101660,7 @@ index 7ad706ec1..45b723788 100644
      if (ckind == CKind_GKoops) {
          return 58.0F;
      }
-@@ -3930,11 +4129,40 @@ float gm_80168BF8(int arg0)
+@@ -3930,11 +4139,40 @@ float gm_80168BF8(int arg0)
  {
      CharacterKind ckind = Player_GetPlayerCharacter(arg0);
      u32 costume = Player_GetCostumeId(arg0);
@@ -101685,7 +101702,7 @@ index 7ad706ec1..45b723788 100644
      switch (arg0) {
      case 0:
          lbAudioAx_800243F4(0x7C830);
-@@ -4164,14 +4392,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
+@@ -4164,14 +4402,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
          HSD_Randi(0);
          HSD_Randi(0);
      }
@@ -101718,7 +101735,7 @@ index 7ad706ec1..45b723788 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4180,6 +4426,11 @@ u8 gm_80169264(u8 ckind)
+@@ -4180,6 +4436,11 @@ u8 gm_80169264(u8 ckind)
  
  u8 gm_80169290(u8 ckind)
  {
@@ -101730,7 +101747,7 @@ index 7ad706ec1..45b723788 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4188,6 +4439,11 @@ u8 gm_80169290(u8 ckind)
+@@ -4188,6 +4449,11 @@ u8 gm_80169290(u8 ckind)
  
  u8 gm_801692BC(u8 ckind)
  {
