@@ -834,6 +834,11 @@ size_t parse_command(const uint8_t* d, size_t len) {
     VertexDesc desc = build_desc(fmt);
     size_t need = 3 + (size_t)count * desc.size;
     if (len < need) return incomplete(need);
+    // Nothing will draw this frame: no renderer (--headless), or a replay jump's unseen frame (the
+    // same test the frame's hand-off makes below). Its vertices are not decoded and no draw is
+    // recorded; register loads, display lists and the frame end still run, so the next frame that is
+    // shown starts from the same GX state. Nothing here reaches the simulation.
+    if (count && (!g_backend || replay_control::skip_render())) return need;
     if (count) {
       g_native_draw_audit.note_decoded_draw();
       uint32_t first = (uint32_t)g_frame.vertices.size();
