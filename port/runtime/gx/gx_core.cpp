@@ -176,6 +176,7 @@ bool g_merge_next_primitive = false;
 std::unordered_map<uint32_t, uint32_t> g_dl_calls;        // display list address -> calls this frame
 std::unordered_map<uint64_t, uint32_t> g_immediate_draws;  // (tex0, count, prim) -> ordinal this frame
 uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
+uint64_t g_dl_draws = 0, g_dl_vertices = 0;   // the part of g_draws / g_vertices that came from display lists
 uint32_t g_efb_copies = 0;
 NativeDrawAudit g_native_draw_audit;
 std::atomic<bool> g_native_pose_capture_enabled{false};
@@ -534,6 +535,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
       previous.frustum_backdrop = false;
       ++g_draws;
       g_vertices += count;
+      if (g_dl_addr) { ++g_dl_draws; g_dl_vertices += count; }
       return;
     }
   }
@@ -597,6 +599,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
   ++g_draws;
   g_vertices += count;
+  if (g_dl_addr) { ++g_dl_draws; g_dl_vertices += count; }
 }
 
 // ---------------- BP side effects ----------------
@@ -1104,6 +1107,11 @@ void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* ef
   if (draws) *draws = g_draws;
   if (vertices) *vertices = g_vertices;
   if (efb_copies) *efb_copies = g_efb_copies;
+}
+
+void display_list_stats(uint64_t* draws, uint64_t* vertices) {
+  if (draws) *draws = g_dl_draws;
+  if (vertices) *vertices = g_dl_vertices;
 }
 
 void set_native_draw_audit(bool enabled) { g_native_draw_audit.reset(enabled); }

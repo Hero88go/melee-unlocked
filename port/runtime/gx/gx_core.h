@@ -700,6 +700,9 @@ void init(Backend* backend);
 void write_fifo(uint32_t value, int bytes);   // write-gather pipe byte stream
 void write_fifo_bytes(const uint8_t* data, size_t bytes);   // the same stream in bulk, big-endian as the pipe carries it
 void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies);
+// The share of stats()' draws and vertices recorded inside display lists (models, stages); the rest
+// is immediate-mode geometry (effects, HUD, text). Cumulative, like stats().
+void display_list_stats(uint64_t* draws, uint64_t* vertices);
 void set_native_draw_audit(bool enabled);
 void native_render_scope_event(const NativeRenderScopeEvent& event);
 NativeDrawAuditStats native_draw_audit_stats();
