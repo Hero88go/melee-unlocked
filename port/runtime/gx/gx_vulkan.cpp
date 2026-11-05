@@ -117,7 +117,7 @@ namespace {
   X(vkCmdBindDescriptorSets) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdSetViewport) X(vkCmdSetScissor) \
   X(vkCmdDrawIndexed) X(vkCmdDraw) X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
   X(vkCmdPushConstants) X(vkWaitForPresentKHR) X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) \
-  X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkGetFenceStatus) MU_VK_DEVICE_PLATFORM(X)
+  X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkGetFenceStatus) X(vkCmdPushDescriptorSetKHR) MU_VK_DEVICE_PLATFORM(X)
 
 #define MU_VK_DECLARE(name) PFN_##name name = nullptr;
 MU_VK_GLOBAL(MU_VK_DECLARE)
@@ -1029,6 +1029,11 @@ class VulkanBackend final : public Backend {
     if (offered.count(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) { extensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME); display_timing_on_ = true; }
 #endif
     if (offered.count(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME); memory_budget_on_ = true; }
+    // Each draw's constants, textures and samplers written straight into the command buffer
+    // (vkCmdPushDescriptorSetKHR) instead of a descriptor set allocated and written for every draw:
+    // less work per draw, and no limit on draws a frame. MELEE_VULKAN_PUSH_DESCRIPTORS=0 for A/B.
+    static const bool push_wanted = [] { const char* v = std::getenv("MELEE_VULKAN_PUSH_DESCRIPTORS"); return !(v && *v == '0'); }();
+    if (push_wanted && offered.count(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) { extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME); push_descriptors_on_ = true; }
     // AMD FSR's compute shaders use compute-shader derivatives (KHR, or NVIDIA's earlier name for it).
     VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
     const char* derivatives_ext = offered.count(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) ? VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
@@ -1055,6 +1060,8 @@ class VulkanBackend final : public Backend {
     load_device(device_);
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
     if (!vkWaitForPresentKHR) present_wait_on_ = false;
+    if (!vkCmdPushDescriptorSetKHR) push_descriptors_on_ = false;
+    host::log("vulkan: draw bindings %s", push_descriptors_on_ ? "pushed with each draw" : "in a descriptor set per draw");
     host::log("vulkan: pacing: %s; exclusive fullscreen %s; display timing %s",
               present_wait_on_ && present_wait_wanted() ? "synced presents hold one frame in line for the display (present wait, MELEE_VULKAN_PRESENT_WAIT=1)"
               : present_wait_on_ ? "two frames in flight, the driver's own present queue (present wait available, off)" : "two frames in flight, the driver's own present queue",
@@ -1094,14 +1101,19 @@ class VulkanBackend final : public Backend {
   }
 
   void create_layouts() {
+    // Pushed bindings cannot be dynamic uniform buffers: the constants' place in the ring then goes
+    // in each write instead of a dynamic offset. The shaders are the same either way.
+    const VkDescriptorType constants = push_descriptors_on_ ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     VkDescriptorSetLayoutBinding b[4]{};
-    b[0] = {kBindingVS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    b[1] = {kBindingPS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    b[0] = {kBindingVS, constants, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    b[1] = {kBindingPS, constants, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     b[2] = {kBindingTex, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     b[3] = {kBindingSamp, VK_DESCRIPTOR_TYPE_SAMPLER, 8, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.bindingCount = 4; li.pBindings = b;
+    if (push_descriptors_on_) li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     check(vkCreateDescriptorSetLayout(device_, &li, nullptr, &set_layout_), "descriptor layout");
+    li.flags = 0;
     VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pl.setLayoutCount = 1; pl.pSetLayouts = &set_layout_;
     check(vkCreatePipelineLayout(device_, &pl, nullptr, &layout_), "pipeline layout");
@@ -2113,21 +2125,30 @@ class VulkanBackend final : public Backend {
     std::memcpy(f.ring.mapped + vs_at, &vc, sizeof vc); std::memcpy(f.ring.mapped + ps_at, &pc, sizeof pc);
     const VkDeviceSize index_at = ring_alloc(index_scratch_.size() * 4, 4);
     std::memcpy(f.ring.mapped + index_at, index_scratch_.data(), index_scratch_.size() * 4);
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = f.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &set_layout_;
-    VkDescriptorSet set;
-    if (vkAllocateDescriptorSets(device_, &ai, &set) != VK_SUCCESS) { if (++pool_exhausted_ <= 3) host::log("vulkan: more than 8192 draws in one frame; the rest were skipped"); return; }
-    VkDescriptorBufferInfo vsb{f.ring.buffer, 0, sizeof vc}, psb{f.ring.buffer, 0, sizeof pc};
+    // Pushed (push_descriptors_on_): the constants' place in the ring is in the write. Otherwise a set
+    // from this frame's pool, with the places as dynamic offsets.
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!push_descriptors_on_) {
+      VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      ai.descriptorPool = f.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &set_layout_;
+      if (vkAllocateDescriptorSets(device_, &ai, &set) != VK_SUCCESS) { if (++pool_exhausted_ <= 3) host::log("vulkan: more than 8192 draws in one frame; the rest were skipped"); return; }
+    }
+    const VkDescriptorType constants = push_descriptors_on_ ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    VkDescriptorBufferInfo vsb{f.ring.buffer, push_descriptors_on_ ? vs_at : 0, sizeof vc}, psb{f.ring.buffer, push_descriptors_on_ ? ps_at : 0, sizeof pc};
     VkWriteDescriptorSet writes[4]{};
     for (auto& wr : writes) wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, wr.dstSet = set;
-    writes[0].dstBinding = kBindingVS; writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; writes[0].pBufferInfo = &vsb;
-    writes[1].dstBinding = kBindingPS; writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; writes[1].pBufferInfo = &psb;
+    writes[0].dstBinding = kBindingVS; writes[0].descriptorCount = 1; writes[0].descriptorType = constants; writes[0].pBufferInfo = &vsb;
+    writes[1].dstBinding = kBindingPS; writes[1].descriptorCount = 1; writes[1].descriptorType = constants; writes[1].pBufferInfo = &psb;
     writes[2].dstBinding = kBindingTex; writes[2].descriptorCount = 8; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[2].pImageInfo = images;
     writes[3].dstBinding = kBindingSamp; writes[3].descriptorCount = 8; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; writes[3].pImageInfo = samplers;
-    vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
+    if (!push_descriptors_on_) vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
     if (p != bound_pipeline_) { vkCmdBindPipeline(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bound_pipeline_ = p; }
-    const uint32_t offsets[] = {(uint32_t)vs_at, (uint32_t)ps_at};
-    vkCmdBindDescriptorSets(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 2, offsets);
+    if (push_descriptors_on_) {
+      vkCmdPushDescriptorSetKHR(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 4, writes);
+    } else {
+      const uint32_t offsets[] = {(uint32_t)vs_at, (uint32_t)ps_at};
+      vkCmdBindDescriptorSets(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 2, offsets);
+    }
     // Melee's viewport is top-down like Direct3D's: a negative height gives the same mapping.
     VkViewport viewport{x, y + std::max(h, 1.0f), std::max(w, 1.0f), -std::max(h, 1.0f), znear, zfar};
     vkCmdSetViewport(f.cmd, 0, 1, &viewport);
@@ -2840,6 +2861,7 @@ class VulkanBackend final : public Backend {
   VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
   // ---- Pacing and the display (see the Backend overrides above) ----
   bool surface_caps2_on_ = false, present_id_on_ = false, present_wait_on_ = false, memory_budget_on_ = false, display_timing_on_ = false;
+  bool push_descriptors_on_ = false;   // VK_KHR_push_descriptor: draws push their bindings (create_layouts, draw)
   bool fse_supported_ = false, fse_failed_ = false, fse_logged_ = false, want_exclusive_ = false;
   FullscreenState fullscreen_state_;
   uint64_t present_id_ = 0, last_present_id_ = 0;
