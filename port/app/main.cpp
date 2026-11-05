@@ -826,6 +826,23 @@ struct TimerResolution {
 static bool g_crash_dialog = true;
 
 #ifdef _WIN32
+// The return addresses above a stopped thread's context, as crash_stack walks them. Allocates nothing
+// (the stopped thread may hold the heap lock) and gives up quietly on a frame it cannot read.
+static void profile_unwind(CONTEXT c, uint64_t* out, int depth) {
+  for (int frame = 0; frame < depth && c.Rip; ++frame) {
+    DWORD64 image = 0;
+    PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+    __try {
+      if (!function) { c.Rip = *(const DWORD64*)c.Rsp; c.Rsp += 8; }   // a leaf: the return address is on top
+      else {
+        void* handler_data = nullptr; DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, function, &c, &handler_data, &establisher, nullptr);
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    out[frame] = c.Rip;
+  }
+}
+
 // --profile: samples where the simulation thread is ~1000 times a second and logs the hottest
 // functions at exit. Translated game functions are named through the dispatch table, everything
 // else through the executable's debug symbols. The sample buffer is reserved up front: the sampler
@@ -858,7 +875,13 @@ struct SimProfiler {
   std::vector<uint64_t> returns;   // [rsp] at the sample: the caller when the sample is in a leaf system routine
   std::vector<uint32_t> sample_frames;
   std::vector<uint64_t> sample_cycles;   // target thread cycles since the previous sample (0: it was waiting)
+  // MELEE_PROFILE_STACK=<n> (1..16): also the n return addresses above each sample, unwound while the
+  // thread is stopped, so a sample inside a system routine (the heap, memcpy) names who called it.
+  int stack_depth = 0;
+  std::vector<uint64_t> stacks;   // stack_depth entries per sample, 0 past the end of the stack
   void start() {
+    if (const char* depth = std::getenv("MELEE_PROFILE_STACK")) stack_depth = std::clamp(std::atoi(depth), 0, 16);
+    if (stack_depth) stacks.reserve((size_t)stack_depth << 20);
     main_thread_id = GetCurrentThreadId();
     if (!render_thread) DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
     samples.reserve(1u << 22);
@@ -882,13 +905,18 @@ struct SimProfiler {
       ULONG64 last_cycles = 0;
       while (running.load(std::memory_order_relaxed) && samples.size() < samples.capacity()) {
         if (SuspendThread(target) != (DWORD)-1) {
-          CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_CONTROL;
+          CONTEXT ctx{}; ctx.ContextFlags = stack_depth ? (CONTEXT_CONTROL | CONTEXT_INTEGER) : CONTEXT_CONTROL;
           ULONG64 cycles = 0; QueryThreadCycleTime(target, &cycles);
           if (GetThreadContext(target, &ctx)) {
             samples.push_back(ctx.Rip);
             returns.push_back(*(uint64_t*)ctx.Rsp);
             sample_frames.push_back(host::profiler_frame_id());
             sample_cycles.push_back(cycles - last_cycles);
+            if (stack_depth && stacks.size() + (size_t)stack_depth <= stacks.capacity()) {
+              uint64_t frames[16] = {};
+              profile_unwind(ctx, frames, stack_depth);
+              stacks.insert(stacks.end(), frames, frames + stack_depth);
+            }
           }
           last_cycles = cycles;
           ResumeThread(target);
@@ -913,9 +941,16 @@ struct SimProfiler {
             if (K32GetModuleInformation(GetCurrentProcess(), mods[m], &mi, sizeof mi) && K32GetModuleBaseNameA(GetCurrentProcess(), mods[m], name, MAX_PATH))
               std::fprintf(f, "# module %llx %lx %s\n", (unsigned long long)(uintptr_t)mi.lpBaseOfDll, (unsigned long)mi.SizeOfImage, name);
           }
-        std::fprintf(f, "frame,rip,ret,cycles\n");
-        for (size_t i = 0; i < samples.size(); ++i)
-          std::fprintf(f, "%u,%llx,%llx,%llu\n", sample_frames[i], (unsigned long long)samples[i], (unsigned long long)returns[i], (unsigned long long)sample_cycles[i]);
+        std::fprintf(f, stack_depth ? "frame,rip,ret,cycles,stack\n" : "frame,rip,ret,cycles\n");
+        for (size_t i = 0; i < samples.size(); ++i) {
+          std::fprintf(f, "%u,%llx,%llx,%llu", sample_frames[i], (unsigned long long)samples[i], (unsigned long long)returns[i], (unsigned long long)sample_cycles[i]);
+          if (stack_depth) {
+            std::fputc(',', f);
+            for (int k = 0; k < stack_depth && (i + 1) * (size_t)stack_depth <= stacks.size(); ++k)
+              std::fprintf(f, k ? ";%llx" : "%llx", (unsigned long long)stacks[i * (size_t)stack_depth + k]);
+          }
+          std::fputc('\n', f);
+        }
         std::fclose(f);
       }
     }
