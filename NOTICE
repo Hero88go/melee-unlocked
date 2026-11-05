@@ -20,10 +20,10 @@ and Slippi Ishiiruka); those terms are compatible with version 3 of the GPL.
 Additional permission under GNU GPL version 3 section 7
 
 If you modify this Program, or any covered work, by linking or combining it with the NVIDIA
-Streamline SDK, the NVIDIA DLSS (NGX) SDK, the NVIDIA Reflex SDK or the Intel XeSS SDK (or a
-modified version of those libraries), containing parts covered by the terms of the NVIDIA RTX
-SDKs License, the License Agreement for NVIDIA Software Development Kits or the Intel
-Simplified Software License, the licensors of this Program grant you additional permission to
+Streamline SDK, the NVIDIA DLSS (NGX) SDK, the NVIDIA Reflex SDK, the Intel XeSS SDK or the AMD FSR
+SDK (or a modified version of those libraries), containing parts covered by the terms of the NVIDIA
+RTX SDKs License, the License Agreement for NVIDIA Software Development Kits, the Intel
+Simplified Software License or the AMD FSR SDK license, the licensors of this Program grant you additional permission to
 convey the resulting work.
 
 This permission is granted by the copyright holders of Melee Unlocked's own code and applies to
@@ -50,6 +50,7 @@ Built into the program:
 - NVIDIA NGX library, builds with DLSS 5 only (NVIDIA RTX SDKs License):
   port/third_party/ngx/LICENSE.txt
 - Intel XeSS headers (Intel license): port/third_party/xess/LICENSE.txt
+- AMD FSR SDK 2.4 API headers (MIT): port/third_party/fsr/LICENSE.md
 - Steinberg ASIO SDK 2.3.4 host files (ASIO output, audio mode 3): asio.cpp, asio.h,
   asiosys.h and iasiodrv.h under the SDK's GPL Version 3 option (port/third_party/asio/LICENSE.txt);
   asiodrivers, asiolist and ginclude under a BSD-3-Clause style notice
@@ -98,6 +99,8 @@ Shipped beside the program under their own terms, not covered by the GPL:
   SDKs License); third-party notices: docs/licenses/nvidia-dlss-third-party.txt
 - NVIDIA Reflex (sl.reflex.dll, sl.pcl.dll): port/third_party/streamline/reflex.license.txt
 - Intel XeSS (libxess.dll, Intel Simplified Software License): port/third_party/xess/LICENSE.txt
+- AMD FSR (amd_fidelityfx_loader_dx12/vk.dll, amd_fidelityfx_upscaler_dx12/vk.dll, AMD's signed
+  binaries, fetched by the game from AMD's repository when the player asks): port/third_party/fsr/LICENSE.md
 - onnxruntime (onnxruntime.dll, MIT): port/third_party/onnxruntime/LICENSE; third-party notices:
   port/third_party/onnxruntime/ThirdPartyNotices.txt
 - Phillip's trained policies (ProAI\*.onnx, MIT, from huggingface.co/vladfi/phillip-models):
@@ -105,5 +108,5 @@ Shipped beside the program under their own terms, not covered by the GPL:
 - Microsoft Visual C++ runtime DLLs (Microsoft Visual Studio distributable code)
 
 Super Smash Bros. Melee is the property of Nintendo and HAL Laboratory. Melee Unlocked is not
-affiliated with or endorsed by Nintendo, HAL Laboratory, NVIDIA, Intel or the projects above.
+affiliated with or endorsed by Nintendo, HAL Laboratory, NVIDIA, Intel, AMD or the projects above.
 You supply your own disc image.

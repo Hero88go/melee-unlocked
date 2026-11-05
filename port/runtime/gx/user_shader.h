@@ -41,6 +41,17 @@ bool d3d11_draw(ID3D11DeviceContext* context, ID3D11ShaderResourceView* source, 
                 const Target& where, size_t frame);
 void d3d11_release();
 
+// Vulkan (Windows and Linux): the renderer's own handles, as opaque values so this header needs no
+// vulkan.h (VkInstance, VkPhysicalDevice, VkDevice, VkQueue, and the loader's vkGetInstanceProcAddr).
+// prepare as d3d12_prepare. draw records the preset's passes into the command buffer, outside any
+// rendering: the source must be in SHADER_READ_ONLY_OPTIMAL and the output (a swapchain image) in
+// COLOR_ATTACHMENT_OPTIMAL, where it stays. Images are VkImage values, formats VkFormat values.
+struct VulkanDevice { void* instance; void* physical; void* device; void* queue; void* get_instance_proc_addr; };
+bool vk_prepare(const VulkanDevice& device, const std::string& preset, void (*wait)(void*), void* owner);
+bool vk_draw(void* command_buffer, uint64_t source, int source_format, uint32_t source_width, uint32_t source_height,
+             uint64_t output, int output_format, uint32_t output_width, uint32_t output_height, const Target& where, size_t frame);
+void vk_release();
+
 // OpenGL (Linux): the renderer's context is current. `loader` resolves GL functions
 // (SDL_GL_GetProcAddress). The source and output are RGBA8 textures; the output texture is the
 // window's size and the renderer copies it to the window afterwards.

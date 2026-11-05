@@ -1,20 +1,18 @@
 // Linux: the answers the settings panel and the presentation loop get from the Windows-only GPU
 // libraries (NVIDIA Streamline: DLSS frame generation and Reflex; the Direct3D 12 renderer's VRAM and
-// pass-cost readings). None of those libraries exists for the OpenGL renderer, so each reports itself
+// pass-cost readings). None of those libraries exists on Linux, so each reports itself
 // unavailable, exactly as on a Windows PC without that hardware, and the panel greys those options.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_streamline.h"
 #include "gx_d3d12.h"
 #include "render_options.h"
+#include "gpu_readings.h"
 #include <atomic>
 #include <cstdint>
 
 namespace gx {
-bool vram_usage(float* used_gb, float* total_gb) {
-  if (used_gb) *used_gb = 0;
-  if (total_gb) *total_gb = 0;
-  return false;
-}
+// The Vulkan renderer measures it (gpu_readings.h); OpenGL does not, and reads 0.
+bool vram_usage(float* used_gb, float* total_gb) { return gpu_readings::vram(used_gb, total_gb); }
 void gpu_pass_cost(float* dlaa_ms, float* neural_ms) {
   if (dlaa_ms) *dlaa_ms = 0;
   if (neural_ms) *neural_ms = 0;

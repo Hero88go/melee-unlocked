@@ -70,7 +70,7 @@ The launcher's Build tab picks the Game Build: the Source Port (the game built f
 Static Recomp (the original game code translated ahead of time; mod discs such as Akaneia run on
 it). The launcher downloads the matching compatibility build for older processors when needed.
 For manual installs, extract MeleeUnlocked-{version}-compat-win64.zip into this folder.
-Intel XeSS is an optional download from Settings > Video. Optional experimental DLSS 5 uses
+Intel XeSS and AMD FSR are optional downloads from Settings > Video. Optional experimental DLSS 5 uses
 NVIDIA's separate model, which is not included in this archive.
 
 Fight a pro (Source Port)
@@ -141,7 +141,7 @@ License and source code
 Melee Unlocked is free software under the GNU General Public License, version 3 or (at your
 option) any later version: licenses\\COPYING.txt, with the notices in licenses\\NOTICE.txt.
 Source code for this version: https://github.com/hero88go/melee-unlocked/tree/v{version}
-The NVIDIA (DLSS, Streamline, Reflex) and Intel (XeSS) runtime files and the Microsoft Visual C++
+The NVIDIA (DLSS, Streamline, Reflex), Intel (XeSS) and AMD (FSR) runtime files and the Microsoft Visual C++
 runtime files in this folder are not covered by the GPL; their own terms are in licenses\\.
 ASIO is a registered trademark of Steinberg Media Technologies GmbH. The SDK and host-helper
 license texts are licenses\\steinberg-asio-sdk.txt and licenses\\steinberg-asio-bsd.txt.
@@ -227,6 +227,21 @@ def imgui_font_notice():
     for name, notice in blocks:
         lines += [name] + ["  " + line[2:].strip() for line in notice.splitlines()] + [""]
     return "\n".join(lines) + "\n" + mit[grant.start():]
+
+
+def ship_vulkan_cache(source, target):
+    recipes = source / "vk_recipes.bin"
+    if not recipes.is_file():
+        print(f"vulkan cache: none at {source} (first Vulkan sessions compile their shaders)")
+        return 0
+    target.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for spv in sorted(source.glob("*.spv")):
+        shutil.copy2(spv, target / spv.name)
+        count += 1
+    shutil.copy2(recipes, target / "vk_recipes.shipped.bin")
+    print(f"vulkan cache: {count} SPIR-V files and {recipes.stat().st_size} bytes of recipes from {source}")
+    return count
 
 
 def main():
@@ -502,6 +517,11 @@ def main():
         (folder / "shadercache").mkdir()
         shutil.copy2(recipes, folder / "shadercache/recipes.bin")
         print(f"pipeline recipes: {recipes} ({recipes.stat().st_size} bytes)")
+    # Vulkan: the warmed SPIR-V and its pipeline recipes, from a run on Vulkan with this build
+    # (gx_vulkan.cpp prewarm_pipelines). SPIR-V is the same on every GPU and driver; pipelines.bin is
+    # the driver's own and stays out. The recipes ship as vk_recipes.shipped.bin so extracting an
+    # update never overwrites the player's own vk_recipes.bin.
+    ship_vulkan_cache(ROOT / "shadercache/vulkan-v1", folder / "shadercache/vulkan-v1")
     # The CRT shader presets, so the shader option has something to pick without a second download.
     shaders = ROOT / "port/third_party/slang-shaders"
     if not (shaders / "crt").is_dir():
@@ -546,6 +566,7 @@ def main():
                      (ROOT / "port/third_party/ngx/LICENSE.txt", "nvidia-rtx-sdks.txt"),
                      (ROOT / "docs/licenses/nvidia-dlss-third-party.txt", "nvidia-dlss-third-party.txt"),
                      (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt"),
+                     (ROOT / "port/third_party/fsr/LICENSE.md", "amd-fsr.md"),
                      (ROOT / "port/third_party/librashader/LICENSE.md", "librashader-MPL-2.0.md"),
                      (ROOT / "port/third_party/dxc/LICENSE-LLVM.txt", "directx-shader-compiler-LLVM.txt"),
                      (ROOT / "port/third_party/dxc/LICENSE-MS.txt", "directx-shader-compiler-dxil-Microsoft.txt"),

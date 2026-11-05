@@ -4,6 +4,7 @@
 #include "gx_d3d11.h"
 #include "gx_d3d12.h"
 #include "gx_vulkan.h"
+#include "gx_fsr.h"
 #include "gx_adapter.h"
 #include "host.h"
 #include "test_env.h"
@@ -75,7 +76,8 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
       *w = r.right - r.left; *h = r.bottom - r.top;
     };
     RenderOptions vulkan_options = options;
-    vulkan_options.dlss_mode = 0;   // DLSS, XeSS and frame generation are Direct3D 12 features
+    // DLSS, XeSS and frame generation are Direct3D 12 features; AMD FSR runs on Vulkan too.
+    if (!fsr::is_fsr_mode(vulkan_options.dlss_mode)) vulkan_options.dlss_mode = 0;
     vulkan_options.frame_generation_mode = 0;
     if (Backend* backend = create_vulkan_backend(window, client_w, client_h, vulkan_options)) return backend;
     host::log("vulkan: falling back to Direct3D 12");

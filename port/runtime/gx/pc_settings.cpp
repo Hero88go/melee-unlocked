@@ -9,6 +9,9 @@
 #include <thread>
 #include "gx_streamline.h"
 #include "gx_xess.h"
+#ifdef _WIN32
+#include "gx_fsr.h"
+#endif
 #include "phillip_ai.h"
 #ifdef GX_DLSS5
 #include "gx_dlss5.h"
@@ -2359,7 +2362,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (load_family_option(key, value)) {}
       else if (load_binding_level(key, value)) {}
       else if (key == "autoopenoverlay") options.settings_open = value == "1";
-      else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
+      else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 15) options.dlss_mode = m; }
       // Pre-multiplier saves wrote 0 or 1; both still mean what they always meant (off / 2x).
       else if (key == "framegen") options.frame_generation_mode = std::clamp(std::stoi(value), 0, 6);
       else if (key == "fgmax") options.fg_cached_max = std::clamp(std::atoi(value.c_str()), 0, 5);
@@ -6046,7 +6049,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // DLSS chooses its own render size, so the internal resolution and supersampling settings do
     // nothing while it is on and are shown greyed out. DLAA renders at the internal resolution the
     // player picked and only anti-aliases it, so it leaves both of them working.
-    const bool dlss_picks_resolution = options.dlss_mode >= 2 && options.dlss_mode != 6;   // not DLAA / XeSS AA
+    const bool dlss_picks_resolution = options.dlss_mode >= 2 && options.dlss_mode != 6 && options.dlss_mode != 11;   // not DLAA / XeSS AA / FSR Native AA
     if (dlss_picks_resolution) ImGui::BeginDisabled();
     changed |= settings_combo("Internal resolution", &options.efb_scale, scales, 9);
     // DLSS (DLAA included) does its own anti-aliasing, so supersampling on top would render larger
@@ -6542,10 +6545,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       } else ImGui::TextUnformatted("Graphics backend: OpenGL");
     }
     const bool d3d11 = true;   // the upscaler row below stays disabled
+    const bool vk_fsr = false;   // AMD FSR's Vulkan build is Windows only
     if (false)
 #endif
     {
-    // Vulkan is offered only where a Vulkan 1.3 GPU is present; it draws without DLSS, XeSS and the CRT model.
+    // Vulkan is offered only where a Vulkan 1.3 GPU is present; it draws without DLSS and XeSS (and shader presets for now).
     const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)", "Vulkan (experimental)"};
     int api_index = options.api == RenderApi::D3D11 ? 1 : options.api == RenderApi::Vulkan ? 2 : 0;
     if (settings_combo("Graphics backend", &api_index, backends, vulkan_available() ? 3 : 2)) {
@@ -6555,17 +6559,23 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     settings_hint("Takes effect at the next launch: save settings, then restart.");
     }
 #ifdef _WIN32
-    const bool d3d11 = options.api == RenderApi::D3D11 || options.api == RenderApi::Vulkan;   // no upscalers on either
+    const bool d3d11 = options.api == RenderApi::D3D11 || options.api == RenderApi::Vulkan;   // no DLSS or XeSS on either
+    const bool vk_fsr = options.api == RenderApi::Vulkan;   // but FSR runs on Vulkan
 #endif
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance",
-                               "XeSS AA", "XeSS Ultra Quality", "XeSS Quality", "XeSS Balanced", "XeSS Performance"};
-    if (d3d11) ImGui::BeginDisabled();
-    if (settings_combo("Upscaling (DLSS / XeSS)", &options.dlss_mode, upscalers, 11)) changed = true;
+                               "XeSS AA", "XeSS Ultra Quality", "XeSS Quality", "XeSS Balanced", "XeSS Performance",
+                               "FSR Native AA", "FSR Quality", "FSR Balanced", "FSR Performance", "FSR Ultra Performance"};
+    if (d3d11 && !vk_fsr) ImGui::BeginDisabled();
+    if (settings_combo("Upscaling (DLSS / XeSS / FSR)", &options.dlss_mode, upscalers, 16)) changed = true;
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("DLSS: NVIDIA RTX cards. XeSS: Intel's upscaler, works on Intel, NVIDIA and AMD cards.\n"
+                        "FSR: AMD's upscaler, works on AMD, NVIDIA and Intel cards (FSR 4 on Radeon RX 6000 and newer).\n"
                         "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.\n"
                         "DLSS Ultra Performance would render below the GameCube's own resolution on\n"
                         "anything short of an 8K display, so there it switches to Performance.");
+    if (options.api == RenderApi::Vulkan)
+      settings_hint(vk_fsr ? "On Vulkan the FSR modes run; DLSS and XeSS need Direct3D 12 (they draw at native resolution here)."
+                           : "On Vulkan the game draws at the Internal resolution above: DLSS and XeSS need Direct3D 12.");
 #ifdef _WIN32
     // Intel XeSS is its own download since 0.9.98 (libxess.dll, 78 MB unpacked): the XeSS modes need it
     // beside the game, where updates leave it alone (host/updater.cpp xess_download).
@@ -6588,9 +6598,27 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         std::snprintf(label, sizeof label, "Download Intel XeSS (%s)", host::updater::kXessSize);
         if (ImGui::Button(label, ImVec2(0, 32))) host::updater::xess_download(game_dir);
         if (xs == ModelState::Failed) settings_hint("%s", host::updater::xess_message().c_str());
-        else settings_hint("%s", options.dlss_mode >= 6
+        else settings_hint("%s", xess::is_xess_mode(options.dlss_mode)
                                      ? "XeSS is a separate download: until it is installed, the game draws at native resolution."
                                      : "Intel's XeSS upscaler is a separate download. It goes beside the game and stays there through updates.");
+      }
+      // AMD FSR the same way: AMD's own signed files, fetched and checked one by one (host/updater.cpp).
+      const ModelState fs = game_dir.empty() ? ModelState::Present : host::updater::fsr_state(game_dir);
+      if (fs == ModelState::Downloading) {
+        settings_hint("%s", host::updater::fsr_message().c_str());
+      } else if (fs == ModelState::Present && !fsr::available() && !host::updater::fsr_message().empty()) {
+        settings_hint("AMD FSR is installed. Restart the game to use it.");
+        restart_now_button("fsr");
+      } else if (fs != ModelState::Present) {
+        char fsr_label[64];
+        std::snprintf(fsr_label, sizeof fsr_label, "Download AMD FSR (%s)", host::updater::kFsrSize);
+        if (ImGui::Button(fsr_label, ImVec2(0, 32))) host::updater::fsr_download(game_dir);
+        if (fs == ModelState::Failed) settings_hint("%s", host::updater::fsr_message().c_str());
+        else settings_hint("%s", fsr::is_fsr_mode(options.dlss_mode)
+                                     ? "FSR is a separate download: until it is installed, the game draws at native resolution."
+                                     : "AMD's FSR upscaler is a separate download, AMD's own signed files. It goes beside the game and stays there through updates.");
+      } else if (fsr::available() && fsr::is_fsr_mode(options.dlss_mode) && !fsr::provider().empty()) {
+        settings_hint("AMD's library runs %s on this graphics card.", fsr::provider().c_str());
       }
     }
 #endif
@@ -6621,6 +6649,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "two, not instant. \"Native (estimated)\" is the total with the two measured\n"
                           "GPU costs subtracted out -- an estimate, not a separate measurement.");
     }
+    if (d3d11 && vk_fsr) ImGui::BeginDisabled();   // Vulkan: frame generation and Reflex stay Direct3D 12 features
     // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode. Build the
     // list from Streamline's present-thread capability query: RTX 40 usually reports 2x, while newer
     // RTX 50 drivers can expose fixed multipliers through 6x and Dynamic.
@@ -6910,11 +6939,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
     }
 #endif
-    if (options.dlss_mode == 1 || options.dlss_mode == 6) {
+    if (options.dlss_mode == 1 || options.dlss_mode == 6 || options.dlss_mode == 11) {
       ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
     } else if (dlss_picks_resolution) {
       static const char* ratios[] = {"", "", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)",
-                                     "", "77% (Ultra Quality)", "67% (Quality)", "59% (Balanced)", "50% (Performance)"};
+                                     "", "77% (Ultra Quality)", "67% (Quality)", "59% (Balanced)", "50% (Performance)",
+                                     "", "67% (Quality)", "59% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
       ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
     }
     // Border art: the files in the Borders folder, read when the list is opened or the page appears.

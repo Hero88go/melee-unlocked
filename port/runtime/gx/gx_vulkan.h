@@ -28,6 +28,9 @@ bool vulkan_available();
 // Vulkan starts in a row that died before the renderer was up (a crash inside the driver leaves the
 // start marker behind; the cleared shader cache is tried once). Picking Vulkan again forgets them.
 int vulkan_failed_starts();
+// The shader cache folder (--shader-cache; "shadercache" by default). The Vulkan files go in its
+// vulkan-v1 folder. Set before vulkan_failed_starts() reads the start marker there.
+void vulkan_set_shader_cache(const std::string& folder);
 void vulkan_forget_failed_starts();
 
 // nullptr (with the reason logged) when Vulkan cannot start; the caller falls back.

@@ -3,10 +3,13 @@
 // Windows compiles them to SPIR-V with the DirectX Shader Compiler the game already ships
 // (dxcompiler.dll), Linux with glslangValidator as the OpenGL renderer does. The loader (vulkan-1 /
 // libvulkan.so.1) is opened at run time, so a machine without Vulkan still starts on another backend.
-// What it draws follows the OpenGL renderer (port/linux/renderer_gl.cpp): the EFB at the internal
-// scale, EFB copies into textures keyed by their address, and the frame region fitted to the window
-// with the box filter of the Direct3D present pass. NVIDIA DLSS/Reflex, XeSS, the CRT model and
-// shader presets are Direct3D or OpenGL features and are not drawn here.
+// What it draws follows the Direct3D 12 renderer: the EFB at the internal scale, EFB copies into
+// textures keyed by their address, and the shared present pass (present_shader.h: box filter,
+// sharpening, colour, ambient occlusion, the CRT model) onto the window. Pacing follows it too: two
+// frames in flight, the presentation loop's deadline, and the display's own vertical blanks for the
+// G-Sync / FreeSync verdict (vrr_detect.h, vblank_clock.h); a present wait (VK_KHR_present_wait) is
+// there for measurement, off by default. AMD FSR upscales on Vulkan too (gx_fsr_vk.cpp); NVIDIA
+// DLSS, Reflex and XeSS stay Direct3D 12 features.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define VK_NO_PROTOTYPES
 #ifdef _WIN32
@@ -15,11 +18,15 @@
 #endif
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <windows.h>
+#include <dxgi.h>
 #include <dxcapi.h>
 #include <wrl/client.h>
 #else
 #include <dlfcn.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 #include <vulkan/vulkan.h>
 #include "gx_vulkan.h"
@@ -28,8 +35,26 @@
 #include "gx_retro.h"
 #include "crt_shader.h"
 #include "present_shader.h"
+#include "user_shader.h"
+#include "vulkan_recipes.h"
+#include "temporal_history.h"
+#ifdef _WIN32
+#include "gx_fsr.h"
+#include "gx_streamline.h"   // the jitter sequence the Direct3D 12 upscalers use
+#endif
 #include "host.h"
 #include "exi_slippi.h"
+#include "window.h"
+#include "sim_work.h"
+#include "fullscreen_state.h"
+#include "vrr_detect.h"
+#include "gpu_readings.h"
+#include "video_background.h"
+#include "video_background_learning.h"
+#include "gx_backend.h"   // solver_pair_counter, for the "gpu:" line
+#ifdef _WIN32
+#include "vblank_clock.h"
+#endif
 #ifdef GX_PC_SETTINGS
 #include "pc_settings.h"
 #include "pc_settings_shared.h"
@@ -63,16 +88,20 @@ namespace {
 // ---- Loader -------------------------------------------------------------------------------------
 
 #define MU_VK_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkEnumerateInstanceVersion)
+// Extension functions load as null when the extension is not enabled; every use checks first.
 #ifdef _WIN32
-#define MU_VK_SURFACE_PLATFORM(X) X(vkCreateWin32SurfaceKHR)
+#define MU_VK_SURFACE_PLATFORM(X) X(vkCreateWin32SurfaceKHR) X(vkGetPhysicalDeviceSurfacePresentModes2EXT)
+#define MU_VK_DEVICE_PLATFORM(X) X(vkAcquireFullScreenExclusiveModeEXT) X(vkReleaseFullScreenExclusiveModeEXT)
 #else
 #define MU_VK_SURFACE_PLATFORM(X)
+#define MU_VK_DEVICE_PLATFORM(X) X(vkGetRefreshCycleDurationGOOGLE) X(vkGetPastPresentationTimingGOOGLE)
 #endif
 #define MU_VK_INSTANCE(X) X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) \
   X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFeatures) \
   X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkDestroySurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR) \
   X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
-  X(vkGetPhysicalDeviceSurfacePresentModesKHR) X(vkEnumerateDeviceExtensionProperties) MU_VK_SURFACE_PLATFORM(X)
+  X(vkGetPhysicalDeviceSurfacePresentModesKHR) X(vkEnumerateDeviceExtensionProperties) X(vkGetPhysicalDeviceFeatures2) \
+  X(vkGetPhysicalDeviceMemoryProperties2) X(vkCreateDebugUtilsMessengerEXT) X(vkDestroyDebugUtilsMessengerEXT) MU_VK_SURFACE_PLATFORM(X)
 #define MU_VK_DEVICE(X) X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) \
   X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) X(vkQueuePresentKHR) X(vkQueueSubmit) X(vkQueueWaitIdle) \
   X(vkDeviceWaitIdle) X(vkCreateCommandPool) X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkResetCommandPool) \
@@ -87,7 +116,8 @@ namespace {
   X(vkGetPipelineCacheData) X(vkCmdBeginRendering) X(vkCmdEndRendering) X(vkCmdPipelineBarrier) X(vkCmdBindPipeline) \
   X(vkCmdBindDescriptorSets) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdSetViewport) X(vkCmdSetScissor) \
   X(vkCmdDrawIndexed) X(vkCmdDraw) X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
-  X(vkCmdPushConstants)
+  X(vkCmdPushConstants) X(vkWaitForPresentKHR) X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) \
+  X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkGetFenceStatus) MU_VK_DEVICE_PLATFORM(X)
 
 #define MU_VK_DECLARE(name) PFN_##name name = nullptr;
 MU_VK_GLOBAL(MU_VK_DECLARE)
@@ -102,8 +132,15 @@ bool load_loader() {
     if (!library) return false;
     vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(library, "vkGetInstanceProcAddr");
 #else
+#ifdef __APPLE__
+    // The Vulkan loader the app bundles in Frameworks (it finds MoltenVK beside it), else MoltenVK on
+    // its own, which is a whole Vulkan implementation without a loader.
+    void* library = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (!library) library = dlopen("libMoltenVK.dylib", RTLD_NOW | RTLD_LOCAL);
+#else
     void* library = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!library) library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+#endif
     if (!library) return false;
     vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(library, "vkGetInstanceProcAddr");
 #endif
@@ -133,13 +170,17 @@ void check(VkResult r, const char* what) {
 // eight textures as one array at 2 and the eight samplers at 3 (register shifts below).
 constexpr uint32_t kBindingVS = 0, kBindingPS = 1, kBindingTex = 2, kBindingSamp = 3;
 
+// The Vulkan namespace under the shader cache folder (--shader-cache, "shadercache" by default, as the
+// Direct3D renderers use it). It was always "shadercache" beside the working folder, which the Mac app
+// (it passes its own folder, outside the read-only bundle) and the tests could not move.
+std::mutex g_cache_mutex;
+std::filesystem::path g_cache_root = "shadercache";
 std::filesystem::path shader_cache_dir() {
-  static const std::filesystem::path dir = [] {
-    std::filesystem::path p = std::filesystem::path("shadercache") / "vulkan-v1";
-    std::error_code ec; std::filesystem::create_directories(p, ec);
-    return p;
-  }();
-  return dir;
+  std::lock_guard<std::mutex> lock(g_cache_mutex);   // the render thread and the pipeline worker both ask
+  static std::filesystem::path made;
+  const std::filesystem::path p = g_cache_root / "vulkan-v1";
+  if (p != made) { std::error_code ec; std::filesystem::create_directories(p, ec); made = p; }
+  return p;
 }
 
 std::vector<uint32_t> read_spirv(const std::filesystem::path& path) {
@@ -207,9 +248,18 @@ std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::st
   // a system copy is the fallback. Run by name alone, a system without glslang could not start Vulkan.
   static const std::string tool = [] {
     std::error_code ec;
+#ifdef __APPLE__
+    char path[4096]; uint32_t size = sizeof path;
+    const std::filesystem::path exe = _NSGetExecutablePath(path, &size) == 0 ? std::filesystem::path(path) : std::filesystem::path();
+    if (exe.empty()) ec = std::make_error_code(std::errc::no_such_file_or_directory);
+#else
     const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    const auto shipped = ec ? std::filesystem::path() : exe.parent_path() / "bin" / "glslangValidator";
-    return !shipped.empty() && std::filesystem::is_regular_file(shipped, ec) ? "'" + shipped.string() + "'" : std::string("glslangValidator");
+#endif
+    std::filesystem::path shipped;
+    if (!ec)   // bin/ beside the program (Linux), or the app bundle's Resources/bin (Mac)
+      for (const auto& candidate : {exe.parent_path() / "bin" / "glslangValidator", exe.parent_path().parent_path() / "Resources" / "bin" / "glslangValidator"})
+        if (std::filesystem::is_regular_file(candidate, ec)) { shipped = candidate; break; }
+    return !shipped.empty() ? "'" + shipped.string() + "'" : std::string("glslangValidator");
   }();
   const std::string command = tool + " -D -V -e " + entry + " -S " + (vertex ? "vert" : "frag") +
       " --target-env vulkan1.3 --auto-map-locations --shift-UBO-binding 0 --shift-texture-binding " + (present ? "1" : "2") +
@@ -290,7 +340,7 @@ struct BlitConstants { float rect[4]; float box[4]; int32_t kind[4]; };
 
 // Images share large blocks (Melee keeps thousands of textures alive, more than a driver's limit of
 // separate allocations). A block is handed back when its last image is gone.
-struct Allocation { VkDeviceMemory memory = VK_NULL_HANDLE; VkDeviceSize offset = 0; int block = -1; };
+struct Allocation { VkDeviceMemory memory = VK_NULL_HANDLE; VkDeviceSize offset = 0; int block = -1; VkDeviceSize size = 0; };
 
 class Heap {
  public:
@@ -307,7 +357,8 @@ class Heap {
     constexpr VkDeviceSize kBlock = 64ull << 20;
     if (req.size > kBlock / 2) {
       VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size, t};
-      Allocation a; check(vkAllocateMemory(device_, &info, nullptr, &a.memory), "dedicated allocation"); return a;
+      Allocation a; check(vkAllocateMemory(device_, &info, nullptr, &a.memory), "dedicated allocation");
+      a.size = req.size; held_ += req.size; return a;
     }
     for (size_t i = 0; i < blocks_.size(); ++i) {
       Block& b = blocks_[i];
@@ -320,22 +371,26 @@ class Heap {
     Block b; b.type = t;
     VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, kBlock, t};
     check(vkAllocateMemory(device_, &info, nullptr, &b.memory), "memory block");
+    held_ += kBlock;
     b.used = req.size; b.live = 1;
     for (size_t i = 0; i < blocks_.size(); ++i) if (!blocks_[i].memory) { blocks_[i] = b; return {b.memory, 0, (int)i}; }
     blocks_.push_back(b);
     return {b.memory, 0, (int)blocks_.size() - 1};
   }
   void release(const Allocation& a) {
-    if (a.block < 0) { if (a.memory) vkFreeMemory(device_, a.memory, nullptr); return; }
+    if (a.block < 0) { if (a.memory) { vkFreeMemory(device_, a.memory, nullptr); held_ -= std::min(held_, a.size); } return; }
     Block& b = blocks_[a.block];
-    if (--b.live == 0) { vkFreeMemory(device_, b.memory, nullptr); b = Block{}; }
+    if (--b.live == 0) { vkFreeMemory(device_, b.memory, nullptr); b = Block{}; held_ -= std::min<VkDeviceSize>(held_, 64ull << 20); }
   }
   void destroy() { for (auto& b : blocks_) if (b.memory) vkFreeMemory(device_, b.memory, nullptr); blocks_.clear(); }
+  // Device memory this heap holds: whole blocks plus dedicated allocations.
+  VkDeviceSize bytes() const { return held_; }
  private:
   struct Block { VkDeviceMemory memory = VK_NULL_HANDLE; VkDeviceSize used = 0; uint32_t type = 0; int live = 0; };
   VkDevice device_ = VK_NULL_HANDLE;
   VkPhysicalDeviceMemoryProperties props_{};
   std::vector<Block> blocks_;
+  VkDeviceSize held_ = 0;
 };
 
 struct Image {
@@ -368,7 +423,16 @@ struct PipelineKeyHash { size_t operator()(const PipelineKey& k) const { return 
 // Set while a Vulkan renderer runs: the settings panel then needs no probe instance.
 bool g_vulkan_running = false;
 
-constexpr int kFrames = 3;
+// Frames in flight. Two, as the Direct3D 12 renderer (its FRAME_SLOTS): with three the CPU could run
+// two whole GPU frames ahead, and when the GPU was the bottleneck those two frames sat in the queue
+// as input delay for the whole session. The slot fence only ever waits when the GPU is already more
+// than a frame behind. The swapchain keeps three images so acquiring one never waits on the display
+// (the present wait below holds the queue instead, after the frame is recorded and submitted).
+constexpr int kFrames = 2;
+// Pipeline state bit: the draw also writes motion vectors and the HUD mask (attachments 1 and 2),
+// for the upscaler. Bits 19 to 22 hold the sample count.
+constexpr uint32_t kStateUpscaleOutputs = 1u << 26;
+inline VkSampleCountFlagBits state_samples(uint32_t state) { return VkSampleCountFlagBits((state >> 19) & 0xF); }
 constexpr VkDeviceSize kRingBytes = 96ull << 20;   // vertices, indices, constants and uploads of one frame
 
 class VulkanBackend final : public Backend {
@@ -389,7 +453,11 @@ class VulkanBackend final : public Backend {
     }
     create_layouts();
     create_frames();
+    apply_fullscreen_mode();   // the window over the whole monitor first when fullscreen or exclusive is saved
     create_swapchain();
+#ifdef _WIN32
+    track_vblank();
+#endif
     scale_ = pick_scale();
     create_efb();
     prewarm_pipelines();
@@ -419,6 +487,10 @@ class VulkanBackend final : public Backend {
     if (!device_) return;
     stop_pipeline_worker();   // before anything it uses goes; what it finished joins the maps emptied below
     vkDeviceWaitIdle(device_);
+#ifdef _WIN32
+    vblank_.stop();
+    if (present_timer_) { CloseHandle(present_timer_); present_timer_ = nullptr; }
+#endif
     // Quitting: keep the caches and leave the device to Windows. NVIDIA's driver crashed inside
     // vkDestroyDevice as the game closed (RTX 3060, 0.9.96 reports), after everything was saved.
     if (host::process_ending()) {
@@ -435,21 +507,32 @@ class VulkanBackend final : public Backend {
     for (auto& c : copies_) destroy(c.second);
     for (auto& f : frames_) { for (auto& img : f.dead) destroy(img); f.dead.clear(); }
     destroy(efb_color_); destroy(efb_depth_); destroy(msaa_color_); destroy(msaa_depth_); destroy(white_);
+    destroy(mvec_img_); destroy(hud_img_); destroy(upscale_out_);
+#ifdef _WIN32
+    fsr::vk_shutdown();
+#endif
+    for (auto& v : video_images_) destroy(v);
+    if (efb_blit_) vkDestroyPipeline(device_, efb_blit_, nullptr);
     for (auto& s : samplers_) vkDestroySampler(device_, s.second, nullptr);
     vkDestroySampler(device_, linear_, nullptr); vkDestroySampler(device_, nearest_, nullptr);
     vkDestroyPipeline(device_, copy_pipeline_, nullptr); vkDestroyPipeline(device_, present_pipeline_, nullptr);
     if (present_plain_) vkDestroyPipeline(device_, present_plain_, nullptr);
+    if (present_plain_rgba_) vkDestroyPipeline(device_, present_plain_rgba_, nullptr);
+    destroy(shader_source_);
+    user_shader::vk_release();   // the GPU is idle: the preset's resources go before the device
     if (present_crt_) vkDestroyPipeline(device_, present_crt_, nullptr);
     for (VkShaderModule m : {present_vs_, present_ps_, present_crt_ps_}) if (m) vkDestroyShaderModule(device_, m, nullptr);
     if (present_layout_) vkDestroyPipelineLayout(device_, present_layout_, nullptr);
     if (present_set_layout_) vkDestroyDescriptorSetLayout(device_, present_set_layout_, nullptr);
     vkDestroyShaderModule(device_, blit_vs_, nullptr); vkDestroyShaderModule(device_, blit_ps_, nullptr);
+    release_exclusive();
     destroy_swapchain();
     if (capture_buffer_.buffer) { vkDestroyBuffer(device_, capture_buffer_.buffer, nullptr); vkFreeMemory(device_, capture_buffer_.memory, nullptr); }
     for (auto& f : frames_) {
       vkDestroyFence(device_, f.fence, nullptr);
       vkDestroySemaphore(device_, f.acquired, nullptr);
       vkDestroyDescriptorPool(device_, f.pool, nullptr);
+      if (f.timers) vkDestroyQueryPool(device_, f.timers, nullptr);
       vkDestroyCommandPool(device_, f.commands, nullptr);
       vkDestroyBuffer(device_, f.ring.buffer, nullptr); vkFreeMemory(device_, f.ring.memory, nullptr);
     }
@@ -460,6 +543,7 @@ class VulkanBackend final : public Backend {
     heap_.destroy();
     vkDestroyDevice(device_, nullptr);
     if (surface_) vkDestroySurfaceKHR(instance_, surface_, nullptr);
+    if (messenger_ && vkDestroyDebugUtilsMessengerEXT) vkDestroyDebugUtilsMessengerEXT(instance_, messenger_, nullptr);
     vkDestroyInstance(instance_, nullptr);
   }
 
@@ -470,6 +554,62 @@ class VulkanBackend final : public Backend {
     if (frames) *frames = presented_;
     if (pipes) *pipes = (uint32_t)pipelines_.size();
     if (textures) *textures = (uint32_t)(textures_.size() + copies_.size());
+  }
+  // The pacing contract the Direct3D renderers keep with the presentation loop (threaded_backend.cpp):
+  // the deadline for this present, how long the frame waited for the display, and the display's own
+  // verdict (follows the frames, or refreshes at a fixed rate) from counts it cannot fake.
+  void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
+  double presentation_wait_seconds() const override { return present_wait_; }
+  std::string profile_line() const override {
+    char line[320];
+    const double f = (double)std::max<uint64_t>(1, stat_frames_);
+    std::snprintf(line, sizeof line, "vulkan per presented frame: acquire %.3f, present wait %.3f, deadline %.3f, present %.3f ms | %zu pipelines, %zu shader modules, %s",
+                  1e3 * stat_acquire_ / f, 1e3 * stat_wait_ / f, 1e3 * stat_spin_ / f, 1e3 * stat_present_ / f, pipelines_.size(), modules_.size(),
+                  present_mode_ == VK_PRESENT_MODE_FIFO_KHR ? "synced" : present_mode_ == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "mailbox");
+    stat_acquire_ = stat_wait_ = stat_spin_ = stat_present_ = 0; stat_frames_ = 0;
+    return line;
+  }
+  std::string display_timing_line() override {
+    char line[256];
+    const char* mode = fullscreen_state_.exclusive_active ? "exclusive fullscreen" : "windowed or borderless";
+#ifdef _WIN32
+    if (!vblank_.healthy()) {
+      timing_shown_ = presented_; timing_blanks_ = vblank_.wakes();
+      std::snprintf(line, sizeof line, "%s, no vertical blank readings from this output", mode);
+      return line;
+    }
+    const uint64_t shown = presented_ - timing_shown_, blanks = vblank_.wakes() - timing_blanks_;
+    timing_shown_ = presented_; timing_blanks_ = vblank_.wakes();
+    std::snprintf(line, sizeof line, "%s, %s: %llu frames presented over %llu vertical blanks (%llu blanks repeated a frame)", mode,
+                  present_wait_active() ? "synced, one frame in line for the display" : present_synced_ ? "synced, the driver's own present queue" : "not synced",
+                  (unsigned long long)shown, (unsigned long long)blanks, (unsigned long long)(blanks > shown ? blanks - shown : 0));
+#else
+    if (!display_timing_on_) { std::snprintf(line, sizeof line, "%s, no display timing from this driver", mode); return line; }
+    std::snprintf(line, sizeof line, "%s, %s: %u frames presented, %u of %u present intervals on the refresh grid", mode,
+                  present_wait_active() ? "synced, one frame in line for the display" : present_synced_ ? "synced, the driver's own present queue" : "not synced",
+                  presented_ - timing_shown_, timing_line_on_grid_, timing_line_intervals_);
+    timing_shown_ = presented_; timing_line_on_grid_ = timing_line_intervals_ = 0;
+#endif
+    return line;
+  }
+  int variable_refresh() const override {
+#ifdef _WIN32
+    return vrr_.state();
+#else
+    return timing_state_;
+#endif
+  }
+  bool display_counts_readable() const override { return vrr_readable_; }
+  void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
+#ifdef _WIN32
+    if (!vblank_tracked_) track_vblank();
+    return vblank_.next_after(after, nominal_hz, when, period, why);
+#else
+    (void)after; (void)nominal_hz; (void)when; (void)period;
+    *why = "no vertical blank clock on this renderer";
+    return false;
+#endif
   }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override {
@@ -492,12 +632,49 @@ class VulkanBackend final : public Backend {
         if (overrides[i].vertices) std::memcpy(f.ring.mapped + at + vertex_offsets_[i] * sizeof(Vertex), overrides[i].vertices, frame.draws[i].vertex_count * sizeof(Vertex));
     }
     set_main_projection(frame_scene_draw(frame));
-    set_css_scene(frame.scene_major == 1 && frame.scene_minor == 0);
+    // Menu video backgrounds and the character select's True widescreen bands, decided as the
+    // Direct3D renderers do (this read major 1 minor 0, the main menu, so the CSS bands never stretched).
+    video_bg::set_enabled(opts_.video_backgrounds);
+    video_bg::begin_frame(frame.scene_major, frame.scene_minor);
+    set_css_scene(video_bg::learning::scene_slot(frame.scene_major, frame.scene_minor) == 0);
     bool presented = false;
+    // Menu video backgrounds (video_background.h): on the character select the decoded frame goes in
+    // between Melee's hardcoded animated backdrop (its leading untextured draws) and the textured
+    // UI; on the stage select it is composited right after the learned backdrop draw.
+    const EfbCopy* screen = nullptr;
+    for (const EfbCopy& c : frame.copies) if (c.to_xfb) screen = &c;
+    int fullscreen_slot = -1;
+    const std::shared_ptr<const video_bg::Frame> fullscreen = video_bg::fullscreen_frame(&fullscreen_slot);
+    const bool css_fullscreen = fullscreen && fullscreen_slot == 0 && screen;
+    unsigned leading_untextured = 0;
+    bool background_drawn = false;
     try {
       for (const auto& command : frame.commands) {
         if (command.kind == FrameCommand::Draw) {
-          draw(frame, frame.draws.at(command.index), overrides ? overrides + command.index : nullptr, vertex_offsets_[command.index]);
+          const DrawCall& dc = frame.draws.at(command.index);
+          if (css_fullscreen && !background_drawn) {
+            bool textured = false;
+            for (const TextureRef& texture : dc.textures) textured |= texture.used;
+            if (!textured) ++leading_untextured;
+            else if (video_bg::learning::should_insert_fullscreen_layer(fullscreen_slot, leading_untextured, textured)) {
+              draw_video_background(fullscreen, fullscreen_slot, *screen);
+              background_drawn = true;
+              if (!video_layer_logged_[0]) {
+                host::log("video backgrounds: CSS full-screen layer inserted after %u hardcoded background draws (Vulkan)", leading_untextured);
+                video_layer_logged_[0] = true;
+              }
+            }
+          }
+          draw_video_slot_ = -1;
+          draw(frame, dc, overrides ? overrides + command.index : nullptr, vertex_offsets_[command.index]);
+          if (fullscreen && screen && fullscreen_slot == 1 && draw_video_slot_ == 1 && !background_drawn) {
+            draw_video_background(fullscreen, fullscreen_slot, *screen);
+            background_drawn = true;
+            if (!video_layer_logged_[1]) {
+              host::log("video backgrounds: SSS full-screen layer composited after learned backdrop draw (Vulkan)");
+              video_layer_logged_[1] = true;
+            }
+          }
         } else {
           const auto& c = frame.copies.at(command.index);
           if (c.to_xfb) { if (!skip_present_ && !presented) { present(c, frame.test_fill); presented = true; } }
@@ -515,6 +692,190 @@ class VulkanBackend final : public Backend {
   }
 
  private:
+  // ---- Pacing, the display, fullscreen ----
+  bool synced_wanted() const { return opts_.vsync || tear_free_; }
+
+  // Blocks until the previous present reached the display (VK_KHR_present_wait), so at most one frame
+  // is ever in line for it, as the Direct3D 12 frame latency waitable object with a latency of one.
+  // Called after this frame is recorded and submitted, never before: waiting before recording made
+  // every frame take CPU plus GPU time under a heavy GPU load. A wait that fails or keeps timing out
+  // gives up for the session rather than slowing the game to the timeout, and says so once.
+  // Synced presents (FIFO) only: only there do frames queue for a vertical blank, which is the delay
+  // this wait removes. Immediate and mailbox presents never wait for a blank, and the two frame
+  // slots already hold the GPU to a frame behind; there NVIDIA's driver also never completed the
+  // wait for a hidden window (three 100 ms timeouts, 2026-11-04 hidden runs, V-Sync off).
+  // Off unless MELEE_VULKAN_PRESENT_WAIT=1 (A/B measurement only): at a locked 60 Hz the wait took 8 to
+  // 15 ms of every frame and frames missed their slot (31 to 56 fps where the shipped renderer held
+  // 57 to 60, 2026-11-05), and its latency gain was never measured. Two frames in flight stay.
+  static bool present_wait_wanted() { static const bool on = [] { const char* v = std::getenv("MELEE_VULKAN_PRESENT_WAIT"); return v && *v == '1'; }(); return on; }
+  bool present_wait_active() const { return present_wait_on_ && present_wait_wanted() && present_mode_ == VK_PRESENT_MODE_FIFO_KHR; }
+  void wait_previous_present() {
+    if (!present_wait_active() || !last_present_id_) return;
+    host::perf::Scope wait_cost(host::perf::Stage::Wait);
+    const VkResult r = vkWaitForPresentKHR(device_, swapchain_, last_present_id_, 100ull * 1000 * 1000);   // 100 ms, as the Direct3D 12 wait
+    if (r == VK_SUCCESS) { present_wait_timeouts_ = 0; return; }
+    if (r == VK_SUBOPTIMAL_KHR) { swapchain_dirty_ = true; present_wait_timeouts_ = 0; return; }
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || exclusive_lost(r)) { swapchain_dirty_ = true; return; }
+    if (r == VK_TIMEOUT) {
+      if (++present_wait_timeouts_ < 3) return;
+      host::log("vulkan: the present wait timed out three frames in a row; presenting with the driver's own queue from now on");
+    } else {
+      host::log("vulkan: the present wait failed (%d); presenting with the driver's own queue from now on", (int)r);
+    }
+    present_wait_on_ = false;
+  }
+
+  // The presentation loop's deadline for this present (set_present_deadline): a high resolution
+  // timer until shortly before it, then a spin, as the Direct3D 12 renderer does. 0 = no deadline.
+  void spin_to_deadline() {
+    if (present_deadline_ <= 0) return;
+    host::perf::Scope wait_cost(host::perf::Stage::Wait);
+    for (;;) {
+      const double remaining = present_deadline_ - host::now_seconds();
+      if (remaining <= 0) break;
+#ifdef _WIN32
+      if (present_timer_ && remaining > 0.0004) {
+        LARGE_INTEGER due; due.QuadPart = -(LONGLONG)((remaining - 0.0002) * 1e7);
+        if (SetWaitableTimer(present_timer_, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(present_timer_, INFINITE);
+        else SwitchToThread();
+      } else YieldProcessor();
+#else
+      if (remaining > 0.0004) std::this_thread::sleep_for(std::chrono::duration<double>(remaining - 0.0002));
+      else std::this_thread::yield();
+#endif
+    }
+  }
+
+  // The window over the whole monitor when fullscreen or exclusive fullscreen is wanted, as the
+  // Direct3D renderers (apply_fullscreen_mode there); exclusive itself is the swapchain's (Windows).
+  void apply_fullscreen_mode() {
+    const bool want_window = opts_.fullscreen || opts_.exclusive_fullscreen;
+    if (want_window != host::window_is_fullscreen()) host::window_set_fullscreen(want_window);
+#ifdef _WIN32
+    if (opts_.exclusive_fullscreen && !fse_supported_ && !fse_logged_) {
+      fse_logged_ = true;
+      host::log("vulkan: exclusive fullscreen is not offered by this driver; borderless fullscreen instead");
+    }
+    const bool want_exclusive = opts_.exclusive_fullscreen && fse_supported_ && !fse_failed_;
+    if (want_exclusive != want_exclusive_) { want_exclusive_ = want_exclusive; swapchain_dirty_ = true; }   // made again with or without the chain
+#endif
+  }
+#ifdef _WIN32
+  void acquire_exclusive() {
+    if (!vkAcquireFullScreenExclusiveModeEXT || !swapchain_ || fullscreen_state_.exclusive_active) return;
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    fullscreen_state_.enter_exclusive([&] { r = vkAcquireFullScreenExclusiveModeEXT(device_, swapchain_); return r == VK_SUCCESS; });
+    if (r == VK_SUCCESS) { host::log("vulkan: exclusive fullscreen"); return; }
+    host::log("vulkan: exclusive fullscreen unavailable (%d); using borderless fullscreen", (int)r);
+    fse_failed_ = true; want_exclusive_ = false; swapchain_dirty_ = true;   // made again without the chain
+  }
+  void release_exclusive() {
+    if (!fullscreen_state_.exclusive_active || !vkReleaseFullScreenExclusiveModeEXT || !swapchain_) return;
+    vkReleaseFullScreenExclusiveModeEXT(device_, swapchain_);
+    fullscreen_state_.exclusive_active = false;
+  }
+  bool exclusive_lost(VkResult r) {
+    if (r != VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) return false;
+    fullscreen_state_.exclusive_active = false;
+    host::log("vulkan: exclusive fullscreen was taken away (another window came up); it is entered again");
+    return true;
+  }
+  void track_vblank() {
+    vblank_.track(MonitorFromWindow((HWND)window_.window, MONITOR_DEFAULTTONEAREST));
+    vblank_tracked_ = true;
+  }
+  // See Backend::variable_refresh and vrr_detect.h. Called every 32 presents; a window is a second.
+  // The refreshes come from the output's own vertical blanks (vblank_clock.h) since Vulkan has no
+  // DXGI frame statistics: a display that follows the frames blanks once per presented frame under
+  // its refresh, a fixed one at its full rate whatever the frame rate.
+  void update_variable_refresh() {
+    vrr_readable_ = vblank_.healthy();
+    if (!vrr_readable_) { vrr_.restart(); return; }
+    if (!vrr_.add({presented_, vblank_.wakes(), host::now_seconds()}, vrr_nominal_hz_)) return;
+    if (vrr_.state() == 1)
+      host::log("display: variable refresh: %.0f vertical blanks a second for %.0f frames on a %.0f Hz display; frames are presented synced under %.0f a second",
+                vrr_.refreshes(), vrr_.shown(), vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
+    else if (vrr_.state() == 0)
+      host::log("display: fixed refresh: %.0f vertical blanks a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(), vrr_.shown(), vrr_nominal_hz_);
+  }
+  void timing_reset() {}
+#else
+  void release_exclusive() {}
+  bool exclusive_lost(VkResult) { return false; }
+  void timing_reset() { last_actual_present_ = 0; timing_intervals_ = timing_on_grid_ = 0; timing_window_start_ = 0; }
+  // Linux: VK_GOOGLE_display_timing says when each frame really reached the screen. On a display
+  // that refreshes at a fixed rate those times sit on its refresh grid (intervals are whole
+  // refreshes); on one that follows the frames they follow the frame times. Verdict after two
+  // one-second windows agree, as vrr::Detector does. Not run on real Linux hardware yet.
+  void update_variable_refresh() {
+    if (!display_timing_on_ || !vkGetPastPresentationTimingGOOGLE || !vkGetRefreshCycleDurationGOOGLE || !swapchain_) { vrr_readable_ = false; return; }
+    uint32_t n = 0;
+    if (vkGetPastPresentationTimingGOOGLE(device_, swapchain_, &n, nullptr) != VK_SUCCESS) { vrr_readable_ = false; return; }
+    std::vector<VkPastPresentationTimingGOOGLE> t(n);
+    if (n) vkGetPastPresentationTimingGOOGLE(device_, swapchain_, &n, t.data());
+    VkRefreshCycleDurationGOOGLE cycle{};
+    if (vkGetRefreshCycleDurationGOOGLE(device_, swapchain_, &cycle) != VK_SUCCESS || !cycle.refreshDuration) { vrr_readable_ = false; return; }
+    vrr_readable_ = true;
+    for (uint32_t i = 0; i < n; ++i) {
+      if (last_actual_present_ && t[i].actualPresentTime > last_actual_present_) {
+        const double k = double(t[i].actualPresentTime - last_actual_present_) / double(cycle.refreshDuration);
+        ++timing_intervals_; ++timing_line_intervals_;
+        if (std::fabs(k - std::round(k)) < 0.05) { ++timing_on_grid_; ++timing_line_on_grid_; }
+      }
+      last_actual_present_ = std::max(last_actual_present_, t[i].actualPresentTime);
+    }
+    const double now = host::now_seconds();
+    if (timing_window_start_ <= 0) { timing_window_start_ = now; timing_window_presents_ = presented_; return; }
+    if (now - timing_window_start_ < 1.0) return;
+    const double shown = double(presented_ - timing_window_presents_) / (now - timing_window_start_);
+    timing_window_start_ = now; timing_window_presents_ = presented_;
+    int verdict = -1;
+    if (timing_intervals_ >= 30 && vrr_nominal_hz_ >= 75.0 && shown >= 30.0 && shown <= 0.96 * vrr_nominal_hz_) {
+      const double on_grid = double(timing_on_grid_) / timing_intervals_;
+      verdict = on_grid > 0.9 ? 0 : on_grid < 0.5 ? 1 : -1;
+    }
+    timing_intervals_ = timing_on_grid_ = 0;
+    if (verdict < 0) { timing_pending_ = -1; timing_votes_ = 0; return; }
+    if (verdict != timing_pending_) { timing_pending_ = verdict; timing_votes_ = 1; return; }
+    if (++timing_votes_ < 2 || verdict == timing_state_) return;
+    timing_state_ = verdict;
+    host::log(verdict == 1 ? "display: variable refresh (present times follow the frames) on a %.0f Hz display; frames are presented synced under %.0f a second"
+                           : "display: fixed refresh (present times sit on the refresh grid) on a %.0f Hz display", vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
+  }
+#endif
+
+  // ---- GPU timers and video memory ----
+  // This slot's previous frame is finished (its fence passed), so its timestamps are ready: read
+  // without waiting. A frame that did not write a pair contributes nothing.
+  void read_gpu_timers(int slot) {
+    Frame_& f = frames_[slot];
+    if (!f.timers || !(f.timer_mask & 1)) return;
+    uint64_t ts[kTimers]{};
+    if (vkGetQueryPoolResults(device_, f.timers, 0, kTimers, sizeof ts, ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) return;
+    const uint64_t mask = timestamp_bits_ >= 64 ? ~0ull : ((1ull << timestamp_bits_) - 1);
+    auto ms = [&](int a, int b) { const uint64_t d = (ts[b] - ts[a]) & mask; return (double)d * limits_.timestampPeriod * 1e-6; };
+    if ((f.timer_mask & 9) == 9) { const double v = ms(0, 3); if (v >= 0 && v < 1000) { gpu_frame_ms_ += v; ++gpu_frame_samples_; } }
+    if ((f.timer_mask & 6) == 6) { const double v = ms(1, 2); if (v >= 0 && v < 1000) { gpu_present_ms_ += v; ++gpu_present_samples_; } }
+  }
+  // VRAM meter (the settings panel's "Video memory in use"): VK_EXT_memory_budget's usage of the
+  // device-local heaps, against the largest of them (the card's own memory on a discrete GPU).
+  void update_vram() {
+    if (!vkGetPhysicalDeviceMemoryProperties2) return;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    if (memory_budget_on_) props.pNext = &budget;
+    vkGetPhysicalDeviceMemoryProperties2(physical_, &props);
+    VkDeviceSize used = 0, total = 0;
+    for (uint32_t i = 0; i < props.memoryProperties.memoryHeapCount; ++i) {
+      if (!(props.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) continue;
+      total = std::max(total, props.memoryProperties.memoryHeaps[i].size);
+      if (memory_budget_on_) used += budget.heapUsage[i];
+    }
+    if (!memory_budget_on_) used = heap_.bytes();   // only what this renderer allocated
+    gpu_readings::vram_total_gb().store((float)(total / 1073741824.0), std::memory_order_relaxed);
+    gpu_readings::vram_used_gb().store((float)(used / 1073741824.0), std::memory_order_relaxed);
+  }
+
   // ---- Setup ----
   void create_instance() {
     if (!load_loader()) throw std::runtime_error("vulkan: no Vulkan loader on this system");
@@ -527,12 +888,53 @@ class VulkanBackend final : public Backend {
 #else
     if (window_.instance_extensions) extensions = window_.instance_extensions();
 #endif
+    // Optional instance extensions, by what the loader offers: surface capabilities 2 (exclusive
+    // fullscreen needs it) and portability enumeration (MoltenVK behind the Vulkan loader on macOS
+    // shows its device only with it).
+    std::unordered_set<std::string> offered;
+    {
+      uint32_t n = 0; vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+      std::vector<VkExtensionProperties> props(n); vkEnumerateInstanceExtensionProperties(nullptr, &n, props.data());
+      for (uint32_t i = 0; i < n; ++i) offered.insert(props[i].extensionName);
+    }
+    VkInstanceCreateFlags flags = 0;
+    if (offered.count(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) { extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME); surface_caps2_on_ = true; }
+    if (offered.count(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) { extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME); flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR; }
+    // MELEE_VULKAN_VALIDATION=1 (tests and reports): Khronos' validation layer, its messages in the
+    // log. Only when the layer is installed (the Vulkan SDK); a player never has it on by accident.
+    const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
+    const bool validation = [] { const char* v = std::getenv("MELEE_VULKAN_VALIDATION"); return v && *v == '1'; }() &&
+                            offered.count(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    if (validation) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "Melee Unlocked"; app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    info.flags = flags;
     info.pApplicationInfo = &app; info.enabledExtensionCount = (uint32_t)extensions.size(); info.ppEnabledExtensionNames = extensions.data();
-    check(vkCreateInstance(&info, nullptr, &instance_), "instance");
+    if (validation) { info.enabledLayerCount = 1; info.ppEnabledLayerNames = layers; }
+    VkResult created = vkCreateInstance(&info, nullptr, &instance_);
+    if (created == VK_ERROR_LAYER_NOT_PRESENT && validation) {
+      host::log("vulkan: MELEE_VULKAN_VALIDATION=1 but the validation layer is not installed; running without it");
+      info.enabledLayerCount = 0; extensions.pop_back(); info.enabledExtensionCount = (uint32_t)extensions.size();
+      created = vkCreateInstance(&info, nullptr, &instance_);
+    } else if (validation) validation_on_ = true;
+    check(created, "instance");
     load_instance(instance_);
+    if (validation_on_ && vkCreateDebugUtilsMessengerEXT) {
+      VkDebugUtilsMessengerCreateInfoEXT m{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+      m.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+      m.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+      m.pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* data, void*) -> VkBool32 {
+        // Each distinct message once (by its id), so a per-draw complaint does not flood the log.
+        static std::mutex mutex; static std::unordered_set<int32_t> seen;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (seen.insert(data->messageIdNumber).second && seen.size() <= 200)
+          host::log("vulkan validation %s: %s", severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "ERROR" : "warning",
+                    data->pMessage ? std::string(data->pMessage).substr(0, 700).c_str() : "");
+        return VK_FALSE;
+      };
+      if (vkCreateDebugUtilsMessengerEXT(instance_, &m, nullptr, &messenger_) == VK_SUCCESS) host::log("vulkan: validation layer on");
+    }
 #ifdef _WIN32
     VkWin32SurfaceCreateInfoKHR s{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     s.hinstance = window_.display ? (HINSTANCE)window_.display : GetModuleHandleW(nullptr); s.hwnd = (HWND)window_.window;
@@ -555,7 +957,7 @@ class VulkanBackend final : public Backend {
         VkBool32 present = VK_FALSE; vkGetPhysicalDeviceSurfaceSupportKHR(d, q, surface_, &present);
         if (!(qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) || !present) continue;
         const int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
-        if (score > best) { best = score; physical_ = d; queue_family_ = q; device_name_ = p.deviceName; limits_ = p.limits; }
+        if (score > best) { best = score; physical_ = d; queue_family_ = q; device_name_ = p.deviceName; limits_ = p.limits; timestamp_bits_ = qs[q].timestampValidBits; }
         break;
       }
     }
@@ -567,18 +969,96 @@ class VulkanBackend final : public Backend {
     // Reads past the end of a buffer return zeros instead of faulting: on AMD's Linux driver such a
     // read lost the device ("GPUVM fault", then "submit failed") as a Training stage loaded.
     features.robustBufferAccess = available.robustBufferAccess;
+    // What AMD FSR's compute shaders use (gx_fsr_vk.cpp), where the GPU has it: typed storage-image
+    // access without a declared format, 16-bit types, image gathers, subgroup size control. The game's
+    // own drawing uses none of it, so enabling it changes nothing for the picture.
+    features.shaderStorageImageReadWithoutFormat = available.shaderStorageImageReadWithoutFormat;
+    features.shaderStorageImageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat;
+    features.shaderInt16 = available.shaderInt16;
+    features.shaderImageGatherExtended = available.shaderImageGatherExtended;
+    // Different blending per attachment: the upscaler's pipelines blend the picture and write motion
+    // vectors and the HUD mask unblended (as Direct3D 12's IndependentBlendEnable).
+    features.independentBlend = available.independentBlend;
+    VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    if (vkGetPhysicalDeviceFeatures2) {
+      VkPhysicalDeviceVulkan12Features have12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+      VkPhysicalDeviceVulkan13Features have13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+      have12.pNext = &have13;
+      VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+      f2.pNext = &have12;
+      vkGetPhysicalDeviceFeatures2(physical_, &f2);
+      v12.shaderFloat16 = have12.shaderFloat16;
+      v13.subgroupSizeControl = have13.subgroupSizeControl;
+      v13.computeFullSubgroups = have13.computeFullSubgroups;
+      // The shader compiler turns HLSL's discard into demote-to-helper for Vulkan 1.3 (DXC), which
+      // needs this feature; drivers drew it without, but the shaders were invalid.
+      v13.shaderDemoteToHelperInvocation = have13.shaderDemoteToHelperInvocation;
+    }
+    v12.pNext = &v13;
     v13.dynamicRendering = VK_TRUE;
+    // Optional device extensions, by what the driver offers. Present id + present wait hold the
+    // display queue to one frame (the Direct3D 12 frame latency waitable object's job); exclusive
+    // fullscreen is Windows; display timing (Linux) reports when frames really reached the screen;
+    // the memory budget feeds the VRAM meter; portability subset must be enabled where it exists (MoltenVK).
+    std::unordered_set<std::string> offered;
+    {
+      uint32_t n = 0; vkEnumerateDeviceExtensionProperties(physical_, nullptr, &n, nullptr);
+      std::vector<VkExtensionProperties> props(n); vkEnumerateDeviceExtensionProperties(physical_, nullptr, &n, props.data());
+      for (uint32_t i = 0; i < n; ++i) offered.insert(props[i].extensionName);
+    }
+    std::vector<const char*> extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    VkPhysicalDevicePresentIdFeaturesKHR present_id_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDevicePresentWaitFeaturesKHR present_wait_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+    if (offered.count(VK_KHR_PRESENT_ID_EXTENSION_NAME) && offered.count(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) && vkGetPhysicalDeviceFeatures2) {
+      VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+      f2.pNext = &present_id_features; present_id_features.pNext = &present_wait_features;
+      vkGetPhysicalDeviceFeatures2(physical_, &f2);
+      present_id_features.pNext = nullptr; present_wait_features.pNext = nullptr;
+      if (present_id_features.presentId && present_wait_features.presentWait) {
+        extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+        present_id_features.pNext = &present_wait_features;
+        v13.pNext = &present_id_features;
+        present_id_on_ = present_wait_on_ = true;
+      }
+    }
+#ifdef _WIN32
+    if (surface_caps2_on_ && offered.count(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME)) { extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME); fse_supported_ = true; }
+#else
+    if (offered.count(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) { extensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME); display_timing_on_ = true; }
+#endif
+    if (offered.count(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME); memory_budget_on_ = true; }
+    // AMD FSR's compute shaders use compute-shader derivatives (KHR, or NVIDIA's earlier name for it).
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+    const char* derivatives_ext = offered.count(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) ? VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
+                                : offered.count(VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) ? VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME : nullptr;
+    if (derivatives_ext && vkGetPhysicalDeviceFeatures2) {
+      VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+      f2.pNext = &derivatives;
+      vkGetPhysicalDeviceFeatures2(physical_, &f2);
+      derivatives.pNext = nullptr;
+      if (derivatives.computeDerivativeGroupLinear || derivatives.computeDerivativeGroupQuads) {
+        extensions.push_back(derivatives_ext);
+        derivatives.pNext = v13.pNext;   // in front of what the chain already holds (present id and wait)
+        v13.pNext = &derivatives;
+      }
+    }
+    if (offered.count("VK_KHR_portability_subset")) extensions.push_back("VK_KHR_portability_subset");
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queue.queueFamilyIndex = queue_family_; queue.queueCount = 1; queue.pQueuePriorities = &priority;
-    const char* extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    info.pNext = &v13; info.queueCreateInfoCount = 1; info.pQueueCreateInfos = &queue;
-    info.enabledExtensionCount = 1; info.ppEnabledExtensionNames = extensions; info.pEnabledFeatures = &features;
+    info.pNext = &v12; info.queueCreateInfoCount = 1; info.pQueueCreateInfos = &queue;
+    info.enabledExtensionCount = (uint32_t)extensions.size(); info.ppEnabledExtensionNames = extensions.data(); info.pEnabledFeatures = &features;
     check(vkCreateDevice(physical_, &info, nullptr, &device_), "device");
     load_device(device_);
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
+    if (!vkWaitForPresentKHR) present_wait_on_ = false;
+    host::log("vulkan: pacing: %s; exclusive fullscreen %s; display timing %s",
+              present_wait_on_ && present_wait_wanted() ? "synced presents hold one frame in line for the display (present wait, MELEE_VULKAN_PRESENT_WAIT=1)"
+              : present_wait_on_ ? "two frames in flight, the driver's own present queue (present wait available, off)" : "two frames in flight, the driver's own present queue",
+              fse_supported_ ? "available" : "not offered", display_timing_on_ ? "available" : "not offered");
     // A start that died while building pipelines (a 0.9.86 Intel Mesa player segfaulted inside
     // vkCreateGraphicsPipelines, every start) left this marker behind: the cached pipelines, recipes
     // and SPIR-V are then cleared and built anew, so a bad cache costs one crash, not every start.
@@ -656,6 +1136,12 @@ class VulkanBackend final : public Backend {
       check(vkCreateDescriptorPool(device_, &dp, nullptr, &f.pool), "descriptor pool");
       f.ring = mapped_buffer(kRingBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+      // GPU timers: frame start, present pass start and end, frame end (read a slot later, never waited on).
+      if (timestamp_bits_ && limits_.timestampPeriod > 0 && vkCreateQueryPool) {
+        VkQueryPoolCreateInfo q{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        q.queryType = VK_QUERY_TYPE_TIMESTAMP; q.queryCount = kTimers;
+        if (vkCreateQueryPool(device_, &q, nullptr, &f.timers) != VK_SUCCESS) f.timers = VK_NULL_HANDLE;
+      }
     }
   }
 
@@ -705,12 +1191,41 @@ class VulkanBackend final : public Backend {
       if ((f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { format = f; break; }
     if (swap_format_ != VK_FORMAT_UNDEFINED && format.format != swap_format_) format.format = swap_format_;   // the present pipeline was built for it
     swap_format_ = format.format;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, nullptr);
-    std::vector<VkPresentModeKHR> modes(n); vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, modes.data());
+    // Exclusive fullscreen (Windows, VK_EXT_full_screen_exclusive): the swapchain is made with the
+    // application-controlled chain and the mode acquired after it; a refusal falls back to borderless
+    // fullscreen for the session, as the Direct3D renderers do.
+    const bool exclusive = want_exclusive_;
+    std::vector<VkPresentModeKHR> modes;
+#ifdef _WIN32
+    VkSurfaceFullScreenExclusiveInfoEXT fse{VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT};
+    VkSurfaceFullScreenExclusiveWin32InfoEXT fse_win32{VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT};
+    fse.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
+    fse_win32.hmonitor = MonitorFromWindow((HWND)window_.window, MONITOR_DEFAULTTONEAREST);
+    fse.pNext = &fse_win32;
+    if (exclusive && vkGetPhysicalDeviceSurfacePresentModes2EXT) {
+      VkPhysicalDeviceSurfaceInfo2KHR si{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR, &fse, surface_};
+      if (vkGetPhysicalDeviceSurfacePresentModes2EXT(physical_, &si, &n, nullptr) == VK_SUCCESS && n) {
+        modes.resize(n); vkGetPhysicalDeviceSurfacePresentModes2EXT(physical_, &si, &n, modes.data());
+      }
+    }
+#endif
+    if (modes.empty()) {
+      vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, nullptr);
+      modes.resize(n); vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, modes.data());
+    }
     auto has = [&](VkPresentModeKHR m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
+    // Synced (FIFO) with V-Sync on, and on a display that follows the frames (tear_free_, from the
+    // presentation loop): there a frame starts its own refresh, so syncing costs nothing under the
+    // refresh and a frame that comes a little early waits instead of tearing. Otherwise IMMEDIATE,
+    // which is what DXGI_PRESENT_ALLOW_TEARING gives the Direct3D renderers; MAILBOX only where
+    // IMMEDIATE is not offered. A change of either asks for the swapchain again (present()).
+    present_synced_ = synced_wanted();
     present_mode_ = VK_PRESENT_MODE_FIFO_KHR;
-    if (!opts_.vsync) present_mode_ = has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR : has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
+    if (!present_synced_) present_mode_ = has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR : has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
     VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+#ifdef _WIN32
+    if (exclusive) info.pNext = &fse;
+#endif
     info.surface = surface_;
     info.minImageCount = std::max(caps.minImageCount, 3u);
     if (caps.maxImageCount) info.minImageCount = std::min(info.minImageCount, caps.maxImageCount);
@@ -721,8 +1236,11 @@ class VulkanBackend final : public Backend {
     info.oldSwapchain = swapchain_;
     VkSwapchainKHR created = VK_NULL_HANDLE;
     check(vkCreateSwapchainKHR(device_, &info, nullptr, &created), "swapchain");
+    release_exclusive();   // the old swapchain's, before it goes
     destroy_swapchain();
     swapchain_ = created; swap_extent_ = extent;
+    present_id_ = last_present_id_ = 0; present_wait_timeouts_ = 0;   // present ids count per swapchain
+    timing_reset();
     vkGetSwapchainImagesKHR(device_, swapchain_, &n, nullptr);
     swap_images_.resize(n); vkGetSwapchainImagesKHR(device_, swapchain_, &n, swap_images_.data());
     for (VkImage image : swap_images_) {
@@ -739,6 +1257,9 @@ class VulkanBackend final : public Backend {
 #ifdef GX_PC_SETTINGS
     if (settings_ready_) ImGui_ImplVulkan_SetMinImageCount(info.minImageCount);
 #endif
+#ifdef _WIN32
+    if (exclusive) acquire_exclusive();   // last: a refusal marks the swapchain dirty, to be made again plain
+#endif
   }
   void destroy_swapchain() {
     for (VkImageView v : swap_views_) vkDestroyImageView(device_, v, nullptr);
@@ -749,6 +1270,7 @@ class VulkanBackend final : public Backend {
   }
 
   int pick_scale() const {
+    if (forced_scale_ > 0) return forced_scale_;   // the upscaler's render size (configure_upscaler)
     const int ssaa = std::clamp(opts_.ssaa, 1, 4);
     const int max_scale = 16;
     if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale * ssaa, 1, max_scale);
@@ -818,7 +1340,12 @@ class VulkanBackend final : public Backend {
                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
     // MSAA: the draws go to multisampled copies, resolved into the images above (colour averaged,
     // depth from sample 0) whenever an EFB pass ends, which is before every copy and present.
-    samples_ = supported_samples(opts_.msaa);
+    samples_ = upscaling_ ? VK_SAMPLE_COUNT_1_BIT : supported_samples(opts_.msaa);   // the upscaler reads single-sample targets
+    if (upscaling_) {
+      mvec_img_ = make_image(width_, height_, 1, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+      hud_img_ = make_image(width_, height_, 1, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+      aux_clear_pending_ = true;
+    }
     if (samples_ != VK_SAMPLE_COUNT_1_BIT) {
       msaa_color_ = make_image(width_, height_, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, samples_);
       msaa_depth_ = make_image(width_, height_, 1, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, samples_);
@@ -844,7 +1371,10 @@ class VulkanBackend final : public Backend {
     std::vector<Image> dead;
     std::vector<std::pair<VkBuffer, VkDeviceMemory>> dead_buffers;
     bool uploads = false;
+    VkQueryPool timers = VK_NULL_HANDLE;
+    uint32_t timer_mask = 0;   // which timestamps this slot's frame wrote (bit i: query i)
   };
+  static constexpr uint32_t kTimers = 4;
 
   VkDeviceSize ring_alloc(VkDeviceSize bytes, VkDeviceSize align) {
     Buffer& r = frames_[slot_].ring;
@@ -857,7 +1387,20 @@ class VulkanBackend final : public Backend {
   void begin_frame(const Frame& frame) {
     slot_ = (slot_ + 1) % kFrames;
     Frame_& f = frames_[slot_];
+    present_wait_ = 0; acquire_wait_ = 0;   // a frame that presents nothing waited for nothing
+    // The frames still running on the GPU when this one starts: the queue depth the player feels.
+    unsigned queued = 0;
+    for (const auto& other : frames_) if (vkGetFenceStatus && vkGetFenceStatus(device_, other.fence) == VK_NOT_READY) ++queued;
     vkWaitForFences(device_, 1, &f.fence, VK_TRUE, UINT64_MAX);
+    read_gpu_timers(slot_);
+    if (++frame_counter_ % 300 == 0) {
+      // As Direct3D 12's line: what a "gets laggier the longer I play" report needs.
+      host::log("gpu: %.2f ms/frame (present pass %.2f), %u frames queued, solver pairs %zu, textures %zu, pipelines %zu",
+                gpu_frame_samples_ ? gpu_frame_ms_ / gpu_frame_samples_ : 0.0, gpu_present_samples_ ? gpu_present_ms_ / gpu_present_samples_ : 0.0,
+                queued, solver_pair_counter().load(std::memory_order_relaxed), textures_.size() + copies_.size(), pipelines_.size());
+      gpu_frame_ms_ = gpu_present_ms_ = 0; gpu_frame_samples_ = gpu_present_samples_ = 0;
+    }
+    if (frame_counter_ % 30 == 1) update_vram();
     for (auto& img : f.dead) destroy(img);
     f.dead.clear();
     for (auto& b : f.dead_buffers) { vkDestroyBuffer(device_, b.first, nullptr); vkFreeMemory(device_, b.second, nullptr); }
@@ -872,6 +1415,12 @@ class VulkanBackend final : public Backend {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(f.upload, &begin), "begin upload");
     check(vkBeginCommandBuffer(f.cmd, &begin), "begin frame");
+    f.timer_mask = 0;
+    if (f.timers) {
+      vkCmdResetQueryPool(f.upload, f.timers, 0, kTimers);
+      vkCmdWriteTimestamp(f.upload, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.timers, 0);
+      f.timer_mask |= 1;
+    }
     rendering_ = false;
     if (pending_white_) {
       const uint32_t white = 0xFFFFFFFFu;
@@ -884,14 +1433,32 @@ class VulkanBackend final : public Backend {
       if (settings_textures_dirty()) drop_textures();
       settings_set_game_aspect(presented_aspect(opts_, client_w_, client_h_, frame_widenable_));
       settings_set_hud_snapshot(frame);
-      const int old_scale = scale_;
       const bool old_vsync = opts_.vsync;
       if (settings_frame(settings_state_, opts_)) {
-        if (pick_scale() != old_scale || opts_.msaa != msaa_applied_) rebuild_efb();
+        apply_fullscreen_mode();
         if (opts_.vsync != old_vsync) swapchain_dirty_ = true;
       }
     }
 #endif
+    // Alt+Enter, and coming back from Alt+Tab in exclusive fullscreen (Windows left it; it is
+    // entered again), as the Direct3D renderers handle them.
+    if (host::window_take_fullscreen_toggle()) {
+      if (opts_.exclusive_fullscreen) opts_.exclusive_fullscreen = false;
+      else opts_.fullscreen = !host::window_is_fullscreen();
+      apply_fullscreen_mode();
+    }
+    if (host::window_take_activation() && opts_.exclusive_fullscreen) apply_fullscreen_mode();
+    configure_upscaler();
+    aux_clear_pending_ = true;
+    in_match_ = frame_in_match(frame);
+    if (in_match_ != was_in_match_) { upscale_reset_ = true; was_in_match_ = in_match_; }
+#ifdef _WIN32
+    if (upscaling_) streamline::jitter(presented_, &jitter_x_, &jitter_y_);
+    else jitter_x_ = jitter_y_ = 0.0f;
+#endif
+    // The internal scale follows the window (auto scale) and the MSAA setting, whoever changed them:
+    // the panel, Alt+Enter, or a drag of the window edge (resize()).
+    if (pick_scale() != scale_ || opts_.msaa != msaa_applied_) rebuild_efb();
     const int lightweight = opts_.lightweight;
     set_lightweight_level(lightweight);
     publish_look(opts_);
@@ -918,6 +1485,7 @@ class VulkanBackend final : public Backend {
   void end_frame(bool presented) {
     Frame_& f = frames_[slot_];
     end_efb();
+    if (f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.timers, 3); f.timer_mask |= 8; }
     check(vkEndCommandBuffer(f.upload), "end upload");
     check(vkEndCommandBuffer(f.cmd), "end frame");
     VkCommandBuffer buffers[] = {f.upload, f.cmd};
@@ -939,13 +1507,40 @@ class VulkanBackend final : public Backend {
     }
     check(submitted, "submit");
     if (presented && acquired_) {
+      // As Direct3D 12: a shown frame waits for its place in the display queue after it is recorded
+      // and submitted (the CPU records this frame while the GPU runs the last one), then for the
+      // presentation loop's deadline; both are this frame's wait (presentation_wait_seconds).
+      const double wait_start = host::now_seconds();
+      wait_previous_present();
+      const double spin_start = host::now_seconds();
+      spin_to_deadline();
+      const double present_call = host::now_seconds();
       VkPresentInfoKHR p{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
       p.waitSemaphoreCount = 1; p.pWaitSemaphores = &swap_done_[image_index_];
       p.swapchainCount = 1; p.pSwapchains = &swapchain_; p.pImageIndices = &image_index_;
-      const VkResult r = vkQueuePresentKHR(queue_, &p);
-      if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_dirty_ = true;
+      const uint64_t id = present_id_ + 1;
+      const void** tail = &p.pNext;
+      VkPresentIdKHR present_id{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+      if (present_id_on_) { present_id.swapchainCount = 1; present_id.pPresentIds = &id; *tail = &present_id; tail = &present_id.pNext; }
+#ifndef _WIN32
+      VkPresentTimeGOOGLE present_time{(uint32_t)id, 0};
+      VkPresentTimesInfoGOOGLE present_times{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
+      if (display_timing_on_) { present_times.swapchainCount = 1; present_times.pTimes = &present_time; *tail = &present_times; tail = &present_times.pNext; }
+#endif
+      (void)tail;
+      const VkResult r = [&] { host::perf::Scope wait_cost(host::perf::Stage::Wait); return vkQueuePresentKHR(queue_, &p); }();
+      const double present_end = host::now_seconds();
+      present_wait_ = acquire_wait_ + (present_end - wait_start);
+      stat_acquire_ += acquire_wait_; stat_wait_ += spin_start - wait_start; stat_spin_ += present_call - spin_start;
+      stat_present_ += present_end - present_call; ++stat_frames_;
+      if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { present_id_ = id; if (present_id_on_) last_present_id_ = id; }
+      if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || exclusive_lost(r)) swapchain_dirty_ = true;
       else if (r != VK_SUCCESS) check(r, "present");
       ++presented_;
+      if ((presented_ & 31) == 0) update_variable_refresh();
+#ifdef _WIN32
+      if ((presented_ & 127) == 0) track_vblank();   // a move to another monitor restarts the clock there
+#endif
       if (capture_pending_) write_capture();
     }
     acquired_ = false;
@@ -974,9 +1569,24 @@ class VulkanBackend final : public Backend {
       depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT; depth.resolveImageView = efb_depth_.view;
       depth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     }
+    VkRenderingAttachmentInfo colors[3] = {color};
+    uint32_t color_count = 1;
+    if (upscaling_ && mvec_img_.image && hud_img_.image) {
+      // Motion vectors and the HUD mask (attachments 1 and 2), cleared once a frame as on Direct3D 12.
+      barrier(f.cmd, mvec_img_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      barrier(f.cmd, hud_img_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      for (int i = 1; i <= 2; ++i) {
+        colors[i] = VkRenderingAttachmentInfo{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        colors[i].imageView = i == 1 ? mvec_img_.view : hud_img_.view; colors[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colors[i].loadOp = clear_all || aux_clear_pending_ ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+        colors[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE; colors[i].clearValue.color = {{0, 0, 0, 0}};
+      }
+      aux_clear_pending_ = false;
+      color_count = 3;
+    }
     VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
     info.renderArea = {{0, 0}, {width_, height_}}; info.layerCount = 1;
-    info.colorAttachmentCount = 1; info.pColorAttachments = &color; info.pDepthAttachment = &depth;
+    info.colorAttachmentCount = color_count; info.pColorAttachments = colors; info.pDepthAttachment = &depth;
     vkCmdBeginRendering(f.cmd, &info);
     rendering_ = true;
     bound_pipeline_ = VK_NULL_HANDLE;
@@ -991,7 +1601,7 @@ class VulkanBackend final : public Backend {
     vkDeviceWaitIdle(device_);
     host::log("vulkan: internal scale %d -> %d", scale_, pick_scale());
     end_efb();
-    retire(efb_color_); retire(efb_depth_); retire(msaa_color_); retire(msaa_depth_);
+    retire(efb_color_); retire(efb_depth_); retire(msaa_color_); retire(msaa_depth_); retire(mvec_img_); retire(hud_img_);
     for (auto& c : copies_) retire(c.second);
     copies_.clear();
     scale_ = pick_scale();
@@ -1059,7 +1669,9 @@ class VulkanBackend final : public Backend {
                             VkPrimitiveTopology topology, VkPolygonMode fill, VkCullModeFlags cull,
                             const VkPipelineColorBlendAttachmentState& blend, bool depth_test, bool depth_write, VkCompareOp compare,
                             VkPipelineLayout layout, VkFormat color, VkFormat depth,
-                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
+                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                            bool upscale_outputs = false, VkColorComponentFlags mvec_write = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT,
+                            VkColorComponentFlags hud_write = VK_COLOR_COMPONENT_R_BIT) {
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = topology;
     VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1071,12 +1683,17 @@ class VulkanBackend final : public Backend {
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = depth_test; ds.depthWriteEnable = depth_write; ds.depthCompareOp = compare;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1; cb.pAttachments = &blend;
+    // With the upscaler's outputs: motion vectors (attachment 1) and the HUD mask (2), never blended.
+    VkPipelineColorBlendAttachmentState blends[3] = {blend, {}, {}};
+    blends[1].colorWriteMask = mvec_write; blends[2].colorWriteMask = hud_write;
+    const VkFormat formats[3] = {color, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R8_UNORM};
+    const uint32_t outputs = upscale_outputs ? 3 : 1;
+    cb.attachmentCount = outputs; cb.pAttachments = blends;
     const VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 1; rendering.pColorAttachmentFormats = &color; rendering.depthAttachmentFormat = depth;
+    rendering.colorAttachmentCount = outputs; rendering.pColorAttachmentFormats = formats; rendering.depthAttachmentFormat = depth;
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &rendering; info.stageCount = 2; info.pStages = stages; info.pVertexInputState = &vi;
     info.pInputAssemblyState = &ia; info.pViewportState = &vp; info.pRasterizationState = &rs; info.pMultisampleState = &ms;
@@ -1109,9 +1726,11 @@ class VulkanBackend final : public Backend {
   }
 
   VkPipeline pipeline(const DrawCall& dc, DrawTopology topology, bool wire) {
-    const auto vs = make_vs_uid(dc); const auto ps = make_ps_uid(dc);
+    auto vs = make_vs_uid(dc); auto ps = make_ps_uid(dc);
+    if (upscaling_) vs.motion_vectors = ps.motion_vectors = 1;   // the shaders also write motion and the HUD mask
     // Bits 19 and up: the EFB's sample count, so an MSAA change builds its own pipelines.
-    const PipelineKey key{vs.hash(), ps.hash(), pipeline_state(dc, topology, wire && wire_supported_) | (uint32_t(samples_) << 19)};
+    const PipelineKey key{vs.hash(), ps.hash(), pipeline_state(dc, topology, wire && wire_supported_) | (uint32_t(samples_) << 19) |
+                                                (upscaling_ ? kStateUpscaleOutputs : 0u)};
     if (auto i = pipelines_.find(key); i != pipelines_.end()) return i->second;
     const std::string vs_hlsl = generate_vertex_shader(vs), ps_hlsl = generate_pixel_shader(ps);
     // A pipeline not built yet goes to the worker and this draw is skipped until it is there (a frame
@@ -1137,23 +1756,23 @@ class VulkanBackend final : public Backend {
   // as on Direct3D 12 before its own prewarm. Each one the game builds is recorded with the SPIR-V
   // files of its two shaders; at the next start those are read back and built through the pipeline
   // cache. A recipe whose SPIR-V is gone (a cleared cache) is dropped.
-  struct Recipe { uint64_t vs, ps, vs_spv, ps_spv; uint32_t state, pad; };
-  static constexpr size_t kMaxRecipes = 16384;
-  static constexpr uint32_t kRecipeMagic = 0x564B5231u;   // "VKR1"
+  using Recipe = vk_recipes::Recipe;   // the file format (vulkan_recipes.h, unit-tested)
+  static constexpr size_t kMaxRecipes = vk_recipes::kMax;
   std::vector<Recipe> recipes_;
 
   void prewarm_pipelines() {
-    std::ifstream f(shader_cache_dir() / "vk_recipes.bin", std::ios::binary);
-    uint32_t head[2]{};
-    if (!f.read(reinterpret_cast<char*>(head), sizeof head) || head[0] != kRecipeMagic || head[1] > kMaxRecipes) return;
-    std::vector<Recipe> saved(head[1]);
-    if (!f.read(reinterpret_cast<char*>(saved.data()), (std::streamsize)(saved.size() * sizeof(Recipe)))) return;
+    // The player's own recipes, then the ones the release ships (vk_recipes.shipped.bin, from a warmed
+    // run: tools/package_release.py). SPIR-V is the same on every GPU and driver, so a first session on
+    // Vulkan builds the common pipelines before its first frame instead of compiling them mid-match.
+    // The shipped file has its own name so an update never overwrites what the player's sessions saved.
+    const std::vector<Recipe> saved = vk_recipes::merge({shader_cache_dir() / "vk_recipes.bin", shader_cache_dir() / "vk_recipes.shipped.bin"});
+    if (saved.empty()) return;
     const auto start = std::chrono::steady_clock::now();
     size_t built = 0;
     for (const Recipe& r : saved) {
       const PipelineKey key{r.vs, r.ps, r.state};
       // Another MSAA sample count than this session's draws to other images: kept for when it is used.
-      if ((r.state >> 19) != uint32_t(samples_)) { recipes_.push_back(r); continue; }
+      if (state_samples(r.state) != samples_ || ((r.state & kStateUpscaleOutputs) != 0) != upscaling_) { recipes_.push_back(r); continue; }
       if (pipelines_.count(key)) continue;
       // Wireframe needs fillModeNonSolid, which a recipe saved on another GPU may have had.
       if (((r.state >> 18) & 1) && !wire_supported_) continue;
@@ -1174,10 +1793,7 @@ class VulkanBackend final : public Backend {
 
   void save_pipeline_recipes() {
     if (recipes_.empty()) return;
-    std::ofstream f(shader_cache_dir() / "vk_recipes.bin", std::ios::binary);
-    const uint32_t head[2] = {kRecipeMagic, (uint32_t)std::min(recipes_.size(), kMaxRecipes)};
-    f.write(reinterpret_cast<const char*>(head), sizeof head);
-    f.write(reinterpret_cast<const char*>(recipes_.data()), (std::streamsize)(head[1] * sizeof(Recipe)));
+    if (!vk_recipes::write(shader_cache_dir() / "vk_recipes.bin", recipes_)) host::log("vulkan: the pipeline recipes could not be saved");
   }
 
   // ---- The pipeline worker ----
@@ -1307,7 +1923,10 @@ class VulkanBackend final : public Backend {
     VkPipeline p = build_pipeline(stages, vi, bits(s, 17, 1) ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                                   wire_on ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL, wire_on ? VK_CULL_MODE_NONE : culls[bits(s, 15, 2)],
                                   blend, bits(s, 10, 1), bits(s, 11, 1), compare[bits(s, 12, 3)], layout_,
-                                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VkSampleCountFlagBits(s >> 19));
+                                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, state_samples(s), (s & kStateUpscaleOutputs) != 0,
+                                  // Motion vectors belong to the surface in the depth buffer: only draws that write depth write
+                                  // them, so a translucent layer over a moving fighter does not replace its motion (gx_d3d12.cpp).
+                                  bits(s, 11, 1) ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT) : 0);
     return p;
   }
 
@@ -1339,6 +1958,16 @@ class VulkanBackend final : public Backend {
       return &c->second;
     }
     if (!t.data || !t.width || !t.height) return nullptr;
+#ifdef GX_PC_SETTINGS
+    // Checked before the texture cache: a target may be learned after the guest texture was cached,
+    // and the next frames must switch at once (as gx_d3d11.cpp get_texture).
+    if (video_bg::wants_texture_names()) {
+      int slot = -1;
+      const auto video = video_bg::lookup(texpack::base_name(t, *t.data), t.width, t.height, &slot);
+      if (video && slot >= 0 && slot < 2 && !video->bgra.empty())
+        if (Image* img = update_video_image(video, slot)) { draw_video_slot_ = slot; return img; }
+    }
+#endif
     const uint64_t desc[] = {t.data->hash, t.width, t.height, t.format, t.tlut_format, t.mip_levels};
     const uint64_t key = look_key(hash_bytes(desc, sizeof desc), look_surface_);
     if (auto i = textures_.find(key); i != textures_.end()) { i->second.used = sequence_; return &i->second; }
@@ -1467,7 +2096,18 @@ class VulkanBackend final : public Backend {
                         VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
     }
     VSConstants vc{}; PSConstants pc{};
-    fill_vs_constants(dc, vc, scale_, matrices); fill_ps_constants(dc, pc, scale_);
+    if (upscaling_) {
+      // As Direct3D 12: the jittered projection and last presented frame's pose of this draw, for its motion.
+      MotionInfo motion; motion.jitter_x = jitter_x_; motion.jitter_y = jitter_y_;
+      const uint64_t presentation = (uint64_t)presented_ + 1;
+      const auto* previous = last_poses_.previous(dc.identity, presentation, !skip_present_);
+      if (previous) { motion.prev_pos = previous->position.data(); motion.prev_proj = previous->projection.data(); }
+      fill_vs_constants(dc, vc, scale_, matrices, &motion);
+      last_poses_.record(dc.identity, presentation, !skip_present_, matrices ? matrices->pos : dc.posMatrices, &vc.unjittered_projection[0][0]);
+    } else {
+      fill_vs_constants(dc, vc, scale_, matrices);
+    }
+    fill_ps_constants(dc, pc, scale_);
     const VkDeviceSize align = std::max<VkDeviceSize>(limits_.minUniformBufferOffsetAlignment, 16);
     const VkDeviceSize vs_at = ring_alloc(sizeof vc, align), ps_at = ring_alloc(sizeof pc, align);
     std::memcpy(f.ring.mapped + vs_at, &vc, sizeof vc); std::memcpy(f.ring.mapped + ps_at, &pc, sizeof pc);
@@ -1563,13 +2203,20 @@ class VulkanBackend final : public Backend {
 
   void present(const EfbCopy& c, int test_fill) {
     Frame_& f = frames_[slot_];
+    // A V-Sync change, or the presentation loop's verdict on the display (tear_free_), asks for
+    // another present mode: the swapchain is made again for it.
+    if (present_synced_ != synced_wanted()) swapchain_dirty_ = true;
     if (swapchain_dirty_) {
       vkDeviceWaitIdle(device_);
       create_swapchain();
-      if (swapchain_dirty_) return;   // minimized
+      if (swapchain_dirty_) return;   // minimized, or exclusive fullscreen refused (made again plain next frame)
     }
+    // With three swapchain images and one frame in line this never waits on the display; the time
+    // is counted all the same (presentation_wait_seconds), so a driver that does queue here shows up.
+    const double acquire_start = host::now_seconds();
     const VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, f.acquired, VK_NULL_HANDLE, &image_index_);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) { swapchain_dirty_ = true; return; }
+    acquire_wait_ = host::now_seconds() - acquire_start;
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || exclusive_lost(r)) { swapchain_dirty_ = true; return; }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) check(r, "acquire");
     if (r == VK_SUBOPTIMAL_KHR) swapchain_dirty_ = true;
     acquired_ = true;
@@ -1581,6 +2228,7 @@ class VulkanBackend final : public Backend {
     end_efb();
     barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);   // ambient occlusion reads it
+    upscale(c, test_fill);
     const VkImage target = swap_images_[image_index_];
     raw_barrier(f.cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     const int w = (int)swap_extent_.width, h = (int)swap_extent_.height;
@@ -1591,8 +2239,20 @@ class VulkanBackend final : public Backend {
     color.clearValue.color = {{fill, fill, fill, 1}};
     VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
     info.renderArea = {{0, 0}, swap_extent_}; info.layerCount = 1; info.colorAttachmentCount = 1; info.pColorAttachments = &color;
+    if (f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.timers, 1); f.timer_mask |= 2; }
+    // A shader preset (user_shader.h): the plain present pass is drawn into a texture the size of the
+    // console's picture (640 columns by the lines sent to the display), and the preset's passes draw
+    // it onto the window after the bars and border art. Presets are written for that picture.
+    const bool shader_on = test_fill < 0 && prepare_shader(c);
+    if (shader_on) draw_shader_source(c, w, h);
     vkCmdBeginRendering(f.cmd, &info);
     if (test_fill < 0) {
+      // Border art fills the window first; the picture is drawn over it (as the Direct3D renderers).
+      video_bg::set_border(opts_.border_art);
+      bool art_reversed = false;
+      if (present_plain_)
+        if (const auto art = video_bg::border_frame(&art_reversed))
+          if (Image* texture = update_video_image(art, video_bg::kBorderSlot)) present_border(*texture, *art, art_reversed, w, h);
       const double aspect = presented_aspect(opts_, w, h, frame_widenable_);
       int pw = w, ph = (int)std::lround(w / aspect);
       if (ph > h) { ph = h; pw = (int)std::lround(h * aspect); }
@@ -1600,7 +2260,8 @@ class VulkanBackend final : public Backend {
       VkViewport viewport{vx, vy, float(pw), float(ph), 0, 1};
       VkRect2D scissor{{0, 0}, swap_extent_};
       vkCmdSetViewport(f.cmd, 0, 1, &viewport); vkCmdSetScissor(f.cmd, 0, 1, &scissor);
-      if (present_plain_) present_picture(c, w, h);
+      if (shader_on) {}   // drawn by the preset below, outside this rendering
+      else if (present_plain_) present_picture(c, w, h);
       else {
         BlitConstants k{};
         const uint32_t sw = std::max(c.src_w, 1u), sh = std::max(c.src_h, 1u);
@@ -1613,6 +2274,17 @@ class VulkanBackend final : public Backend {
         blit(f.cmd, present_pipeline_, efb_color_, linear_, k);
       }
     }
+    if (shader_on) {
+      vkCmdEndRendering(f.cmd);
+      const double aspect = presented_aspect(opts_, w, h, frame_widenable_);
+      float vw = (float)w, vh = (float)(w / aspect);
+      if (vh > h) { vh = (float)h; vw = (float)(h * aspect); }
+      const user_shader::Target where{std::floor((w - vw) * 0.5f), std::floor((h - vh) * 0.5f), (uint32_t)std::max(vw, 1.0f), (uint32_t)std::max(vh, 1.0f)};
+      user_shader::vk_draw(f.cmd, (uint64_t)(uintptr_t)shader_source_.image, (int)VK_FORMAT_R8G8B8A8_UNORM, shader_source_.width, shader_source_.height,
+                           (uint64_t)(uintptr_t)target, (int)swap_format_, (uint32_t)w, (uint32_t)h, where, presented_);
+      color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // the settings panel goes over what the preset drew
+      vkCmdBeginRendering(f.cmd, &info);
+    }
 #ifdef GX_PC_SETTINGS
     if (settings_ui_ready()) {
       VkViewport viewport{0, 0, float(w), float(h), 0, 1};
@@ -1621,11 +2293,268 @@ class VulkanBackend final : public Backend {
     }
 #endif
     vkCmdEndRendering(f.cmd);
+    if (f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.timers, 2); f.timer_mask |= 4; }
     capture_pending_ = test_fill < 0 && wants_capture();
     if (capture_pending_) record_capture(target);
     raw_barrier(f.cmd, target, capture_pending_ ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+  }
+
+  // ---- AMD FSR (Windows: AMD's Vulkan DLLs, gx_fsr_vk.cpp) ----
+  // Follows the Upscaling setting each frame, as configure_dlss does on Direct3D 12: the render scale is
+  // the smallest EFB multiple whose 640x480 picture reaches the mode's render size for the picture's
+  // size in the window; Native AA keeps the player's own scale and anti-aliases the EFB in place.
+  void configure_upscaler() {
+#ifdef _WIN32
+    if (!fsr_tried_ && fsr::is_fsr_mode(opts_.dlss_mode)) {
+      fsr_tried_ = true;
+      wchar_t module[MAX_PATH]{};
+      const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+      if (length > 0 && length < MAX_PATH) {
+        const std::wstring dir = std::filesystem::path(module).parent_path().wstring();
+        const fsr::VulkanDevice d{device_, physical_, (void*)vkGetDeviceProcAddr};
+        fsr::vk_init(dir, d);
+      }
+    }
+    const int mode = opts_.dlss_mode;
+    const bool want = fsr::is_fsr_mode(mode) && fsr::vk_available();
+    if (!want) {
+      if (upscaling_) {
+        vkDeviceWaitIdle(device_);
+        upscaling_ = false; forced_scale_ = 0; upscaled_now_ = false;
+        retire(upscale_out_);
+        rebuild_efb();
+        host::log("fsr (vulkan): off (native rendering at EFB x%d)", scale_);
+      }
+      return;
+    }
+    const float aspect = presented_aspect(opts_, client_w_, client_h_, true);
+    int out_w = client_w_, out_h = (int)std::lround(client_w_ / aspect);
+    if (out_h > client_h_) { out_h = client_h_; out_w = (int)std::lround(client_h_ * aspect); }
+    const bool in_place = fsr::is_in_place(mode);
+    int scale;
+    if (in_place) {
+      const int saved = forced_scale_;
+      forced_scale_ = 0; scale = pick_scale(); forced_scale_ = saved;
+      out_w = EFB_WIDTH * scale; out_h = EFB_HEIGHT * scale;
+    } else {
+      uint32_t rw = 0, rh = 0;
+      fsr::render_size_for(mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh);
+      scale = std::max(1, (int)std::ceil(std::max(rw / 640.0, rh / 480.0)));
+      while (scale > 1 && (640 * scale > out_w || 480 * scale > out_h)) --scale;
+      if (640 * scale > out_w || 480 * scale > out_h) {
+        if (!upscale_logged_) { upscale_logged_ = true; host::log("fsr (vulkan): the window is smaller than the native picture; staying native"); }
+        return;
+      }
+    }
+    if (upscaling_ && upscale_mode_ == mode && (int)upscale_w_ == out_w && (int)upscale_h_ == out_h && forced_scale_ == scale) return;
+    vkDeviceWaitIdle(device_);
+    if (!fsr::vk_set_options(mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; return; }
+    retire(upscale_out_);
+    try {
+      upscale_out_ = make_image((uint32_t)out_w, (uint32_t)out_h, 1, VK_FORMAT_R8G8B8A8_UNORM,
+                                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    } catch (const std::exception& e) {
+      host::log("fsr (vulkan): the output image could not be made (%s); staying native", e.what());
+      upscale_out_ = Image{}; opts_.dlss_mode = 0; return;
+    }
+    upscaling_ = true; upscale_in_place_ = in_place; upscale_mode_ = mode; upscale_w_ = (uint32_t)out_w; upscale_h_ = (uint32_t)out_h;
+    forced_scale_ = scale; upscale_reset_ = true; last_poses_.clear();
+    rebuild_efb();   // the render scale, single-sample targets, and the motion and HUD targets
+    host::log("fsr (vulkan): %s, render %dx%d (EFB x%d) -> output %dx%d", fsr::mode_name(mode),
+              in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, out_w, out_h);
+#endif
+  }
+  // In a match the upscaler rebuilds the picture from the jittered EFB, depth and motion; menus are
+  // presented from the EFB as rendered (as on Direct3D 12).
+  void upscale(const EfbCopy& c, int test_fill) {
+    upscaled_now_ = false;
+#ifdef _WIN32
+    if (!upscaling_ || !in_match_ || test_fill >= 0 || !upscale_out_.image || !mvec_img_.image) return;
+    if (!upscale_in_place_ && (c.src_x || c.src_y)) return;   // FSR reads from the image's origin
+    Frame_& f = frames_[slot_];
+    barrier(f.cmd, mvec_img_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    barrier(f.cmd, hud_img_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    barrier(f.cmd, upscale_out_, VK_IMAGE_LAYOUT_GENERAL);
+    const double now = host::now_seconds();
+    const float frame_ms = fsr_last_time_ > 0 ? (float)((now - fsr_last_time_) * 1000.0) : 0.0f;
+    fsr_last_time_ = now;
+    // MELEE_FSR_JITTER_SIGN (tests): the jitter convention, as on Direct3D 12 (gx_d3d12.cpp).
+    static const float jitter_sign = [] { const char* v = std::getenv("MELEE_FSR_JITTER_SIGN"); return v && *v ? (float)std::atof(v) : -1.0f; }();
+    auto image = [](const Image& i, uint32_t usage) { return fsr::VulkanImage{(uint64_t)(uintptr_t)i.image, (int)i.format, i.width, i.height, usage}; };
+    fsr::VulkanInputs in{};
+    in.command_buffer = f.cmd;
+    in.color = image(efb_color_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    in.depth = image(efb_depth_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    in.mvec = image(mvec_img_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    in.out = image(upscale_out_, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    in.in_w = upscale_in_place_ ? width_ : std::min<uint32_t>(c.src_w * scale_, width_);
+    in.in_h = upscale_in_place_ ? height_ : std::min<uint32_t>(c.src_h * scale_, height_);
+    in.jitter_x = jitter_sign * jitter_x_ * opts_.dlss_jitter_sign;
+    in.jitter_y = jitter_sign * jitter_y_ * opts_.dlss_jitter_sign;
+    in.frame_ms = frame_ms;
+    in.reset = upscale_reset_;
+    upscale_reset_ = false;
+    upscaled_now_ = fsr::vk_evaluate(in);
+    barrier(f.cmd, upscale_out_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+#else
+    (void)c; (void)test_fill;
+#endif
+  }
+
+  // ---- Shader presets (user_shader.h) ----
+  // The preset's filter chain for the chosen preset (made, swapped or let go by user_shader), and the
+  // source image at the picture's size. False: no preset, or it cannot run (its status says why).
+  bool prepare_shader(const EfbCopy& c) {
+    const user_shader::VulkanDevice device{instance_, physical_, device_, queue_, (void*)vkGetInstanceProcAddr};
+    const bool on = user_shader::vk_prepare(device, opts_.shader_preset,
+                                            [](void* self) { vkDeviceWaitIdle(static_cast<VulkanBackend*>(self)->device_); }, this);
+    if (!on || !present_plain_rgba_) return false;
+    const uint32_t sw = std::max(c.src_w, 1u), sh = (uint32_t)std::max(std::lround((double)c.src_h * c.y_scale), 1L);
+    if (!shader_source_.image || shader_source_.width != sw || shader_source_.height != sh) {
+      retire(shader_source_);
+      try {
+        shader_source_ = make_image(sw, sh, 1, VK_FORMAT_R8G8B8A8_UNORM,
+                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                    VK_IMAGE_ASPECT_COLOR_BIT);
+      } catch (const std::exception& e) {
+        host::log("shaders: the picture texture could not be made (%s); the preset is off this frame", e.what());
+        shader_source_ = Image{};
+        return false;
+      }
+    }
+    return true;
+  }
+  void draw_shader_source(const EfbCopy& c, int w, int h) {
+    Frame_& f = frames_[slot_];
+    barrier(f.cmd, shader_source_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    a.imageView = shader_source_.view; a.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    a.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; a.storeOp = VK_ATTACHMENT_STORE_OP_STORE; a.clearValue.color = {{0, 0, 0, 1}};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, {shader_source_.width, shader_source_.height}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &a;
+    vkCmdBeginRendering(f.cmd, &ri);
+    const VkRect2D sc{{0, 0}, {shader_source_.width, shader_source_.height}};
+    vkCmdSetScissor(f.cmd, 0, 1, &sc);
+    const VkExtent2D into{shader_source_.width, shader_source_.height};
+    present_picture(c, w, h, &into);
+    vkCmdEndRendering(f.cmd);
+    barrier(f.cmd, shader_source_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
+
+  // ---- Menu video backgrounds and border art (video_background.h) ----
+  // The slot's image holds the newest published frame (BGRA, as the decoder writes it); a new size
+  // makes a new image (the old one goes when this frame slot comes round again).
+  Image* update_video_image(const std::shared_ptr<const video_bg::Frame>& frame, int slot) {
+    if (!frame || slot < 0 || slot >= video_bg::kVideoSlots || frame->bgra.empty() || !frame->width || !frame->height) return nullptr;
+    if ((uint64_t)frame->width * frame->height * 4 > frame->bgra.size()) return nullptr;
+    Image& img = video_images_[slot];
+    if (!img.image || img.width != frame->width || img.height != frame->height) {
+      retire(img);
+      try {
+        img = make_image(frame->width, frame->height, 1, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+      } catch (const std::exception& e) {
+        video_bg::report_backend_failure(slot, std::string("Vulkan video texture creation failed: ") + e.what());
+        img = Image{};
+        return nullptr;
+      }
+      video_frame_[slot] = nullptr;
+    }
+    // A new frame object or a new serial: the decoder published another picture.
+    if (video_frame_[slot] != frame.get() || video_serial_[slot] != frame->serial) {
+      upload_level(img, 0, frame->width, frame->height, frame->bgra.data());
+      finish_upload(img);
+      video_frame_[slot] = frame.get();
+      video_serial_[slot] = frame->serial;
+      video_keep_[slot] = frame;   // keeps the address from being reused by a later frame
+    }
+    img.used = sequence_;
+    return &img;
+  }
+  // The blit pipeline for drawing into the EFB itself (its colour and depth formats and sample count).
+  VkPipeline efb_blit_pipeline() {
+    if (efb_blit_ && efb_blit_samples_ == samples_ && efb_blit_upscale_ == upscaling_) return efb_blit_;
+    if (efb_blit_) { vkDeviceWaitIdle(device_); vkDestroyPipeline(device_, efb_blit_, nullptr); efb_blit_ = VK_NULL_HANDLE; }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, blit_vs_, "main", nullptr};
+    stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, blit_ps_, "main", nullptr};
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState blend{}; blend.colorWriteMask = 0xF;
+    try {
+      efb_blit_ = build_pipeline(stages, vi, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, blend,
+                                 false, false, VK_COMPARE_OP_ALWAYS, blit_layout_, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, samples_,
+                                 upscaling_, 0, 0);
+      efb_blit_samples_ = samples_; efb_blit_upscale_ = upscaling_;
+    } catch (const std::exception& e) {
+      host::log("%s (video background layer)", e.what());
+      efb_blit_ = VK_NULL_HANDLE;
+    }
+    return efb_blit_;
+  }
+  // The decoded menu frame over the screen region of the EFB. The decoder's rows run the other way
+  // from this blit's V, so V is flipped, as on Direct3D (the same constants: both blits put the
+  // first vertex row at the top).
+  void draw_video_background(const std::shared_ptr<const video_bg::Frame>& frame, int slot, const EfbCopy& screen) {
+    Image* video = update_video_image(frame, slot);
+    if (!video) return;
+    VkPipeline p = efb_blit_pipeline();
+    if (!p) return;
+    begin_efb();
+    Frame_& f = frames_[slot_];
+    VkViewport vp{float(screen.src_x * scale_), float(screen.src_y * scale_), float(screen.src_w * scale_), float(screen.src_h * scale_), 0, 1};
+    VkRect2D sc{{int32_t(screen.src_x * scale_), int32_t(screen.src_y * scale_)}, {screen.src_w * scale_, screen.src_h * scale_}};
+    vkCmdSetViewport(f.cmd, 0, 1, &vp);
+    vkCmdSetScissor(f.cmd, 0, 1, &sc);
+    BlitConstants k{};
+    k.rect[0] = 1; k.rect[1] = -1; k.rect[2] = 0; k.rect[3] = 1;
+    k.kind[0] = 1;   // opaque: the backdrop is the bottom layer
+    blit(f.cmd, p, *video, linear_, k);
+    bound_pipeline_ = VK_NULL_HANDLE;   // the next game draw binds its own
+  }
+  // Border art across the window through the shared present shader (its art_frame: the picture's
+  // rectangle casts a soft shadow on the art), with the Direct3D renderers' constants.
+  void present_border(const Image& texture, const video_bg::Frame& art, bool reversed, int w, int h) {
+    Frame_& f = frames_[slot_];
+    const float window = (float)w / std::max((float)h, 1.0f), shape = (float)art.width / std::max((float)art.height, 1.0f);
+    const float sx = shape > window ? window / shape : 1.0f, sy = shape > window ? 1.0f : shape / window;
+    const float aspect = presented_aspect(opts_, w, h, frame_widenable_);
+    float pw = (float)w, ph = pw / aspect;
+    if (ph > (float)h) { ph = (float)h; pw = ph * aspect; }
+    const float px = ((float)w - pw) * 0.5f, py = ((float)h - ph) * 0.5f;
+    const float k[28] = {sx, reversed ? -sy : sy, (1.0f - sx) * 0.5f, reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f,
+                         1.0f / art.width, 1.0f / art.height, 0.0f, 0.0f,
+                         1.0f, 1.0f, 0.0f, 0.0f,
+                         1.0f, 1.0f, 0.0f, 0.0f,
+                         1.0f, 1.0f, 1.0f, 0.0f,
+                         px, py, px + pw, py + ph,
+                         std::clamp(std::max(px, py) * 0.6f, 12.0f, 160.0f), 0.0f, 0.0f, opts_.border_edge ? 1.0f : 0.0f};
+    VkViewport vp{0, 0, (float)w, (float)h, 0, 1};
+    VkRect2D sc{{0, 0}, swap_extent_};
+    vkCmdSetViewport(f.cmd, 0, 1, &vp);
+    vkCmdSetScissor(f.cmd, 0, 1, &sc);
+    const VkDeviceSize align = std::max<VkDeviceSize>(limits_.minUniformBufferOffsetAlignment, 16);
+    const VkDeviceSize at = ring_alloc(sizeof k, align);
+    std::memcpy(f.ring.mapped + at, k, sizeof k);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = f.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &present_set_layout_;
+    VkDescriptorSet set; check(vkAllocateDescriptorSets(device_, &ai, &set), "border descriptors");
+    VkDescriptorBufferInfo ub{f.ring.buffer, 0, sizeof k};
+    VkDescriptorImageInfo img[4] = {{VK_NULL_HANDLE, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, efb_depth_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    VkDescriptorImageInfo smp{linear_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkWriteDescriptorSet wr[6]{};
+    for (auto& x : wr) x.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, x.dstSet = set, x.descriptorCount = 1;
+    wr[0].dstBinding = 0; wr[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; wr[0].pBufferInfo = &ub;
+    for (uint32_t i = 0; i < 4; ++i) { wr[1 + i].dstBinding = 1 + i; wr[1 + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; wr[1 + i].pImageInfo = &img[i]; }
+    wr[5].dstBinding = 5; wr[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; wr[5].pImageInfo = &smp;
+    vkUpdateDescriptorSets(device_, 6, wr, 0, nullptr);
+    vkCmdBindPipeline(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, present_plain_);
+    const uint32_t offset = (uint32_t)at;
+    vkCmdBindDescriptorSets(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout_, 0, 1, &set, 1, &offset);
+    vkCmdDraw(f.cmd, 3, 1, 0, 0);
   }
 
   // ---- The shared present pass: averaging box, sharpening, colour sliders, ambient occlusion and
@@ -1660,30 +2589,44 @@ class VulkanBackend final : public Backend {
                crt ? "PS_CRT" : "PS", nullptr};
       (crt ? present_crt_ : present_plain_) = build_pipeline(st, vi, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE,
                                                              blend, false, false, VK_COMPARE_OP_ALWAYS, present_layout_, swap_format_, VK_FORMAT_UNDEFINED);
+      if (!crt)   // the shader preset's source image
+        present_plain_rgba_ = build_pipeline(st, vi, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE,
+                                             blend, false, false, VK_COMPARE_OP_ALWAYS, present_layout_, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED);
     }
   }
-  void present_picture(const EfbCopy& c, int w, int h) {
+  // `into`: drawn into the shader preset's source image instead (its own size, no CRT model: a preset
+  // takes the CRT model's place, as on Direct3D 12).
+  void present_picture(const EfbCopy& c, int w, int h, const VkExtent2D* into = nullptr) {
     Frame_& f = frames_[slot_];
     const float src_h_lines = (float)c.src_h * c.y_scale;
     const float aspect = presented_aspect(opts_, w, h, frame_widenable_);
     float vw = (float)w, vh = (float)w / aspect;
     if (vh > h) { vh = (float)h; vw = h * aspect; }
-    const bool crt_on = opts_.crt_filter != 0;
+    if (into) { vw = (float)into->width; vh = (float)into->height; }
+    const bool crt_on = opts_.crt_filter != 0 && !into;
     const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0, opts_.crt_curve);
     CrtFit fit{vh, 0.0f, src_h_lines};
     if (crt_on) fit = crt_fit(vh, src_h_lines);
-    VkViewport vp{(w - vw) * 0.5f, (h - vh) * 0.5f, vw, vh, 0, 1};
+    VkViewport vp{into ? 0.0f : (w - vw) * 0.5f, into ? 0.0f : (h - vh) * 0.5f, vw, vh, 0, 1};
     if (crt_on) { vp.x = std::floor(vp.x); vp.y = std::floor(vp.y); }
     vkCmdSetViewport(f.cmd, 0, 1, &vp);
-    float k[28] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                   1.0f / std::max((float)width_, 1.0f), 1.0f / std::max((float)height_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
-                   1.0f, 1.0f, 0.0f, 0.0f,
-                   1.0f, 1.0f, 0.0f, 0.0f,
+    // Upscaled: the upscaler's image is the picture region alone (or, in place, the whole EFB), and pixels a
+    // flat 2D draw wrote this frame (HUD, text, tags) come from this frame's own render (box.z), mapped
+    // from output uv to EFB uv (hudr), as the Direct3D 12 present pass does.
+    const bool up = upscaled_now_ && upscale_out_.image;
+    const bool fills = up && !upscale_in_place_;
+    const Image& source = up ? upscale_out_ : efb_color_;
+    float k[28] = {fills ? 1.0f : (float)c.src_w / EFB_WIDTH, fills ? 1.0f : (float)c.src_h / EFB_HEIGHT,
+                   fills ? 0.0f : (float)c.src_x / EFB_WIDTH, fills ? 0.0f : (float)c.src_y / EFB_HEIGHT,
+                   1.0f / std::max((float)source.width, 1.0f), 1.0f / std::max((float)source.height, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
+                   1.0f, 1.0f, up ? 1.0f : 0.0f, 0.0f,
+                   fills ? (float)c.src_w / EFB_WIDTH : 1.0f, fills ? (float)c.src_h / EFB_HEIGHT : 1.0f,
+                   fills ? (float)c.src_x / EFB_WIDTH : 0.0f, fills ? (float)c.src_y / EFB_HEIGHT : 0.0f,
                    opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao,
                    crt.scan, crt.mask, crt.curve, std::max(fit.lines, 1.0f),
                    (float)c.src_w, vh / std::max(fit.lines, 1.0f), crt.halation, fit.shift};
-    k[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
-    k[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
+    k[8] = (float)std::clamp((int)std::lround((fills ? (double)source.width : (double)c.src_w * scale_) / std::max(vw, 1.0f)), 1, 4);
+    k[9] = (float)std::clamp((int)std::lround((fills ? (double)source.height : (double)c.src_h * scale_) / std::max(vh, 1.0f)), 1, 4);
     const VkDeviceSize align = std::max<VkDeviceSize>(limits_.minUniformBufferOffsetAlignment, 16);
     const VkDeviceSize at = ring_alloc(sizeof k, align);
     std::memcpy(f.ring.mapped + at, k, sizeof k);
@@ -1691,9 +2634,9 @@ class VulkanBackend final : public Backend {
     ai.descriptorPool = f.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &present_set_layout_;
     VkDescriptorSet set; check(vkAllocateDescriptorSets(device_, &ai, &set), "present descriptors");
     VkDescriptorBufferInfo ub{f.ring.buffer, 0, sizeof k};
-    VkDescriptorImageInfo img[4] = {{VK_NULL_HANDLE, efb_color_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+    VkDescriptorImageInfo img[4] = {{VK_NULL_HANDLE, source.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                                     {VK_NULL_HANDLE, efb_color_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                                    {VK_NULL_HANDLE, white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                    {VK_NULL_HANDLE, up ? hud_img_.view : white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                                     {VK_NULL_HANDLE, efb_depth_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
     VkDescriptorImageInfo smp{linear_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
     VkWriteDescriptorSet wr[6]{};
@@ -1702,7 +2645,7 @@ class VulkanBackend final : public Backend {
     for (uint32_t i = 0; i < 4; ++i) { wr[1 + i].dstBinding = 1 + i; wr[1 + i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; wr[1 + i].pImageInfo = &img[i]; }
     wr[5].dstBinding = 5; wr[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; wr[5].pImageInfo = &smp;
     vkUpdateDescriptorSets(device_, 6, wr, 0, nullptr);
-    vkCmdBindPipeline(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, crt_on ? present_crt_ : present_plain_);
+    vkCmdBindPipeline(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, crt_on ? present_crt_ : into ? present_plain_rgba_ : present_plain_);
     const uint32_t offset = (uint32_t)at;
     vkCmdBindDescriptorSets(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout_, 0, 1, &set, 1, &offset);
     vkCmdDraw(f.cmd, 3, 1, 0, 0);
@@ -1848,7 +2791,8 @@ class VulkanBackend final : public Backend {
   VkShaderModule present_vs_ = VK_NULL_HANDLE, present_ps_ = VK_NULL_HANDLE, present_crt_ps_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout present_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout present_layout_ = VK_NULL_HANDLE;
-  VkPipeline present_plain_ = VK_NULL_HANDLE, present_crt_ = VK_NULL_HANDLE;
+  VkPipeline present_plain_ = VK_NULL_HANDLE, present_crt_ = VK_NULL_HANDLE, present_plain_rgba_ = VK_NULL_HANDLE;
+  Image shader_source_;   // the picture at the console's own size, for a shader preset (user_shader.h)
   std::unordered_map<uint64_t, VkShaderModule> modules_;
   std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines_;
   std::unordered_map<uint64_t, Image> textures_, copies_;
@@ -1869,6 +2813,56 @@ class VulkanBackend final : public Backend {
   Buffer capture_buffer_;
   bool capture_pending_ = false;
   std::string capture_file_;
+  // ---- AMD FSR ----
+  bool upscaling_ = false, upscale_in_place_ = false, upscaled_now_ = false, upscale_reset_ = true, upscale_logged_ = false;
+  bool aux_clear_pending_ = false, in_match_ = false, was_in_match_ = false, fsr_tried_ = false, efb_blit_upscale_ = false;
+  int upscale_mode_ = 0, forced_scale_ = 0;
+  uint32_t upscale_w_ = 0, upscale_h_ = 0;
+  Image mvec_img_, hud_img_, upscale_out_;
+  float jitter_x_ = 0, jitter_y_ = 0;
+  double fsr_last_time_ = 0;
+  TemporalMotionHistory last_poses_;
+  // ---- Menu video backgrounds, border art ----
+  Image video_images_[video_bg::kVideoSlots];
+  uint64_t video_serial_[video_bg::kVideoSlots]{};
+  const void* video_frame_[video_bg::kVideoSlots]{};
+  std::shared_ptr<const video_bg::Frame> video_keep_[video_bg::kVideoSlots];
+  bool video_layer_logged_[2]{};
+  int draw_video_slot_ = -1;
+  VkPipeline efb_blit_ = VK_NULL_HANDLE;
+  VkSampleCountFlagBits efb_blit_samples_ = VK_SAMPLE_COUNT_1_BIT;
+  // ---- GPU timers, validation ----
+  uint32_t timestamp_bits_ = 0;
+  uint64_t frame_counter_ = 0;
+  double gpu_frame_ms_ = 0, gpu_present_ms_ = 0;
+  uint32_t gpu_frame_samples_ = 0, gpu_present_samples_ = 0;
+  bool validation_on_ = false;
+  VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+  // ---- Pacing and the display (see the Backend overrides above) ----
+  bool surface_caps2_on_ = false, present_id_on_ = false, present_wait_on_ = false, memory_budget_on_ = false, display_timing_on_ = false;
+  bool fse_supported_ = false, fse_failed_ = false, fse_logged_ = false, want_exclusive_ = false;
+  FullscreenState fullscreen_state_;
+  uint64_t present_id_ = 0, last_present_id_ = 0;
+  int present_wait_timeouts_ = 0;
+  double present_deadline_ = 0, present_wait_ = 0, acquire_wait_ = 0;
+  bool present_synced_ = true, tear_free_ = false, vrr_readable_ = false;
+  double vrr_nominal_hz_ = 0;
+  mutable double stat_acquire_ = 0, stat_wait_ = 0, stat_spin_ = 0, stat_present_ = 0;
+  mutable uint64_t stat_frames_ = 0;
+  uint32_t timing_shown_ = 0;
+  uint64_t timing_blanks_ = 0;
+#ifdef _WIN32
+  HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
+  VBlankClock vblank_;
+  bool vblank_tracked_ = false;
+  vrr::Detector vrr_;
+#else
+  uint64_t last_actual_present_ = 0;
+  uint32_t timing_intervals_ = 0, timing_on_grid_ = 0, timing_line_intervals_ = 0, timing_line_on_grid_ = 0;
+  double timing_window_start_ = 0;
+  uint32_t timing_window_presents_ = 0;
+  int timing_state_ = -1, timing_pending_ = -1, timing_votes_ = 0;
+#endif
 };
 
 }  // namespace
@@ -1941,7 +2935,13 @@ bool vulkan_available() {
   return available;
 }
 
+void vulkan_set_shader_cache(const std::string& folder) {
+  std::lock_guard<std::mutex> lock(g_cache_mutex);
+  g_cache_root = folder.empty() ? std::filesystem::path("shadercache") : std::filesystem::u8path(folder);
+}
+
 Backend* create_vulkan_backend(const VulkanWindow& window, int client_w, int client_h, const RenderOptions& options) {
+  vulkan_set_shader_cache(options.shader_cache);
   try {
     return new VulkanBackend(window, client_w, client_h, options);
   } catch (const std::exception& e) {

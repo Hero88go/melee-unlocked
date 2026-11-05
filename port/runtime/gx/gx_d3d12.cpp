@@ -35,6 +35,7 @@
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
+#include "gpu_readings.h"
 #ifdef MELEE_NO_SLIPPI
 #include "netplay_state.h"   // the same names, answered from the neutral netplay state
 #else
@@ -52,6 +53,7 @@
 #include "gx_streamline.h"
 #include <system_error>
 #include "gx_xess.h"
+#include "gx_fsr.h"
 #include "flicker_scan.h"
 #ifdef GX_DLSS5
 #include "gx_dlss5.h"
@@ -86,7 +88,8 @@ std::atomic<bool> g_dxr_path_available{false};
 bool dxr_path_tracing_available() { return g_dxr_path_available.load(std::memory_order_relaxed); }
 bool vram_usage(float* used_gb, float* total_gb) {
   *used_gb = g_vram_used.load(std::memory_order_relaxed); *total_gb = g_vram_total.load(std::memory_order_relaxed);
-  return *total_gb > 0.0f;
+  if (*total_gb <= 0.0f) return gpu_readings::vram(used_gb, total_gb);   // the Vulkan renderer publishes its own
+  return true;
 }
 
 // GPU time actually spent in the DLAA/DLSS pass and the DLSS 5 pass, in milliseconds, each frame
@@ -363,7 +366,7 @@ class D3D12Backend : public Backend {
 #endif
     mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset();
     if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: render resources reset");
-    xess::shutdown(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: XeSS stopped");
+    xess::shutdown(); fsr::shutdown(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: XeSS and FSR stopped");
     streamline::shutdown_for_process_exit();
     if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: Streamline left for process exit");
     if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend destroyed"); }
@@ -651,8 +654,12 @@ class D3D12Backend : public Backend {
   ComPtr<IDXGIAdapter3> adapter3_;   // video memory queries   // last frame's frame_in_match: the upscaler's history restarts on a change
   std::wstring exe_dir_;   // for loading the upscaler libraries
   bool xess_active() const { return xess::is_xess_mode(opts_.dlss_mode); }
+  bool fsr_active() const { return fsr::is_fsr_mode(opts_.dlss_mode); }
+  // The chosen upscaler's library is loaded and runs on this GPU.
+  bool upscaler_available() const { return xess_active() ? xess::available() : fsr_active() ? fsr::available() : streamline::available(); }
+  double fsr_last_time_ = 0;   // the previous FSR upscale, for its frame time
   // The name of the upscaling mode for the log, whichever vendor it belongs to.
-  const char* upscaler_name() const { return xess_active() ? xess::mode_name(opts_.dlss_mode) : dlss_mode_name((DlssMode)opts_.dlss_mode); }   // draws with motion history (diagnostic, logged with DLSS on)
+  const char* upscaler_name() const { return xess_active() ? xess::mode_name(opts_.dlss_mode) : fsr_active() ? fsr::mode_name(opts_.dlss_mode) : dlss_mode_name((DlssMode)opts_.dlss_mode); }   // draws with motion history (diagnostic, logged with DLSS on)
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
   // Queried independently from Streamline: RR support does not imply that the renderer can build
@@ -856,6 +863,7 @@ void D3D12Backend::init() {
       streamline::set_device(device_.Get());
       streamline::dlss_supported(adapter.Get());
       if (!exe_dir_.empty()) xess::init(exe_dir_, device_.Get());
+      if (!exe_dir_.empty()) fsr::init(exe_dir_, device_.Get());
       break;
     }
     if (streamline::device_faulted()) break;   // start over without Streamline
@@ -1513,7 +1521,7 @@ void D3D12Backend::configure_dlss() {
   widenable_scene_ = true;
   int vw, vh; output_size(&vw, &vh);
   widenable_scene_ = saved_widenable;
-  bool want = opts_.dlss_mode != 0 && (xess_active() ? xess::available() : streamline::available());
+  bool want = opts_.dlss_mode != 0 && upscaler_available();
   if (!want) {
     if (dlss_active_ || forced_scale_) {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0; dlss_hdr_active_ = false;
@@ -1524,7 +1532,7 @@ void D3D12Backend::configure_dlss() {
     }
     return;
   }
-  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA || xess::is_in_place(opts_.dlss_mode);
+  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA || xess::is_in_place(opts_.dlss_mode) || fsr::is_in_place(opts_.dlss_mode);
   // DLAA only accepts a render size equal to its output size. The EFB is always a 640x480 multiple,
   // which can never equal a 16:9 window, so asking for a window-sized DLAA output left the render
   // larger than the mode's own maximum and it produced an empty image (a black screen). Anti-alias
@@ -1563,6 +1571,7 @@ void D3D12Backend::configure_dlss() {
   uint32_t rw = 0, rh = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0;
   const bool sized = xess_active()
       ? xess::optimal_size(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)
+      : fsr_active() ? fsr::optimal_size(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)
       : streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h);
   if (!sized) {
     host::log("dlss: optimal settings unavailable, staying native"); opts_.dlss_mode = 0; return;
@@ -1602,6 +1611,12 @@ void D3D12Backend::configure_dlss() {
         configure_dlss();
         return;
       }
+      if (opts_.dlss_mode == fsr::kLastMode) {   // FSR Ultra Performance: the same as DLSS's
+        host::log("fsr: using FSR Performance instead");
+        opts_.dlss_mode = fsr::kLastMode - 1;
+        configure_dlss();
+        return;
+      }
       host::log("dlss: staying native");
       opts_.dlss_mode = 0; return;
     }
@@ -1622,6 +1637,7 @@ void D3D12Backend::configure_dlss() {
     dlss_hdr_active_ = opts_.path_tracing;
   }
   const bool configured = xess_active() ? xess::set_options(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)
+                        : fsr_active() ? fsr::set_options(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)
                                         : streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, opts_.path_tracing);
   if (!configured) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
   dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; xess_reset_ = true; last_poses_.clear();
@@ -2854,6 +2870,25 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       upscaled = xess::evaluate(list_.Get(), xi);
       for (auto& b : xb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
       list_->ResourceBarrier(3, xb);
+    } else if (fsr_active()) {
+      // FSR reads its inputs from compute shaders, as XeSS does.
+      D3D12_RESOURCE_BARRIER fb[3]{};
+      fb[0].Type = fb[1].Type = fb[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      fb[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      fb[1].Transition = {efb_depth_.Get(), 0, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      fb[2].Transition = {mvec_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      list_->ResourceBarrier(3, fb);
+      // MELEE_FSR_JITTER_SIGN (tests): FSR's jitter the other way round; the default was measured on captures.
+      static const float fsr_jitter = [] { const char* v = std::getenv("MELEE_FSR_JITTER_SIGN"); return v && *v ? (float)std::atof(v) : -1.0f; }();
+      const double now = Stopwatch::now();
+      const float frame_ms = fsr_last_time_ > 0 ? (float)((now - fsr_last_time_) * 1000.0) : 0.0f;
+      fsr_last_time_ = now;
+      fsr::Inputs fi{efb_color_.Get(), efb_depth_.Get(), mvec_.Get(), dlss_out_.Get(), in.in_left, in.in_top, in.in_w, in.in_h,
+                     fsr_jitter * jitter_x_ * opts_.dlss_jitter_sign, fsr_jitter * jitter_y_ * opts_.dlss_jitter_sign, frame_ms, xess_reset_};
+      xess_reset_ = false;   // the history restart flag both of these vendors' upscalers share
+      upscaled = fsr::evaluate(list_.Get(), fi);
+      for (auto& b : fb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+      list_->ResourceBarrier(3, fb);
     } else {
       if (opts_.ray_reconstruction && path_color && streamline::ray_reconstruction_available()) {
         streamline::RayReconstructionInputs rr{};
@@ -3985,7 +4020,7 @@ void D3D12Backend::prewarm_pipelines() {
     auto topo = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology;
     // Both pipeline variants: plain, and with motion vectors for DLSS (otherwise the first match
     // with DLSS on would compile everything again and skip draws meanwhile).
-    const int variants = streamline::available() || xess::available() ? 2 : 1;
+    const int variants = streamline::available() || xess::available() || fsr::available() ? 2 : 1;
     for (int mvec = 0; mvec < variants; ++mvec) {
       VSUid vsu = make_vs_uid(draw); PSUid psu = make_ps_uid(draw);
       vsu.motion_vectors = psu.motion_vectors = (uint32_t)mvec;
