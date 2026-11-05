@@ -6534,7 +6534,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #ifndef _WIN32
     // Linux: OpenGL, or Vulkan where a Vulkan 1.3 GPU is present. Direct3D, DLSS and XeSS are Windows parts.
     {
-      const char* linux_backends[] = {"OpenGL (default)", "Vulkan (experimental)"};
+      const char* linux_backends[] = {"OpenGL", "Vulkan (default)"};
       int linux_index = options.api == RenderApi::Vulkan ? 1 : 0;
       if (vulkan_available()) {
         if (settings_combo("Graphics backend", &linux_index, linux_backends, 2)) {
