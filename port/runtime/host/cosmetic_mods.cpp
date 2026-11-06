@@ -3448,7 +3448,7 @@ bool pause_resource(const fs::path& source, const std::string& member, std::vect
   out->kind = "pause_screen"; out->target_path = "GmPause.usd";
   out->group = "Menus"; out->slot = "Pause screen";
   const bool no_hud = lower(member.empty() ? path_filename_utf8(source) : member).find("nohud") != std::string::npos;
-  out->display_name = source.stem().u8string() + (no_hud ? " (no HUD)" : " (keep HUD)");
+  out->display_name = source.stem().u8string() + (no_hud ? " (no pause overlay)" : " (PAUSE label)");
   out->bytes = std::move(bytes);
   return true;
 }
@@ -7131,20 +7131,43 @@ bool file_matches(const fs::path& file, uint64_t size, const char* sha) {
 }
 
 #ifdef _WIN32
+fs::path prepare_xdelta(const fs::path& preferred, bool recover, std::string* error);
 // xdelta3 -d -f -s <source> <patch> <out>, hidden, waited for (up to 10 minutes: the discs are big).
 bool run_xdelta(const fs::path& xdelta, const fs::path& source, const fs::path& patch, const fs::path& out, std::string* error) {
-  std::wstring command = quote_windows_arg(xdelta.wstring()) + L" -d -f -s " + quote_windows_arg(source.wstring()) + L" " +
-                         quote_windows_arg(patch.wstring()) + L" " + quote_windows_arg(out.wstring());
+  fs::path tool = prepare_xdelta(xdelta, false, error);
+  if (tool.empty()) return false;
   STARTUPINFOW startup{}; startup.cb = sizeof startup;
   PROCESS_INFORMATION process{};
-  if (!CreateProcessW(xdelta.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
-    *error = "The patch tool could not be started."; return false;
+  const auto start = [&] {
+    std::wstring command = quote_windows_arg(tool.wstring()) + L" -d -f -s " + quote_windows_arg(source.wstring()) + L" " +
+                           quote_windows_arg(patch.wstring()) + L" " + quote_windows_arg(out.wstring());
+    return CreateProcessW(tool.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                          nullptr, nullptr, &startup, &process) != FALSE;
+  };
+  if (!start()) {
+    // A partially extracted install, removed dependency or wrong executable should repair itself
+    // in the user's writable catalog, without asking them to find a tool or replace the game.
+    tool = prepare_xdelta(xdelta, true, error);
+    if (tool.empty()) return false;
+    if (!start()) {
+      *error = "The repaired patch tool could not start (Windows error " + std::to_string(GetLastError()) + ").";
+      return false;
+    }
   }
   const DWORD wait = WaitForSingleObject(process.hProcess, 600000);
   if (wait == WAIT_TIMEOUT) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
   DWORD code = 1; GetExitCodeProcess(process.hProcess, &code);
   CloseHandle(process.hThread); CloseHandle(process.hProcess);
-  if (wait != WAIT_OBJECT_0 || code != 0) { *error = "The patch did not apply to this disc."; return false; }
+  const bool loader_failed = code == 0xC0000135u || code == 0xC000007Bu || code == 0xC0000142u;
+  if (wait == WAIT_OBJECT_0 && loader_failed) {
+    const fs::path repaired = prepare_xdelta(xdelta, true, error);
+    if (!repaired.empty() && repaired != tool) return run_xdelta(repaired, source, patch, out, error);
+  }
+  if (wait != WAIT_OBJECT_0 || code != 0) {
+    *error = wait == WAIT_TIMEOUT ? "Building the patch timed out." :
+        "The patch tool failed (exit code " + std::to_string(code) + ").";
+    return false;
+  }
   return true;
 }
 #endif
@@ -7197,10 +7220,11 @@ bool build_look_packs(const std::string& patcher_folder, const std::string& reta
 #else
   fs::path dir;
   { std::lock_guard<std::mutex> lock(g_mutex); if (!g_configured) { *message = "The skin catalog is not running."; return false; } dir = looks_dir_locked(); }
-  const fs::path folder = fs::u8path(patcher_folder), retail = fs::u8path(retail_disc), xdelta = fs::u8path(xdelta_tool);
+  const fs::path folder = fs::u8path(patcher_folder), retail = fs::u8path(retail_disc);
   std::error_code ec;
-  if (!fs::is_regular_file(xdelta, ec)) { *message = "The patch tool is missing from the game folder (tools" + std::string(1, '\\') + "xdelta3.exe)."; return false; }
   if (const std::string problem = retail_disc_problem(retail); !problem.empty()) { *message = problem; return false; }
+  const fs::path xdelta = prepare_xdelta(fs::u8path(xdelta_tool), false, message);
+  if (xdelta.empty()) return false;
   const fs::path classic_patch = find_named(folder, kLookClassicPatch);
   if (classic_patch.empty() || !file_matches(classic_patch, kLookClassicPatchSize, kLookClassicPatchSha)) {
     *message = "That folder does not hold the patch files these looks need (version 1.0.2)."; return false;
@@ -7331,6 +7355,41 @@ bool https_get(const std::string& url, const fs::path* out, std::string* text, u
   return ok;
 }
 
+fs::path prepare_xdelta(const fs::path& preferred, bool recover, std::string* error) {
+  std::error_code ec;
+  if (!recover && !preferred.empty() && fs::is_regular_file(preferred, ec)) return preferred;
+  fs::path root;
+  { std::lock_guard<std::mutex> lock(g_mutex); root = g_root; }
+  if (root.empty()) { *error = "The cosmetic catalog is not ready to prepare the patch tool."; return {}; }
+  const fs::path cached = root / L"tools" / L"xdelta3.exe";
+  constexpr uint64_t size = 624463;
+  constexpr const char* sha = "6855c01cf4a1662ba421e6f95370cf9afa2b3ab6c148473c63efe60d634dfb9a";
+  if (file_matches(cached, size, sha)) return cached;
+  fs::create_directories(cached.parent_path(), ec);
+  if (ec) { *error = "The patch-tool cache could not be created."; return {}; }
+  const fs::path archive = cached.parent_path() / L"xdelta-download.zip";
+  const fs::path part = cached.parent_path() / L"xdelta3-3.1.0-x86_64.exe";
+  std::string why;
+  constexpr uint64_t archive_size = 217891;
+  const bool fetched = https_get("https://github.com/jmacd/xdelta-gpl/releases/download/v3.1.0/xdelta3-3.1.0-x86_64.exe.zip",
+                                 &archive, nullptr, archive_size, &why);
+  const bool verified = fetched && file_matches(archive, archive_size,
+      "b10e0d1df3e212e5a2d37d5c088d2f72ecec760bc3c26caeca51499c3118b93a");
+  const bool unpacked = verified && host::updater::unpack_download(archive.u8string(), cached.parent_path().u8string());
+  fs::remove(archive, ec);
+  if (!unpacked || !file_matches(part, size, sha)) {
+    if (unpacked) fs::remove(part, ec);
+    *error = fetched ? "The patch tool download did not match its verified release; nothing was run." :
+                      "The patch tool could not be prepared: " + why;
+    return {};
+  }
+  fs::remove(cached, ec); ec.clear();
+  fs::rename(part, cached, ec);
+  if (ec) { *error = "The verified patch tool could not be saved."; return {}; }
+  host::log("looks: recovered the verified patch tool in the cosmetic catalog");
+  return cached;
+}
+
 // The authors' Mediafire page names the file's current download address; only that address is
 // followed, and only on Mediafire's own download hosts. The file must then match its pin exactly.
 bool fetch_official(const OfficialFile& f, const fs::path& out, std::string* error) {
@@ -7446,6 +7505,15 @@ void install_official_look(int which, const std::string& retail_disc, const std:
 }
 
 namespace testing {
+bool apply_look_patch(const std::string& tool, const std::string& source, const std::string& patch,
+                     const std::string& output, std::string* error) {
+#ifdef _WIN32
+  return run_xdelta(fs::u8path(tool), fs::u8path(source), fs::u8path(patch), fs::u8path(output), error);
+#else
+  (void)tool; (void)source; (void)patch; (void)output;
+  *error = "The Windows patch-tool diagnostic is not available on this host."; return false;
+#endif
+}
 DatInspection inspect_dat(const std::vector<uint8_t>& bytes) { return inspect_dat_impl(bytes); }
 bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                      std::string* error) {

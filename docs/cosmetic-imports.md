@@ -128,6 +128,10 @@ and restart. The two-style pack leaves the original selected until you choose on
 general texture-pack toggle can remain off. **Vanilla** or **Restore Vanilla** removes both the
 pause archive and its label replacement. The ISO stays untouched.
 
+The supplied Minimal pause pack has a **PAUSE label** style and a **no pause overlay** style.
+The latter removes the label as well. These names describe the pause overlay; the game's own
+pause camera still controls the match HUD.
+
 Imports validate the scene symbol, required controls joints, bounded texture data and archive
 pointers. Unsupported joint trees and mixed pause/gameplay archives are refused before changing
 the catalog. A pause style changes presentation; it does not change whether pausing is allowed.
