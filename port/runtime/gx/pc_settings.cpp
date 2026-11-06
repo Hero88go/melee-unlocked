@@ -8256,6 +8256,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP. Select several to import them all.\n"
+                            "Pause-screen ZIPs and GmPause.usd are supported too.\n"
                             "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.\n"
                             "A portrait or stock icon PNG works too when its name says the costume\n"
                             "(\"Fox Green.png\", \"PlFxGr stock.png\"), alone or as a ZIP of pictures.");
@@ -8414,6 +8415,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           using CosmeticAsset = host::cosmetics::AssetInfo;
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> characters;
           std::map<std::string, std::vector<const CosmeticAsset*>> stages;
+          std::vector<const CosmeticAsset*> pause_screens;
           std::map<std::string, std::vector<const CosmeticAsset*>> pictures;   // a costume's own portrait and stock icon
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
           std::map<std::string, std::vector<const CosmeticAsset*>> fighter_sounds;
@@ -8424,6 +8426,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             else if (asset.kind == "character_portrait") pictures[asset.character + ", " + asset.costume].push_back(&asset);
             else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
             else if (asset.kind == "fighter_sound") fighter_sounds[asset.character].push_back(&asset);
+            else if (asset.kind == "pause_screen") pause_screens.push_back(&asset);
           }
           static std::string rename_id;
           static std::array<char, 97> rename_text{};
@@ -8434,6 +8437,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             return target && std::strcmp(target, "skins") == 0;
           }();
           if (skins_shot) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+          if (!pause_screens.empty()) {
+            draw_resource_slot("Pause screen", pause_screens);
+            settings_hint("Choose a pause-screen style or Vanilla. Restart to apply it.");
+          }
           if (ImGui::CollapsingHeader("Characters")) {
             {
               static int scroll_frames = 0;

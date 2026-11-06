@@ -467,6 +467,22 @@ std::vector<uint8_t> cosmetic_test_iso(const std::vector<std::pair<std::string, 
   return iso;
 }
 
+std::vector<uint8_t> pause_screen_dat(bool no_hud = false) {
+  std::vector<uint8_t> out(32 + 0x600);
+  std::vector<uint32_t> pointers;
+  auto point = [&](uint32_t at, uint32_t to) { be32(out, 32 + at, to); pointers.push_back(at); };
+  point(0, 0x20); point(0x20, 0x40); point(0x40, 0x100);
+  for (uint32_t i = 0; i < 12; ++i) {
+    const uint32_t at = 0x100 + i * 64;
+    if (i < 2) point(at + 8, at + 64);
+    else if (i < 11) point(at + 12, at + 64);
+    be32(out, 32 + at + 4, no_hud ? 0x10 : 0);
+  }
+  point(0x60, 0x420); point(0x420, 0x500);
+  be32(out, 32 + 0x424, 0x00080008);  // an 8x8 I4 label texture
+  return mex_archive(std::move(out), pointers, "ScGamPause_scene_data");
+}
+
 // The same three joints with a mesh on the root: one display object, one envelope polygon object,
 // one envelope that blends joint 1 and joint 2 with `weight` each. Joint 1 always has an inverse
 // bind matrix; joint 2 has one only when `bound`. The game asserts on a blended joint without one.
@@ -561,6 +577,19 @@ int main(int argc, char** argv) {
       (L"melee-cosmetic-test-" + std::to_wstring(GetCurrentProcessId()));
   std::error_code ec; fs::remove_all(folder, ec); fs::create_directories(folder, ec);
   check(!ec, "create temporary directory");
+
+  if (argc == 3 && std::string(argv[1]) == "--pause-pack") {
+    host::cosmetics::configure((folder / L"settings.ini").string());
+    const auto imported = host::cosmetics::import_file(argv[2]);
+    const auto assets = host::cosmetics::assets();
+    check(imported.ok && assets.size() == 2, "real supplied pause ZIP imports both styles");
+    for (const auto& asset : assets)
+      check(asset.kind == "pause_screen" && asset.available && asset.target_path == "GmPause.usd",
+            "real pause archive has a valid pause-screen identity");
+    if (failures) return 1;
+    std::puts("real minimal pause pack passed");
+    return 0;
+  }
 
   if (argc == 5 && std::string(argv[1]) == "--prepare-stage") {
     host::cosmetics::configure(argv[3]);
@@ -2530,6 +2559,63 @@ int main(int argc, char** argv) {
     check(!host::cosmetics::costume_file(renamed_id, &renamed_model, &thumbnail),
           "renamed costumes still verify the original source hash before adapting exports");
     g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // Optional pause-screen packs keep both supplied styles and their text texture in the cosmetic
+  // profile. Only the selected archive is served, including after a restart and online.
+  {
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    const fs::path pause_folder = folder / L"pause-screens";
+    fs::create_directories(pause_folder, ec);
+    const fs::path settings = pause_folder / L"settings.ini";
+    host::cosmetics::configure(settings.string());
+    const auto keep_hud = pause_screen_dat(), no_hud = pause_screen_dat(true);
+    const fs::path pack = pause_folder / L"Minimal-pause-screen.zip";
+    write_file(pack, stored_zip({{"GmPause.usd", keep_hud}, {"GmPauseNoHUD.usd", no_hud},
+        {"Pause Text HD Texture/tex1_108x20_c68e0bb8472069de_14.png", png(432, 80)},
+        {"preview1.png", png(1920, 1080)}, {"README.txt", {'t','e','x','t'}}}));
+    const auto imported = host::cosmetics::import_file(pack.string());
+    auto assets = host::cosmetics::assets();
+    if (!imported.ok) std::fprintf(stderr, "pause pack import: %s\n", imported.message.c_str());
+    check(imported.ok && assets.size() == 2 &&
+              std::none_of(assets.begin(), assets.end(), [](const auto& a) { return a.selected; }),
+          "a two-style pause pack imports both choices without silently enabling either");
+    std::string no_hud_id;
+    for (const auto& asset : assets) if (asset.name.find("no HUD") != std::string::npos) no_hud_id = asset.id;
+    check(!no_hud_id.empty() && host::cosmetics::select_variant("GmPause.usd", no_hud_id, &error),
+          "the no-HUD pause style can be selected independently of stage and character skins");
+    host::cosmetics::configure(settings.string());
+    g_disc_target = "GmPause.usd"; g_disc_bytes = keep_hud;
+    auto fst = one_file_fst(0, (uint32_t)keep_hud.size(), g_disc_target);
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    std::vector<uint8_t> served(no_hud.size());
+    check(host::cosmetics::read(0, 0, served.data(), (uint32_t)served.size()) == host::cosmetics::OverrideRead::Success && served == no_hud,
+          "after reload, the selected pause DAT is served without altering its model data");
+    const auto pictures = host::cosmetics::active_companions();
+    check(pictures.size() == 1 && pictures[0].kind == "pause_text" && pictures[0].target_path == "GmPause.usd",
+          "the pause label's HD texture accompanies only the selected pause-screen style");
+    check(host::cosmetics::import_file(pack.string()).ok && host::cosmetics::assets().size() == 2,
+          "reimporting the pause pack is idempotent");
+    check(host::cosmetics::restore_vanilla(&error), "pause style can be restored to Vanilla");
+    fst = one_file_fst(0, (uint32_t)keep_hud.size(), g_disc_target);
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    check(host::cosmetics::read(0, 0, served.data(), 4) == host::cosmetics::OverrideRead::NotOverridden &&
+              host::cosmetics::active_companions().empty(), "Restore Vanilla removes the pause archive and HD label together");
+    const fs::path malformed_pack = pause_folder / L"malformed.zip";
+    auto missing_joint = no_hud;
+    be32(missing_joint, 32 + 0x140 + 8, 0xFFFFFFF0);
+    write_file(malformed_pack, stored_zip({{"GmPause.usd", keep_hud}, {"GmPauseNoHUD.usd", missing_joint}}));
+    check(!host::cosmetics::import_file(malformed_pack.string()).ok && host::cosmetics::assets().size() == 2,
+          "a malformed second pause style cannot partially change the catalog");
+    auto cycle = no_hud; be32(cycle, 32 + 0x180 + 12, 0x140);
+    write_file(pause_folder / L"GmPause.usd", cycle);
+    check(!host::cosmetics::import_file((pause_folder / L"GmPause.usd").string()).ok,
+          "pause archives with cyclic controls joints are refused");
+    write_file(malformed_pack, stored_zip({{"GmPause.usd", keep_hud}, {"PlFxNr.dat", skeleton_dat(2, 5, false)}}));
+    check(!host::cosmetics::import_file(malformed_pack.string()).ok,
+          "a ZIP cannot smuggle unrelated costume or gameplay DATs into a pause-screen import");
+    g_disc_target.clear(); g_disc_bytes.clear();
   }
 
   // Voice mods: a skin's own fighter sound bank, one zip per mod (docs/voice-mods.md).

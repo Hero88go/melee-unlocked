@@ -17,7 +17,7 @@ constexpr uint32_t kMaxArchiveEntries = 4096;
 struct AssetInfo {
   std::string id;
   std::string name;
-  std::string kind;              // character_costume, fighter_sound, stage_visual, or effect_visual
+  std::string kind;              // character_costume, fighter_sound, stage_visual, effect_visual, or pause_screen
   std::string target_path;       // logical GALE01 FST path, e.g. PlFxGr.dat
   std::string character;
   std::string costume;
