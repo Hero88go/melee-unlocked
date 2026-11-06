@@ -3222,7 +3222,11 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
       const uint8_t* b = (const uint8_t*)p;
       for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
     };
-    mix(frame.rtx.cameras[(size_t)rtx_main_camera_].view, sizeof frame.rtx.cameras[(size_t)rtx_main_camera_].view);
+    // The whole camera: where it looks from and its lens (the pause camera zooms by its field of view).
+    const RtxCamera& cam = frame.rtx.cameras[(size_t)rtx_main_camera_];
+    mix(cam.view, sizeof cam.view);
+    mix(cam.projection_params, sizeof cam.projection_params);
+    mix(cam.viewport, sizeof cam.viewport);
     for (const DrawCall& d : frame.draws)
       if (d.rtx.camera == rtx_main_camera_) mix(d.posMatrices, 12 * sizeof(float));
     rtx_still_frames_ = h == rtx_scene_hash_ ? rtx_still_frames_ + 1 : 0;

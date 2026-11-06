@@ -284,10 +284,13 @@ float polished_floor(float3 albedo) {
   const float sat = max(albedo.r, max(albedo.g, albedo.b)) - min(albedo.r, min(albedo.g, albedo.b));
   return saturate((0.30 - lum) / 0.15) * saturate((0.20 - sat) / 0.10);
 }
-// What the floor reflects: the whole scene, fighters, the stage, effects and the sky.
+// What the floor reflects: everything in the scene at any distance (fighters, the stage, effects,
+// far scenery). A ray to empty sky keeps the floor's own colour (`own`): a mirror-strong floor under a
+// night sky or space (Fountain of Dreams, Final Destination) would otherwise turn black.
 float3 floor_reflection(float3 origin, float3 n, float3 v, float3 own, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
   const float3 dir = glossy_direction(n, v, kFloorRoughness, rng);
-  return hit_radiance(trace_surface(origin, dir, 1.0e5), ambient_light, sun, sun_dir, sun_radius, rng);
+  const Hit h = trace_surface(origin, dir, 1.0e5);
+  return h.found ? hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng) : own;
 }
 // Fighters' shadows on the stage: from the stage's light direction lifted to about 57 degrees, so
 // the shadow lands at their feet on every stage, with soft edges. 1 lit, else how much light is left.
@@ -311,8 +314,14 @@ void emit(uint2 px, float3 lit, float3 albedo) {
   // refines to a clean, converged image while paused. The light is averaged apart from the surface
   // colour, so textures stay as sharp as the raster under the camera's sub-pixel jitter.
   const float3 base = max(albedo, 0.02);
+  // A sample that came out invalid (NaN or infinite, rare at high strengths) or far out of range must
+  // not enter photo mode's running average, where it would stay until the scene moves.
   float3 light = lit / base;
-  if (still_frames > 0u) light = lerp(Accum[px].rgb, light, 1.0 / (float)(min(still_frames, 255u) + 1u));
+  if (any(isnan(light)) || any(isinf(light))) light = 1.0;
+  light = min(light, 64.0);
+  const float3 kept = Accum[px].rgb;
+  const bool kept_ok = !any(isnan(kept)) && !any(isinf(kept));
+  if (still_frames > 0u && kept_ok) light = lerp(kept, light, 1.0 / (float)(min(still_frames, 255u) + 1u));
   Accum[px] = float4(light, 1);
   // What the raster drew over the surface goes back on top, composed as GX blended it (encoded).
   const float3 shown = linear_to_srgb(light * base) * Trans[px].rgb + Overlay[px].rgb;
