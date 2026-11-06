@@ -10755,4 +10755,10 @@ void PcSettingsUI::draw(ID3D12GraphicsCommandList* list) {
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), list);
 }
 #endif
+#ifndef _WIN32
+// No Direct3D 12 here: no path tracing, no HDR swap chain, no local NVIDIA module.
+bool rtx_path_tracing_ready() { return false; }
+bool rtx_nvidia_integrator_available() { return false; }
+bool hdr_display_available() { return false; }
+#endif
 }
