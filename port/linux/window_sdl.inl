@@ -595,6 +595,9 @@ void window_set_dpi_callback(DpiCallback cb) { g_on_dpi = std::move(cb); }
 bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
 #ifdef __APPLE__
 bool window_take_activation() { return g_activated.exchange(false); }
+#else
+// Linux has no exclusive fullscreen to enter again when the window comes back.
+bool window_take_activation() { return false; }
 #endif
 bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }
 int window_take_trace_mark() { return g_trace_mark.exchange(0); }
