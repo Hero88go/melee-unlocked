@@ -201,10 +201,11 @@ int mu_stage_skin_cycle(const char* file, int next)
 
 #define CMD_SKIN_CYCLE 0xF9   /* payload: port, fighter (character select number), costume, 1 next / 0 previous */
 
-int mu_skin_cycle(int port, int char_kind, int costume, int next, char* name, int capacity)
+int mu_skin_cycle(int port, int char_kind, int* costume, int next, unsigned allowed_colors,
+                  char* name, int capacity)
 {
     static unsigned char response[4096];
-    unsigned char payload[4];
+    unsigned char payload[5];
     unsigned int got = 0;
     unsigned int i;
     if (name != NULL && capacity > 0) {
@@ -212,20 +213,28 @@ int mu_skin_cycle(int port, int char_kind, int costume, int next, char* name, in
     }
     payload[0] = (unsigned char) port;
     payload[1] = (unsigned char) char_kind;
-    payload[2] = (unsigned char) costume;
+    payload[2] = (unsigned char) *costume;
     payload[3] = next ? 1 : 0;
-    if (mu_online_abi_command(CMD_SKIN_CYCLE, payload, sizeof payload, response, sizeof response, &got) != 0 ||
-        got < 1 || response[0] == 0)
+    payload[4] = (unsigned char) allowed_colors;
+    /* The original four-byte request remains the online per-color path. */
+    if (mu_online_abi_command(CMD_SKIN_CYCLE, payload, allowed_colors ? 5 : 4,
+                             response, sizeof response, &got) != 0 ||
+        got < (allowed_colors ? 2u : 1u) || response[0] == 0)
     {
         return 0;
     }
+    if (allowed_colors) {
+        if (response[1] >= 8 || !(allowed_colors & (1u << response[1]))) return 0;
+        *costume = response[1];
+    }
     if (name != NULL && capacity > 0) {
-        for (i = 0; i + 1 < got && (int) i + 1 < capacity; i++) {
-            name[i] = (char) response[i + 1];
+        const unsigned start = allowed_colors ? 2 : 1;
+        for (i = 0; i + start < got && (int) i + 1 < capacity; i++) {
+            name[i] = (char) response[i + start];
         }
         name[i] = '\0';
     }
-    OSReport("[content] skin for fighter %d costume %d: %s\n", char_kind, costume,
+    OSReport("[content] skin for fighter %d costume %d: %s\n", char_kind, *costume,
              name != NULL && capacity > 0 ? name : "");
     return 1;
 }

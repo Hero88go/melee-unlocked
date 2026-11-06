@@ -2063,6 +2063,35 @@ int main(int argc, char** argv) {
     check(!last.empty() && step.asset_id.empty(), "the other direction steps back the same way");
     check(!host::cosmetics::cycle_slot_live("PlFxGr.dat", 1).changed, "a costume with no skins has nothing to cycle");
 
+    // Source Port L/R can reach imports in every native color slot. Returning from another
+    // color must follow the actual on-screen costume, rather than another slot's saved choice.
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", "", &error), "start fighter cycling on standard Fox");
+    std::map<std::string, bool> fighter_seen;
+    int color = 0;
+    for (int i = 0; i < 7; ++i) {
+      const auto choice = host::cosmetics::cycle_character_live(2, color, 1);
+      check(choice.pick.ok && choice.pick.changed && choice.costume >= 0 && choice.costume < 4,
+            "every fighter cycle gives the game the real native costume index");
+      color = choice.costume;
+      check(choice.target == host::cosmetics::costume_slot_file(2, color), "cycled model keeps its original costume slot");
+      fighter_seen[std::to_string(color) + ":" + choice.pick.asset_id] = true;
+    }
+    check(fighter_seen.size() == 7 && color == 0, "all three installed skins and four native colors cycle once before wrapping");
+    auto back = host::cosmetics::cycle_character_live(2, color, -1);
+    check(back.pick.changed && back.costume == 3, "reverse cycling wraps to the last native color");
+    back = host::cosmetics::cycle_character_live(2, back.costume, 1);
+    check(back.pick.changed && back.costume == 0 && back.pick.asset_id.empty(), "reversing direction returns to the same choice");
+    back = host::cosmetics::cycle_character_live(2, 3, -1, 1u);
+    check(back.pick.changed && back.costume == 0, "colors occupied by another player are skipped");
+    host::cosmetics::set_online_probe([] { return true; });
+    check(!host::cosmetics::cycle_character_live(2, 0, 1).pick.changed, "fighter-wide cycling cannot change an online color");
+    host::cosmetics::set_online_probe(nullptr);
+    host::cosmetics::freeze_for_online_session();
+    check(!host::cosmetics::cycle_character_live(2, 0, 1).pick.changed, "fighter cycling cannot change a queued online profile");
+    host::cosmetics::thaw_after_online_session();
+    check(!host::cosmetics::cycle_character_live(26, 0, 1).pick.changed, "added fighters do not borrow another fighter's skins");
+    check(!host::cosmetics::cycle_character_live(1, 0, 1).pick.changed, "a fighter without installed skins leaves L/R alone");
+
     // The character select's fighter numbers and costume order.
     check(host::cosmetics::costume_slot_file(2, 0) == "PlFxNr.dat" && host::cosmetics::costume_slot_file(2, 3) == "PlFxGr.dat" &&
               host::cosmetics::costume_slot_file(2, 4).empty() && host::cosmetics::costume_slot_file(14, 1) == "PlPpGr.dat" &&

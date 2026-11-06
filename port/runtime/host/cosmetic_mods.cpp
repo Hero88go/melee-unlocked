@@ -6426,6 +6426,65 @@ LiveCycle cycle_slot_live(const std::string& slot, int direction) {
   return result;
 }
 
+CharacterCycle cycle_character_live(int character, int costume, int direction, uint32_t allowed_costumes) {
+  CharacterCycle result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!ready_locked(&result.pick.message)) return result;
+  if (online_active()) {
+    result.pick.message = "Online skins cycle within the selected color.";
+    return result;
+  }
+  if (costume < 0 || costume_slot_file(character, 0).empty()) return result;
+  struct Choice { int costume; std::string target, id, name; };
+  std::vector<Choice> choices;
+  size_t current = 0;
+  bool any_skin = false;
+  for (int color = 0; color < 32; ++color) {
+    const std::string slot = costume_slot_file(character, color);
+    if (slot.empty()) break;
+    if (!(allowed_costumes & (1u << color))) continue;
+    SlotName known;
+    find_slot(slot, &known);
+    const auto selected = g_profile.selections.find(slot);
+    const std::string selected_id = g_profile.enabled && selected != g_profile.selections.end() &&
+        selected->second != kVanillaSelection ? selected->second : std::string();
+    if (color == costume) current = choices.size();
+    choices.push_back({color, slot, {}, std::string("Standard ") + known.color->label});
+    for (const auto& asset : g_assets) {
+      if (asset.info.kind != "character_costume" || !asset.info.available || selection_key(asset) != slot ||
+          (asset.info.variant.empty() && session_pack_record(asset))) continue;
+      if (color == costume && selected_id == asset.info.id) current = choices.size();
+      choices.push_back({color, slot, asset.info.id, asset.source_kind == kDiscSource ?
+          asset.source_name + (asset.info.variant.empty() ? "" : " (" + asset.info.variant + ")") : asset.info.name});
+      any_skin = true;
+    }
+  }
+  result.pick.ok = true;
+  if (!any_skin || choices.empty()) {
+    result.pick.message = "No other skin is installed for this fighter.";
+    return result;
+  }
+  for (size_t step = 1; step < choices.size(); ++step) {
+    const auto& next = choices[direction > 0 ? (current + step) % choices.size() :
+        (current + choices.size() - step) % choices.size()];
+    std::string error;
+    const auto before = g_profile.selections.find(next.target);
+    const std::string previous = g_profile.enabled && before != g_profile.selections.end() &&
+        before->second != kVanillaSelection ? before->second : std::string();
+    if (!select_live_locked(next.target, next.id, &error)) { result.pick.message = error; continue; }
+    result.target = next.target;
+    result.costume = next.costume;
+    result.pick.changed = true;
+    result.pick.previous_id = previous;
+    result.pick.asset_id = next.id;
+    result.pick.name = next.name;
+    result.pick.message.clear();
+    pair_climbers_locked(next.target, &result.pick);
+    break;
+  }
+  return result;
+}
+
 // ---- stage select skin cycling ----
 // The profile's key for a stage file: the target path of the stage skins installed for it, as the
 // catalog spells it. Empty when no stage skin is installed for that file. The game names a stage

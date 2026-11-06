@@ -158,6 +158,18 @@ again there. A picture added to the costume fills in where a skin has none, and 
 costume. This also holds for skins from a mod disc or a files pack; the picture is kept in the
 catalog and stays with the skin when the pack is scanned again.
 
+On Source Port character select, place the character token and press **L/R** to cycle that fighter's
+native colors and installed skins, including skins imported into other color slots. The costume
+index, portrait and model follow the choice together without restarting. **X/Y** still changes
+color normally. A color occupied by another player of the same fighter is skipped. Online and Teams
+keep L/R within the selected color; queued matches keep the cosmetic profile locked. Static Recomp
+also keeps L/R within the selected color. With 20XX TE shield colors enabled, L/R belongs to that
+option; turn it off to use skin cycling.
+
+**Mods → Costume packs** keeps every scanned ISO or folder under one source name. Its **Costume set**
+picker lists its original and m-ex sets inside that pack; **Apply set** previews the selections it
+will replace before applying them. Sets are choices within a pack, not separate ISO imports.
+
 When scanning an m-ex ISO or extracted files pack, `MxDt.dat` identifies each retail fighter's
 costume files, including extra filenames such as `PlMsNr2.dat`. A costume whose model roots name
 a supported retail slot becomes another skin choice for that slot; select it in Mods or cycle it
