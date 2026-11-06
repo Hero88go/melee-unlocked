@@ -63938,7 +63938,7 @@ index 8ec2dd606..089f50af9 100644
                      HSD_JObjAddDObj(part_jobj, dobj);
                  } else {
 diff --git a/src/melee/ft/ftparts.c b/src/melee/ft/ftparts.c
-index d72f0824e..fa0fa1ab6 100644
+index d72f082..2f88485 100644
 --- a/src/melee/ft/ftparts.c
 +++ b/src/melee/ft/ftparts.c
 @@ -1,3 +1,9 @@
@@ -64147,7 +64147,7 @@ index d72f0824e..fa0fa1ab6 100644
      if (val != fp->x5F4_arr[model_idx].idx) {
          fp->x5F4_arr[model_idx].idx = val;
          fp->x221D_b2 = true;
-@@ -607,8 +635,8 @@ void ftParts_80074B6C(Fighter* fp, FtPartsVis* vis, int idx,
+@@ -607,16 +635,22 @@ void ftParts_80074B6C(Fighter* fp, FtPartsVis* vis, int idx,
              int r25 = (int) fp->x5F4_arr[i].idx; // r25
              int j;                               // r24
              for (j = 0; j < lookup[i].x0; j++) {
@@ -64158,7 +64158,21 @@ index d72f0824e..fa0fa1ab6 100644
                  if (j == r25) {
                      int k; // r20
                      for (k = 0; k < r27->x0; k++) {
-@@ -637,8 +665,8 @@ void ftParts_80074CA0(FtPartsVis* vis, int idx, DObjList* dobj_list)
++#ifdef MU_NATIVE
++                        if (r0[k] >= dobj_list->count || !dobj_list->data[r0[k]]) continue;
++#endif
+                         HSD_DObjClearFlags(dobj_list->data[r0[k]], 1);
+                     }
+                 } else {
+                     int k; // r20
+                     for (k = 0; k < r27->x0; k++) {
++#ifdef MU_NATIVE
++                        if (r0[k] >= dobj_list->count || !dobj_list->data[r0[k]]) continue;
++#endif
+                         HSD_DObjSetFlags(dobj_list->data[r0[k]], 1);
+                     }
+                 }
+@@ -637,9 +671,12 @@ void ftParts_80074CA0(FtPartsVis* vis, int idx, DObjList* dobj_list)
                  TempS* r26; // r26
                  int k;      // r22
                  u8* r29;    // r29
@@ -64167,9 +64181,13 @@ index d72f0824e..fa0fa1ab6 100644
 +                r26 = &DP(lookup[i].x4)[j];
 +                r29 = DP(r26->x4);
                  for (k = 0; k < r26->x0; k++) {
++#ifdef MU_NATIVE
++                    if (r29[k] >= dobj_list->count || !dobj_list->data[r29[k]]) continue;
++#endif
                      HSD_DObjClearFlags(dobj_list->data[r29[k]], 1);
                  }
-@@ -659,8 +687,8 @@ void ftParts_80074D7C(FtPartsVis* vis, int idx, DObjList* dobj_list)
+             }
+@@ -659,9 +696,12 @@ void ftParts_80074D7C(FtPartsVis* vis, int idx, DObjList* dobj_list)
                  TempS* r26; // r26
                  int k;      // r22
                  u8* r29;    // r29
@@ -64178,9 +64196,13 @@ index d72f0824e..fa0fa1ab6 100644
 +                r26 = &DP(lookup[i].x4)[j];
 +                r29 = DP(r26->x4);
                  for (k = 0; k < r26->x0; k++) {
++#ifdef MU_NATIVE
++                    if (r29[k] >= dobj_list->count || !dobj_list->data[r29[k]]) continue;
++#endif
                      HSD_DObjSetFlags(dobj_list->data[r29[k]], 1);
                  }
-@@ -677,7 +705,7 @@ void ftParts_80074E58(Fighter* fp)
+             }
+@@ -677,7 +717,7 @@ void ftParts_80074E58(Fighter* fp)
      fp->parts = HSD_ObjAlloc(&fighter_parts_alloc_data);
      fp->dobj_list.data = HSD_ObjAlloc(&fighter_dobj_list_alloc_data);
  
@@ -64189,7 +64211,7 @@ index d72f0824e..fa0fa1ab6 100644
          fp->parts[i].flags8 = 0;
          fp->parts[i].flagsC = 0;
      }
-@@ -694,16 +722,64 @@ void ftParts_80074E58(Fighter* fp)
+@@ -694,16 +734,64 @@ void ftParts_80074E58(Fighter* fp)
  
  Fighter_Part ftParts_GetBoneIndex(Fighter* fp, Fighter_Part part)
  {
@@ -64258,7 +64280,7 @@ index d72f0824e..fa0fa1ab6 100644
          }
      }
      return FTPART_INVALID;
-@@ -711,13 +787,13 @@ int ftPartsRemap(size_t to_table_idx, size_t from_table_idx, size_t joint_idx)
+@@ -711,13 +799,13 @@ int ftPartsRemap(size_t to_table_idx, size_t from_table_idx, size_t joint_idx)
  
  u32 ftParts_8007506C(enum FighterKind ftkind, int part)
  {
@@ -64276,7 +64298,7 @@ index d72f0824e..fa0fa1ab6 100644
          for (i = 0; i < temp_r3->x4; i++, var_r3++) {
              if (var_r3->x0 == part) {
                  return 1 << i;
-@@ -894,8 +970,8 @@ void ftParts_800753D4(Fighter* arg0, struct Fighter_804D6540_x0_t* arg1,
+@@ -894,8 +982,8 @@ void ftParts_800753D4(Fighter* arg0, struct Fighter_804D6540_x0_t* arg1,
          }
      }
      sp2C = *sp6C;
@@ -64287,6 +64309,26 @@ index d72f0824e..fa0fa1ab6 100644
  
      temp_r30 = ftParts_8007482C(&sp2C);
      temp_r31 = ftParts_8007482C(&sp2C);
+@@ -937,6 +1025,9 @@ void ftParts_80075650(Fighter_GObj* arg0, HSD_JObj* jobj, DObjList* arg2)
+     PAD_STACK(8);
+ 
+     var_r30 = 0;
++#ifdef MU_NATIVE
++    arg2->count = 0;
++#endif
+     while (jobj != NULL) {
+         dobj = HSD_JObjGetDObj(jobj);
+         while (true) {
+@@ -982,6 +1073,9 @@ void ftParts_80075650(Fighter_GObj* arg0, HSD_JObj* jobj, DObjList* arg2)
+             }
+         }
+     }
++#ifdef MU_NATIVE
++    arg2->count = (u32) var_r30;
++#endif
+ }
+ 
+ void ftParts_JObjSetRotation(HSD_JObj* jobj, Vec4* quat)
 diff --git a/src/melee/ft/ftparts.dox b/src/melee/ft/ftparts.dox
 deleted file mode 100644
 index 7d8b1f086..000000000
