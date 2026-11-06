@@ -8,6 +8,8 @@
 
 namespace phillip_ai {
 bool available(unsigned pro);                      // a policy for this pro is installed and onnxruntime loads
+// Without AVX: why Fight a pro is not offered yet (a speed check is running, or it was too slow); null otherwise.
+const char* unavailable_reason();
 bool act(const MuGhostObs& obs, MuGhostAct& out);  // false: no policy for this pro, character or matchup
 
 // "Stronger Pro AI (Requires additional download)": Phillip's newest policies, about 90 MB each, are

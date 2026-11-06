@@ -488,9 +488,12 @@ std::vector<Row> rows_for(Page p) {
         for (int i = 0; neural && i < kGhostCount; ++i) any |= ghost_offered(i, neural);
         if (any)
           rows.push_back(page_row("Fight a pro", Page::Ghosts, active_pro(c), "Play Phillip's AI as a top player."));
-        else
-          rows.push_back(action_row("Fight a pro", kActNone, "Not available",
-                                    "Phillip's AI as a top player: Source Port, on a processor with AVX.", false));
+        else {
+          // Without AVX a timed check decides; the row says whether it is running or found the PC too slow.
+          const char* why = neural ? phillip_ai::unavailable_reason() : nullptr;
+          rows.push_back(action_row("Fight a pro", kActNone, why && why[0] == 'C' ? "Checking..." : "Not available",
+                                    why ? why : "Phillip's AI as a top player: Source Port.", false));
+        }
       }
       rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Practice CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),

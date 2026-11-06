@@ -83,8 +83,9 @@ std::string pro_dir() {
   return exe_dir() + "ProAI/";
 }
 
-// A step of a 21 MB policy takes 3 to 8 ms with AVX. Without it onnxruntime falls far behind the
-// 60 frames a second the game needs, so those processors (the compatibility build's) go without.
+// A step of a 21 MB policy takes 3 to 8 ms with AVX. Without AVX (the compatibility build's
+// processors) onnxruntime uses its SSE kernels: such a PC plays only once a timed check shows it
+// steps a policy fast enough (light_ok below).
 bool cpu_has_avx() {
 #ifdef _WIN32
   return IsProcessorFeaturePresent(PF_AVX_INSTRUCTIONS_AVAILABLE) != FALSE;
@@ -96,7 +97,7 @@ bool cpu_has_avx() {
 bool runtime_ready() {
   if (g_runtime) return g_runtime == 1;
   g_runtime = -1;
-  if (!cpu_has_avx()) { host::log("pro ai: this processor has no AVX; Fight a pro is off"); return false; }
+  if (!cpu_has_avx()) host::log("pro ai: this processor has no AVX; Fight a pro plays if a timed check shows it is fast enough");
 #ifdef _WIN32
   // The full path: Windows has its own, older onnxruntime.dll in System32 for Windows ML.
   const std::string path = exe_dir() + "onnxruntime.dll";
@@ -264,9 +265,12 @@ std::atomic<int> g_stronger{kStrongerAsk};
 // check shows it steps one fast enough (0 not known, 1 fast enough, -1 too slow). Until then, and on
 // a slower PC, the lighter policies play. MELEE_PRO_AI_LARGE=1/0 (tests) skips the check.
 std::atomic<int> g_large_ok{0};
+// The same check for the ordinary policies, run only on a processor without AVX (with AVX they are
+// always fast enough): 0 not known yet, 1 fast enough, -1 too slow (Fight a pro stays off).
+std::atomic<int> g_light_ok{0};
 std::atomic<bool> g_checking{false};
 std::thread g_check_thread;
-void check_speed_later(const Entry& e);
+void check_speed_later(const Entry& e, bool light = false);
 
 // The policy for this pro on this character against that opponent: first one trained as this pro (or
 // cleared by the likeness table), then the highest priority (Phillip's newest self-play, then older
@@ -437,8 +441,10 @@ const Policy* load_policy(const std::string& file) {
   const auto bytes = std::filesystem::file_size(std::filesystem::u8path(path), size_ec);
   const bool large = !size_ec && bytes > 50u * 1024u * 1024u;
   const int large_threads = (int)std::clamp(std::thread::hardware_concurrency() / 4u, 2u, 4u);
+  // Without AVX every policy gets the large policies' threads: the SSE kernels need the help.
+  const bool more_threads = large || !cpu_has_avx();
   bool good = ok(g_ort->CreateSessionOptions(&opt), "session options") &&
-              ok(g_ort->SetIntraOpNumThreads(opt, large ? large_threads : 1), "threads") && ok(g_ort->SetInterOpNumThreads(opt, 1), "threads") &&
+              ok(g_ort->SetIntraOpNumThreads(opt, more_threads ? large_threads : 1), "threads") && ok(g_ort->SetInterOpNumThreads(opt, 1), "threads") &&
               ok(g_ort->SetSessionGraphOptimizationLevel(opt, ORT_ENABLE_ALL), "optimization");
 #ifdef _WIN32
   std::wstring wpath(path.size() + 1, L'\0');
@@ -867,12 +873,12 @@ void work(Slot* s) {
   }
 }
 
-void check_speed_later(const Entry& e) {
+void check_speed_later(const Entry& e, bool light) {
   bool expected = false;
   if (!g_checking.compare_exchange_strong(expected, true)) return;
   if (g_check_thread.joinable()) g_check_thread.join();
   const std::string file = e.file;
-  g_check_thread = std::thread([file] {
+  g_check_thread = std::thread([file, light] {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);   // as a match's worker runs
 #endif
@@ -901,9 +907,15 @@ void check_speed_later(const Entry& e) {
     // An answer is due 21 frames after its step, so a step only has to average under a frame (16.7 ms):
     // this check and the 15 ms in-match limit keep a margin under that.
     static const double limit = [] { const char* v = std::getenv("MELEE_PRO_AI_CHECK_MS"); return v ? std::atof(v) : 14.0; }();
-    g_large_ok = ms <= limit ? 1 : -1;
-    host::log("pro ai: %s steps in %.1f ms here: Phillip's large policies %s", file.c_str(), ms,
-              ms <= limit ? "play from the next match" : "are too slow for this PC; the lighter ones play");
+    if (light) {
+      g_light_ok = ms <= limit ? 1 : -1;
+      host::log("pro ai: %s steps in %.1f ms here without AVX: Fight a pro %s", file.c_str(), ms,
+                ms <= limit ? "is on" : "stays off (too slow for this processor)");
+    } else {
+      g_large_ok = ms <= limit ? 1 : -1;
+      host::log("pro ai: %s steps in %.1f ms here: Phillip's large policies %s", file.c_str(), ms,
+                ms <= limit ? "play from the next match" : "are too slow for this PC; the lighter ones play");
+    }
     g_checking = false;
   });
 }
@@ -926,9 +938,22 @@ bool available(unsigned pro) {
   std::lock_guard<std::mutex> lk(g_mutex);
   if (pro >= kPros) return false;
   read_catalog();
-  bool any = false;
-  for (const Entry& e : g_catalog) any |= e.name[pro] >= 0 && e.kind == "imitation" && present(e);
-  return any && runtime_ready();
+  const Entry* any = nullptr;
+  for (const Entry& e : g_catalog) if (e.name[pro] >= 0 && e.kind == "imitation" && present(e)) { any = &e; break; }
+  if (!any || !runtime_ready()) return false;
+  if (cpu_has_avx()) return true;
+  // No AVX: offered once a policy of this size has been timed here (the first ask starts the check).
+  static const int forced = [] { const char* v = std::getenv("MELEE_PRO_AI_LIGHT"); return v ? (std::atoi(v) ? 1 : -1) : 0; }();
+  if (forced) g_light_ok = forced;
+  if (g_light_ok.load() == 0) check_speed_later(*any, true);
+  return g_light_ok.load() > 0;
+}
+
+const char* unavailable_reason() {
+  if (cpu_has_avx()) return nullptr;
+  const int light = g_light_ok.load();
+  return light == 0 ? "Checking whether this processor is fast enough for Phillip's AI..." :
+         light < 0 ? "This processor (no AVX) is too slow to run Phillip's AI at full speed." : nullptr;
 }
 
 bool act(const MuGhostObs& o, MuGhostAct& out) {
