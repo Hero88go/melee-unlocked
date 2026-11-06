@@ -258,6 +258,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--verify", type=int, default=0, help="steps to compare the file with the twin")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--blend", type=float, default=1.0,
+                    help="weight of the fine-tune against the base, 0..1 (weight-space blend; 1 = the fine-tune as trained)")
     args = ap.parse_args()
     pol, meta = from_onnx(args.base)
     if args.model:
@@ -265,11 +267,17 @@ def main() -> int:
         if saved["num_names"] != pol.cfg.num_names:
             from phillip_finetune import grow_name_table
             grow_name_table(pol, meta, saved["new_name"])
-        pol.load_state_dict(saved["state_dict"])
+        base_sd = {k: v.clone() for k, v in pol.state_dict().items()}
+        sd = saved["state_dict"]
+        if args.blend < 1.0:
+            # Each weight a mix of the fine-tune and the policy it started from: keeps much of what the fine-tune
+            # learned with less of what it unlearned (a self-play policy's strength).
+            sd = {k: (args.blend * v + (1 - args.blend) * base_sd[k]) if v.is_floating_point() else v for k, v in sd.items()}
+        pol.load_state_dict(sd)
         meta["name_map"] = saved["name_map"]
         meta["config"]["max_names"] = pol.cfg.num_names
         meta["agent_config"] = {"finetune": {"base": saved["base"], "name_code": saved["name_code"], "step": saved.get("step"),
-                                             "dev": saved.get("dev")}}
+                                             "dev": saved.get("dev"), "blend": args.blend}}
     # The file stores weight matrices in float16, as the published policies do (biases and layer norms stay float32).
     # Round the twin's matrices the same way first, so --verify checks the file against exactly what it holds; a
     # fine-tune's float32 weights otherwise differ from their float16 copies by up to about 1e-2 in the recurrent state.
