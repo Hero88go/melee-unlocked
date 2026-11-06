@@ -122,6 +122,14 @@ target_compile_options(full_runtime PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
 target_link_libraries(full_runtime PUBLIC full_native_animation full_enet full_imgui PkgConfig::LIBUSB SDL2::SDL2 OpenGL::GL
   GLEW::GLEW CURL::libcurl OpenSSL::Crypto PkgConfig::FFMPEG Threads::Threads X11::X11 X11::Xext ${CMAKE_DL_LIBS} m)
 
+# The Vulkan renderer's DXC path (gx_dxc_linux.cpp) against the shipped libdxcompiler.so.
+add_executable(linux_dxc_spirv_test "${PORT}/tests/linux_dxc_spirv_test.cpp" "${PORT}/runtime/gx/gx_dxc_linux.cpp")
+target_include_directories(linux_dxc_spirv_test PRIVATE "${PORT}/third_party")
+target_compile_features(linux_dxc_spirv_test PRIVATE cxx_std_17)
+target_link_libraries(linux_dxc_spirv_test PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME linux_dxc_spirv COMMAND linux_dxc_spirv_test)
+set_tests_properties(linux_dxc_spirv PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${PORT}/third_party/dxc/linux")
+
 add_executable(linux_ws_frame_test "${COMPAT}/tests/ws_frame_test.cpp")
 target_compile_features(linux_ws_frame_test PRIVATE cxx_std_17)
 target_link_libraries(linux_ws_frame_test PRIVATE OpenSSL::Crypto)

@@ -84,6 +84,11 @@
 #include <vector>
 
 namespace gx {
+#if defined(__linux__)
+// gx_dxc_linux.cpp: DXC from libdxcompiler.so, the same compiler and arguments as Windows.
+bool linux_dxc_available();
+std::vector<uint32_t> linux_dxc_spirv(const std::string& hlsl, const std::vector<std::wstring>& arguments, std::string* error);
+#endif
 namespace {
 
 // ---- Loader -------------------------------------------------------------------------------------
@@ -241,6 +246,20 @@ std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::st
 }
 #else
 std::vector<uint32_t> compile_hlsl(const std::string& hlsl, bool vertex, std::string* error, const char* entry = "main", bool present = false) {
+#if defined(__linux__)
+  // DXC first (bin/libdxcompiler.so): the Windows compiler and arguments, so the same SPIR-V.
+  if (linux_dxc_available()) {
+    const std::wstring wentry(entry, entry + std::strlen(entry));
+    std::vector<std::wstring> args = {L"-spirv", L"-E", wentry, L"-T", vertex ? L"vs_6_0" : L"ps_6_0", L"-fspv-target-env=vulkan1.3",
+                                      L"-fvk-b-shift", L"0", L"0", L"-fvk-t-shift", present ? L"1" : L"2", L"0",
+                                      L"-fvk-s-shift", present ? L"5" : L"3", L"0", L"-O3", L"-Wno-ignored-attributes"};
+    if (present && vertex) args.push_back(L"-fvk-invert-y");
+    std::string dxc_error;
+    std::vector<uint32_t> words = linux_dxc_spirv(hlsl, args, &dxc_error);
+    if (!words.empty()) return words;
+    host::log("vulkan: DXC could not compile a shader (%s), trying glslangValidator", dxc_error.substr(0, 300).c_str());
+  }
+#endif
   const auto dir = shader_cache_dir();
   const std::string stem = (dir / ("tmp-" + std::to_string(getpid()))).string();
   const std::string in = stem + ".hlsl", out = stem + ".spv", log = stem + ".log";

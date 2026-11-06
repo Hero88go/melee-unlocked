@@ -5,3 +5,7 @@ bin/dxil.dll         LICENSE-MS.txt
 
 Unmodified. librashader (third_party/librashader) compiles shader presets with it on Direct3D 12.
 Both files sit beside the program; without them a chosen preset stays off on Direct3D 12.
+
+port/third_party/dxc/linux/libdxcompiler.so and include/dxc (dxcapi.h, WinAdapter.h, dxcerrors.h): the same
+release for Linux (linux_dxc_2026_09_28.x86_x64.tar.gz, unmodified). The Linux Vulkan renderer compiles its
+shaders with it (runtime/gx/gx_dxc_linux.cpp); the Linux package ships it in bin/.

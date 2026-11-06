@@ -296,6 +296,14 @@ def main():
         shutil.copy2(os.path.realpath(found), tools_dir / tool)
         os.chmod(tools_dir / tool, 0o755)
         shader_tools.append(tools_dir / tool)
+    # DXC (libdxcompiler.so, the same compiler Windows uses): the Vulkan renderer compiles its shaders
+    # with it from bin/ (gx_dxc_linux.cpp), with glslangValidator as the fallback.
+    dxc = ROOT / 'port/third_party/dxc/linux/libdxcompiler.so'
+    if not dxc.is_file():
+        raise SystemExit(f'missing {dxc}')
+    shutil.copy2(dxc, tools_dir / 'libdxcompiler.so')
+    os.chmod(tools_dir / 'libdxcompiler.so', 0o755)
+    shader_tools.append(tools_dir / 'libdxcompiler.so')
     libraries = {}
     for binary in (exe, launcher, game, compat_exe, compat_game, *shader_tools):
         libraries.update(ldd(binary))
@@ -312,6 +320,8 @@ def main():
             owner = subprocess.run(['dpkg', '-S', path], capture_output=True, text=True).stdout
         if owner:
             packages.add(owner.split(':')[0].strip())
+    for name in ('LICENSE-LLVM.txt', 'LICENSE-MS.txt'):
+        shutil.copy2(ROOT / 'port/third_party/dxc' / name, licenses / f'directx-shader-compiler-{name[8:]}')
     for package in sorted(packages):
         copyright_file = Path('/usr/share/doc') / package / 'copyright'
         if copyright_file.is_file():
