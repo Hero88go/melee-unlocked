@@ -201,8 +201,7 @@ int mu_stage_skin_cycle(const char* file, int next)
 
 #define CMD_SKIN_CYCLE 0xF9   /* payload: port, fighter (character select number), costume, 1 next / 0 previous */
 
-int mu_skin_cycle(int port, int char_kind, int* costume, int next, unsigned allowed_colors,
-                  char* name, int capacity)
+int mu_skin_cycle(int port, int char_kind, int* costume, int next, unsigned allowed_colors, char* name, int capacity)
 {
     static unsigned char response[4096];
     unsigned char payload[5];
