@@ -37,6 +37,9 @@ struct AuthoredBone { std::shared_ptr<const AuthoredPose> chain; float weight = 
 struct AuthoredSlot { std::vector<AuthoredBone> bones; };
 struct AuthoredPose {
   std::vector<AuthoredJoint> joints;   // rigid draws and bone chains: root..joint
+  // The joints' track bytes when the tracks are views (PackedTrack::view): one buffer per chain, never
+  // resized. Shared, so a copy of the pose keeps the buffer its tracks point into alive.
+  std::shared_ptr<const uint8_t[]> track_bytes;
   // Envelope (skinned) draws: view matrix, skeleton root transform and the weighted bones per matrix slot.
   bool envelope = false;
   bool has_view = false;               // `view` holds the draw's camera (view) matrix

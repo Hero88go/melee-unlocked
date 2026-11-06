@@ -1109,6 +1109,10 @@ add_executable(port_native_pose_bridge_test tests/native_pose_bridge_test.cpp ru
 target_include_directories(port_native_pose_bridge_test PRIVATE runtime/gx runtime/abi "${PROJECT_SOURCE_DIR}/native")
 target_compile_features(port_native_pose_bridge_test PRIVATE cxx_std_17)
 add_test(NAME port_native_pose_bridge COMMAND port_native_pose_bridge_test)
+add_executable(port_native_pose_bridge_equiv_test tests/native_pose_bridge_equiv_test.cpp runtime/gx/native_pose_bridge.cpp)
+target_include_directories(port_native_pose_bridge_equiv_test PRIVATE runtime/gx runtime/abi "${PROJECT_SOURCE_DIR}/native")
+target_compile_features(port_native_pose_bridge_equiv_test PRIVATE cxx_std_17)
+add_test(NAME port_native_pose_bridge_equiv COMMAND port_native_pose_bridge_equiv_test)
 
 # Cache identity follows shader generation, constant layout and pipeline setup.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS

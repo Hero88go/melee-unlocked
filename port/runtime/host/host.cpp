@@ -3096,6 +3096,12 @@ void retrace() {
     gx_stats(&commands, &draws, &vertices, &copies);
     log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | %s",
         g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, sim_cost_line(60).c_str());
+    if (draws) {
+      uint64_t dl_draws = 0, dl_vertices = 0;
+      gx::display_list_stats(&dl_draws, &dl_vertices);
+      log("[frame %u] gx sources: display lists %llu draws %llu verts, immediate %llu draws %llu verts",
+          g_retraces, dl_draws, dl_vertices, draws - dl_draws, vertices - dl_vertices);
+    }
     // Same-thread, fixed-frame reading of authored coverage: comparable between the two engines.
     if (const auto& a = gx::authored_stats(); a.posed_draws)
       log("[frame %u] authored coverage: posed draws %u (envelope %u), skinned draws %u",

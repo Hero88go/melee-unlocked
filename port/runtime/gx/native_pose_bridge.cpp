@@ -5,23 +5,36 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
+#include "frame_table.h"
 #include <utility>
 
 namespace gx {
 namespace {
+// A float is finite unless its exponent bits are all set (infinity, NaN): the same answer as
+// std::isfinite, which on Windows is a C runtime call per value (~200,000 a frame here).
+inline bool finite(float value) {
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof bits);
+  return (bits & 0x7F800000u) != 0x7F800000u;
+}
 bool finite_values(const float* values, size_t count) {
   for (size_t i = 0; i < count; ++i)
-    if (!std::isfinite(values[i])) return false;
+    if (!finite(values[i])) return false;
   return true;
 }
 
 bool valid_channel(uint8_t channel) {
   return (channel >= 1 && channel <= 3) || (channel >= 5 && channel <= 10);
 }
-// Copies snapshot.joints (with their tracks, which must be contiguous in joint order).
-bool copy_joints(const MuNativePoseSnapshot& snapshot, std::vector<AuthoredJoint>& out) {
+// The game hands over one snapshot per drawn PObj, ~300 a simulation frame, and most of them carry a
+// joint chain another PObj of the same frame already sent (every piece of a fighter shares its
+// bones). The checks and the comparison below therefore read the game's arrays directly: a chain is
+// copied only when this frame has not captured an equal one yet, instead of copying every snapshot
+// (one heap block per animation track) and throwing the duplicate away afterwards.
+
+// Every joint of `snapshot` and its tracks (contiguous in joint order) pass the checks a copy needs.
+bool valid_joints(const MuNativePoseSnapshot& snapshot) {
   uint32_t expected_track = 0;
-  out.reserve(snapshot.joint_count);
   for (uint32_t i = 0; i < snapshot.joint_count; ++i) {
     const MuNativePoseJoint& source = snapshot.joints[i];
     if (!source.generation || source.first_track != expected_track ||
@@ -31,67 +44,83 @@ bool copy_joints(const MuNativePoseSnapshot& snapshot, std::vector<AuthoredJoint
         !finite_values(source.scale, 3) || !finite_values(source.rotation, 3) ||
         !finite_values(source.translation, 3) || !finite_values(source.quaternion, 4) ||
         !finite_values(source.world, 12) ||
-        !std::isfinite(source.frame) || !std::isfinite(source.rate) ||
-        !std::isfinite(source.end) || !std::isfinite(source.rewind))
+        !finite(source.frame) || !finite(source.rate) ||
+        !finite(source.end) || !finite(source.rewind))
       return false;
-
-    AuthoredJoint joint;
-    joint.generation = source.generation;
-    joint.flags = source.flags;
-    joint.anim_flags = source.anim_flags;
-    std::copy_n(source.scale, 3, joint.scale.begin());
-    std::copy_n(source.rotation, 3, joint.rotation.begin());
-    std::copy_n(source.translation, 3, joint.translation.begin());
-    std::copy_n(source.quaternion, 4, joint.quat.begin());
-    std::copy_n(source.world, 12, joint.world.begin());
-    joint.quaternion = (source.flags & 0x20000u) != 0;
-    joint.frame = source.frame;
-    joint.rate = source.rate;
-    joint.end = source.end;
-    joint.rewind = source.rewind;
-    joint.tracks.reserve(source.track_count);
-
     for (uint32_t t = 0; t < source.track_count; ++t) {
       const MuNativePoseTrack& source_track = snapshot.tracks[source.first_track + t];
       if (!valid_channel(source_track.channel) ||
           source_track.byte_offset > snapshot.track_byte_count ||
           source_track.byte_length > snapshot.track_byte_count - source_track.byte_offset)
         return false;
-      NativeMelee::PackedTrack track;
-      track.start_frame = source_track.start_frame;
-      track.channel = source_track.channel;
-      track.value_format = source_track.value_format;
-      track.slope_format = source_track.slope_format;
-      if (source_track.byte_length != 0) {
-        const uint8_t* begin = snapshot.track_bytes + source_track.byte_offset;
-        track.bytes.assign(begin, begin + source_track.byte_length);
-      }
-      joint.tracks.push_back(std::move(track));
     }
     expected_track += source.track_count;
-    out.push_back(std::move(joint));
   }
   return expected_track == snapshot.track_count;
 }
 
-bool same_track(const NativeMelee::PackedTrack& a, const NativeMelee::PackedTrack& b) {
-  return a.start_frame == b.start_frame && a.channel == b.channel && a.value_format == b.value_format &&
-         a.slope_format == b.slope_format && a.bytes == b.bytes;
+// One joint of a snapshot that passed valid_joints, with its tracks. Their bytes are copied to
+// `storage` (the chain's buffer, AuthoredPose::track_bytes), which advances past them; the tracks
+// are views into it.
+AuthoredJoint copy_joint(const MuNativePoseSnapshot& snapshot, const MuNativePoseJoint& source, uint8_t*& storage) {
+  AuthoredJoint joint;
+  joint.generation = source.generation;
+  joint.flags = source.flags;
+  joint.anim_flags = source.anim_flags;
+  std::copy_n(source.scale, 3, joint.scale.begin());
+  std::copy_n(source.rotation, 3, joint.rotation.begin());
+  std::copy_n(source.translation, 3, joint.translation.begin());
+  std::copy_n(source.quaternion, 4, joint.quat.begin());
+  std::copy_n(source.world, 12, joint.world.begin());
+  joint.quaternion = (source.flags & 0x20000u) != 0;
+  joint.frame = source.frame;
+  joint.rate = source.rate;
+  joint.end = source.end;
+  joint.rewind = source.rewind;
+  joint.tracks.reserve(source.track_count);
+  for (uint32_t t = 0; t < source.track_count; ++t) {
+    const MuNativePoseTrack& source_track = snapshot.tracks[source.first_track + t];
+    NativeMelee::PackedTrack track;
+    track.start_frame = source_track.start_frame;
+    track.channel = source_track.channel;
+    track.value_format = source_track.value_format;
+    track.slope_format = source_track.slope_format;
+    if (source_track.byte_length != 0) {
+      std::memcpy(storage, snapshot.track_bytes + source_track.byte_offset, source_track.byte_length);
+      track.view = storage;
+      track.view_size = source_track.byte_length;
+      storage += source_track.byte_length;
+    }
+    joint.tracks.push_back(track);
+  }
+  return joint;
 }
 
-// Bit for bit (memcmp, so -0 and +0 differ): a shared chain must sample exactly as its copies would.
-bool same_joint(const AuthoredJoint& a, const AuthoredJoint& b) {
-  if (a.generation != b.generation || a.flags != b.flags || a.anim_flags != b.anim_flags ||
-      a.quaternion != b.quaternion || std::memcmp(&a.scale, &b.scale, sizeof a.scale) ||
-      std::memcmp(&a.rotation, &b.rotation, sizeof a.rotation) ||
-      std::memcmp(&a.translation, &b.translation, sizeof a.translation) ||
-      std::memcmp(&a.quat, &b.quat, sizeof a.quat) || std::memcmp(&a.world, &b.world, sizeof a.world) ||
-      std::memcmp(&a.frame, &b.frame, sizeof a.frame) || std::memcmp(&a.rate, &b.rate, sizeof a.rate) ||
-      std::memcmp(&a.end, &b.end, sizeof a.end) || std::memcmp(&a.rewind, &b.rewind, sizeof a.rewind) ||
-      a.tracks.size() != b.tracks.size() || !a.constraints.empty() || !b.constraints.empty())
+// Whether `a` equals what copy_joint would make of `source`. Bit for bit (memcmp, so -0 and +0
+// differ): a shared chain must sample exactly as its copies would. The snapshot's floats passed
+// valid_joints (all finite), so a copy carries exactly their bits.
+bool same_joint(const AuthoredJoint& a, const MuNativePoseSnapshot& snapshot, const MuNativePoseJoint& source) {
+  if (a.generation != source.generation || a.flags != source.flags || a.anim_flags != source.anim_flags ||
+      a.quaternion != ((source.flags & 0x20000u) != 0) ||
+      std::memcmp(a.scale.data(), source.scale, sizeof source.scale) ||
+      std::memcmp(a.rotation.data(), source.rotation, sizeof source.rotation) ||
+      std::memcmp(a.translation.data(), source.translation, sizeof source.translation) ||
+      std::memcmp(a.quat.data(), source.quaternion, sizeof source.quaternion) ||
+      std::memcmp(a.world.data(), source.world, sizeof source.world) ||
+      std::memcmp(&a.frame, &source.frame, sizeof a.frame) || std::memcmp(&a.rate, &source.rate, sizeof a.rate) ||
+      std::memcmp(&a.end, &source.end, sizeof a.end) || std::memcmp(&a.rewind, &source.rewind, sizeof a.rewind) ||
+      a.tracks.size() != source.track_count || !a.constraints.empty())
     return false;
-  for (size_t t = 0; t < a.tracks.size(); ++t)
-    if (!same_track(a.tracks[t], b.tracks[t])) return false;
+  for (uint32_t t = 0; t < source.track_count; ++t) {
+    const NativeMelee::PackedTrack& track = a.tracks[t];
+    const MuNativePoseTrack& source_track = snapshot.tracks[source.first_track + t];
+    if (track.start_frame != source_track.start_frame || track.channel != source_track.channel ||
+        track.value_format != source_track.value_format || track.slope_format != source_track.slope_format ||
+        track.size() != source_track.byte_length ||
+        (source_track.byte_length &&
+         std::memcmp(track.data(), snapshot.track_bytes + source_track.byte_offset, source_track.byte_length)))
+      return false;
+  }
   return true;
 }
 
@@ -101,30 +130,46 @@ bool same_joint(const AuthoredJoint& a, const AuthoredJoint& b) {
 // to build a new chain per PObj, so every skinned piece and every rigid PObj of a joint sampled the
 // same bones again on every presented frame. Chains equal in every captured field now share one
 // object for the simulation frame; a joint whose state changed between two draws stays separate.
-std::unordered_map<uint64_t, std::vector<std::shared_ptr<const AuthoredPose>>> g_chains;
+// Emptied every frame end and refilled, so its nodes and buckets come from a pool (frame_table.h;
+// simulation thread only, like every caller of this file).
+using ChainBucket = FrameVector<std::shared_ptr<const AuthoredPose>>;
+FramePool g_chain_pool;
+FrameTable<uint64_t, ChainBucket> g_chains = frame_table<FrameTable<uint64_t, ChainBucket>>(g_chain_pool);
 
-uint64_t chain_hash(const std::vector<AuthoredJoint>& joints) {
+// The chain of `count` joints whose i-th joint is snapshot.joints[joint(i)]: this frame's equal chain
+// when there is one, else a copy (which later equal snapshots of the frame then share).
+template <class JointIndex>
+std::shared_ptr<const AuthoredPose> intern_chain(const MuNativePoseSnapshot& snapshot, uint32_t count,
+                                                 JointIndex joint) {
   uint64_t h = 1469598103934665603ull;
   auto mix = [&h](uint64_t v) { h ^= v; h *= 1099511628211ull; };
-  mix(joints.size());
-  for (const AuthoredJoint& j : joints) {
+  mix(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const MuNativePoseJoint& j = snapshot.joints[joint(i)];
     uint32_t frame_bits;
     std::memcpy(&frame_bits, &j.frame, sizeof frame_bits);
     mix(j.generation); mix(j.flags); mix(frame_bits);
   }
-  return h;
-}
-
-std::shared_ptr<const AuthoredPose> intern_chain(std::vector<AuthoredJoint>&& joints) {
-  std::vector<std::shared_ptr<const AuthoredPose>>& bucket = g_chains[chain_hash(joints)];
+  ChainBucket& bucket = g_chains[h];
   for (const auto& existing : bucket) {
-    if (existing->joints.size() != joints.size()) continue;
+    if (existing->joints.size() != count) continue;
     bool equal = true;
-    for (size_t i = 0; equal && i < joints.size(); ++i) equal = same_joint(existing->joints[i], joints[i]);
+    for (uint32_t i = 0; equal && i < count; ++i) equal = same_joint(existing->joints[i], snapshot, snapshot.joints[joint(i)]);
     if (equal) return existing;
   }
+  // One allocation for every track byte of the chain (valid_joints bounded each range), not one per track.
+  size_t byte_count = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const MuNativePoseJoint& source = snapshot.joints[joint(i)];
+    for (uint32_t t = 0; t < source.track_count; ++t) byte_count += snapshot.tracks[source.first_track + t].byte_length;
+  }
   auto chain = std::make_shared<AuthoredPose>();
-  chain->joints = std::move(joints);
+  std::shared_ptr<uint8_t[]> buffer;   // built from `new` directly: it frees the bytes if it cannot allocate
+  if (byte_count) buffer = std::shared_ptr<uint8_t[]>(new uint8_t[byte_count]);
+  uint8_t* storage = buffer.get();
+  chain->track_bytes = std::move(buffer);
+  chain->joints.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) chain->joints.push_back(copy_joint(snapshot, snapshot.joints[joint(i)], storage));
   bucket.push_back(chain);
   return chain;
 }
@@ -156,9 +201,9 @@ std::shared_ptr<const AuthoredPose> copy_native_pose_snapshot(
   if (pose->has_view)
     std::memcpy(pose->view.data(), snapshot.view, sizeof(snapshot.view));
 
-  std::vector<AuthoredJoint> joints;
-  if (!copy_joints(snapshot, joints)) return {};
-  pose->chain = intern_chain(std::move(joints));   // the translated observer's shape: pose + shared chain
+  if (!valid_joints(snapshot)) return {};
+  // the translated observer's shape: pose + shared chain
+  pose->chain = intern_chain(snapshot, snapshot.joint_count, [](uint32_t i) { return i; });
   return pose;
 }
 
@@ -182,8 +227,7 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
       !finite_values(snapshot.view, 12))
     return {};
 
-  std::vector<AuthoredJoint> joints;
-  if (!copy_joints(snapshot, joints)) return {};
+  if (!valid_joints(snapshot)) return {};
 
   // Each chain becomes one shared pose, shared with every other snapshot of the frame that loads
   // the same bones (intern_chain), so the sampler's chain cache hits.
@@ -195,14 +239,10 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
         source.first_link > snapshot.link_count ||
         source.link_count > snapshot.link_count - source.first_link)
       return {};
-    std::vector<AuthoredJoint> links;
-    links.reserve(source.link_count);
-    for (uint32_t l = 0; l < source.link_count; ++l) {
-      const uint32_t joint = snapshot.links[source.first_link + l];
-      if (joint >= joints.size()) return {};
-      links.push_back(joints[joint]);
-    }
-    chains.push_back(intern_chain(std::move(links)));
+    const MuNativePoseU32* links = snapshot.links + source.first_link;
+    for (uint32_t l = 0; l < source.link_count; ++l)
+      if (links[l] >= snapshot.joint_count) return {};
+    chains.push_back(intern_chain(snapshot, source.link_count, [links](uint32_t i) { return links[i]; }));
   }
 
   auto pose = std::make_shared<AuthoredPose>();
@@ -237,7 +277,7 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
     slot.bones.reserve(source.bone_count);
     for (uint32_t b = 0; b < source.bone_count; ++b) {
       const MuNativePoseBone& bone = snapshot.bones[source.first_bone + b];
-      if (bone.chain >= chains.size() || !std::isfinite(bone.weight) ||
+      if (bone.chain >= chains.size() || !finite(bone.weight) ||
           !finite_values(bone.envelope, 12))
         return {};
       AuthoredBone target;
