@@ -582,6 +582,8 @@ function(mu_boundary_fixture name source)
   add_test(NAME native_${name} COMMAND mu_${name}_test)
 endfunction()
 mu_boundary_fixture(hud_nana "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_hud_scale.c" mu_live_fighter mu_nana_damage)
+mu_boundary_fixture(practice_destination "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_practice.c"
+  mu_practice_resolve_pending_mode mu_practice_enter_mode)
 mu_boundary_fixture(stage_item_link "${D}/src/melee/it/kinds/itwhitebea.c" mu_whitebea_block_alive mu_whitebea_validate_block)
 mu_boundary_fixture(envelope_ready "${D}/src/sysdolphin/baselib/pobj.c" PObjNativeEnvelopeReady)
 mu_boundary_fixture(fod_scenery "${D}/src/melee/gr/grizumi.c"
