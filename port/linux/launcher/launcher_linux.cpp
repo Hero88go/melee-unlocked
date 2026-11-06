@@ -823,10 +823,31 @@ namespace { void page_online() { page_online_impl(); } }
 #include "launcher_linux_lobby.inl"
 
 int main(int argc, char** argv) {
-  (void)argc; (void)argv;
   g_dir = exe_dir();
   host::g_log = std::fopen((g_dir + "/launcher.log").c_str(), "w");
   load_ini();
+  // Steam Game Mode: open the game directly with the saved ISO, CPU compatibility choice,
+  // controller/card paths and replay preference, without creating a launcher window.
+  if (argc > 1 && std::strcmp(argv[1], "--play") == 0) {
+    std::vector<std::string> extra;
+    for (int i = 2; i < argc; ++i) {
+      if (std::strcmp(argv[i], "--iso") == 0) {
+        if (++i == argc) { std::fprintf(stderr, "--iso requires a disc path\n"); return 2; }
+        g_iso = fs::absolute(fs::u8path(argv[i])).string();
+      } else extra.push_back(argv[i]);
+    }
+    if (!check_ready()) { std::fprintf(stderr, "%s\n", status_text().c_str()); return 2; }
+    auto args = base_args();
+    args.insert(args.end(), extra.begin(), extra.end());
+    std::vector<char*> command;
+    for (auto& arg : args) command.push_back(arg.data());
+    command.push_back(nullptr);
+    if (chdir(g_dir.c_str()) != 0) { std::perror("game folder"); return 1; }
+    // Replacing this process lets Steam track the game and receive its real exit status.
+    execv(command[0], command.data());
+    std::perror("Melee Unlocked could not start");
+    return 1;
+  }
   // YouGame: the bridge for the game's YouGame rows, up for the whole run. On Linux the release YouGame
   // is on cannot be fetched beside this one yet: the game says where to get it instead.
   launcher::yougame::set_on_session_change([] { g_yg_save = true; });

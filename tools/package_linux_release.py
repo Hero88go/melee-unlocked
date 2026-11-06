@@ -58,6 +58,10 @@ is also in game (F1). Replays lists your replays and the Slippi Launcher's; Watc
 broadcast you open in the Slippi Launcher's Spectate tab. Online is the Melee Unlocked lobby, shared
 with Windows players on the same version.
 
+For Steam Game Mode, add the launch option --play to open the game directly without a launcher
+window. It uses the ISO and replay choices saved in launcher.ini and picks the compatibility
+game on older processors. You can also run ./MeleeUnlocked --play --iso "/path/to/melee.iso".
+
 Requirements
 
   - An x86-64 Linux desktop and an OpenGL 4.5 graphics driver (Mesa or NVIDIA). Processors without
