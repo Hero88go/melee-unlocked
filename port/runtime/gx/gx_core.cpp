@@ -15,6 +15,8 @@ namespace gx { void settings_guest_options_frame(uint8_t menu, uint16_t selectio
 #include "audio.h"
 #include "native_pose_bridge.h"
 #include "replay_control.h"
+#include "rtx_semantics.h"
+#include "../abi/mu_rtx_tokens.h"
 #ifdef MELEE_NO_SLIPPI
 #include "netplay_state.h"   // the same names, answered from the neutral netplay state
 #else
@@ -205,6 +207,9 @@ NativePoseBridgeStats g_native_pose_stats{};
 bool g_native_owner_source = false;
 uint8_t g_native_owner = 0xFF;
 bool g_native_skinned = false;   // token 0xF2: the current native PObj is an envelope draw
+// Render semantics (tokens 0xF3-0xF6, rtx_semantics.h): the material, light set, camera and pass the
+// draws recorded now belong to. Indices into g_frame.rtx, so it is reset whenever a frame is handed on.
+RtxDecodeState g_rtx_state;
 
 uint32_t active_native_pose_scope_id() {
   return g_native_pose_scope_ids.empty() ? 0 : g_native_pose_scope_ids.back();
@@ -674,6 +679,29 @@ static bool frustum_backdrop(const DrawCall& dc, const Frame& f) {
   return true;
 }
 
+// Coverage of the render semantics, logged every 600 frames that carried any: how many draws the
+// game described (material, camera) and what it sent. The F1 gate reads this line.
+static void note_rtx_semantics_frame(const Frame& frame) {
+  if (!frame.rtx.present) return;
+  RtxSemanticsStats& s = rtx_semantics_stats();
+  ++s.frames;
+  for (const DrawCall& dc : frame.draws) {
+    ++s.draws;
+    if (dc.rtx.material >= 0) ++s.draws_with_material;
+    if (dc.rtx.camera >= 0) ++s.draws_with_camera;
+    if (dc.rtx.pass == MU_RTX_PASS_PARTICLES) ++s.particle_draws;
+  }
+  if (s.frames % 600 != 0) return;
+  const double draws = s.draws ? (double)s.draws : 1.0;
+  host::log("rtx: semantics over %llu frames: %llu draws, %.1f%% with a material, %.1f%% with a camera, "
+            "%llu particle draws; %llu materials, %llu lights, %llu cameras, %llu malformed",
+            (unsigned long long)s.frames, (unsigned long long)s.draws, 100.0 * s.draws_with_material / draws,
+            100.0 * s.draws_with_camera / draws, (unsigned long long)s.particle_draws,
+            (unsigned long long)s.materials, (unsigned long long)s.lights, (unsigned long long)s.cameras,
+            (unsigned long long)s.malformed);
+  s = RtxSemanticsStats{};
+}
+
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
   host::SimCostScope record_cost(host::SIM_RECORD);
   const bool line = primitive == 0xA8 || primitive == 0xB0;
@@ -749,6 +777,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
       if (dc.authored_pose->envelope) ++authored_stats().posed_draws_envelope;
     } }
   dc.frustum_backdrop = frustum_backdrop(dc, g_frame);   // SkipInit: written every draw
+  dc.rtx = rtx_draw_info(g_rtx_state);
   g_frame.draws.push_back(std::move(dc));
   g_frame.segments.push_back({first, count, primitive});
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
@@ -869,6 +898,7 @@ void bp_write(uint32_t value) {
         g_frame.test_fill = latency_test_fill();
         // A replay viewer on the way to a jump's target simulates frames nobody sees: they are not
         // handed to the renderer, and the next frame that is shown is not the last shown one's neighbour.
+        note_rtx_semantics_frame(g_frame);
         const bool unseen = replay_control::skip_render();
         g_vertex_decoder.join();   // the frame's vertices are complete before anyone else sees them
         if (g_backend && !unseen) {
@@ -879,6 +909,7 @@ void bp_write(uint32_t value) {
         if (unseen) g_discontinuity = g_hard_cut = true;
         g_texture_snapshots.end_frame();
         g_dl_calls.clear(); g_immediate_draws.clear(); g_native_object_scopes.clear(); g_native_draw_scopes.clear(); native_pose_bridge_frame_reset(); finish_observed_frame();
+        g_rtx_state.reset();   // its indices pointed into the frame just handed on
         host::note_frame_submitted();   // the game now only waits for the retrace (audio pacing, host.cpp)
       }
       break;
@@ -988,6 +1019,18 @@ size_t parse_command(const uint8_t* d, size_t len) {
     if (len < 2) return incomplete(2);
     g_native_skinned = d[1] != 0;
     return 2;
+  }
+  // Render semantics from the native game (0xF3 material, 0xF4 lights, 0xF5 camera, 0xF6 pass).
+  // Sent only while rtx_semantics_enabled(); consumed here and kept in g_frame.rtx.
+  if (is_rtx_token(op)) {
+    size_t need = 0;
+    const size_t used = parse_rtx_token(d, len, g_rtx_state, g_frame.rtx, &need);
+    if (used == 0) return incomplete(need);
+    if (used == 1) {
+      static int reported = 0;
+      if (reported++ < 10) host::log("gx: malformed render-semantics token %02X %02X", op, len > 1 ? d[1] : 0);
+    }
+    return used;
   }
   if (op == 0x61) { if (len < 5) return incomplete(5); bp_write(be32(d + 1)); return 5; }
   if (op >= 0x80 && op < 0xC0) {

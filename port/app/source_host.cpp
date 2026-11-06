@@ -1158,6 +1158,8 @@ int32_t h_native_owner_tracking() { return gx::owner_tracking_enabled() ? 1 : 0;
 // Always on: the scope tokens are a few bytes per PObj, and without them a draw is known only by
 // its display list and call order, which shifts whenever a menu drops or adds a draw.
 int32_t h_native_draw_identity() { return 1; }
+// Render semantics for the ray-traced renderer (tokens 0xF3-0xF6): only while it asks for them.
+int32_t h_native_rtx_semantics() { return gx::rtx_semantics_enabled() ? 1 : 0; }
 // The HUD sliders (stock icon and damage number size), display only, as the backend last set them.
 uint32_t h_hud_scales() { return gx::hud_scales_packed(); }
 static_assert(gx::kArcadeHitboxes == 0x20u && gx::kArcadeProjectileHitboxes == 0x40u && gx::kArcadeHitboxesBehind == 0x80u,
@@ -3412,6 +3414,7 @@ MuHostApi make_host() {
   h.screen_shake_scale = h_screen_shake_scale;
   h.card_boot_confirm = h_card_boot_confirm;
   h.hud_extras = h_hud_extras;
+  h.native_rtx_semantics = h_native_rtx_semantics;
   return h;
 }
 

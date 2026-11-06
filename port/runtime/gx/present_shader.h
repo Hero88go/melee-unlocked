@@ -12,7 +12,11 @@ Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : 
 // box.z > 0: DLSS HUD composite. Pixels a flat 2D draw wrote this frame (HUD, text, player tags) come
 // from this frame's own render instead of DLSS, which rebuilds from history and ghosted the ticking
 // timer and moving tags; NVIDIA's guide puts UI after DLSS. hudr maps output uv to EFB uv.
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; float4 crt; float4 crt2; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; float4 crt; float4 crt2;
+#ifdef PRESENT_HDR
+  float4 hdr;   // HDR10 output (Direct3D 12 only): x 1 on, y paper white nits, z peak nits
+#endif
+};  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Border art (crt2.w > 0): the picture casts a soft shadow on the art beside it, darkest at the
@@ -37,12 +41,21 @@ float4 downsample(float2 uv) {
       acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / float2(nx, ny) * foot - 0.5 * foot);
   return acc / (nx * ny);
 }
+// The EFB holds display values; a path-traced picture (sharp.w > 0.5) is linear light until
+// path_to_display, so an EFB sample composited into it is decoded first (else the HUD came out
+// encoded twice, washed out).
+float4 efb_as_source(float4 v) {
+  if (sharp.w <= 0.5) return v;
+  v.rgb = saturate(v.rgb);
+  v.rgb = lerp(v.rgb / 12.92, pow((v.rgb + 0.055) / 1.055, 2.4), step(0.04045, v.rgb));
+  return v;
+}
 float4 hud(float2 uv, float4 c) {
   if (box.z <= 0.0) return c;
   float2 e = uv * hudr.xy + hudr.zw;
   if (box.w > 0.0) return float4(hudmask.Sample(samp, e).rrr, 1);   // MELEE_DEBUG_HUDMASK
   float m = hudmask.Sample(samp, e).r;
-  return m > 0.0 ? lerp(c, efb.Sample(samp, e), saturate(m)) : c;
+  return m > 0.0 ? lerp(c, efb_as_source(efb.Sample(samp, e)), saturate(m)) : c;
 }
 // Optional screen-space ambient occlusion approximation. Melee uses reversed depth (clear = 0),
 // so nearer samples have larger depth. It darkens contact edges only and leaves cleared pixels
@@ -78,6 +91,29 @@ float3 path_to_display(float3 c) {
   c = saturate(c);
   return lerp(12.92 * c, 1.055 * pow(c, 1.0 / 2.4) - 0.055, step(0.0031308, c));
 }
+// Frame generation's UI layer (Direct3D 12): the HUD as this frame drew it, premultiplied by its
+// mask, at the picture's place in the window.
+float4 PS_UI(O i) : SV_Target {
+  const float2 e = i.uv * hudr.xy + hudr.zw;
+  const float m = saturate(hudmask.Sample(samp, e).r);
+  return float4(efb.Sample(samp, e).rgb * m, m);
+}
+// The finished display picture to the swap chain. HDR10: nits at paper white (the path tracer's
+// light above white rolls off toward the display's peak), BT.2020, PQ.
+float3 present_out(float3 display, float3 above_white) {
+#ifdef PRESENT_HDR
+  if (hdr.x > 0.0) {
+    const float3 d = saturate(display);
+    float3 nits = (lerp(d / 12.92, pow((d + 0.055) / 1.055, 2.4), step(0.04045, d)) + above_white) * hdr.y;
+    const float knee = hdr.y, room = max(hdr.z - hdr.y, 1.0);
+    nits = lerp(nits, knee + room * (1.0 - exp(-(nits - knee) / room)), step(knee, nits));
+    const float3x3 bt709_to_2020 = {0.6274, 0.3293, 0.0433, 0.0691, 0.9195, 0.0114, 0.0164, 0.0880, 0.8956};
+    const float3 y = pow(saturate(max(mul(bt709_to_2020, nits), 0.0) / 10000.0), 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
+  }
+#endif
+  return display;
+}
 float4 PS(O i) : SV_Target {
   if (color.w < -1.5) {
     uint z = min((uint)((1.0 - src.Sample(samp, i.uv).r) * 16777216.0), 0xFFFFFFu);
@@ -89,7 +125,8 @@ float4 PS(O i) : SV_Target {
   float4 c = hud(i.uv, scene);
   // color.w < 0: an EFB copy from a frame buffer without alpha, which reads as opaque on hardware.
   if (color.w < 0.0) return float4(c.rgb, 1.0);
-  if (sharp.z <= 0.0) return float4(art_frame(i.pos.xy, grade(sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb)), c.a);
+  const float3 above_white = sharp.w > 0.5 ? max(c.rgb - 1.0, 0.0) : 0.0;
+  if (sharp.z <= 0.0) return float4(present_out(art_frame(i.pos.xy, grade(sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb)), above_white), c.a);
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -101,7 +138,7 @@ float4 PS(O i) : SV_Target {
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
   float4 sharpened = hud(i.uv, float4(saturate(r), c.a));
-  return float4(grade(sharp.w > 0.5 ? path_to_display(sharpened.rgb) : sharpened.rgb), sharpened.a);
+  return float4(present_out(grade(sharp.w > 0.5 ? path_to_display(sharpened.rgb) : sharpened.rgb), above_white), sharpened.a);
 })";
 
 inline constexpr const char* kPresentCrtTap = R"(
@@ -110,7 +147,7 @@ float3 crt_tap(float2 uv) {
   if (box.z > 0.0) {
     float2 e = uv * hudr.xy + hudr.zw;
     float m = hudmask.SampleLevel(samp, e, 0).r;
-    if (m > 0.0) c = lerp(c, efb.SampleLevel(samp, e, 0), saturate(m));
+    if (m > 0.0) c = lerp(c, efb_as_source(efb.SampleLevel(samp, e, 0)), saturate(m));
   }
   return sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb;
 }
@@ -121,7 +158,7 @@ float4 PS_CRT(O i) : SV_Target {
   float2 picture_uv;
   float3 c = crt_pixel(i.pos.xy, i.uv, picture_uv);
   c *= ao(picture_uv * hudr.xy + hudr.zw);
-  return float4(grade(c), 1.0);
+  return float4(present_out(grade(c), 0.0), 1.0);
 })";
 
 }  // namespace gx

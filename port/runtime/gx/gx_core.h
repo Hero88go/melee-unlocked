@@ -15,6 +15,7 @@
 #include "native_draw_audit.h"
 #include "../abi/mu_native_pose.h"
 #include "../host/tick_timing.h"
+#include "rtx_semantics.h"
 #include "texture_snapshot.h"
 
 struct MuNativePoseSnapshot;
@@ -152,6 +153,9 @@ struct DrawCall {
   // backdrop plane authored to fill the 4:3 view (Poke Floats' sky gradient). True widescreen leaves
   // it at its authored projection so it fills the widened picture instead of showing as a 4:3 box.
   bool frustum_backdrop = false;
+  // Render semantics from the native game (tokens 0xF3-0xF6, rtx_semantics.h): indices into
+  // Frame::rtx. Display only, like owner_player: not part of `identity`, never in a shader UID.
+  RtxDrawInfo rtx;
   // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
   // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
   mutable void* cached_pipeline = nullptr;
@@ -225,6 +229,8 @@ struct Frame {
   // Display latency test (set_latency_test): -1 the picture as drawn, 0 all black, 1 all white. Decided
   // from the pads the game read for this frame, so a photodiode times the same input-to-photon path.
   int8_t test_fill = -1;
+  // Render semantics the native game sent with this frame's draws (empty unless rtx_semantics_enabled).
+  RtxFrameSemantics rtx;
   // Reserve enough storage for an ordinary match before the first large scene is decoded. DrawCall
   // is about 5 KB, so a vector growth during a Stadium transformation can otherwise copy several
   // megabytes on the simulation thread and miss a 16.7 ms frame. Recycled frames retain this memory.
@@ -249,7 +255,7 @@ struct Frame {
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; source_retrace = source_match_frame = 0; time = 0.0; tick = {}; discontinuous = false; hard_cut = false; test_fill = -1; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; source_retrace = source_match_frame = 0; time = 0.0; tick = {}; discontinuous = false; hard_cut = false; test_fill = -1; rtx.clear(); }
 };
 
 // Display latency test for photodiode testers that press X + D-pad Down (LDAT, pico lag testers;

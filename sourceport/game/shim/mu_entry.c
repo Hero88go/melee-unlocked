@@ -244,6 +244,15 @@ int mu_native_owner_tracking(void)
     return mu_host && mu_host->native_owner_tracking ? mu_host->native_owner_tracking() != 0 : 0;
 }
 
+/* Render semantics for the host's ray-traced renderer (tokens 0xF3-0xF6, mu_rtx_tokens.h): the HSD
+ * hooks in tobj.c, dobj.c, lobj.c, cobj.c and eflib.c write them only while this is nonzero. */
+int mu_native_rtx_semantics(void)
+{
+    return mu_host && mu_host->version >= 25 && mu_host->native_rtx_semantics
+               ? mu_host->native_rtx_semantics() != 0
+               : 0;
+}
+
 const MuHostApi* mu_host;
 
 static int32_t mu_run(void);

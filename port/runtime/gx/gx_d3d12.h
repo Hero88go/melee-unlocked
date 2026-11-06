@@ -13,6 +13,11 @@ namespace gx {
 // the selected backend has not measured the requested value.
 bool vram_usage(float* used_gb, float* total_gb);
 bool dxr_path_tracing_available();
+// The path tracer (rtx_*): ready on this GPU; and whether this build has the local NVIDIA integrator.
+bool rtx_path_tracing_ready();
+bool rtx_nvidia_integrator_available();
+// Windows HDR is on for the screen the game is on (Direct3D 12 checks it at each present).
+bool hdr_display_available();
 void gpu_pass_cost(float* dlaa_ms, float* neural_ms);
 
 // Whether Direct3D 12 can start on this system (a DXGI factory and a hardware adapter that can make
