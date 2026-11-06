@@ -388,7 +388,7 @@ def main():
             for model in catalog["models"]:
                 source = args.pro_ai_dir / model["file"]
                 if not source.is_file():
-                    if model["kind"] == "imitation":
+                    if model["kind"] == "imitation" or not model.get("source"):   # ours have nowhere to download from
                         raise SystemExit(f"missing Fight a pro policy: {source}")
                     continue
                 if hashlib.sha256(source.read_bytes()).hexdigest() != model["sha256"]:

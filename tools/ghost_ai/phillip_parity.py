@@ -157,6 +157,10 @@ class PyPolicy:
         self.mask_window = anim.get("tech_mask_window", 7) if anim.get("mask") else 0
         self.rating = (self.m.get("agent_config") or {}).get("rating", 0.0)
         self.prev_action, self.count = 0, 0
+        # Parity holds every noise input at 0.5 and the temperature at 1.0; phillip_likeness.py samples
+        # (noise_rng) at the temperature it measures.
+        self.temperature = 1.0
+        self.noise_rng: tp.Optional[np.random.Generator] = None
         if upstream:
             cv1, assigner, self.randall = upstream
             cfg = self.m["controller"]["custom_v1"]
@@ -196,7 +200,7 @@ class PyPolicy:
             for slot, (spawn, kind, state, ix, iy) in zip(slots, o["items"]):
                 pre = f"game.items.item_{slot}."
                 leaves.update({pre + "exists": True, pre + "type": kind, pre + "state": state, pre + "x": ix, pre + "y": iy})
-        leaves.update({"name": self.code, "needs_reset": reset, "temperature": 1.0, "rating": self.rating})
+        leaves.update({"name": self.code, "needs_reset": reset, "temperature": self.temperature, "rating": self.rating})
         leaves.update(self.state)
         leaves.update(self.prev)
         packed = {}
@@ -207,7 +211,8 @@ class PyPolicy:
             for e in entries:
                 v = leaves.get(e["name"])
                 if e["name"].startswith("noise."):
-                    v = np.full(e["size"], 0.5, np.float32)
+                    v = (self.noise_rng.random(e["size"], dtype=np.float32) if self.noise_rng is not None
+                         else np.full(e["size"], 0.5, np.float32))
                 if v is not None:
                     buf[0, e["offset"]:e["offset"] + e["size"]] = np.asarray(v, dt).reshape(-1)
             packed[key] = buf
@@ -216,6 +221,7 @@ class PyPolicy:
         for key, entries in self.m["outputs"].items():
             for e in entries:
                 out[e["name"]] = vals[key][:, e["offset"]:e["offset"] + e["size"]].reshape((1,) + tuple(e["shape"]))
+        self.last_out = out   # the raw labels, for phillip_likeness.py
         for k, v in out.items():
             if k.startswith("state."):
                 self.state["prev_" + k] = v

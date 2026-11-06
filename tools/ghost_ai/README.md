@@ -47,3 +47,24 @@ Training run. That is a functional check, not a strength test.
 Jev reviews ambiguous replay attribution and evidence wording. Its judgments are saved with their
 input evidence and never replace replay validation or held-out evaluation. Keep downloaded replays,
 generated datasets, credentials and trained model files out of source commits.
+
+## Phillip policies (Fight a pro on the Source Port)
+
+The game plays Phillip's published policies (slippi-ai, Vlad Firoiu, MIT) from `ProAI/catalog.json`.
+`phillip_catalog.py` builds that folder from the Hugging Face index and records, per policy, the players
+its self-play ran as (`trained_as`, the policy's own `agent_config.name`) and whether each Fight a pro
+player is among them (`pro_trained`). The game plays like the pro first: a policy trained as other
+players never beats one trained as the pro, whatever its generation, unless the catalog clears it with
+`likeness_ok`. Set that only from measurements:
+
+```powershell
+$env:PYTHONPATH = '<folder with onnxruntime>'
+py -3.12 tools/ghost_ai/phillip_likeness.py --pro zain --model <dir>/marth_d18_vs_fox_v3.1.onnx --opponent FOX --games 20 --temperature 1.0 0.7
+py -3.12 tools/ghost_ai/phillip_catalog.py --models <dir> --out release/ProAI --delays 18,21 --max-mb 100 --likeness cleared.json --temperature temps.json
+```
+
+`phillip_likeness.py` teacher-forces a policy over the pro's held-out games (the verified arrays) and
+reports how often its sampled controller matches the pro's on the frames where the pro changed
+something, beside the "hold last input" floor. Compare policies on the same opponent; the absolute
+numbers also move with temperature, which the catalog can set per policy. `phillip_parity.py` checks
+the game's C++ stepper against the Python one.
