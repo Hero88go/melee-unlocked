@@ -15,6 +15,14 @@
 #else
 #define LIBRA_RUNTIME_OPENGL   // Linux: the presets run on the OpenGL renderer (gl_prepare/gl_draw)
 #endif
+// The Vulkan renderer's presets (vk_prepare/vk_draw), wherever that renderer is built.
+#if __has_include(<vulkan/vulkan.h>)
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif
+#define LIBRA_RUNTIME_VULKAN
+#define MU_USER_SHADER_VULKAN 1
+#endif
 #include "../../third_party/librashader/librashader_ld.h"
 #include <algorithm>
 #include <cctype>
@@ -318,6 +326,10 @@ void report(const std::string& preset, bool ok) {
 libra_gl_filter_chain_t g_chain_gl = nullptr;
 Choice g_choice_gl;
 #endif
+#ifdef MU_USER_SHADER_VULKAN
+libra_vk_filter_chain_t g_chain_vk = nullptr;
+Choice g_choice_vk;
+#endif
 #ifdef _WIN32
 libra_d3d12_filter_chain_t g_chain12 = nullptr;
 Choice g_choice12;
@@ -328,6 +340,79 @@ Choice g_choice11;
 }  // namespace
 
 bool available() { return library().instance_loaded; }
+
+#ifdef MU_USER_SHADER_VULKAN
+bool vk_prepare(const VulkanDevice& device, const std::string& preset, void (*wait)(void*), void* owner) {
+  test_scan();
+  if (preset == g_choice_vk.preset) return g_chain_vk != nullptr && !g_choice_vk.failed;
+  if (g_chain_vk) {
+    wait(owner);   // frames already submitted still use the old chain's resources
+    library().vk_filter_chain_free(&g_chain_vk);
+    g_chain_vk = nullptr;
+  }
+  g_choice_vk = {preset, true};
+  if (preset.empty()) { set_status({}); return false; }
+#ifdef _WIN32
+  if (!available()) { set_status("librashader.dll is missing from the game folder"); report(preset, false); return false; }
+#else
+  if (!available()) { set_status("librashader is missing from the game folder"); report(preset, false); return false; }
+#endif
+  // A library built without its Vulkan runtime (the Linux build shipped before 0.9.102 had OpenGL only).
+  if (library().vk_filter_chain_create == __librashader__noop_vk_filter_chain_create) {
+    set_status("this librashader build has no Vulkan support; shader presets run on the other renderers");
+    report(preset, false);
+    return false;
+  }
+  libra_shader_preset_t loaded = nullptr;
+  if (!load_preset(preset, &loaded)) { report(preset, false); return false; }
+  libra_device_vk_t vk{};
+  vk.instance = (VkInstance)device.instance;
+  vk.physical_device = (VkPhysicalDevice)device.physical;
+  vk.device = (VkDevice)device.device;
+  vk.queue = (VkQueue)device.queue;
+  vk.entry = (PFN_vkGetInstanceProcAddr)device.get_instance_proc_addr;
+  filter_chain_vk_opt_t options{};
+  options.version = LIBRASHADER_CURRENT_VERSION;
+  options.frames_in_flight = 2;   // the renderer's own (gx_vulkan.cpp kFrames)
+  options.use_dynamic_rendering = true;
+  const std::string error = take_error(library().vk_filter_chain_create(&loaded, vk, &options, &g_chain_vk));
+  if (!error.empty() || !g_chain_vk) {
+    g_chain_vk = nullptr;
+    set_status(error.empty() ? "the filter chain could not be made" : error);
+    report(preset, false);
+    return false;
+  }
+  g_choice_vk.failed = false;
+  report(preset, true);
+  return true;
+}
+
+bool vk_draw(void* command_buffer, uint64_t source, int source_format, uint32_t source_width, uint32_t source_height,
+             uint64_t output, int output_format, uint32_t output_width, uint32_t output_height, const Target& where, size_t frame) {
+  if (!g_chain_vk) return false;
+  libra_image_vk_t in{};
+  in.handle = (VkImage)(uintptr_t)source; in.format = (VkFormat)source_format; in.width = source_width; in.height = source_height;
+  libra_image_vk_t out{};
+  out.handle = (VkImage)(uintptr_t)output; out.format = (VkFormat)output_format; out.width = output_width; out.height = output_height;
+  const libra_viewport_t viewport{where.x, where.y, where.width, where.height};
+  const std::string error = take_error(library().vk_filter_chain_frame(&g_chain_vk, (VkCommandBuffer)command_buffer, frame, in, out, &viewport, nullptr, nullptr));
+  if (error.empty()) return true;
+  set_status(error);
+  g_choice_vk.failed = true;   // the plain picture from the next frame on
+  host::log("shaders: %s stopped: %s", g_choice_vk.preset.c_str(), error.c_str());
+  return false;
+}
+
+void vk_release() {
+  if (g_chain_vk) library().vk_filter_chain_free(&g_chain_vk);
+  g_chain_vk = nullptr;
+  g_choice_vk = {};
+}
+#else
+bool vk_prepare(const VulkanDevice&, const std::string&, void (*)(void*), void*) { return false; }
+bool vk_draw(void*, uint64_t, int, uint32_t, uint32_t, uint64_t, int, uint32_t, uint32_t, const Target&, size_t) { return false; }
+void vk_release() {}
+#endif
 
 std::vector<std::string> presets() {
   unpack_bundle();

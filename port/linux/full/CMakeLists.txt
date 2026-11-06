@@ -103,7 +103,7 @@ file(GLOB FULL_RUNTIME_SOURCES "${PORT}/runtime/ppc/*.cpp" "${PORT}/runtime/hle/
 foreach(removed
     runtime/ppc/leaf_stencils.cpp runtime/ppc/leaf_translator.cpp runtime/ppc/ram_translator.cpp
     runtime/gx/gx_d3d11.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_dlss5.cpp runtime/gx/gx_dlss5_scaling.cpp
-    runtime/gx/gx_dxr_gpu_scene.cpp runtime/gx/gx_dxr_path_tracer.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp
+    runtime/gx/gx_dxr_gpu_scene.cpp runtime/gx/gx_dxr_path_tracer.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp runtime/gx/gx_fsr.cpp runtime/gx/gx_fsr_vk.cpp
     runtime/gx/rtx_scene.cpp runtime/gx/rtx_tracer.cpp runtime/gx/rtx_melee_integrator.cpp
     runtime/gx/gx_backend.cpp runtime/gx/pc_settings_dx11.cpp runtime/host/audio.cpp)
   list(REMOVE_ITEM FULL_RUNTIME_SOURCES "${PORT}/${removed}")

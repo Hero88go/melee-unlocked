@@ -42,7 +42,12 @@ struct RenderOptions {
   // the translated guest's Slippi/Gecko patch hooks. Keep that distinction explicit in the UI and
   // in presentation defaults without changing the user's saved Legacy settings.
   bool native_source = false;
+#ifdef __linux__
+  // Linux (where D3D12 stands for OpenGL): Vulkan for a new install; OpenGL when Vulkan cannot start.
+  RenderApi api = RenderApi::Vulkan;   // --backend, or "backend" in port-settings.ini
+#else
   RenderApi api = RenderApi::D3D12;   // --backend d3d11|d3d12, or "backend" in port-settings.ini
+#endif
   int audio_mode = 0;              // 0 Auto (adaptive, remembered per device), 1 Low latency (fixed), 2 Exclusive, 3 ASIO
   std::string audio_asio_driver;   // ASIO driver name (HKLM\SOFTWARE\ASIO); used in mode 3 only
   int audio_asio_buffer = 0;       // ASIO buffer in frames; 0 = the driver's preferred size

@@ -1782,7 +1782,8 @@ static int melee_main(int argc, char** argv) {
 #ifdef GX_DLSS5
     else if (a == "--dlss5") gfx.dlss5 = true;                  // EXPERIMENTAL (gx_dlss5.h); needs --dlss
 #endif
-    else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : v == "xess-aa" ? 6 : v == "xess-ultra" ? 7 : v == "xess-quality" ? 8 : v == "xess-balanced" ? 9 : v == "xess-performance" ? 10 : -1;
+    else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : v == "xess-aa" ? 6 : v == "xess-ultra" ? 7 : v == "xess-quality" ? 8 : v == "xess-balanced" ? 9 : v == "xess-performance" ? 10 :
+                                  v == "fsr-aa" ? 11 : v == "fsr-quality" ? 12 : v == "fsr-balanced" ? 13 : v == "fsr-performance" ? 14 : v == "fsr-ultra" ? 15 : -1;
       if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
     else if (a == "--frame-generation") gfx.frame_generation_mode = 1;   // backward-compatible 2x shorthand
     else if (a.rfind("--frame-generation=", 0) == 0) {
@@ -2277,6 +2278,7 @@ static int melee_main(int argc, char** argv) {
 #else
     constexpr int vulkan_failure_limit = 2;
 #endif
+    gx::vulkan_set_shader_cache(gfx.shader_cache);   // the start marker lives in the cache folder
     if (gfx.api == gx::RenderApi::Vulkan && gx::vulkan_failed_starts() >= vulkan_failure_limit) {
       host::log("vulkan: the last %d starts did not finish; starting on the default renderer (pick Vulkan in the settings to try it again)",
                 gx::vulkan_failed_starts());

@@ -70,4 +70,13 @@ void xess_download(const std::string& game_dir_utf8);
 ModelState xess_state(const std::string& game_dir_utf8);
 std::string xess_message();
 constexpr const char* kXessSize = "about 60 MB";
+
+// AMD FSR (amd_fidelityfx_loader_dx12/vk.dll and amd_fidelityfx_upscaler_dx12/vk.dll), its own download:
+// AMD's signed files from their FSR SDK repository at a pinned tag (nothing re-hosted), each checked
+// against its SHA-256 before it goes beside the game; the game loads them at its next start.
+bool fsr_present(const std::string& game_dir_utf8);
+void fsr_download(const std::string& game_dir_utf8);
+ModelState fsr_state(const std::string& game_dir_utf8);
+std::string fsr_message();
+constexpr const char* kFsrSize = "about 160 MB";
 }  // namespace host::updater

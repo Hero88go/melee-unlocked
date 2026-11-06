@@ -29,8 +29,17 @@ class YouGame0968MergeTest(unittest.TestCase):
             with self.subTest(backend=name):
                 backend = source("port/runtime/gx/" + name)
                 # Melee Unlocked 1.0: a hidden window only tests (DXGI_PRESENT_TEST), the other call
-                # presents. Both sit inside the one wait scope.
-                self.assertEqual(backend.count("swapchain_->Present("), 2)
+                # presents. Both sit inside the one wait scope. Direct3D 12 has a third: AMD FSR frame
+                # generation's second present, from its presenter thread, whose flags are taken from
+                # the same actual fullscreen state when the present is handed to it.
+                if name == "gx_d3d12.cpp":
+                    self.assertEqual(backend.count("swapchain_->Present("), 3)
+                    presenter = re.search(r"void fg_presenter_run\(\) \{(.*?)\n  \}\n", backend, re.S)
+                    self.assertIsNotNone(presenter)
+                    self.assertIn("swapchain_->Present(interval, flags);", presenter.group(1))
+                    self.assertIn("(!opts_.vsync && !fullscreen_state_.exclusive_active) ? DXGI_PRESENT_ALLOW_TEARING : 0u", backend)
+                else:
+                    self.assertEqual(backend.count("swapchain_->Present("), 2)
                 present = re.search(
                     r"const HRESULT present_result = \[&\] \{(.*?)\}\(\);",
                     backend, re.S)

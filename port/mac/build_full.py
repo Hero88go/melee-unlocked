@@ -56,7 +56,7 @@ def main():
     for directory in ['ppc', 'hle', 'host', 'gx']:
         sources += sorted(Path('port/runtime', directory).glob('*.cpp'))
     removed = {'leaf_stencils', 'leaf_translator', 'ram_translator', 'gx_d3d11', 'gx_d3d12', 'gx_dlss5',
-               'gx_dlss5_scaling', 'gx_dxr_gpu_scene', 'gx_dxr_path_tracer', 'gx_streamline', 'gx_xess', 'rtx_scene', 'rtx_tracer', 'rtx_melee_integrator',
+               'gx_dlss5_scaling', 'gx_dxr_gpu_scene', 'gx_dxr_path_tracer', 'gx_streamline', 'gx_xess', 'gx_fsr', 'gx_fsr_vk', 'rtx_scene', 'rtx_tracer', 'rtx_melee_integrator',
                'gx_backend', 'pc_settings_dx11', 'audio'}
     sources = [p for p in sources if p.stem not in removed]
     sources += sorted(Path('port/runtime/mu_net').glob('*.cpp'))
@@ -69,17 +69,19 @@ def main():
     sources += sorted(Path('port/third_party/enet').glob('*.c'))
     sources += sorted(Path('port/third_party/monocypher').glob('*.c'))
     sources += [Path('port/third_party/imgui', p) for p in ['imgui.cpp','imgui_draw.cpp','imgui_tables.cpp',
-        'imgui_widgets.cpp','backends/imgui_impl_sdl2.cpp','backends/imgui_impl_opengl3.cpp']]
+        'imgui_widgets.cpp','backends/imgui_impl_sdl2.cpp','backends/imgui_impl_opengl3.cpp','backends/imgui_impl_vulkan.cpp']]
     version = (ROOT/'VERSION').read_text().strip()
     flags = ['-arch','x86_64','-mmacosx-version-min=15.0','-O2','-g','-fno-strict-aliasing',
              '-ffp-contract=off','-pthread','-Wno-unknown-pragmas','-Wno-multichar','-Wno-deprecated-declarations']
     cpp = ['-std=c++17','-include','port/linux/compat/windows.h','-DMELEE_LINUX','-DGX_PC_SETTINGS',
            '-DMELEE_SOURCE_PORT', f'-DMELEE_PORT_VERSION="{version}"','-DMELEE_CPU_BASELINE_NAME="AVX2"',
-           '-DMELEE_PLAYBACK_GCT_BASE=0u','-DMELEE_PLAYBACK_GCT_SIZE=0u','-DGX_SHADER_CACHE_VERSION="mac-gl-1"']
+           '-DMELEE_PLAYBACK_GCT_BASE=0u','-DMELEE_PLAYBACK_GCT_SIZE=0u','-DGX_SHADER_CACHE_VERSION="mac-gl-1"',
+           # The Vulkan renderer (gx_vulkan.cpp, MoltenVK on the Mac) opens the loader at run time: headers only.
+           '-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES']
     for p in ['port/linux/compat','port/linux','port/app','port/runtime/ppc','port/runtime/hle','port/runtime/host',
               'port/runtime/gx','port/runtime/mu_net','port/runtime/abi','port/third_party','native',str(BUILD/'gen'),
               str(gen),'port/third_party/enet/include','port/third_party/monocypher','port/third_party/imgui',
-              'port/third_party/imgui/backends',str(SDL/'include'),str(SDL/'include/SDL2')]:
+              'port/third_party/imgui/backends','port/third_party/vulkan-headers/include',str(SDL/'include'),str(SDL/'include/SDL2')]:
         cpp += ['-I'+p]
     cflags = ['-DHAS_SOCKLEN_T=1','-DHAS_POLL=1','-DHAS_FCNTL=1','-DHAS_MSGHDR_FLAGS=1',
               '-DHAS_GETADDRINFO=1','-DHAS_GETNAMEINFO=1','-DHAS_INET_PTON=1','-DHAS_INET_NTOP=1',

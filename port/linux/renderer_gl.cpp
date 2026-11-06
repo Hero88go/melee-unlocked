@@ -19,9 +19,9 @@
 #ifdef GX_PC_SETTINGS   // the full game (port/linux/full): texture packs and F2 captures
 #include "texture_pack.h"
 #include "video_background.h"
-#include "video_background_learning.h"
 #include "user_shader.h"
 #endif
+#include "video_background_learning.h"   // scene_slot: which scene is the character select (every build)
 #include "crt_shader.h"
 #include "gx_retro.h"
 #ifdef __APPLE__
@@ -415,7 +415,7 @@ void main() {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices_);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniform_[0]); glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniform_[1]);
     gx::set_main_projection(gx::frame_scene_draw(frame));
-    gx::set_css_scene(frame.scene_major == 1 && frame.scene_minor == 0);
+    gx::set_css_scene(gx::video_bg::learning::scene_slot(frame.scene_major, frame.scene_minor) == 0);   // the character select, as Direct3D decides it
 #ifdef GX_PC_SETTINGS
     // Menu video backgrounds: the character select's video goes in after Melee's untextured
     // animated backdrop, the stage select's right after the learned backdrop draw (as on Windows).

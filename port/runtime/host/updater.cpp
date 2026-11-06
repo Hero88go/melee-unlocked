@@ -948,7 +948,7 @@ struct PartFetch {
   std::string message;
   std::thread thread;
 };
-PartFetch g_compat, g_xess;
+PartFetch g_compat, g_xess, g_fsr;
 void part_message(PartFetch& p, const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); p.message = m; }
 std::string part_message(PartFetch& p) { std::lock_guard<std::mutex> lk(g_mutex); return p.message; }
 
@@ -1014,6 +1014,18 @@ bool compat_record(const std::string& game_dir_utf8, std::string* sha, std::stri
 // Intel's XeSS runtime as this release was built with it (XeSS SDK, port/third_party/xess).
 constexpr const char* kXessUrl = "https://github.com/hero88go/melee-unlocked/releases/download/v0.9.98/MeleeUnlocked-XeSS.zip";
 constexpr const char* kXessSha256 = "251659dd84a3e84de67c886a4186e01f3eca49b00641906fe38bb6b807e5d5b7";
+
+// AMD's signed FSR DLLs as the game was built with them (AMD FSR SDK 2.4.0, port/third_party/fsr).
+constexpr const char* kFsrBase = "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin/";
+struct FsrFile { const char* name; const char* sha256; };
+constexpr FsrFile kFsrFiles[] = {
+    {"amd_fidelityfx_loader_dx12.dll", "e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb"},
+    {"amd_fidelityfx_upscaler_dx12.dll", "aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace"},
+    {"amd_fidelityfx_framegeneration_dx12.dll", "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6"},
+    {"amd_fidelityfx_loader_vk.dll", "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9"},
+    {"amd_fidelityfx_upscaler_vk.dll", "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7"},
+    {"amd_fidelityfx_framegeneration_vk.dll", "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4"},
+};
 }  // namespace
 
 bool compat_build_needed(const std::string& game_dir_utf8) {
@@ -1090,6 +1102,54 @@ void xess_download(const std::string& game_dir_utf8) {
              });
 }
 
+bool fsr_present(const std::string& game_dir_utf8) {
+  std::error_code ec;
+  for (const FsrFile& f : kFsrFiles)
+    if (!std::filesystem::is_regular_file(std::filesystem::u8path(game_dir_utf8) / f.name, ec)) return false;
+  return true;
+}
+
+// Each file on its own (AMD publishes them loose, not as a zip), checked, written beside the game
+// under a temporary name and then renamed, so a cut download never leaves half a DLL in place.
+void fsr_download(const std::string& game_dir_utf8) {
+  if (g_fsr.busy.exchange(true)) return;
+  if (g_fsr.thread.joinable()) g_fsr.thread.join();
+  g_fsr.failed = false;
+  part_message(g_fsr, std::string("Downloading AMD FSR (") + kFsrSize + ")...");
+  g_fsr.thread = std::thread([game_dir_utf8] {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::u8path(game_dir_utf8);
+    std::error_code ec;
+    auto fail = [&](const std::string& why) {
+      part_message(g_fsr, why);
+      host::log("fsr download: %s", why.c_str());
+      g_fsr.failed = true;
+      g_fsr.busy = false;
+    };
+    for (const FsrFile& f : kFsrFiles) {
+      std::string body; int status = 0;
+      if (!http_get(std::string(kFsrBase) + f.name, &body, &status) || status != 200)
+        return fail(status ? "AMD FSR download failed (HTTP " + std::to_string(status) + ")" : std::string("AMD FSR download failed (no connection)"));
+      if (sha256_hex(body) != f.sha256) return fail(std::string("AMD FSR: ") + f.name + " does not match AMD's build; not installed");
+      const fs::path part = dir / (std::string(f.name) + ".part"), to = dir / f.name;
+      { std::ofstream o(part, std::ios::binary); o.write(body.data(), (std::streamsize)body.size()); if (!o) return fail("AMD FSR: cannot write beside the game"); }
+      fs::rename(part, to, ec);
+      if (ec) { ec.clear(); fs::copy_file(part, to, fs::copy_options::overwrite_existing, ec); fs::remove(part, ec); }
+      if (!fs::is_regular_file(to, ec)) return fail("AMD FSR: cannot put it beside the game");
+    }
+    part_message(g_fsr, "AMD FSR is installed. It starts with the game's next start.");
+    host::log("fsr download: AMD's FSR DLLs installed beside the game");
+    g_fsr.busy = false;
+  });
+}
+
+ModelState fsr_state(const std::string& game_dir_utf8) {
+  if (g_fsr.busy.load()) return ModelState::Downloading;
+  if (fsr_present(game_dir_utf8)) return ModelState::Present;
+  return g_fsr.failed.load() ? ModelState::Failed : ModelState::Missing;
+}
+std::string fsr_message() { return part_message(g_fsr); }
+
 ModelState xess_state(const std::string& game_dir_utf8) {
   if (g_xess.busy.load()) return ModelState::Downloading;
   if (xess_present(game_dir_utf8)) return ModelState::Present;
@@ -1103,5 +1163,6 @@ void shutdown() {
   if (g_model_thread.joinable()) g_model_thread.join();
   if (g_compat.thread.joinable()) g_compat.thread.join();
   if (g_xess.thread.joinable()) g_xess.thread.join();
+  if (g_fsr.thread.joinable()) g_fsr.thread.join();
 }
 }  // namespace host::updater

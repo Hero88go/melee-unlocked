@@ -156,6 +156,25 @@ def agent_test_hook_enabled(executable):
     return b'agent-test.json' in executable.read_bytes()
 
 
+def ship_vulkan_cache(source, target):
+    """The warmed Vulkan SPIR-V and its recipes (as tools/package_release.py ships them for Windows):
+    SPIR-V is the same on every GPU and driver, so a first Linux session on Vulkan builds its common
+    pipelines before the first frame. The recipes ship as vk_recipes.shipped.bin, which an extracted
+    update never writes over the player's own vk_recipes.bin."""
+    recipes = source / 'vk_recipes.bin'
+    if not recipes.is_file():
+        print(f'vulkan cache: none at {source} (first Vulkan sessions compile their shaders)')
+        return 0
+    target.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for spv in sorted(source.glob('*.spv')):
+        shutil.copy2(spv, target / spv.name)
+        count += 1
+    shutil.copy2(recipes, target / 'vk_recipes.shipped.bin')
+    print(f'vulkan cache: {count} SPIR-V files and {recipes.stat().st_size} bytes of recipes from {source}')
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build-linux/port/linux/full')
@@ -390,6 +409,7 @@ def main():
         if not src.is_file():
             raise SystemExit(f'missing license text: {src}')
         shutil.copy2(src, licenses / dst)
+    ship_vulkan_cache(ROOT / 'shadercache/vulkan-v1', folder / 'shadercache/vulkan-v1')
     # Mod import tools: the system's 7-Zip and xdelta3, as the Windows release carries its own.
     tools = folder / 'tools'
     tools.mkdir()

@@ -53,4 +53,31 @@ class VBlankModel {
   int at_ = 0, count_ = 0;
 };
 
+// Which returns of the wait are vertical blanks. A display that is asleep or switched off returns
+// from the wait at once instead of waiting for a blank (seen 2026-11-05: millions of returns a
+// second, a core spinning at the waiting thread's priority). No display refreshes faster than about
+// every 1.7 ms (600 Hz), so a return within a millisecond of the previous one is not a blank and is
+// not counted. One such return also follows a wake that came late (the next blank is just after
+// it), which is no reason to stop waiting; only a run of them means the wait is not waiting, and
+// then the thread sleeps between waits.
+class WakeFilter {
+ public:
+  enum Verdict { kBlank, kSkip, kSleep };
+  Verdict add(double now) {
+    const bool quick = have_ && now - last_ < 0.001;
+    have_ = true; last_ = now;
+    if (!quick) { run_ = 0; return kBlank; }
+    return ++run_ >= kRun ? kSleep : kSkip;
+  }
+  // The time a sleep ended: the next return is measured from it, so the display still not waiting
+  // is caught by the first return after the sleep.
+  void slept(double now) { last_ = now; have_ = true; }
+
+ private:
+  static constexpr int kRun = 4;
+  double last_ = 0;
+  bool have_ = false;
+  int run_ = 0;
+};
+
 }  // namespace gx

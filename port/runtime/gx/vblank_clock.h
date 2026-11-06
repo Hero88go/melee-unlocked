@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <string>
@@ -35,30 +36,42 @@ class VBlankClock {
     DXGI_OUTPUT_DESC desc{};
     output->GetDesc(&desc);
     if (thread_.joinable() && desc.Monitor == monitor_) { output->Release(); return; }
-    stop();
-    monitor_ = desc.Monitor;
-    { std::lock_guard<std::mutex> lock(mutex_); model_.clear(); failures_ = 0; }
-    running_ = true;
-    thread_ = std::thread([this, output] {
-      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);   // it only sleeps in the wait
-      while (running_.load(std::memory_order_relaxed)) {
-        const HRESULT hr = output->WaitForVBlank();
-        const double now = host::now_seconds();
-        if (FAILED(hr)) {
-          { std::lock_guard<std::mutex> lock(mutex_); ++failures_; }
-          Sleep(5);
-          continue;
-        }
-        std::lock_guard<std::mutex> lock(mutex_);
-        model_.add(now);
+    track_output(output, desc.Monitor);
+  }
+  // Follows the output showing `monitor`, for a renderer without a DXGI swap chain (Vulkan): the
+  // output is found through DXGI's adapter list, and the wait itself is the same.
+  void track(HMONITOR monitor) {
+    if (!monitor) return;
+    if (thread_.joinable() && monitor == monitor_) return;
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)) || !factory) return;
+    IDXGIOutput* found = nullptr;
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT a = 0; !found && factory->EnumAdapters1(a, &adapter) == S_OK; ++a) {
+      IDXGIOutput* output = nullptr;
+      for (UINT o = 0; !found && adapter->EnumOutputs(o, &output) == S_OK; ++o) {
+        DXGI_OUTPUT_DESC desc{};
+        if (SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor == monitor) found = output;
+        else output->Release();
       }
-      output->Release();
-    });
+      adapter->Release();
+    }
+    factory->Release();
+    if (found) track_output(found, monitor);
   }
   void stop() {
     running_ = false;
     if (thread_.joinable()) thread_.join();
     monitor_ = nullptr;
+  }
+  // Vertical blanks seen since the clock started on this output (for frames-per-refresh counting,
+  // vrr_detect.h, where no DXGI frame statistics exist).
+  uint64_t wakes() const { return wakes_.load(std::memory_order_relaxed); }
+  // Blanks are arriving: the thread runs, the waits succeed, and the newest blank is recent.
+  bool healthy() const {
+    if (!thread_.joinable()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return failures_ <= 8 && model_.newest() > 0.0 && host::now_seconds() - model_.newest() < 0.25;
   }
   // The first blank at or after `after`, if the clock is healthy against the nominal refresh.
   // `why` says what is wrong when it is not.
@@ -84,9 +97,38 @@ class VBlankClock {
   }
 
  private:
+  // Takes ownership of `output` (released when the thread ends).
+  void track_output(IDXGIOutput* output, HMONITOR monitor) {
+    stop();
+    monitor_ = monitor;
+    { std::lock_guard<std::mutex> lock(mutex_); model_.clear(); failures_ = 0; }
+    wakes_.store(0, std::memory_order_relaxed);
+    running_ = true;
+    thread_ = std::thread([this, output] {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);   // it only sleeps in the wait
+      WakeFilter filter;   // vblank_model.h: returns that are not blanks (a display asleep or off)
+      while (running_.load(std::memory_order_relaxed)) {
+        const HRESULT hr = output->WaitForVBlank();
+        const double now = host::now_seconds();
+        if (FAILED(hr)) {
+          { std::lock_guard<std::mutex> lock(mutex_); ++failures_; }
+          Sleep(5);
+          continue;
+        }
+        const WakeFilter::Verdict verdict = filter.add(now);
+        if (verdict == WakeFilter::kSleep) { Sleep(10); filter.slept(host::now_seconds()); continue; }
+        if (verdict == WakeFilter::kSkip) continue;
+        wakes_.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(mutex_);
+        model_.add(now);
+      }
+      output->Release();
+    });
+  }
   std::thread thread_;
   std::atomic<bool> running_{false};
-  std::mutex mutex_;
+  std::atomic<uint64_t> wakes_{0};
+  mutable std::mutex mutex_;
   VBlankModel model_;
   unsigned failures_ = 0;
   HMONITOR monitor_ = nullptr;
