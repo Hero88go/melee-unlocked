@@ -3432,6 +3432,8 @@ void settings_context_destroy() {
   ImGui::DestroyContext();
 }
 
+// HDR10 paper white of the settings panel (0 on an SDR screen); set by the Direct3D 12 presenter.
+namespace { float g_settings_hdr_nits = 0.0f; }
 #ifdef _WIN32
 struct PcSettingsUI::Impl {
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
@@ -3443,7 +3445,6 @@ struct PcSettingsUI::Impl {
   SettingsState state;
 };
 
-namespace { float g_settings_hdr_nits = 0.0f; }
 void PcSettingsUI::set_hdr_paper_white(float nits) { g_settings_hdr_nits = nits; }
 
 PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options,

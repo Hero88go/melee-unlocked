@@ -45,7 +45,7 @@ if(MELEE_LINUX_GRAPHICS)
     renderer_presenter.cpp "${LINUX_HOST_FOBJ}"
     ../runtime/gx/gx_core.cpp ../runtime/gx/gx_shader.cpp ../runtime/gx/gx_texture.cpp
     ../runtime/gx/native_draw_audit.cpp ../runtime/gx/native_pose_bridge.cpp
-    ../runtime/gx/authored_pose.cpp ../runtime/gx/subframe.cpp)
+    ../runtime/gx/authored_pose.cpp ../runtime/gx/subframe.cpp ../runtime/gx/rtx_semantics.cpp)
   target_link_libraries(melee_linux PRIVATE SDL2::SDL2 OpenGL::GL GLEW::GLEW)
   find_program(MELEE_XVFB_RUN xvfb-run)
   if(MELEE_XVFB_RUN)
