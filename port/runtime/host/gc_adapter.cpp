@@ -657,11 +657,19 @@ bool open_libusb() {
     if (detached != 0) log("gc adapter: could not detach the kernel driver (%s)", libusb_error_name(detached));
   }
 #endif
+#ifndef _WIN32
+  // Linux: claimed before the request. A request to an interface nobody claimed makes the kernel give
+  // it to usbfs on our handle, and the claim after it then failed with LIBUSB_ERROR_BUSY ("in use by
+  // another program" with nothing else running). Dolphin claims first too.
+  rc = libusb_claim_interface(g_dev, g_iface);
+#endif
   // The request is optional: Nintendo adapters may reject it while still working normally.
-  const int protocol = libusb_control_transfer(g_dev, 0x21, 11, 0x0001, 0, nullptr, 0, 1000);
+  const int protocol = rc == 0 ? libusb_control_transfer(g_dev, 0x21, 11, 0x0001, 0, nullptr, 0, 1000) : 0;
   if (protocol < 0 && protocol != LIBUSB_ERROR_PIPE)
     log("gc adapter: report protocol request returned %s", libusb_error_name(protocol));
+#ifdef _WIN32
   rc = libusb_claim_interface(g_dev, g_iface);
+#endif
   if (rc != 0) {
     set_problem(std::string("Your GameCube adapter is in use by another program, such as Dolphin, so the game cannot read it. Close that program.")
                 + kFrame1Note + " It is picked up without a restart.");
