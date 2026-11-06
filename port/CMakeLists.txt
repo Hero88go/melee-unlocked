@@ -1155,7 +1155,8 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
     "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
 endif()
 
-add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp runtime/gx/flicker_scan.cpp runtime/gx/texture_pack.cpp runtime/gx/gx_dxr_scene.cpp runtime/gx/gx_dxr_gpu_scene.cpp runtime/gx/gx_dxr_path_tracer.cpp)
+add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp runtime/gx/flicker_scan.cpp runtime/gx/texture_pack.cpp runtime/gx/gx_dxr_scene.cpp runtime/gx/gx_dxr_gpu_scene.cpp runtime/gx/gx_dxr_path_tracer.cpp
+  runtime/gx/rtx_semantics.cpp runtime/gx/rtx_lights.cpp runtime/gx/rtx_scene.cpp runtime/gx/rtx_tracer.cpp runtime/gx/rtx_melee_integrator.cpp)
 target_include_directories(port_gpu_resource_test PRIVATE runtime/gx runtime/host runtime/ppc runtime/hle third_party)
 target_compile_features(port_gpu_resource_test PRIVATE cxx_std_17)
 target_compile_definitions(port_gpu_resource_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS GX_SRV_HEAP_SIZE=32 GX_SAMPLER_HEAP_SIZE=16 GX_CONSTANT_PAGE_SIZE=4096)
@@ -1163,7 +1164,8 @@ target_link_libraries(port_gpu_resource_test PRIVATE d3d12 dxgi d3dcompiler user
 add_test(NAME port_gpu_resources COMMAND port_gpu_resource_test)
 set_tests_properties(port_gpu_resources PROPERTIES TIMEOUT 60)
 
-add_executable(port_render_observer_test tests/render_observer_test.cpp runtime/gx/render_observer.cpp runtime/gx/gx_texture.cpp runtime/gx/authored_pose.cpp runtime/gx/subframe.cpp runtime/gx/gx_shader.cpp)
+add_executable(port_render_observer_test tests/render_observer_test.cpp runtime/gx/render_observer.cpp runtime/gx/gx_texture.cpp runtime/gx/authored_pose.cpp runtime/gx/subframe.cpp runtime/gx/gx_shader.cpp
+  runtime/gx/rtx_semantics.cpp)
 target_include_directories(port_render_observer_test PRIVATE runtime/ppc runtime/gx "${PROJECT_SOURCE_DIR}/native")
 target_compile_features(port_render_observer_test PRIVATE cxx_std_17)
 target_compile_definitions(port_render_observer_test PRIVATE NOMINMAX)

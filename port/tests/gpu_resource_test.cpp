@@ -188,15 +188,15 @@ int main(int argc, char** argv) {
     check(warmed > 0, "recorded pipelines prewarm before the next draw");
     for (unsigned n=0; n<6; ++n) { frame.sequence=n+1; renderer->submit_frame(frame); }
     const uint64_t owner_b = frame.draws[0].cached_pipeline_owner;
-    // A draw's cached pipeline belongs to one backend AND one motion-vector (DLSS) variant: the
-    // variant changes shader generation and the render target count, so a pipeline built for the
-    // other one must never be handed back after DLSS is switched on or off. The owner is
-    // backend_id*4 + 2*variant + wire, so the plain variant is a multiple of four and two backends
-    // created in sequence step by four.
+    // A draw's cached pipeline belongs to one backend AND one variant (path-tracing G-buffer,
+    // motion vectors for DLSS, wireframe): each changes shader generation or the render target
+    // count, so a pipeline built for another one must never be handed back after a switch. The
+    // owner is backend_id*8 + 4*gbuffer + 2*motion vectors + wire, so the plain variant is a
+    // multiple of eight and two backends created in sequence step by eight.
     printf("pso cache owners: %llu then %llu\n",(unsigned long long)owner_a,(unsigned long long)owner_b);
     check(owner_a!=0&&owner_b!=0,"draws resolved a real pipeline");
-    check(owner_a%4==0&&owner_b%4==0,"pipelines without motion vectors or wireframe cache under the backend's first owner");
-    check(owner_b==owner_a+4,"each backend owns one cache identity per motion-vector and wireframe variant");
+    check(owner_a%8==0&&owner_b%8==0,"pipelines without a G-buffer, motion vectors or wireframe cache under the backend's first owner");
+    check(owner_b==owner_a+8,"each backend owns one cache identity per G-buffer, motion-vector and wireframe variant");
 
     // Texture generator 7 must read Vertex::texmtx[7] (offset 104), not generator 6's index.
     static_assert(offsetof(gx::Vertex,texmtx)+7==104,"texmtx[7] byte offset");
