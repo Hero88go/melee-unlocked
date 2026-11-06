@@ -2444,6 +2444,11 @@ int main(int argc, char** argv) {
     auto marths = host::cosmetics::assets();
     check(mex_scan.ok && marths.size() == 8 && mex_scan.message.find("8 skins from ") == 0,
           "m-ex imports and reports all eight Marth costumes, excluding an unlisted DAT");
+    const auto mex_packs = host::cosmetics::packs();
+    check(mex_packs.size() == 1 && mex_packs[0].name == "Eight Marths" && mex_packs[0].skins == 8 &&
+              mex_packs[0].variants.size() == 4 && std::all_of(marths.begin(), marths.end(),
+                  [&](const auto& skin) { return skin.pack == mex_packs[0].key; }),
+          "original and extra m-ex costumes stay in one source pack, with sets inside that pack");
     std::vector<std::string> ids(8), pictures(8);
     for (size_t i = 0; i < files.size(); ++i) {
       for (const auto& skin : marths) {
