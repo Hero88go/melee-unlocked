@@ -4357,7 +4357,16 @@ std::vector<PackInfo> packs() {
   }
   for (auto& pack : out) {
     pack.slots = (uint32_t)slots[pack.key].size();
-    std::sort(pack.variants.begin(), pack.variants.end());   // "" first, then "alt L", "alt R"
+    std::sort(pack.variants.begin(), pack.variants.end(), [](const std::string& a, const std::string& b) {
+      // Costume 10 follows 9, rather than preceding 2 in a large m-ex pack.
+      constexpr const char* prefix = "m-ex costume ";
+      if (a.rfind(prefix, 0) == 0 && b.rfind(prefix, 0) == 0) {
+        const auto left = std::strtoul(a.c_str() + 13, nullptr, 10);
+        const auto right = std::strtoul(b.c_str() + 13, nullptr, 10);
+        if (left != right) return left < right;
+      }
+      return a < b;
+    });
   }
   // Imports first, then the packs by name.
   std::stable_sort(out.begin(), out.end(), [](const PackInfo& a, const PackInfo& b) {

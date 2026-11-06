@@ -1719,6 +1719,7 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
     companions.push_back({item.kind, item.target_path, item.path});
   gx::texpack::refresh_cosmetic_companions(std::move(companions));
   host::log("cosmetics: character select picked %s for %s", pick.name.c_str(), slot.c_str());
+  screen_label::show(("Skin: " + pick.name).c_str(), 2.5);
   reply[0] = 1;
   if (allowed_costumes) reply.push_back((uint8_t)costume);
   reply.insert(reply.end(), pick.name.begin(), pick.name.begin() + (std::ptrdiff_t)std::min<size_t>(pick.name.size(), 63));
