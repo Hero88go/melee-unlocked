@@ -516,7 +516,6 @@ bool reflex_sleep(uint32_t frame_index) {
   }
   { host::perf::Scope wait_cost(host::perf::Stage::Wait);
     driver_call([&] { return slReflexSleep(*g_token); }); }
-  driver_call([&] { return slPCLSetMarker(sl::PCLMarker::eSimulationStart, *g_token); });
   return true;
 }
 float reflex_latency_ms() { return g_latency_ms.load(std::memory_order_relaxed); }

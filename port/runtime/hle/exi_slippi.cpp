@@ -15,6 +15,7 @@
 #include "host.h"
 #include "vcdiff.h"
 #include "sysgen_boot.h"
+#include "mod_scan.h"
 #include "lab_view.h"
 #ifdef YOUGAME_AGENT_TEST_HOOK
 #include "yougame_agent_static.h"
@@ -713,7 +714,14 @@ std::vector<uint8_t> build_game_file(const std::string& name) {
   if (read_whole_file(base + ".diff", blob)) {
     uint32_t off = 0, size = 0;
     std::vector<uint8_t> source;
-    if (host::disc_find_file(name, &off, &size)) {
+    // These deltas were authored against retail assets. A mod can replace the same archive
+    // with a different layout; VCDIFF may still succeed, producing invalid relocation offsets.
+    // Static Recomp already has an explicit retail base for the mod's code. Use that same disc
+    // for Sys deltas, keeping the mod disc's own files and file table intact.
+    if (!host::options.mod_base_iso.empty()) {
+      source_port::mods::read_disc_file(std::filesystem::u8path(host::options.mod_base_iso),
+                                      ("/" + name).c_str(), &source);
+    } else if (host::disc_find_file(name, &off, &size)) {
       source.resize(size);
       if (!host::disc_read(off, source.data(), size)) source.clear();
     }

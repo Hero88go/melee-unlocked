@@ -4541,7 +4541,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                            std::memory_order_relaxed);
     }
   }
-  if (!reflex_token_) streamline::pcl_marker(0);   // under Reflex pacing it was set after the sleep
+  // Both modes measure the same submission boundary. Starting the marker after Reflex's sleep
+  // included subsequent frame selection/re-posing only when Reflex was on, inflating its counter.
+  streamline::pcl_marker(0);
   streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
   const EfbCopy* screen = nullptr;

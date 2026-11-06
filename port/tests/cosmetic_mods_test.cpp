@@ -578,6 +578,57 @@ int main(int argc, char** argv) {
   std::error_code ec; fs::remove_all(folder, ec); fs::create_directories(folder, ec);
   check(!ec, "create temporary directory");
 
+  if (argc == 5 && std::string(argv[1]) == "--build-looks") {
+    host::cosmetics::configure((folder / L"settings.ini").string());
+    std::string message;
+    const bool ok = host::cosmetics::build_look_packs(argv[2], argv[3], argv[4], &message);
+    std::printf("Diet look build: %s\n", message.c_str());
+    fs::remove_all(folder, ec);
+    return ok ? 0 : 1;
+  }
+  if (argc == 5 && std::string(argv[1]) == "--install-official") {
+    host::cosmetics::configure((folder / L"settings.ini").string());
+    const int which = std::atoi(argv[2]);
+    const std::string mods = (folder / L"Mods").u8string();
+    host::cosmetics::install_official_look(which, argv[3], argv[4], mods);
+    host::cosmetics::OfficialLookState state;
+    for (int tick = 0; tick < 9000; ++tick) {
+      state = host::cosmetics::official_look_state(which, mods);
+      if (!state.busy) break;
+      Sleep(100);
+    }
+    std::printf("Official look install: %s\n", state.message.c_str());
+    const bool ok = !state.busy && state.installed;
+    if (!state.busy) fs::remove_all(folder, ec);
+    return ok ? 0 : 1;
+  }
+
+  if ((argc == 3 || argc == 4) && std::string(argv[1]) == "--patch-tool") {
+    host::cosmetics::configure((folder / L"settings.ini").string());
+    const fs::path cache = folder / L"CosmeticMods" / L"tools" / L"xdelta3.exe";
+    fs::create_directories(cache.parent_path(), ec);
+    if (argc == 3) write_file(cache, read_file(fs::u8path(argv[2])));
+    const fs::path source = folder / L"source with spaces.bin", patch = folder / L"test patch.xdelta";
+    write_file(source, {'h','e','l','l','o',' ','w','o','r','l','d'});
+    write_file(patch, {0xD6,0xC3,0xC4,0,0,1,11,0,17,14,0,7,4,1,' ','t','h','e','r','e','!',21,7,0,3,0});
+    const std::string expected = "hello there!!!";
+    for (int fault = 0; fault < 2; ++fault) {
+      const fs::path bad = folder / (fault ? L"broken tool.exe" : L"missing tool.exe");
+      if (fault) write_file(bad, {'n','o','t',' ','a','n',' ','e','x','e'});
+      const fs::path output = folder / (fault ? L"repaired output.bin" : L"installed output.bin");
+      std::string error;
+      const bool ok = host::cosmetics::testing::apply_look_patch(bad.u8string(), source.u8string(), patch.u8string(), output.u8string(), &error);
+      if (!ok) std::fprintf(stderr, "patch-tool diagnostic: %s\n", error.c_str());
+      const auto bytes = read_file(output);
+      check(ok && std::string(bytes.begin(), bytes.end()) == expected,
+            "a missing or unstartable packaged tool recovers and applies the real delta, including paths with spaces");
+    }
+    fs::remove_all(folder, ec);
+    if (failures) return 1;
+    std::puts("patch-tool recovery diagnostic passed");
+    return 0;
+  }
+
   if (argc == 3 && std::string(argv[1]) == "--pause-pack") {
     host::cosmetics::configure((folder / L"settings.ini").string());
     const auto imported = host::cosmetics::import_file(argv[2]);
@@ -2619,7 +2670,7 @@ int main(int argc, char** argv) {
               std::none_of(assets.begin(), assets.end(), [](const auto& a) { return a.selected; }),
           "a two-style pause pack imports both choices without silently enabling either");
     std::string no_hud_id;
-    for (const auto& asset : assets) if (asset.name.find("no HUD") != std::string::npos) no_hud_id = asset.id;
+    for (const auto& asset : assets) if (asset.name.find("no pause overlay") != std::string::npos) no_hud_id = asset.id;
     check(!no_hud_id.empty() && host::cosmetics::select_variant("GmPause.usd", no_hud_id, &error),
           "the no-HUD pause style can be selected independently of stage and character skins");
     host::cosmetics::configure(settings.string());

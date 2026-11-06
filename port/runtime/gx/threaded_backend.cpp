@@ -349,8 +349,9 @@ class ThreadedBackend final : public Backend {
       }
       // Backlog (the renderer fell behind, or a compile burst): execute older frames without
       // the solver or a present so their EFB copies exist, then catch up to the newest one. The
-      // simulation never waits on this.
-      if (got_new && queue.size() > 0) {
+      // simulation never waits on this. Check again after a Reflex sleep too: got_new is false
+      // on that pass, but a newer frame may have arrived while the driver waited.
+      if (frames[cur].sequence != rendered_sequence && queue.size() > 0) {
         renderer->set_skip_present(true);
         renderer->submit_frame(frames[cur]);
         renderer->set_skip_present(false);

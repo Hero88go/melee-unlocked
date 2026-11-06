@@ -8476,6 +8476,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (!skin_packs.empty()) {
             ImGui::Spacing();
             ImGui::TextUnformatted("Costume packs");
+            // Keep the complete pack controls in view for the isolated screenshot check.
+            static int pack_scroll_frames = 0;
+            const char* pack_scroll = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+            if (pack_scroll && std::strcmp(pack_scroll, "packs") == 0 && pack_scroll_frames < 4) {
+              ImGui::SetScrollHereY(0.0f); ++pack_scroll_frames;
+            }
 #ifdef MELEE_NO_SLIPPI   // the same rule without the other build's mode names
             ImGui::TextWrapped("Each button sets every costume the pack has. Skins that stay on online keep working in "
                                "online matches; the rest show the standard costume there.");

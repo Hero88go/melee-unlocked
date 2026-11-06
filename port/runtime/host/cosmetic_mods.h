@@ -414,6 +414,8 @@ struct DatInspection {
   std::vector<std::string> roots;
 };
 DatInspection inspect_dat(const std::vector<uint8_t>& bytes);
+bool apply_look_patch(const std::string& tool, const std::string& source, const std::string& patch,
+                     const std::string& output, std::string* error);
 bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                      std::string* error);
 // The public costume_skeleton_matches, kept under its old name for the tests.
