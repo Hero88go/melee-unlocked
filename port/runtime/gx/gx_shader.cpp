@@ -652,12 +652,6 @@ std::string generate_pixel_shader(const PSUid& uid) {
   if (lastA != 0) o.w("prev.a = %s;\n", aOut[lastA]);
   if (rs.overflow[cOutSource[lastC]] || rs.overflow[aOutSource[lastA]]) o.w("prev = CHK_O_U8(prev);\n");
   };
-  // Path tracing with ray-traced fighter shadows (the G-buffer variant, flags.w): the game's painted
-  // shadow textures read white in the picture too, so a surface the path tracer shows as drawn (Fountain
-  // of Dreams' see-through water) does not keep the old projected shadow beside the traced one.
-  if (gbuffer)
-    for (uint32_t n = 0; n < numStages; ++n)
-      if (bp.order_enable(n)) o.w("if (((uint)flags.w >> %d) & 1u) tex_ta[%u] = wu4(255,255,255,255);\n", bp.order_texmap(n), n);
   RegState rs;
   emit_tev_stages(rs);
 
