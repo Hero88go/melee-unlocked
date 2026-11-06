@@ -4395,7 +4395,8 @@ void D3D12Backend::update_hdr() {
     if (SUCCEEDED(swapchain_->GetContainingOutput(&output)) && SUCCEEDED(output.As(&output6))) {
       DXGI_OUTPUT_DESC1 desc{};
       if (SUCCEEDED(output6->GetDesc1(&desc))) {
-        display_hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        display_hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+                      host::test_env::getenv("MELEE_TEST_HDR_DISPLAY") != nullptr;   // hidden test runs: the HDR switch on an SDR screen
         if (desc.MaxLuminance > 100.0f) hdr_display_peak_ = desc.MaxLuminance;
       }
     }
