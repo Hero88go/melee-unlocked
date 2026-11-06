@@ -6649,22 +6649,25 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "two, not instant. \"Native (estimated)\" is the total with the two measured\n"
                           "GPU costs subtracted out -- an estimate, not a separate measurement.");
     }
-    if (d3d11 && vk_fsr) ImGui::BeginDisabled();   // Vulkan: frame generation and Reflex stay Direct3D 12 features
+    bool vk_rows_disabled = false;   // Vulkan: DLSS frame generation and Reflex stay Direct3D 12 features
 #ifdef _WIN32
     // With an FSR mode, frame generation is AMD's (the FSR download): 2x, on any graphics card,
-    // Direct3D 12. It reuses FSR's depth and motion vectors as DLSS's reuses DLSS's.
-    if (fsr::is_fsr_mode(options.dlss_mode) && !d3d11) {
+    // Direct3D 12 or Vulkan. It reuses FSR's depth and motion vectors as DLSS's reuses DLSS's.
+    if (fsr::is_fsr_mode(options.dlss_mode) && (!d3d11 || vk_fsr)) {
+      const bool fsr_loaded = vk_fsr ? fsr::vk_available() : fsr::available();
+      const bool fg_ok = vk_fsr ? fsr::vk_fg_available() : fsr::fg_available();
+      const std::string fg_name = vk_fsr ? fsr::vk_fg_provider() : fsr::fg_provider();
       const char* fsr_fg_modes[] = {"Off", "2x (AMD FSR)"};
       int fsr_fg = options.frame_generation_mode > 0 ? 1 : 0;
       // Installed is enough to choose it (the launcher's settings window never loads AMD's library);
       // only a game that loaded it and found frame generation unsupported keeps the row closed.
-      bool fsr_installed = fsr::available();
+      bool fsr_installed = fsr_loaded;
       if (!fsr_installed) {
         wchar_t module[MAX_PATH]{};
         const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
         if (length > 0 && length < MAX_PATH) fsr_installed = host::updater::fsr_present(std::filesystem::path(module).parent_path().u8string());
       }
-      const bool fg_unsupported = fsr::available() && !fsr::fg_available();
+      const bool fg_unsupported = fsr_loaded && !fg_ok;
       ImGui::BeginDisabled(!fsr_installed || fg_unsupported);
       ImGui::SetNextItemWidth(160.0f);
       if (settings_combo("Frame generation", &fsr_fg, fsr_fg_modes, 2)) { options.frame_generation_mode = fsr_fg; changed = true; }
@@ -6675,12 +6678,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "online matches. Needs an FSR upscaling mode; menus are shown as rendered.");
       if (!fsr_installed) settings_hint("Frame generation with FSR needs the AMD FSR download above.");
       else if (fg_unsupported) settings_hint("AMD's frame generation did not start on this graphics card.");
-      else if (!fsr::available() && options.frame_generation_mode > 0) settings_hint("Frame generation starts with the game.");
-      else if (options.frame_generation_mode > 0 && !fsr::fg_provider().empty())
-        settings_hint("AMD's library runs %s on this graphics card.", fsr::fg_provider().c_str());
+      else if (!fsr_loaded && options.frame_generation_mode > 0) settings_hint("Frame generation starts with the game.");
+      else if (options.frame_generation_mode > 0 && !fg_name.empty())
+        settings_hint("AMD's library runs %s on this graphics card.", fg_name.c_str());
     } else
 #endif
     {
+    if (d3d11 && vk_fsr) { ImGui::BeginDisabled(); vk_rows_disabled = true; }
     // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode. Build the
     // list from Streamline's present-thread capability query: RTX 40 usually reports 2x, while newer
     // RTX 50 drivers can expose fixed multipliers through 6x and Dynamic.
@@ -6743,6 +6747,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "than competitive online matches. Needs DLSS upscaling; Reflex turns on with it.\n"
                         "With an FSR mode, AMD's frame generation is offered here instead (any card).");
     }
+    if (d3d11 && vk_fsr && !vk_rows_disabled) { ImGui::BeginDisabled(); vk_rows_disabled = true; }
     // NVIDIA Reflex, laid out the way games offer it.
     {
       const char* modes[] = {"Off", "On", "On + Boost"};

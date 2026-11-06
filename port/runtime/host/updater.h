@@ -78,5 +78,5 @@ bool fsr_present(const std::string& game_dir_utf8);
 void fsr_download(const std::string& game_dir_utf8);
 ModelState fsr_state(const std::string& game_dir_utf8);
 std::string fsr_message();
-constexpr const char* kFsrSize = "about 120 MB";
+constexpr const char* kFsrSize = "about 160 MB";
 }  // namespace host::updater

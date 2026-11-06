@@ -93,6 +93,22 @@ struct VulkanInputs {
   bool reset;
 };
 bool vk_evaluate(const VulkanInputs& in);
+// Frame generation on Vulkan (amd_fidelityfx_framegeneration_vk.dll, the same download), as
+// fg_create and fg_generate above: depth, motion and the upscaled picture in
+// SHADER_READ_ONLY_OPTIMAL, the generated picture written into `out` in GENERAL.
+bool vk_fg_available();
+std::string vk_fg_provider();
+bool vk_fg_create(uint32_t w, uint32_t h, uint32_t max_render_w, uint32_t max_render_h);
+void vk_fg_destroy();
+bool vk_fg_ready();
+struct VulkanFrameInputs {
+  void* command_buffer;
+  VulkanImage depth, mvec, color, out;
+  uint32_t render_w, render_h;
+  float jitter_x, jitter_y, frame_ms;
+  bool reset;
+};
+bool vk_fg_generate(const VulkanFrameInputs& in);
 
 }  // namespace fsr
 }  // namespace gx

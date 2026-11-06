@@ -79,6 +79,7 @@
 #include <unordered_set>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -115,7 +116,7 @@ namespace {
   X(vkCreateGraphicsPipelines) X(vkDestroyPipeline) X(vkCreatePipelineCache) X(vkDestroyPipelineCache) \
   X(vkGetPipelineCacheData) X(vkCmdBeginRendering) X(vkCmdEndRendering) X(vkCmdPipelineBarrier) X(vkCmdBindPipeline) \
   X(vkCmdBindDescriptorSets) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdSetViewport) X(vkCmdSetScissor) \
-  X(vkCmdDrawIndexed) X(vkCmdDraw) X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
+  X(vkCmdDrawIndexed) X(vkCmdDraw) X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdCopyImage) \
   X(vkCmdPushConstants) X(vkWaitForPresentKHR) X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) \
   X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkGetFenceStatus) X(vkCmdPushDescriptorSetKHR) MU_VK_DEVICE_PLATFORM(X)
 
@@ -486,6 +487,9 @@ class VulkanBackend final : public Backend {
   ~VulkanBackend() override {
     if (!device_) return;
     stop_pipeline_worker();   // before anything it uses goes; what it finished joins the maps emptied below
+#ifdef _WIN32
+    fg_presenter_wait(); fg_presenter_stop();
+#endif
     vkDeviceWaitIdle(device_);
 #ifdef _WIN32
     vblank_.stop();
@@ -509,6 +513,10 @@ class VulkanBackend final : public Backend {
     destroy(efb_color_); destroy(efb_depth_); destroy(msaa_color_); destroy(msaa_depth_); destroy(white_);
     destroy(mvec_img_); destroy(hud_img_); destroy(upscale_out_);
 #ifdef _WIN32
+    destroy(fg_out_); destroy(fg_real_);
+    for (VkFence fence : fg_fences_) if (fence) vkDestroyFence(device_, fence, nullptr);
+    for (VkSemaphore sem : fg_acquired_) if (sem) vkDestroySemaphore(device_, sem, nullptr);
+    if (fg_pool_) vkDestroyCommandPool(device_, fg_pool_, nullptr);
     fsr::vk_shutdown();
 #endif
     for (auto& v : video_images_) destroy(v);
@@ -600,6 +608,7 @@ class VulkanBackend final : public Backend {
 #endif
   }
   bool display_counts_readable() const override { return vrr_readable_; }
+  int frame_generation_multiplier() const override { return fg_multiplier_.load(std::memory_order_relaxed); }
   void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
   bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
 #ifdef _WIN32
@@ -749,6 +758,9 @@ class VulkanBackend final : public Backend {
   // The window over the whole monitor when fullscreen or exclusive fullscreen is wanted, as the
   // Direct3D renderers (apply_fullscreen_mode there); exclusive itself is the swapchain's (Windows).
   void apply_fullscreen_mode() {
+#ifdef _WIN32
+    fg_presenter_wait();
+#endif
     const bool want_window = opts_.fullscreen || opts_.exclusive_fullscreen;
     if (want_window != host::window_is_fullscreen()) host::window_set_fullscreen(want_window);
 #ifdef _WIN32
@@ -1328,6 +1340,13 @@ class VulkanBackend final : public Backend {
     img = Image{};
   }
   // An image the GPU may still read this frame or the frames in flight goes when this slot comes round again.
+  // The GPU idle, with the frame generation presenter's present out first (it uses the queue).
+  void idle() {
+#ifdef _WIN32
+    fg_presenter_wait();
+#endif
+    vkDeviceWaitIdle(device_);
+  }
   void retire(Image& img) { if (img.image) frames_[slot_].dead.push_back(img); img = Image{}; }
 
   static void barrier(VkCommandBuffer cmd, Image& img, VkImageLayout to, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
@@ -1468,6 +1487,15 @@ class VulkanBackend final : public Backend {
     in_match_ = frame_in_match(frame);
     if (in_match_ != was_in_match_) { upscale_reset_ = true; was_in_match_ = in_match_; }
 #ifdef _WIN32
+    {
+      bool ui_drawn = false;   // the settings panel open: frames are shown as rendered (no generated panel)
+#ifdef GX_PC_SETTINGS
+      if (settings_ui_ready()) if (const ImDrawData* d = ImGui::GetDrawData()) ui_drawn = d->TotalVtxCount > 0;
+#endif
+      update_fsr_frame_generation(ui_drawn);
+    }
+#endif
+#ifdef _WIN32
     if (upscaling_) streamline::jitter(presented_, &jitter_x_, &jitter_y_);
     else jitter_x_ = jitter_y_ = 0.0f;
 #endif
@@ -1485,7 +1513,7 @@ class VulkanBackend final : public Backend {
 #endif
     if (opts_.anisotropy != anisotropy_applied_) {
       anisotropy_applied_ = opts_.anisotropy;
-      vkDeviceWaitIdle(device_);
+      idle();
       for (auto& s : samplers_) vkDestroySampler(device_, s.second, nullptr);
       samplers_.clear();
     }
@@ -1499,6 +1527,9 @@ class VulkanBackend final : public Backend {
 
   void end_frame(bool presented) {
     Frame_& f = frames_[slot_];
+#ifdef _WIN32
+    fg_presenter_wait();
+#endif
     end_efb();
     if (f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.timers, 3); f.timer_mask |= 8; }
     check(vkEndCommandBuffer(f.upload), "end upload");
@@ -1557,8 +1588,14 @@ class VulkanBackend final : public Backend {
       if ((presented_ & 127) == 0) track_vblank();   // a move to another monitor restarts the clock there
 #endif
       if (capture_pending_) write_capture();
+#ifdef _WIN32
+      if (fsr_fg_generated_ && !fg_show_generated_only()) post_rendered_frame();
+#endif
     }
     acquired_ = false;
+#ifdef _WIN32
+    fsr_fg_generated_ = false;
+#endif
   }
 
   void begin_efb(bool clear_all = false) {
@@ -1613,7 +1650,7 @@ class VulkanBackend final : public Backend {
   }
 
   void rebuild_efb() {
-    vkDeviceWaitIdle(device_);
+    idle();
     host::log("vulkan: internal scale %d -> %d", scale_, pick_scale());
     end_efb();
     retire(efb_color_); retire(efb_depth_); retire(msaa_color_); retire(msaa_depth_); retire(mvec_img_); retire(hud_img_);
@@ -2227,11 +2264,14 @@ class VulkanBackend final : public Backend {
 
   void present(const EfbCopy& c, int test_fill) {
     Frame_& f = frames_[slot_];
+#ifdef _WIN32
+    fg_presenter_wait();   // the previous frame's second present (FSR frame generation) is out first
+#endif
     // A V-Sync change, or the presentation loop's verdict on the display (tear_free_), asks for
     // another present mode: the swapchain is made again for it.
     if (present_synced_ != synced_wanted()) swapchain_dirty_ = true;
     if (swapchain_dirty_) {
-      vkDeviceWaitIdle(device_);
+      idle();
       create_swapchain();
       if (swapchain_dirty_) return;   // minimized, or exclusive fullscreen refused (made again plain next frame)
     }
@@ -2253,17 +2293,39 @@ class VulkanBackend final : public Backend {
     barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);   // ambient occlusion reads it
     upscale(c, test_fill);
-    const VkImage target = swap_images_[image_index_];
+    capture_pending_ = false;
+#ifdef _WIN32
+    generate_frame();
+    if (fsr_fg_generated_) {
+      // AMD FSR frame generation: the generated picture (between the last frame and this one) is
+      // this present's; the rendered frame is drawn into fg_real_ and presented half a frame later
+      // (post_rendered_frame). Captures take the rendered frames unless MELEE_FSR_FG_SHOW_GENERATED.
+      std::swap(upscale_out_, fg_out_);
+      draw_window(c, test_fill, swap_images_[image_index_], swap_views_[image_index_], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, true, false, fg_show_generated_only());
+      std::swap(upscale_out_, fg_out_);
+      draw_window(c, test_fill, fg_real_.image, fg_real_.view, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, false, true, !fg_show_generated_only());
+      fg_real_.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    } else
+#endif
+    draw_window(c, test_fill, swap_images_[image_index_], swap_views_[image_index_], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, true, true, true);
+    barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+  }
+
+  // The window's picture into `target` (a swapchain image, or fg_real_): border art, the picture or a
+  // shader preset, the settings panel when `ui`; GPU timers when `timers`, a capture when `capture`.
+  void draw_window(const EfbCopy& c, int test_fill, VkImage target, VkImageView view, VkImageLayout final_layout, bool timers, bool ui, bool capture) {
+    Frame_& f = frames_[slot_];
     raw_barrier(f.cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     const int w = (int)swap_extent_.width, h = (int)swap_extent_.height;
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = swap_views_[image_index_]; color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.imageView = view; color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     const float fill = test_fill > 0 ? 1.0f : 0.0f;
     color.clearValue.color = {{fill, fill, fill, 1}};
     VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
     info.renderArea = {{0, 0}, swap_extent_}; info.layerCount = 1; info.colorAttachmentCount = 1; info.pColorAttachments = &color;
-    if (f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.timers, 1); f.timer_mask |= 2; }
+    if (timers && f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.timers, 1); f.timer_mask |= 2; }
     // A shader preset (user_shader.h): the plain present pass is drawn into a texture the size of the
     // console's picture (640 columns by the lines sent to the display), and the preset's passes draw
     // it onto the window after the bars and border art. Presets are written for that picture.
@@ -2310,20 +2372,213 @@ class VulkanBackend final : public Backend {
       vkCmdBeginRendering(f.cmd, &info);
     }
 #ifdef GX_PC_SETTINGS
-    if (settings_ui_ready()) {
+    if (ui && settings_ui_ready()) {
       VkViewport viewport{0, 0, float(w), float(h), 0, 1};
       vkCmdSetViewport(f.cmd, 0, 1, &viewport);
       ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), f.cmd);
     }
 #endif
     vkCmdEndRendering(f.cmd);
-    if (f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.timers, 2); f.timer_mask |= 4; }
-    capture_pending_ = test_fill < 0 && wants_capture();
-    if (capture_pending_) record_capture(target);
-    raw_barrier(f.cmd, target, capture_pending_ ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    barrier(f.cmd, efb_color_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    barrier(f.cmd, efb_depth_, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (timers && f.timers) { vkCmdWriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.timers, 2); f.timer_mask |= 4; }
+    const bool captured = capture && test_fill < 0 && wants_capture();
+    if (captured) { capture_pending_ = true; record_capture(target); }
+    raw_barrier(f.cmd, target, captured ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, final_layout);
   }
+
+#ifdef _WIN32
+  // ---- AMD FSR frame generation (fsr::vk_fg_generate), as Direct3D 12's (gx_d3d12.cpp) ----
+  // No AMD swap chain: each rendered frame in a match makes one generated picture, presented first,
+  // and the rendered frame follows half a rendered frame later from the presenter thread, so the
+  // presentation loop's pacing stays the game's. The loop renders at half the rate (the multiplier).
+  static bool fg_show_generated_only() {
+    // MELEE_FSR_FG_SHOW_GENERATED=1 (tests): only the generated pictures are shown and captured.
+    static const bool on = [] { const char* v = std::getenv("MELEE_FSR_FG_SHOW_GENERATED"); return v && *v == '1'; }();
+    return on;
+  }
+  bool fsr_fg_wanted() const {
+    return opts_.frame_generation_mode > 0 && upscaling_ && upscale_out_.image && fsr::vk_fg_available() && !fsr_fg_failed_;
+  }
+  void update_fsr_frame_generation(bool ui_drawn) {
+    if (!fsr_fg_wanted() || !swap_extent_.width || !swap_extent_.height) {
+      if (fsr_fg_running_ && !fsr_fg_wanted()) release_fsr_frame_generation();
+      fsr_fg_on_ = false;
+      fg_multiplier_.store(1, std::memory_order_relaxed);
+      return;
+    }
+    const bool sized = fg_out_.image && fg_real_.image && fsr::vk_fg_ready() && fg_out_.width == upscale_w_ && fg_out_.height == upscale_h_ &&
+                       fg_real_.width == swap_extent_.width && fg_real_.height == swap_extent_.height && fg_real_.format == swap_format_;
+    if (!sized) {
+      idle();
+      destroy(fg_out_); destroy(fg_real_);
+      bool made = true;
+      try {
+        fg_out_ = make_image(upscale_w_, upscale_h_, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        fg_real_ = make_image(swap_extent_.width, swap_extent_.height, 1, swap_format_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        if (!fg_pool_) {
+          VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+          pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; pool.queueFamilyIndex = queue_family_;
+          check(vkCreateCommandPool(device_, &pool, nullptr, &fg_pool_), "frame generation pool");
+          VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+          ai.commandPool = fg_pool_; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = kFrames;
+          check(vkAllocateCommandBuffers(device_, &ai, fg_cmds_.data()), "frame generation commands");
+          for (int i = 0; i < kFrames; ++i) {
+            VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            check(vkCreateFence(device_, &fence, nullptr, &fg_fences_[i]), "frame generation fence");
+            VkSemaphoreCreateInfo sem{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            check(vkCreateSemaphore(device_, &sem, nullptr, &fg_acquired_[i]), "frame generation semaphore");
+          }
+        }
+      } catch (const std::exception& e) {
+        host::log("fsr (vulkan): frame generation images could not be made (%s)", e.what());
+        made = false;
+      }
+      if (!made || !fsr::vk_fg_create(upscale_w_, upscale_h_, width_, height_)) {
+        host::log("fsr (vulkan): frame generation could not start; it stays off this session");
+        fsr_fg_failed_ = true;
+        release_fsr_frame_generation();
+        return;
+      }
+      fsr_fg_prev_frame_ = ~0ull; fsr_fg_interval_ = 0; fsr_fg_last_present_ = 0;
+      if (!fsr_fg_running_)
+        host::log("fsr (vulkan): frame generation 2x (%s) for a %ux%u picture in a %ux%u window",
+                  fsr::vk_fg_provider().empty() ? "AMD FSR" : fsr::vk_fg_provider().c_str(), upscale_w_, upscale_h_, swap_extent_.width, swap_extent_.height);
+      fsr_fg_running_ = true;
+    }
+    // Menus are shown as rendered (the upscaler runs in matches only); so are frames with the
+    // settings panel or a shader preset over them.
+    fsr_fg_on_ = in_match_ && !ui_drawn && opts_.shader_preset.empty();
+    fg_multiplier_.store(fsr_fg_on_ ? 2 : 1, std::memory_order_relaxed);
+  }
+  void release_fsr_frame_generation() {
+    fg_presenter_wait(); fg_presenter_stop();
+    vkDeviceWaitIdle(device_);
+    fsr::vk_fg_destroy();
+    destroy(fg_out_); destroy(fg_real_);
+    if (fsr_fg_running_) host::log("fsr (vulkan): frame generation off");
+    fsr_fg_running_ = fsr_fg_on_ = fsr_fg_generated_ = false;
+    fsr_fg_prev_frame_ = ~0ull;
+    fg_multiplier_.store(1, std::memory_order_relaxed);
+  }
+  // After this frame's upscale: the picture between the previous upscaled picture and this one.
+  void generate_frame() {
+    fsr_fg_generated_ = false;
+    if (!upscaled_now_ || !fsr_fg_on_ || !fg_out_.image || !fg_real_.image) return;
+    if (fg_real_.width != swap_extent_.width || fg_real_.height != swap_extent_.height || fg_real_.format != swap_format_) return;   // a new swapchain: sized next frame
+    Frame_& f = frames_[slot_];
+    barrier(f.cmd, fg_out_, VK_IMAGE_LAYOUT_GENERAL);
+    auto image = [](const Image& i, uint32_t usage) { return fsr::VulkanImage{(uint64_t)(uintptr_t)i.image, (int)i.format, i.width, i.height, usage}; };
+    fsr::VulkanFrameInputs in{};
+    in.command_buffer = f.cmd;
+    in.depth = image(efb_depth_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    in.mvec = image(mvec_img_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    in.color = image(upscale_out_, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    in.out = image(fg_out_, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    in.render_w = fsr_in_w_; in.render_h = fsr_in_h_;
+    in.jitter_x = fsr_jitter_x_; in.jitter_y = fsr_jitter_y_; in.frame_ms = fsr_frame_ms_;
+    in.reset = fsr_fg_prev_frame_ + 1 != (uint64_t)presented_;   // not the frame right after the last generating one
+    fsr_fg_generated_ = fsr::vk_fg_generate(in);
+    fsr_fg_prev_frame_ = presented_;
+    barrier(f.cmd, fg_out_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
+  // The generated picture is presented: the rendered one follows halfway to the next (the cadence
+  // measured at these presents, at most 50 ms apart); with V-Sync, half a refresh early, so it is
+  // shown at the blank nearest halfway.
+  void post_rendered_frame() {
+    const double shown = host::now_seconds();
+    if (fsr_fg_last_present_ > 0) {
+      const double gap = shown - fsr_fg_last_present_;
+      if (gap > 0 && gap < 0.1) fsr_fg_interval_ = fsr_fg_interval_ > 0 ? fsr_fg_interval_ * 0.9 + gap * 0.1 : gap;
+    }
+    fsr_fg_last_present_ = shown;
+    const double halfway = shown + 0.5 * std::min(fsr_fg_interval_, 0.05);
+    const double hz = vrr_nominal_hz_ > 0 ? vrr_nominal_hz_ : 60.0;
+    fg_presenter_post(present_mode_ == VK_PRESENT_MODE_FIFO_KHR ? halfway - 0.5 / std::max(hz, 30.0) : halfway, slot_);
+    ++fsr_fg_shown_;
+    if (fsr_fg_shown_ % 600 == 0)
+      host::log("fsr (vulkan): frame generation, %llu generated frames shown, rendered frames %.2f ms apart",
+                (unsigned long long)fsr_fg_shown_, fsr_fg_interval_ * 1000.0);
+  }
+  // The presenter thread: the only queue and swapchain user between fg_presenter_post and the end of
+  // its present; the game thread waits for it (fg_presenter_wait) before using either.
+  void fg_presenter_wait() {
+    if (!fg_presenter_.joinable()) return;
+    std::unique_lock<std::mutex> lock(fg_mutex_);
+    fg_cv_.wait(lock, [&] { return !fg_pending_; });
+    if (fg_dirty_) { fg_dirty_ = false; swapchain_dirty_ = true; }
+  }
+  void fg_presenter_post(double due, int slot) {
+    if (!fg_presenter_.joinable()) { fg_quit_ = false; fg_presenter_ = std::thread([this] { fg_presenter_run(); }); }
+    { std::lock_guard<std::mutex> lock(fg_mutex_); fg_due_ = due; fg_slot_ = slot; fg_pending_ = true; }
+    fg_cv_.notify_all();
+  }
+  void fg_presenter_stop() {
+    if (!fg_presenter_.joinable()) return;
+    { std::lock_guard<std::mutex> lock(fg_mutex_); fg_quit_ = true; }
+    fg_cv_.notify_all();
+    fg_presenter_.join();
+  }
+  void fg_presenter_run() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    for (;;) {
+      double due; int slot;
+      {
+        std::unique_lock<std::mutex> lock(fg_mutex_);
+        fg_cv_.wait(lock, [&] { return fg_pending_ || fg_quit_; });
+        if (!fg_pending_) break;   // asked to stop with nothing left to present
+        due = fg_due_; slot = fg_slot_;
+      }
+      const bool dirty = !present_rendered(slot, due, timer);
+      {
+        std::lock_guard<std::mutex> lock(fg_mutex_);
+        if (dirty) fg_dirty_ = true;
+        fg_pending_ = false;
+      }
+      fg_cv_.notify_all();
+    }
+    if (timer) CloseHandle(timer);
+  }
+  // fg_real_ into the next swapchain image, presented at `due`. False: the swapchain needs making again.
+  bool present_rendered(int slot, double due, HANDLE timer) {
+    uint32_t index = 0;
+    VkResult r = vkAcquireNextImageKHR(device_, swapchain_, 100000000ull, fg_acquired_[slot], VK_NULL_HANDLE, &index);
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) return true;   // no image in time: this rendered frame is not shown
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
+    vkWaitForFences(device_, 1, &fg_fences_[slot], VK_TRUE, UINT64_MAX);
+    vkResetFences(device_, 1, &fg_fences_[slot]);
+    const VkCommandBuffer cmd = fg_cmds_[slot];
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) return false;
+    raw_barrier(cmd, swap_images_[index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; region.dstSubresource = region.srcSubresource;
+    region.extent = {fg_real_.width, fg_real_.height, 1};
+    vkCmdCopyImage(cmd, fg_real_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swap_images_[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    raw_barrier(cmd, swap_images_[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) return false;
+    const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.waitSemaphoreCount = 1; submit.pWaitSemaphores = &fg_acquired_[slot]; submit.pWaitDstStageMask = &wait_stage;
+    submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
+    submit.signalSemaphoreCount = 1; submit.pSignalSemaphores = &swap_done_[index];
+    if (vkQueueSubmit(queue_, 1, &submit, fg_fences_[slot]) != VK_SUCCESS) return false;
+    for (;;) {
+      const double remaining = due - host::now_seconds();
+      if (remaining <= 0) break;
+      if (timer && remaining > 0.0004) {
+        LARGE_INTEGER t; t.QuadPart = -(LONGLONG)((remaining - 0.0002) * 1e7);
+        if (SetWaitableTimer(timer, &t, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+        else SwitchToThread();
+      } else YieldProcessor();
+    }
+    VkPresentInfoKHR p{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    p.waitSemaphoreCount = 1; p.pWaitSemaphores = &swap_done_[index];
+    p.swapchainCount = 1; p.pSwapchains = &swapchain_; p.pImageIndices = &index;
+    r = vkQueuePresentKHR(queue_, &p);
+    return r == VK_SUCCESS;   // anything else (out of date, suboptimal, exclusive fullscreen lost): made again by the game thread
+  }
+#endif
 
   // ---- AMD FSR (Windows: AMD's Vulkan DLLs, gx_fsr_vk.cpp) ----
   // Follows the Upscaling setting each frame, as configure_dlss does on Direct3D 12: the render scale is
@@ -2345,7 +2600,7 @@ class VulkanBackend final : public Backend {
     const bool want = fsr::is_fsr_mode(mode) && fsr::vk_available();
     if (!want) {
       if (upscaling_) {
-        vkDeviceWaitIdle(device_);
+        idle();
         upscaling_ = false; forced_scale_ = 0; upscaled_now_ = false;
         retire(upscale_out_);
         rebuild_efb();
@@ -2373,7 +2628,7 @@ class VulkanBackend final : public Backend {
       }
     }
     if (upscaling_ && upscale_mode_ == mode && (int)upscale_w_ == out_w && (int)upscale_h_ == out_h && forced_scale_ == scale) return;
-    vkDeviceWaitIdle(device_);
+    idle();
     if (!fsr::vk_set_options(mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; return; }
     retire(upscale_out_);
     try {
@@ -2421,6 +2676,7 @@ class VulkanBackend final : public Backend {
     in.reset = upscale_reset_;
     upscale_reset_ = false;
     upscaled_now_ = fsr::vk_evaluate(in);
+    fsr_in_w_ = in.in_w; fsr_in_h_ = in.in_h; fsr_jitter_x_ = in.jitter_x; fsr_jitter_y_ = in.jitter_y; fsr_frame_ms_ = frame_ms;
     barrier(f.cmd, upscale_out_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 #else
     (void)c; (void)test_fill;
@@ -2433,7 +2689,7 @@ class VulkanBackend final : public Backend {
   bool prepare_shader(const EfbCopy& c) {
     const user_shader::VulkanDevice device{instance_, physical_, device_, queue_, (void*)vkGetInstanceProcAddr};
     const bool on = user_shader::vk_prepare(device, opts_.shader_preset,
-                                            [](void* self) { vkDeviceWaitIdle(static_cast<VulkanBackend*>(self)->device_); }, this);
+                                            [](void* self) { static_cast<VulkanBackend*>(self)->idle(); }, this);
     if (!on || !present_plain_rgba_) return false;
     const uint32_t sw = std::max(c.src_w, 1u), sh = (uint32_t)std::max(std::lround((double)c.src_h * c.y_scale), 1L);
     if (!shader_source_.image || shader_source_.width != sw || shader_source_.height != sh) {
@@ -2499,7 +2755,7 @@ class VulkanBackend final : public Backend {
   // The blit pipeline for drawing into the EFB itself (its colour and depth formats and sample count).
   VkPipeline efb_blit_pipeline() {
     if (efb_blit_ && efb_blit_samples_ == samples_ && efb_blit_upscale_ == upscaling_) return efb_blit_;
-    if (efb_blit_) { vkDeviceWaitIdle(device_); vkDestroyPipeline(device_, efb_blit_, nullptr); efb_blit_ = VK_NULL_HANDLE; }
+    if (efb_blit_) { idle(); vkDestroyPipeline(device_, efb_blit_, nullptr); efb_blit_ = VK_NULL_HANDLE; }
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, blit_vs_, "main", nullptr};
     stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, blit_ps_, "main", nullptr};
@@ -2696,7 +2952,7 @@ class VulkanBackend final : public Backend {
     Frame_& f = frames_[slot_];
     const VkDeviceSize bytes = VkDeviceSize(swap_extent_.width) * swap_extent_.height * 4;
     if (capture_buffer_.size < bytes) {
-      if (capture_buffer_.buffer) { vkDeviceWaitIdle(device_); vkDestroyBuffer(device_, capture_buffer_.buffer, nullptr); vkFreeMemory(device_, capture_buffer_.memory, nullptr); }
+      if (capture_buffer_.buffer) { idle(); vkDestroyBuffer(device_, capture_buffer_.buffer, nullptr); vkFreeMemory(device_, capture_buffer_.memory, nullptr); }
       capture_buffer_ = mapped_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
     }
     raw_barrier(f.cmd, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -2845,6 +3101,26 @@ class VulkanBackend final : public Backend {
   Image mvec_img_, hud_img_, upscale_out_;
   float jitter_x_ = 0, jitter_y_ = 0;
   double fsr_last_time_ = 0;
+  uint32_t fsr_in_w_ = 0, fsr_in_h_ = 0;   // this frame's upscale inputs, reused by frame generation
+  float fsr_jitter_x_ = 0, fsr_jitter_y_ = 0, fsr_frame_ms_ = 0;
+  std::atomic<int> fg_multiplier_{1};   // frame_generation_multiplier(): 2 while FSR frame generation runs
+#ifdef _WIN32
+  Image fg_out_;    // the generated picture, the upscaled picture's size (storage)
+  Image fg_real_;   // the rendered frame's window picture, copied into the next swapchain image
+  VkCommandPool fg_pool_ = VK_NULL_HANDLE;
+  std::array<VkCommandBuffer, kFrames> fg_cmds_{};
+  std::array<VkFence, kFrames> fg_fences_{};
+  std::array<VkSemaphore, kFrames> fg_acquired_{};
+  bool fsr_fg_on_ = false, fsr_fg_generated_ = false, fsr_fg_running_ = false, fsr_fg_failed_ = false;
+  uint64_t fsr_fg_prev_frame_ = ~0ull, fsr_fg_shown_ = 0;
+  double fsr_fg_last_present_ = 0, fsr_fg_interval_ = 0;
+  std::thread fg_presenter_;
+  std::mutex fg_mutex_;
+  std::condition_variable fg_cv_;
+  bool fg_pending_ = false, fg_quit_ = false, fg_dirty_ = false;
+  double fg_due_ = 0;
+  int fg_slot_ = 0;
+#endif
   TemporalMotionHistory last_poses_;
   // ---- Menu video backgrounds, border art ----
   Image video_images_[video_bg::kVideoSlots];
