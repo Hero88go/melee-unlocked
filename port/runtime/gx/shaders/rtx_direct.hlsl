@@ -266,6 +266,13 @@ float3 specular_albedo(float3 f0, float nv, float roughness) {
 // picture at a glancing view.
 static const float kFloorRoughness = 0.10;
 float3 floor_fresnel(float3 n, float3 v) { return min(2.0 * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), 0.35); }
+// How polished a painted floor reads from its colour (linear): 1 for dark, grey stone or metal,
+// fading to 0 for bright or coloured ground (grass, felt, paper).
+float polished_floor(float3 albedo) {
+  const float lum = dot(albedo, float3(0.2126, 0.7152, 0.0722));
+  const float sat = max(albedo.r, max(albedo.g, albedo.b)) - min(albedo.r, min(albedo.g, albedo.b));
+  return saturate((0.30 - lum) / 0.15) * saturate((0.20 - sat) / 0.10);
+}
 // What the floor reflects: something near (a fighter, the stage, an effect); open sky or a far
 // backdrop leaves the floor's own colour (`own`), so grass and painted ground stay as they are.
 float3 floor_reflection(float3 origin, float3 n, float3 v, float3 own, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
@@ -407,10 +414,14 @@ void main(uint3 id : SV_DispatchThreadID) {
                hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng);
     }
     if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && n.y > 0.85 && nd.w < 800.0) {
-      // Glossy stage floors: a polished floor reflects the scene, more at a glancing view.
-      const float3 fresnel = floor_fresnel(n, v);
-      baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng);
-      write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
+      // Glossy stage floors on painted ground: only dark, grey floors are polished (Final
+      // Destination's stone, metal decks). Grass, felt and paper (Yoshi's Story, Dream Land) stay
+      // matte, or the mirror shows the cut-outs and trees through the ground.
+      const float3 fresnel = floor_fresnel(n, v) * polished_floor(albedo);
+      if (fresnel.x > 0.0) {
+        baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng);
+        write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
+      }
     }
     emit(px, baked, albedo);
     return;
