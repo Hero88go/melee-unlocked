@@ -788,16 +788,19 @@ class VulkanBackend final : public Backend {
   // The refreshes come from the output's own vertical blanks (vblank_clock.h) since Vulkan has no
   // DXGI frame statistics: a display that follows the frames blanks once per presented frame under
   // its refresh, a fixed one at its full rate whatever the frame rate.
+  // No verdict on Windows: the output's vertical blank wait keeps ticking at the nominal rate under
+  // G-Sync too (his 200 Hz G-Sync screen, 2026-11-05: Direct3D 12's frame statistics said variable
+  // refresh, the blank count said "fixed, 201 a second"), so it cannot tell the two apart. Unknown
+  // is the honest answer, as before; the blank clock still serves fixed-refresh pacing (vblank_next).
   void update_variable_refresh() {
-    vrr_readable_ = vblank_.healthy();
-    if (!vrr_readable_) { vrr_.restart(); return; }
-    if (!vrr_.add({presented_, vblank_.wakes(), host::now_seconds()}, vrr_nominal_hz_)) return;
-    if (vrr_.state() == 1)
-      host::log("display: variable refresh: %.0f vertical blanks a second for %.0f frames on a %.0f Hz display; frames are presented synced under %.0f a second",
-                vrr_.refreshes(), vrr_.shown(), vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
-    else if (vrr_.state() == 0)
-      host::log("display: fixed refresh: %.0f vertical blanks a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(), vrr_.shown(), vrr_nominal_hz_);
+    vrr_readable_ = false;
+    vrr_.restart();
+    if (!vrr_unknown_logged_) {
+      vrr_unknown_logged_ = true;
+      host::log("display: Vulkan cannot tell variable refresh (G-Sync, FreeSync) from a fixed refresh on Windows; treated as unknown");
+    }
   }
+  bool vrr_unknown_logged_ = false;
   void timing_reset() {}
 #else
   void release_exclusive() {}
