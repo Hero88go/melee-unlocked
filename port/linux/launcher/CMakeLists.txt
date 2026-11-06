@@ -7,6 +7,8 @@ add_executable(melee_launcher launcher_linux.cpp
   "${PORT}/runtime/host/updater.cpp" "${COMPAT}/compat.cpp" "${COMPAT}/winhttp_ws.cpp"
   "${PORT}/app/launcher_yougame.cpp" "${PORT}/third_party/dht/dht.c")
 set_target_properties(melee_launcher PROPERTIES OUTPUT_NAME MeleeUnlocked)
+add_test(NAME linux_launcher_quick_play
+  COMMAND "${Python3_EXECUTABLE}" "${PORT}/tests/linux_launcher_quick_play_test.py" $<TARGET_FILE:melee_launcher>)
 target_include_directories(melee_launcher PRIVATE "${COMPAT}" "${PORT}/app" "${PORT}/runtime/host" "${PORT}/runtime/hle"
   "${PORT}/runtime/ppc" "${PORT}/runtime/gx" "${PORT}/third_party" "${PORT}/third_party/dht" "${PORT}/third_party/monocypher")
 target_compile_features(melee_launcher PRIVATE cxx_std_17)
