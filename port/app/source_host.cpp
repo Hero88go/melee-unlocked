@@ -1677,12 +1677,18 @@ void cycle_stage_skin(const std::string& file, int direction, std::vector<uint8_
   reply[0] = 1;
 }
 
-void cycle_costume_skin(int character, int costume, int direction, std::vector<uint8_t>& reply) {
+void cycle_costume_skin(int character, int costume, int direction, std::vector<uint8_t>& reply,
+                        uint32_t allowed_costumes = 0) {
   reply.assign(1, 0);
   if (g_replaying || g_cosmetic_fst.empty()) return;
-  const std::string slot = host::cosmetics::costume_slot_file(character, costume);
+  std::string slot = host::cosmetics::costume_slot_file(character, costume);
   if (slot.empty()) return;
-  const auto pick = host::cosmetics::cycle_slot_live(slot, direction);
+  host::cosmetics::LiveCycle pick;
+  if (allowed_costumes) {
+    const auto cycle = host::cosmetics::cycle_character_live(character, costume, direction, allowed_costumes);
+    pick = cycle.pick;
+    if (pick.changed) { slot = cycle.target; costume = cycle.costume; }
+  } else pick = host::cosmetics::cycle_slot_live(slot, direction);
   if (!pick.ok || !pick.changed) {
     if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
     // Say why a press did nothing, except on a costume with no skins at all.
@@ -1714,6 +1720,7 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
   gx::texpack::refresh_cosmetic_companions(std::move(companions));
   host::log("cosmetics: character select picked %s for %s", pick.name.c_str(), slot.c_str());
   reply[0] = 1;
+  if (allowed_costumes) reply.push_back((uint8_t)costume);
   reply.insert(reply.end(), pick.name.begin(), pick.name.begin() + (std::ptrdiff_t)std::min<size_t>(pick.name.size(), 63));
 }
 
@@ -1832,7 +1839,10 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           reply.assign(bytes, bytes + sizeof cfg);
           return true;
         }
-        if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
+        if (c == CMD_SKIN_CYCLE && (n == 4 || (n == 5 && p[4] != 0))) {
+          cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply, n == 5 ? p[4] : 0);
+          return true;
+        }
         if (c == CMD_STAGE_SKIN_MATCH && n >= 2 && n <= 64 && p[n - 1] == 0) {
           plan_random_stage_skin(std::string((const char*)p, strnlen((const char*)p, n)), reply);
           return true;

@@ -292,6 +292,15 @@ struct LiveCycle {
   std::string partner_slot, partner_previous_id;
 };
 LiveCycle cycle_slot_live(const std::string& slot, int direction);
+struct CharacterCycle {
+  LiveCycle pick;
+  std::string target;
+  int costume = -1;
+};
+// Offline: all of this fighter's native colors and installed skins, with their actual slot kept.
+// allowed_costumes excludes colors occupied by another player of the same fighter. Online callers
+// keep cycle_slot_live: their team/lock-in costume rules are unchanged.
+CharacterCycle cycle_character_live(int character, int costume, int direction, uint32_t allowed_costumes = ~0u);
 // Publishes one costume slot again from the saved profile: the same work apply_to_fst does for it,
 // on the table apply_to_fst patched at startup. The slot's entries get their new lengths and the
 // read snapshot is swapped as a whole, so a reader sees the old file or the new one, never a mix.

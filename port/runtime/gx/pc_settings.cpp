@@ -8232,8 +8232,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
         ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
                            "visual check use the clean disc resource online. Changes take effect after restart.");
-        ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "
-                           "its installed skins, no restart needed.");
+        ImGui::TextWrapped(options.native_source ?
+            "Character select: place your token, then L/R cycles this fighter's colors and installed skins. "
+            "X/Y changes color. Online and Teams cycle skins within the selected color." :
+            "Character select: place your token, then L/R cycles skins for the selected color. X/Y changes color.");
         // Several files at once (batch import): each is imported as if picked alone, and the message
         // counts them and names the ones that did not go in.
         auto import_all = [](const std::vector<std::string>& files, auto&& one) {
@@ -8376,13 +8378,21 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 pending_preview = host::cosmetics::apply_pack_set(pack.key, variant, true);
                 if (!pending_preview.ok) { mod_message = pending_preview.message; pending_pack.clear(); }
               };
-              const bool one_set = pack.variants.size() == 1;
-              for (const auto& variant : pack.variants) {
-                const std::string label = one_set ? "Use all" : variant.empty() ? "Use standard set" : "Use " + variant;
-                ask(label.c_str(), variant);
-                ImGui::SameLine();
-              }
-              ask("Use none", "none");
+              // Every set stays under its source pack. A long m-ex pack must not create a row of
+              // buttons extending beyond the window, hiding its remaining costumes and controls.
+              static std::map<std::string, int> pack_sets;
+              int& chosen = pack_sets[pack.key];
+              chosen = std::clamp(chosen, 0, (int)pack.variants.size() - 1);
+              std::vector<std::string> set_labels;
+              std::vector<const char*> set_names;
+              for (const auto& variant : pack.variants)
+                set_labels.push_back(variant.empty() ? "Original costumes" : variant);
+              for (const auto& label : set_labels) set_names.push_back(label.c_str());
+              ImGui::SetNextItemWidth(230.0f);
+              settings_combo("Costume set", &chosen, set_names.data(), (int)set_names.size());
+              ask("Apply set", pack.variants[(size_t)chosen]);
+              ImGui::SameLine();
+              ask("Clear pack selections", "none");
               if (pending_pack == pack.key) {
                 std::string ask_line = pending_variant == "none"
                     ? std::to_string(pending_preview.cleared) + " costumes go back to standard."
@@ -8437,10 +8447,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             return target && std::strcmp(target, "skins") == 0;
           }();
           if (skins_shot) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-          if (!pause_screens.empty()) {
-            draw_resource_slot("Pause screen", pause_screens);
-            settings_hint("Choose a pause-screen style or Vanilla. Restart to apply it.");
-          }
           if (ImGui::CollapsingHeader("Characters")) {
             {
               static int scroll_frames = 0;
@@ -8601,8 +8607,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   }
                 }
                 if (variants.size() > 1)
-                  ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                                     "%zu variants; the saved selection wins.", variants.size());
+                  ImGui::TextDisabled("%zu skins for this color. You can also cycle them on character select.", variants.size());
                 // What online play does with the selected skin, said here instead of only in the log.
                 // The check runs when the game starts, so a skin picked just now has no verdict yet.
                 if (current != 0) {
@@ -8750,6 +8755,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               ImGui::TextWrapped("%s", details->availability_message.c_str());
             ImGui::PopID();
           };
+          if (!pause_screens.empty()) {
+            draw_resource_slot("Pause screen", pause_screens);
+            settings_hint("Choose a pause-screen style or Vanilla. Restart to apply it.");
+          }
           if (!pictures.empty() && ImGui::CollapsingHeader("Portraits and stock icons", ImGuiTreeNodeFlags_DefaultOpen))
             for (const auto& slot : pictures) draw_resource_slot(slot.first, slot.second);
           if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
