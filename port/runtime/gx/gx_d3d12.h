@@ -15,6 +15,9 @@ bool vram_usage(float* used_gb, float* total_gb);
 bool dxr_path_tracing_available();
 // The path tracer (rtx_*): ready on this GPU; and whether this build has the local NVIDIA integrator.
 bool rtx_path_tracing_ready();
+// Whether rtx_path_tracing_ready() has an answer: false in the launcher's settings window, which
+// never starts the path tracer, so it must not switch off what the player chose.
+bool rtx_path_tracing_known();
 bool rtx_nvidia_integrator_available();
 // Windows HDR is on for the screen the game is on (Direct3D 12 checks it at each present).
 bool hdr_display_available();

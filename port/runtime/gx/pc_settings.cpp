@@ -4973,6 +4973,28 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.button & 1) || pad.stick_x < -40);
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.button & 2) || pad.stick_x > 40);
   }
+  // Test runs (MELEE_TEST_PANEL_NAV, hidden only): a D-pad press per 8 frames from the string
+  // (U D L R, A for the A button, B for B), each logged with where the focus went.
+  static int test_nav_step = -1;
+  {
+    static const char* test_nav = host::test_env::getenv("MELEE_TEST_PANEL_NAV");
+    static int test_nav_frame = 0;
+    if (test_nav && state.open && test_nav_frame++ >= 120) {
+      const int step = (test_nav_frame - 120) / 8, phase = (test_nav_frame - 120) % 8;
+      auto& io = ImGui::GetIO();
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+      const char c = step < (int)std::strlen(test_nav) ? test_nav[step] : 0;
+      const bool down = phase == 0;
+      io.AddKeyEvent(ImGuiKey_GamepadDpadUp, down && c == 'U');
+      io.AddKeyEvent(ImGuiKey_GamepadDpadDown, down && c == 'D');
+      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, down && c == 'L');
+      io.AddKeyEvent(ImGuiKey_GamepadDpadRight, down && c == 'R');
+      io.AddKeyEvent(ImGuiKey_GamepadFaceDown, down && c == 'A');
+      io.AddKeyEvent(ImGuiKey_GamepadFaceRight, down && c == 'B');
+      test_nav_step = c && phase == 6 ? step : -1;
+    }
+  }
   ImGui::NewFrame();
   if (yougame::active()) {
     const auto now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -6830,10 +6852,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (d3d11) { ImGui::EndDisabled(); settings_hint("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
     // Ray tracing. What cannot apply is cleared here, so what the panel shows and what the renderer
     // does agree. The path tracer's G-buffer rides on DLSS's motion vectors: DLSS or DLAA must be on.
+    // The launcher's settings window has no path tracer to ask (rtx_path_tracing_known() false): there the
+    // GPU is taken as able and nothing the player chose is switched off; the game decides when it starts.
+    const bool rtx_known = rtx_path_tracing_known();
+    const bool rtx_ready = !rtx_known || rtx_path_tracing_ready();
     const bool path_available = RenderOptions::kPathTracingAvailable && !d3d11 && options.dlss_mode >= 1 &&
-                                options.dlss_mode <= 5 && rtx_path_tracing_ready();
+                                options.dlss_mode <= 5 && rtx_ready;
     if (!path_available && options.path_tracing) { options.path_tracing = false; changed = true; }
-    const bool rr_available = path_available && options.path_tracing && streamline::ray_reconstruction_available();
+    const bool rr_available = path_available && options.path_tracing &&
+                              (!rtx_known || streamline::ray_reconstruction_available());
     if (!rr_available && options.ray_reconstruction) { options.ray_reconstruction = false; changed = true; }
     {
       // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=raytracing): bring HDR and Ray tracing into view once.
@@ -6865,7 +6892,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "occlusion, highlights. Menus stay as drawn. Display only: replays and online are untouched.");
     if (!path_available)
       settings_hint(d3d11 ? "Needs Direct3D 12 and an RTX GPU." :
-                    !rtx_path_tracing_ready() ? "Needs an RTX (ray-tracing) GPU and the Source Port." :
+                    !rtx_ready ? "Needs an RTX (ray-tracing) GPU and the Source Port." :
                     "Turn on DLSS or DLAA above: path tracing uses its motion vectors.");
     if (options.path_tracing) {
       // Presets set the look, brightness and every strength at once; moving one of them makes it Custom.
@@ -6886,7 +6913,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Faithful: the game's own lighting, with ray-traced shadows on top.\n"
                           "Remastered: physically based light (deeper shade, real highlights).");
-      if (settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+      // Its own ID: the picture's Brightness slider further down this page has the same label, and two rows
+      // with one ID made controller navigation loop between them (Up never got past this group).
+      ImGui::PushID("rtx");
+      const bool rtx_bright = settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%");
+      ImGui::PopID();
+      if (rtx_bright) { changed = true; options.rtx_preset = 0; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("How bright the path-traced picture is. Changes show at once behind this panel.");
       if (settings_slider("Reflection strength", &options.rtx_reflection_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
@@ -10827,6 +10859,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (g_settings_old_font) ImGui::PopFont();
     ImGui::GetStyle() = launcher_saved_style;
   }
+  if (test_nav_step >= 0) {
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    const ImGuiWindow* w = g.NavWindow;
+    host::log("panel nav: step %d nav id %08X active %08X window %s rect y %.0f..%.0f scroll %.0f/%.0f", test_nav_step,
+              g.NavId, g.ActiveId, w ? w->Name : "-", w ? w->NavRectRel[0].Min.y : 0.f, w ? w->NavRectRel[0].Max.y : 0.f,
+              w ? w->Scroll.y : 0.f, w ? w->ScrollMax.y : 0.f);
+  }
   ImGui::Render();
   // Apply opacity after ImGui has built the overlay: this includes the game-facing custom
   // geometry and images as well as standard widgets, leaving the emulated frame visible beneath.
@@ -10883,13 +10922,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 
 #ifdef _WIN32
 void PcSettingsUI::draw(ID3D12GraphicsCommandList* list) {
+  // A panel rebuilt this frame (HDR switched on or off) has not run a frame yet: nothing to draw.
+  ImDrawData* data = ImGui::GetCurrentContext() ? ImGui::GetDrawData() : nullptr;
+  if (!data) return;
   ID3D12DescriptorHeap* heap = impl_->heap.Get(); list->SetDescriptorHeaps(1, &heap);
-  ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), list);
+  ImGui_ImplDX12_RenderDrawData(data, list);
 }
 #endif
 #ifndef _WIN32
 // No Direct3D 12 here: no path tracing, no HDR swap chain, no local NVIDIA module.
 bool rtx_path_tracing_ready() { return false; }
+bool rtx_path_tracing_known() { return true; }
 bool rtx_nvidia_integrator_available() { return false; }
 bool hdr_display_available() { return false; }
 #endif

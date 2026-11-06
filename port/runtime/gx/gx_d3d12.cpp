@@ -92,7 +92,8 @@ namespace gx {
 std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f}, g_vram_total{0.0f};
 std::atomic<bool> g_dxr_path_available{false};
 bool dxr_path_tracing_available() { return g_dxr_path_available.load(std::memory_order_relaxed); }
-namespace { std::atomic<bool> g_rtx_ready{false}, g_rtx_nvidia{false}; }
+namespace { std::atomic<bool> g_rtx_ready{false}, g_rtx_nvidia{false}, g_rtx_known{false}; }
+bool rtx_path_tracing_known() { return g_rtx_known.load(std::memory_order_relaxed); }
 bool rtx_path_tracing_ready() { return g_rtx_ready.load(std::memory_order_relaxed); }
 bool rtx_nvidia_integrator_available() { return g_rtx_nvidia.load(std::memory_order_relaxed); }
 namespace { std::atomic<bool> g_hdr_display{false}; }
@@ -1184,6 +1185,7 @@ void D3D12Backend::init() {
   } else {
     g_dxr_path_available.store(false, std::memory_order_relaxed);
   }
+  g_rtx_known.store(true, std::memory_order_relaxed);   // the game's renderer has looked; a settings window never does
   list_->Close();
   check(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "fence");
   fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -4415,7 +4417,12 @@ void D3D12Backend::update_hdr() {
   }
 #ifdef GX_PC_SETTINGS
   PcSettingsUI::set_hdr_paper_white(want ? (float)opts_.hdr_paper_white : 0.0f);
-  if (settings_ui_) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd_, device_.Get(), queue_.Get(), opts_, (int)backbuffer_format_);
+  // The old panel goes first: its destructor ends the current ImGui context, which would be the new
+  // panel's if that were made first (a crash at the next draw, every start with HDR on).
+  if (settings_ui_) {
+    settings_ui_.reset();
+    settings_ui_ = std::make_unique<PcSettingsUI>(hwnd_, device_.Get(), queue_.Get(), opts_, (int)backbuffer_format_);
+  }
 #endif
   if (fg_applied_ > 0) fg_applied_ = -1;   // frame generation picks up the new format at the next present
   host::log("d3d12: HDR10 output %s (paper white %d nits, peak %.0f nits)", want ? "on" : "off", opts_.hdr_paper_white,
