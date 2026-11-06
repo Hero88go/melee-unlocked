@@ -2163,6 +2163,39 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   int saved_lcancel_flash = -1, saved_lcancel_success = -1;
   bool lowspec_look = false;   // "lowspec_look 1": written by builds that migrate Low spec to the image only
   int dlss5_defaults_version = 0;   // 2 from 0.9.60: NVIDIA's own DLSS 5 defaults
+  // Video > Ray tracing and HDR keys, apart from the main chain below (one else-if chain that long
+  // exceeds MSVC's nesting limit).
+  auto load_rtx_key = [&options](const std::string& key, const std::string& value) -> bool {
+    try {
+      if (key == "pathtracing")
+        options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
+      else if (key == "rayreconstruction")
+        options.ray_reconstruction = RenderOptions::kPathTracingAvailable && value == "1";
+      else if (key == "rtxlook") { int n = std::stoi(value); if (n >= 0 && n <= 100) options.rtx_look = n; }
+      else if (key == "rtxshadows") options.rtx_shadows = value == "1";
+      else if (key == "rtxao") options.rtx_ao = value == "1";
+      else if (key == "rtxfightershadows") options.rtx_fighter_shadows = value == "1";
+      else if (key == "rtxbounce") options.rtx_bounce = value == "1";
+      else if (key == "rtxreflections") options.rtx_reflections = value == "1";
+      else if (key == "rtxskin") options.rtx_skin = value == "1";
+      else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
+      else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
+      else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
+      else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
+      else if (key == "rtxpreset") { int n = std::stoi(value); if (n >= 0 && n <= 4) options.rtx_preset = n; }
+      else if (key == "rtxreflstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_reflection_strength = n; }
+      else if (key == "rtxfloorstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_floor_strength = n; }
+      else if (key == "rtxshadowstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_shadow_strength = n; }
+      else if (key == "rtxbouncestrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_bounce_strength = n; }
+      else if (key == "rtxradiancecache") options.rtx_radiance_cache = value == "1";
+      else if (key == "hdroutput") options.hdr_output = value == "1";
+      else if (key == "hdrpaperwhite") { int n = std::stoi(value); if (n >= 80 && n <= 500) options.hdr_paper_white = n; }
+      else if (key == "hdrpeak") { int n = std::stoi(value); if (n >= 0 && n <= 10000) options.hdr_peak = n; }
+      else if (key == "rtxintegrator") { int n = std::stoi(value); if (n >= 0 && n <= 1) options.rtx_integrator = n; }
+      else return false;
+    } catch (...) {}
+    return true;
+  };
   while (file >> key) {
     std::getline(file, value);
     const size_t first = value.find_first_not_of(" \t");
@@ -2170,6 +2203,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
     while (!value.empty() && (value.back() == '\r' || value.back() == ' ' || value.back() == '\t')) value.pop_back();
     if (value.empty()) continue;
     if (source_port::mods::parse_choice(key, value, &options.mod_choices)) continue;
+    if (load_rtx_key(key, value)) continue;
     try {
       bool matched = true;
       if (key == "fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || rate >= 30) options.fps_cap = std::min(rate, 2000.0); }
@@ -2392,31 +2426,6 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "reflexflash") options.reflex_flash = value == "1";
       else if (key == "latencytest") options.latency_test = value == "1";
       else if (key == "lagtestnext") options.lossless_lag_test = value == "1";
-      else if (key == "pathtracing")
-        options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
-      else if (key == "rayreconstruction")
-        options.ray_reconstruction = RenderOptions::kPathTracingAvailable && value == "1";
-      else if (key == "rtxlook") { int n = std::stoi(value); if (n >= 0 && n <= 100) options.rtx_look = n; }
-      else if (key == "rtxshadows") options.rtx_shadows = value == "1";
-      else if (key == "rtxao") options.rtx_ao = value == "1";
-      else if (key == "rtxfightershadows") options.rtx_fighter_shadows = value == "1";
-      else if (key == "rtxbounce") options.rtx_bounce = value == "1";
-      else if (key == "rtxreflections") options.rtx_reflections = value == "1";
-      else if (key == "rtxskin") options.rtx_skin = value == "1";
-      else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
-      else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
-      else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
-      else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
-      else if (key == "rtxpreset") { int n = std::stoi(value); if (n >= 0 && n <= 4) options.rtx_preset = n; }
-      else if (key == "rtxreflstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_reflection_strength = n; }
-      else if (key == "rtxfloorstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_floor_strength = n; }
-      else if (key == "rtxshadowstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_shadow_strength = n; }
-      else if (key == "rtxbouncestrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_bounce_strength = n; }
-      else if (key == "rtxradiancecache") options.rtx_radiance_cache = value == "1";
-      else if (key == "hdroutput") options.hdr_output = value == "1";
-      else if (key == "hdrpaperwhite") { int n = std::stoi(value); if (n >= 80 && n <= 500) options.hdr_paper_white = n; }
-      else if (key == "hdrpeak") { int n = std::stoi(value); if (n >= 0 && n <= 10000) options.hdr_peak = n; }
-      else if (key == "rtxintegrator") { int n = std::stoi(value); if (n >= 0 && n <= 1) options.rtx_integrator = n; }
 #ifdef GX_DLSS5
       else if (key == "dlss5") options.dlss5 = value == "1";
       else if (key == "dlss5intensity") dlss5_float(value, options.dlss5_tuning.intensity, 0.0f, 10.0f);
