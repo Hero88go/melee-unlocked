@@ -146,8 +146,10 @@ static const uint kCasters = 0x0Bu, kFighterCasters = 0x08u;
 static const float kBakedShadowReach = 250.0;   // painted surfaces take shadows from this close only
 static const float kShadowFill = 0.2;           // what a blocked light still gives (sky and bounce)
 // Shadow strength: how much of the light a shadow takes away (1 as designed, more is deeper).
-float darken(float kept) { return saturate(1.0 - (1.0 - kept) * shadow_strength); }
-float3 darken3(float3 kept) { return saturate(1.0 - (1.0 - kept) * shadow_strength); }
+// Above 1 the shadow deepens but keeps at least half of what it was designed to keep, so a
+// character in shadow never goes black.
+float darken(float kept) { return saturate(max(1.0 - (1.0 - kept) * shadow_strength, 0.5 * kept)); }
+float3 darken3(float3 kept) { return saturate(max(1.0 - (1.0 - kept) * shadow_strength, 0.5 * kept)); }
 
 
 float3 ggx_specular(float3 n, float3 v, float3 l, float roughness, float3 f0) {
