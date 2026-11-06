@@ -385,10 +385,17 @@ std::mutex g_cosmetic_mutex;
 std::atomic<bool> g_cosmetic_any{false};
 // The set waiting for the render thread (refresh_cosmetic_companions), and the list it was built from.
 std::vector<CosmeticCompanion> g_cosmetic_list, g_cosmetic_pending;
+std::string g_cosmetic_pause_text;
 std::atomic<bool> g_cosmetic_refresh{false};
 
 bool cosmetic_path(const std::string& base, std::string* path = nullptr) {
   if (!g_cosmetic_any.load(std::memory_order_relaxed)) return false;
+  if (base == "tex1_108x20_c68e0bb8472069de_14" || base == "tex1_108x20_m_c68e0bb8472069de_14") {
+    std::lock_guard<std::mutex> lk(g_cosmetic_mutex);
+    if (g_cosmetic_pause_text.empty()) return false;
+    if (path) *path = g_cosmetic_pause_text;
+    return true;
+  }
   const native_companions::TextureName name = native_companions::parse_texture_name(base);
   if (!name.ok) return false;
   std::lock_guard<std::mutex> lk(g_cosmetic_mutex);
@@ -426,7 +433,12 @@ void set_cosmetic_companions(std::vector<CosmeticCompanion> companions) {
     g.cosmetic_csp.clear();
     g.cosmetic_stock.clear();
     g.cosmetic_stock_palette.clear();
+    g_cosmetic_pause_text.clear();
     for (const auto& companion : companions) {
+      if (companion.kind == "pause_text" && companion.target_path == "GmPause.usd") {
+        g_cosmetic_pause_text = companion.path;
+        continue;
+      }
       const auto found = native_companions::identities(companion.kind, companion.target_path);
       if (found.empty())
         host::log("cosmetics: no retail %s texture is known for %s; using vanilla",
@@ -439,7 +451,7 @@ void set_cosmetic_companions(std::vector<CosmeticCompanion> companions) {
     }
     portraits = g.cosmetic_csp.size();
     stocks = g.cosmetic_stock.size() + g.cosmetic_stock_palette.size();
-    g_cosmetic_any.store(portraits || stocks, std::memory_order_relaxed);
+    g_cosmetic_any.store(portraits || stocks || !g_cosmetic_pause_text.empty(), std::memory_order_relaxed);
     g_cosmetic_list = std::move(companions);
   }
   clear_cache();

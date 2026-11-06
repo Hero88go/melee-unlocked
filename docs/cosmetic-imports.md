@@ -119,6 +119,19 @@ and the `.dat` otherwise. An import for such a slot replaces both, each checked 
 file for the online rule. The importer accepts a file named `.usd` wherever it accepts a `.dat`,
 alone or inside a ZIP.
 
+### Optional pause screens
+
+**Settings > Mods > Import / Refresh** accepts a pause-screen ZIP with `GmPause.usd` and an optional
+`GmPauseNoHUD.usd`, or either file on its own. Choose the imported style in **Mods > Pause screen**
+and restart. The two-style pack leaves the original selected until you choose one. Its optional
+`tex1_108x20_c68e0bb8472069de_14.png` label texture is enabled only with the selected style; the
+general texture-pack toggle can remain off. **Vanilla** or **Restore Vanilla** removes both the
+pause archive and its label replacement. The ISO stays untouched.
+
+Imports validate the scene symbol, required controls joints, bounded texture data and archive
+pointers. Unsupported joint trees and mixed pause/gameplay archives are refused before changing
+the catalog. A pause style changes presentation; it does not change whether pausing is allowed.
+
 ### Portraits and stock icons without a costume file
 
 A portrait (the character select picture) or a stock icon can be given to a costume on its own:

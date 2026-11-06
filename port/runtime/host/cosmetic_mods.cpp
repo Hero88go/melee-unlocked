@@ -418,6 +418,19 @@ void load_companions(const json& item, AssetRecord* asset) {
       throw std::runtime_error("companion");
     asset->companions.push_back(std::move(companion));
   }
+  // Separate optional field: older builds ignore it instead of rejecting every catalog entry
+  // because their known companion kinds predate pause-screen imports.
+  const auto label = item.find("pause_text");
+  if (label != item.end() && label->is_object() && asset->info.kind == "pause_screen") {
+    AssetRecord::Companion companion;
+    companion.kind = "pause_text";
+    companion.stored_path = label->value("stored_path", std::string());
+    companion.sha256 = label->value("sha256", std::string());
+    companion.source_member = label->value("source_member", std::string());
+    if (!safe_relative_path(companion.stored_path) || companion.sha256.size() != 64)
+      throw std::runtime_error("pause text");
+    asset->companions.push_back(std::move(companion));
+  }
 }
 
 // A skin's sound bank is its own "voice" object, not one of "companions": a build that predates
@@ -501,6 +514,11 @@ json catalog_json_locked() {
     if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}, {"rule", kOnlineRule}};
     item["companions"] = json::array();
     for (const auto& companion : asset.companions) {
+      if (companion.kind == "pause_text") {
+        item["pause_text"] = {{"stored_path", companion.stored_path}, {"sha256", companion.sha256},
+                              {"source_member", companion.source_member}};
+        continue;
+      }
       item["companions"].push_back({{"kind", companion.kind},
                                       {"stored_path", companion.stored_path},
                                       {"sha256", companion.sha256},
@@ -3257,7 +3275,8 @@ ImportResult install_vault_locked(const fs::path& source, VaultPlan plan,
     if (digest.empty()) { result.message = "A Nucleus resource could not be hashed."; return result; }
     std::string identity = sha256_text(resource.source_id + "\n" + resource.target_path + "\n" + digest);
     if (identity.empty()) { result.message = "A Nucleus resource identity could not be hashed."; return result; }
-    std::string id = (resource_source_kind == "nucleus_project" ? "nucleus-resource-" : "stage-") + identity;
+    std::string id = (resource_source_kind == "nucleus_project" ? "nucleus-resource-" :
+                      resource_source_kind == "pause_screen" ? "pause-" : "stage-") + identity;
     auto existing = std::find_if(next_assets.begin(), next_assets.end(), [&](const AssetRecord& item) {
       return item.source_kind == resource_source_kind && item.source_id == resource.source_id;
     });
@@ -3304,7 +3323,7 @@ ImportResult install_vault_locked(const fs::path& source, VaultPlan plan,
     }
     std::string visual_error, classification;
     std::vector<uint8_t> effect_runtime;
-    bool validated_now = resource.kind == "stage_visual" ||
+    bool validated_now = resource.kind == "stage_visual" || resource.kind == "pause_screen" ||
         materialize_effect_with_open_disc(resource.target_path, resource.bytes, &effect_runtime,
                                           &classification, &visual_error);
     const std::string key = selection_key(*recorded);
@@ -3363,6 +3382,12 @@ ImportResult install_vault_locked(const fs::path& source, VaultPlan plan,
   }
   result.ok = true; result.already_present = added == 0;
   result.already_present = result.already_present && resource_added == 0;
+  if (resource_source_kind == "pause_screen") {
+    result.message = std::to_string(resource_added) + " new / " + std::to_string(resource_refreshed) +
+                     " existing pause screens imported. Choose a style under Mods, Pause screen, then restart.";
+    g_message = result.message;
+    return result;
+  }
   result.message = (resource_source_kind == "nucleus_project" ?
                     "Nucleus project committed atomically: " : "Stage import committed atomically: ") +
                    std::to_string(added) +
@@ -3372,6 +3397,60 @@ ImportResult install_vault_locked(const fs::path& source, VaultPlan plan,
                    std::to_string(plan.rejected_resources.size()) +
                    " structurally unsupported records quarantined. Effects require exact-ISO materialization; stage visuals are checked before online use.";
   return result;
+}
+
+// The game's pause loader indexes joints 1, 9, 10 and 11 and takes joint 1's child.
+// Keep that contract when accepting presentation-only archives from a pause-screen pack.
+bool pause_screen_valid(const std::vector<uint8_t>& bytes, std::string* error) {
+  VisualLayout layout;
+  if (!parse_visual_layout(bytes, &layout, error)) return false;
+  if (layout.roots.size() != 1 || layout.roots[0] != "ScGamPause_scene_data" || be32(bytes.data() + 16) != 0) {
+    *error = "A pause screen must contain only ScGamPause_scene_data, without external code references."; return false;
+  }
+  disc_metadata::Archive archive(bytes);
+  uint32_t scene, models, model, joint;
+  if (!archive.parse() || !archive.root("ScGamPause_scene_data", &scene) || !archive.bounds(scene, 16) ||
+      !archive.pointer(scene, &models) || !archive.bounds(models, 8) || archive.word(models + 4) ||
+      !archive.pointer(models, &model) || !archive.bounds(model, 16) || !archive.pointer(model, &joint)) {
+    *error = "The pause screen has no supported scene model."; return false;
+  }
+  std::set<uint32_t> visited;
+  std::vector<uint32_t> order;
+  std::function<bool(uint32_t, unsigned)> walk = [&](uint32_t at, unsigned depth) {
+    if (depth > 128 || order.size() >= 4096 || !archive.bounds(at, 64) || !visited.insert(at).second) return false;
+    order.push_back(at);
+    // Particle, spline and instance joints can reach runtime tables outside this visual archive.
+    if (archive.word(at + 4) & (0x20u | 0x4000u | 0x1000u)) return false;
+    for (uint32_t field : {8u, 12u}) {
+      uint32_t next;
+      if (archive.pointer(at + field, &next)) { if (!walk(next, depth + 1)) return false; }
+      else if (archive.word(at + field)) return false;
+    }
+    return true;
+  };
+  uint32_t child;
+  if (!walk(joint, 0) || order.size() < 12 || !archive.pointer(order[1] + 8, &child) || !visited.count(child)) {
+    *error = "The pause screen is missing required controls joints or has a cyclic joint tree."; return false;
+  }
+  return true;
+}
+
+bool pause_filename(const std::string& name) {
+  const std::string base = lower(path_filename_utf8(fs::u8path(name)));
+  return base == "gmpause.usd" || base == "gmpause.dat" || base == "gmpausenohud.usd" || base == "gmpausenohud.dat";
+}
+
+bool pause_resource(const fs::path& source, const std::string& member, std::vector<uint8_t> bytes,
+                    VaultResourcePlan* out, std::string* error) {
+  if (!pause_screen_valid(bytes, error)) return false;
+  out->source_id = "pause:" + sha256(bytes);
+  out->source_member = member;
+  out->kind = "pause_screen"; out->target_path = "GmPause.usd";
+  out->group = "Menus"; out->slot = "Pause screen";
+  const bool no_hud = lower(member.empty() ? path_filename_utf8(source) : member).find("nohud") != std::string::npos;
+  out->display_name = source.stem().u8string() + (no_hud ? " (no HUD)" : " (keep HUD)");
+  out->bytes = std::move(bytes);
+  return true;
 }
 
 std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::string* error) {
@@ -3421,6 +3500,8 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
       return {};
     }
     bytes = std::move(safe);
+  } else if (asset.info.kind == "pause_screen") {
+    if (asset.info.target_path != "GmPause.usd" || !pause_screen_valid(bytes, error)) return {};
   } else if (asset.info.kind == "stage_visual" || asset.info.kind == "effect_visual") {
     VisualLayout layout;
     if (!parse_visual_layout(bytes, &layout, error)) {
@@ -3453,7 +3534,8 @@ bool refresh_assets_locked(bool prune_invalid_selections, std::string* error) {
       asset.info.available = !load_runtime_asset_locked(asset, &validation_error).empty();
     }
     asset.info.availability_message = asset.info.available ?
-        (asset.info.kind == "character_costume" || asset.info.kind == kPortraitKind || asset.info.kind == "fighter_sound" ? std::string() :
+        (asset.info.kind == "character_costume" || asset.info.kind == kPortraitKind || asset.info.kind == "fighter_sound" ||
+         asset.info.kind == "pause_screen" ? std::string() :
          asset.info.kind == "stage_visual" ?
              "Stage replacement is offline unless exact-ISO validation proves texture-only changes." :
              "Exact clean-ISO effect validation and safe materialization are required when selected and repeated at every launch.") :
@@ -4503,6 +4585,13 @@ ImportResult import_file(const std::string& path_text) {
   }
   if (extension == ".dat" || extension == ".usd") {
     if (!read_bounded(path, kMaxAssetBytes, &bytes, &error)) return {false, false, {}, error};
+    if (pause_filename(path_filename_utf8(path))) {
+      VaultResourcePlan pause;
+      if (!pause_resource(path, {}, std::move(bytes), &pause, &error)) return {false, false, {}, error};
+      VaultPlan plan; plan.resources.push_back(std::move(pause));
+      std::lock_guard<std::mutex> lock(g_mutex);
+      return install_vault_locked(path, std::move(plan), "pause_screen");
+    }
     size_t sound_kind = 0; const char* sound_character = nullptr;
     if (fighter_sound_identity(path_filename_utf8(path), &sound_kind, &sound_character)) {
       std::lock_guard<std::mutex> lock(g_mutex);
@@ -4528,6 +4617,33 @@ ImportResult import_file(const std::string& path_text) {
   } else if (extension == ".zip") {
     std::vector<ZipEntry> entries;
     if (!parse_zip(path, &entries, &error)) return {false, false, {}, error};
+    const auto pause_files = std::count_if(entries.begin(), entries.end(), [](const auto& file) { return pause_filename(file.name); });
+    if (pause_files) {
+      if (pause_files > 2) return {false, false, {}, "A pause-screen pack can contain at most two styles."};
+      VaultPlan plan;
+      std::vector<uint8_t> hd_text;
+      std::string hd_name;
+      for (const auto& entry : entries) {
+        const std::string filename = lower(path_filename_utf8(fs::u8path(entry.name)));
+        if (filename == "tex1_108x20_c68e0bb8472069de_14.png") {
+          if (!hd_text.empty() || !extract_zip_member(path, entry, &hd_text, &error) || !png_companion(hd_text, &error))
+            return {false, false, {}, "The pause text texture is duplicated or invalid: " + error};
+          hd_name = entry.name;
+        } else if (dat_extension(entry.name) && !pause_filename(entry.name))
+          return {false, false, {}, "Import pause screens separately from character, stage or gameplay archives."};
+      }
+      for (const auto& entry : entries) {
+        if (!pause_filename(entry.name)) continue;
+        std::vector<uint8_t> data;
+        VaultResourcePlan pause;
+        if (!extract_zip_member(path, entry, &data, &error) || !pause_resource(path, entry.name, std::move(data), &pause, &error))
+          return {false, false, {}, "Pause screen rejected: " + error};
+        if (!hd_text.empty()) pause.companions.push_back({"pause_text", hd_name, hd_text});
+        plan.resources.push_back(std::move(pause));
+      }
+      std::lock_guard<std::mutex> lock(g_mutex);
+      return install_vault_locked(path, std::move(plan), "pause_screen");
+    }
     auto metadata = std::find_if(entries.begin(), entries.end(), [](const ZipEntry& entry) {
       return lower(entry.name) == "metadata.json";
     });

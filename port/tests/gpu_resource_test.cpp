@@ -62,6 +62,21 @@ static gx::TextureRef texture(uint32_t addr, uint8_t r, uint8_t b) {
   data->hash=gx::hash_bytes(data->image.data(),data->image.size()); t.data=data; return t;
 }
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--pause-text") {
+    try {
+      const std::string name = "tex1_108x20_c68e0bb8472069de_14";
+      gx::texpack::set_cosmetic_companions({{"pause_text", "GmPause.usd", argv[2]}});
+      check(gx::texpack::has(name) && gx::texpack::has("tex1_108x20_m_c68e0bb8472069de_14"),
+            "selected pause text is found with general texture packs off");
+      check(!gx::texpack::has("tex1_108x20_c68e0bb8472069df_14"), "unrelated text is not replaced");
+      auto decoded = gx::texpack::load(name, ~0ull);
+      check(decoded && decoded->width && decoded->height, "pause text PNG decodes with the production loader");
+      gx::texpack::set_cosmetic_companions({});
+      check(!gx::texpack::has(name), "removing the pause style restores the standard text texture");
+      std::puts("pause text texture diagnostic passed");
+      return 0;
+    } catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
+  }
   // Optional real-asset diagnostic: exercise the exact production PNG decoder and native
   // selector identity lookup without booting the game or touching the ISO/catalog.
   if (argc == 3) {
