@@ -128,6 +128,26 @@ constexpr bool kLabViewAvailable = false;
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 #endif
 namespace gx {
+
+// Video > Ray tracing presets: the look, brightness and strengths each sets (every effect on).
+static void apply_rtx_preset(RenderOptions& o) {
+  struct Preset { int look, brightness, reflection, floor, shadow, bounce; };
+  static const Preset presets[] = {
+    {0, 0, 0, 0, 0, 0},             // Custom: leaves everything as it is
+    {0, 100, 60, 0, 70, 50},        // Faithful
+    {60, 105, 80, 70, 90, 80},      // Balanced
+    {100, 115, 100, 100, 100, 100}, // Remastered
+    {100, 120, 200, 180, 140, 160}, // Showcase
+  };
+  if (o.rtx_preset <= 0 || o.rtx_preset > 4) return;
+  const Preset& p = presets[o.rtx_preset];
+  o.rtx_look = p.look; o.rtx_brightness = p.brightness; o.rtx_reflection_strength = p.reflection;
+  o.rtx_floor_strength = p.floor; o.rtx_shadow_strength = p.shadow; o.rtx_bounce_strength = p.bounce;
+  o.rtx_shadows = o.rtx_ao = o.rtx_fighter_shadows = o.rtx_bounce = o.rtx_reflections = true;
+  o.rtx_skin = o.rtx_stage_shade = true;
+  o.rtx_glossy_floors = p.floor > 0;
+  if (o.rtx_preset == 4) o.rtx_photo_mode = true;
+}
 namespace {
 std::atomic<uint32_t> g_guest_options_selection{0};
 std::atomic<bool> g_guest_options_open_request{false};
@@ -2387,6 +2407,11 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
       else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
       else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
+      else if (key == "rtxpreset") { int n = std::stoi(value); if (n >= 0 && n <= 4) options.rtx_preset = n; }
+      else if (key == "rtxreflstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_reflection_strength = n; }
+      else if (key == "rtxfloorstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_floor_strength = n; }
+      else if (key == "rtxshadowstrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_shadow_strength = n; }
+      else if (key == "rtxbouncestrength") { int n = std::stoi(value); if (n >= 0 && n <= 200) options.rtx_bounce_strength = n; }
       else if (key == "rtxradiancecache") options.rtx_radiance_cache = value == "1";
       else if (key == "hdroutput") options.hdr_output = value == "1";
       else if (key == "hdrpaperwhite") { int n = std::stoi(value); if (n >= 80 && n <= 500) options.hdr_paper_white = n; }
@@ -4271,6 +4296,9 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0)
        << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0) << "\nrtxbrightness " << options.rtx_brightness
        << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
+       << "\nrtxpreset " << options.rtx_preset << "\nrtxreflstrength " << options.rtx_reflection_strength
+       << "\nrtxfloorstrength " << options.rtx_floor_strength << "\nrtxshadowstrength " << options.rtx_shadow_strength
+       << "\nrtxbouncestrength " << options.rtx_bounce_strength
        << "\nrtxradiancecache " << (options.rtx_radiance_cache ? 1 : 0)
        << "\nhdroutput " << (options.hdr_output ? 1 : 0) << "\nhdrpaperwhite " << options.hdr_paper_white
        << "\nhdrpeak " << options.hdr_peak
@@ -6831,30 +6859,51 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                     !rtx_path_tracing_ready() ? "Needs an RTX (ray-tracing) GPU and the Source Port." :
                     "Turn on DLSS or DLAA above: path tracing uses its motion vectors.");
     if (options.path_tracing) {
+      // Presets set the look, brightness and every strength at once; moving one of them makes it Custom.
+      {
+        const char* presets[] = {"Custom", "Faithful", "Balanced", "Remastered", "Showcase"};
+        if (settings_combo("Preset", &options.rtx_preset, presets, 5)) {
+          apply_rtx_preset(options);
+          changed = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Faithful: the game's own lighting with ray-traced shadows.\n"
+                            "Balanced: a little shine and bounce light.\n"
+                            "Remastered: physically based light, reflections and glossy floors.\n"
+                            "Showcase: everything pushed: mirror floors, strong reflections, deep shadows.");
+      }
       if (settings_slider("Look", &options.rtx_look, 0, 100, options.rtx_look >= 100 ? "Remastered" :
-                          options.rtx_look <= 0 ? "Faithful" : "%d%% remastered")) changed = true;
+                          options.rtx_look <= 0 ? "Faithful" : "%d%% remastered")) { changed = true; options.rtx_preset = 0; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Faithful: the game's own lighting, with ray-traced shadows on top.\n"
                           "Remastered: physically based light (deeper shade, real highlights).");
-      if (settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%")) changed = true;
+      if (settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("How bright the path-traced picture is. Changes show at once behind this panel.");
-      if (settings_toggle("Ray-traced shadows", &options.rtx_shadows)) changed = true;
-      if (settings_toggle("Ambient occlusion", &options.rtx_ao)) changed = true;
-      if (settings_toggle("Bounce light", &options.rtx_bounce)) changed = true;
+      if (settings_slider("Reflection strength", &options.rtx_reflection_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly shiny materials reflect the real scene.");
+      if (settings_slider("Floor reflection strength", &options.rtx_floor_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How mirror-like polished stage floors are (Glossy stage floors).");
+      if (settings_slider("Shadow strength", &options.rtx_shadow_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How dark ray-traced shadows and contact shade are.");
+      if (settings_slider("Bounce light strength", &options.rtx_bounce_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much colour light picks up bouncing off the stage onto everything.");
+      if (settings_toggle("Ray-traced shadows", &options.rtx_shadows)) { changed = true; options.rtx_preset = 0; }
+      if (settings_toggle("Ambient occlusion", &options.rtx_ao)) { changed = true; options.rtx_preset = 0; }
+      if (settings_toggle("Bounce light", &options.rtx_bounce)) { changed = true; options.rtx_preset = 0; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Light reflected off the stage onto the fighters and lit surfaces: colour from the\n"
                           "ground and walls, shade that is not flat.");
-      if (settings_toggle("Reflections", &options.rtx_reflections)) changed = true;
+      if (settings_toggle("Reflections", &options.rtx_reflections)) { changed = true; options.rtx_preset = 0; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Glossy and mirror-like surfaces reflect the real scene (fighters, stage, effects).");
       ImGui::BeginDisabled(!options.rtx_reflections);
-      if (settings_toggle("Glossy stage floors", &options.rtx_glossy_floors)) changed = true;
+      if (settings_toggle("Glossy stage floors", &options.rtx_glossy_floors)) { changed = true; options.rtx_preset = 0; }
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("The stage's floors reflect the fighters, effects and the stage's own lights,\n"
                           "more at a glancing view, as polished floors do.");
-      if (settings_toggle("Soft skin", &options.rtx_skin)) changed = true;
+      if (settings_toggle("Soft skin", &options.rtx_skin)) { changed = true; options.rtx_preset = 0; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Light scatters under the fighters' matte surfaces: softer shading and a warm\n"
                           "edge where light turns to shadow (Kirby, Jigglypuff, Yoshi, faces).");
@@ -6872,13 +6921,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Pause the match and the picture keeps refining for a few seconds, to a clean\n"
                           "image with every ray averaged in. Moving again resets it at once.");
       ImGui::BeginDisabled(!options.rtx_shadows);
-      if (settings_toggle("Fighter shadows on the stage", &options.rtx_fighter_shadows)) changed = true;
+      if (settings_toggle("Fighter shadows on the stage", &options.rtx_fighter_shadows)) { changed = true; options.rtx_preset = 0; }
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Most stages have their light painted in. This casts the fighters' real shadows\n"
                           "onto them from the stage's sun.");
       ImGui::BeginDisabled(!options.rtx_shadows);
-      if (settings_toggle("Stage shadows and contact shade", &options.rtx_stage_shade)) changed = true;
+      if (settings_toggle("Stage shadows and contact shade", &options.rtx_stage_shade)) { changed = true; options.rtx_preset = 0; }
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"

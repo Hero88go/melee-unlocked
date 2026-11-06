@@ -79,6 +79,9 @@ struct RtxFrameInputs {
   bool skin = true;                               // soft skin: subsurface approximation on fighters
   bool stage_shade = true;                        // baked stages: their own sun shadows and contact shade
   bool glossy_floors = true;                      // the stage's floors reflect the scene
+  // Strengths (Video > Ray tracing, 1 = the Remastered look): traced reflections, glossy floors,
+  // how deep shadows go, how much bounce light adds.
+  float reflection_strength = 1.0f, floor_strength = 1.0f, shadow_strength = 1.0f, bounce_strength = 1.0f;
   uint32_t still_frames = 0;                      // photo mode: presents the scene has stood still (0: moving or off)
   bool radiance_cache = true;                     // a world-space radiance cache for multi-bounce light (NVIDIA: SHaRC)
   ID3D12Resource* draws = nullptr;                // per draw index: material record for the G-buffer

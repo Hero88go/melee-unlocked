@@ -33,8 +33,9 @@ struct FrameConstants {        // cbuffer Frame in rtx_direct.hlsl
   float look;
   uint32_t switches;          // 1 shadows, 2 ambient occlusion, 4 fighters' shadows on baked stages
   uint32_t still_frames;      // photo mode
+  float reflection_strength, floor_strength, shadow_strength, bounce_strength;
 };
-static_assert(sizeof(FrameConstants) == 176, "Frame layout");
+static_assert(sizeof(FrameConstants) == 192, "Frame layout");
 
 constexpr DXGI_FORMAT kOutputFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr D3D12_RESOURCE_STATES kShaderRead =
@@ -218,6 +219,10 @@ class MeleeIntegrator final : public RtxIntegrator {
     k.main_light_count = in.main_light_count;
     k.look = in.look;
     k.still_frames = in.still_frames;
+    k.reflection_strength = in.reflection_strength;
+    k.floor_strength = in.floor_strength;
+    k.shadow_strength = in.shadow_strength;
+    k.bounce_strength = in.bounce_strength;
     k.switches = (in.shadows ? 1u : 0u) | (in.ambient_occlusion ? 2u : 0u) | (in.fighter_shadows ? 4u : 0u) |
                  (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u) |
                  (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u);

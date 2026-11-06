@@ -398,6 +398,13 @@ struct RenderOptions {
   bool rtx_stage_shade = true;     // the stage's own sun shadows and contact shade where its light is painted in
   int rtx_brightness = 115;        // relit picture brightness, percent (50..200)
   bool rtx_glossy_floors = true;   // the stage's floors reflect the scene (fighters, effects, its own lights)
+  // Ray tracing preset (0 Custom, 1 Faithful, 2 Balanced, 3 Remastered, 4 Showcase) and the strengths it
+  // sets, percent (100 = Remastered): traced reflections, glossy floors, shadow depth, bounce light.
+  int rtx_preset = 3;
+  int rtx_reflection_strength = 100;
+  int rtx_floor_strength = 100;
+  int rtx_shadow_strength = 100;
+  int rtx_bounce_strength = 100;
   bool rtx_photo_mode = true;      // a still (paused) scene keeps refining to a clean, converged picture
   bool rtx_radiance_cache = true;  // multi-bounce light from a world-space radiance cache (NVIDIA build: SHaRC)
   bool hdr_output = false;         // HDR10 output when Windows HDR is on (Direct3D 12)

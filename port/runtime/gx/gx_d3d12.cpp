@@ -3638,6 +3638,10 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.stage_shade = opts_.rtx_stage_shade;
   in.glossy_floors = opts_.rtx_glossy_floors;
   in.light_scale = opts_.rtx_brightness / 100.0f;
+  in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;
+  in.floor_strength = opts_.rtx_floor_strength / 100.0f;
+  in.shadow_strength = opts_.rtx_shadow_strength / 100.0f;
+  in.bounce_strength = opts_.rtx_bounce_strength / 100.0f;
   in.still_frames = opts_.rtx_photo_mode ? rtx_still_frames_ : 0;
   in.radiance_cache = opts_.rtx_radiance_cache;
   in.draws = rtx_scene_.draw_table(slot);
