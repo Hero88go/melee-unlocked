@@ -67,6 +67,65 @@ static void check_stronger_downloads() {
   std::filesystem::remove_all(dir);
 }
 
+// Like the pro first: a policy trained as other players never beats one trained as the pro, whatever
+// its generation, unless the likeness table cleared it; the catalog carries sizes and temperatures.
+static void check_like_the_pro() {
+  using namespace phillip_ai;
+  const auto dir = std::filesystem::temp_directory_path() / ("mu-pro-like-" + std::to_string(GetCurrentProcessId()));
+  std::filesystem::create_directories(dir);
+  _putenv_s("MELEE_PRO_AI_DIR", dir.string().c_str());
+  // No sha256 or source: nothing is ever fetched for these.
+  auto entry = [](const char* file, int rank, bool heavy, bool trained) {
+    Entry e;
+    e.file = file; e.priority = rank; e.heavy = heavy; e.character = 18; e.delay = 18;
+    e.name[1] = 0;
+    e.pro_trained[1] = trained;
+    return e;
+  };
+  g_catalog = {entry("imitation.onnx", 1, false, true), entry("kodorin.onnx", 3, false, false),
+               entry("zain_heavy.onnx", 4, true, true), entry("kodorin_heavy.onnx", 4, true, false)};
+  g_catalog_state = 1;
+  for (const Entry& e : g_catalog) std::ofstream(dir / e.file).put('x');
+  g_large_ok = -1;   // a PC too slow for the heavy policies
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[0]);   // imitation (Zain) over the Kodorin-trained matchup policy
+  g_catalog[1].likeness_ok = true;
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[1]);   // cleared by the likeness table: its generation counts again
+  g_catalog[1].likeness_ok = false;
+  g_large_ok = 1;
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[2]);   // the heavy policy trained as Zain
+  g_catalog[2].pro_trained[1] = false;
+  CHECK(choose(1, 0, 18, 1) == &g_catalog[0]);   // no heavy policy trained as Zain: imitation again
+  // Sizes come from the catalog; an older catalog without them counts 90 MB each.
+  g_catalog[2].size = 82800000;
+  std::filesystem::remove(dir / "zain_heavy.onnx");
+  std::filesystem::remove(dir / "kodorin_heavy.onnx");
+  const StrongerStatus st = stronger_status(1);
+  CHECK(st.missing == 2 && std::fabs(st.missing_mb - 172.8) < 0.01);
+  // The catalog file: pro_trained per pro, likeness_ok, temperature (clamped) and size are read; an
+  // entry without them is trained as everyone at temperature 1.0.
+  {
+    std::ofstream f(dir / "catalog.json");
+    f << R"({"version": 1, "models": [
+      {"file": "a.onnx", "kind": "rl", "character": 18, "delay": 18, "names": {"1": 5, "3": 6}, "priority": 3,
+       "pro_trained": {"1": false, "3": true}, "likeness_ok": true, "temperature": 0.7, "size": 21244744,
+       "trained_as": ["Kodorin", "Master Player"]},
+      {"file": "b.onnx", "kind": "imitation", "character": 18, "delay": 18, "names": {"1": 5}, "temperature": 9}]})";
+  }
+  g_catalog.clear(); g_catalog_state = 0;
+  read_catalog();
+  CHECK(g_catalog.size() == 2);
+  if (g_catalog.size() == 2) {
+    CHECK(!g_catalog[0].pro_trained[1] && g_catalog[0].pro_trained[3] && g_catalog[0].likeness_ok);
+    CHECK(std::fabs(g_catalog[0].temperature - 0.7f) < 1e-6f && g_catalog[0].size == 21244744);
+    CHECK(g_catalog[0].trained_as == "Kodorin, Master Player");
+    CHECK(g_catalog[1].pro_trained[1] && g_catalog[1].pro_trained[0] && !g_catalog[1].likeness_ok);
+    CHECK(g_catalog[1].temperature == 2.f && g_catalog[1].size == 0 && g_catalog[1].trained_as.empty());
+  }
+  g_catalog.clear(); g_catalog_state = 0; g_large_ok = 0;
+  _putenv_s("MELEE_PRO_AI_DIR", "__no_pro_ai__");
+  std::filesystem::remove_all(dir);
+}
+
 int main(int argc, char** argv) {
   using namespace ghost_ai;
   // Phillip's policies (ProAI beside the game) must not answer for the injected test models.
@@ -95,7 +154,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   _putenv("MELEE_PRO_AI_DIR=__no_pro_ai__");
-  if (argc == 1) check_stronger_downloads();
+  if (argc == 1) { check_stronger_downloads(); check_like_the_pro(); }
   // This test injects its own model; installed specialist files must not change its evidence.
   std::fill(std::begin(g_specialist_status), std::end(g_specialist_status), -1);
   if (argc == 2) {

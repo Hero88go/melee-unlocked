@@ -140,6 +140,19 @@ struct Entry {
   bool heavy = false;           // a large policy (about 12 ms a step): skipped on a PC too slow for it
   std::vector<int> opponents;   // empty: every opponent (imitation policies)
   int name[kPros];              // the pro's name code in this policy, -1 absent
+  // Like the pro first (owner, 2026-11-05): a self-play policy trained as other players never beats one
+  // trained as this pro, whatever its generation (catalog "pro_trained", from the policy's own
+  // agent_config.name), unless the likeness measurements cleared it ("likeness_ok",
+  // tools/ghost_ai/phillip_likeness.py). Imitation policies count as trained as every pro they know.
+  bool pro_trained[kPros];
+  bool likeness_ok = false;
+  float temperature = 1.f;      // the sampling temperature it is stepped with (catalog; 1.0 as published)
+  uint64_t size = 0;            // bytes, for the download question (0 in an older catalog)
+  std::string trained_as;       // the players its self-play ran as, for the log
+  Entry() {
+    for (int& n : name) n = -1;
+    for (bool& t : pro_trained) t = true;
+  }
 };
 std::vector<Entry> g_catalog;
 int g_catalog_state = 0;   // 0 not read, 1 read, -1 missing/bad
@@ -166,7 +179,17 @@ void read_catalog() {
     e.delay = m.value("delay", 0);
     e.priority = m.value("priority", e.kind == "imitation" ? 1 : 2);
     e.heavy = m.value("heavy", false);
-    for (int& n : e.name) n = -1;
+    e.likeness_ok = m.value("likeness_ok", false);
+    e.temperature = (float)std::clamp(m.value("temperature", 1.0), 0.05, 2.0);
+    e.size = m.value("size", (uint64_t)0);
+    if (has(m, "pro_trained") && m["pro_trained"].is_object())
+      for (auto it = m["pro_trained"].begin(); it != m["pro_trained"].end(); ++it) {
+        const int pro = std::atoi(it.key().c_str());
+        if (pro >= 0 && pro < (int)kPros && it.value().is_boolean()) e.pro_trained[pro] = it.value().get<bool>();
+      }
+    if (has(m, "trained_as") && m["trained_as"].is_array())
+      for (const json& n : m["trained_as"])
+        if (n.is_string()) e.trained_as += (e.trained_as.empty() ? "" : ", ") + n.get<std::string>();
     if (has(m, "opponents") && m["opponents"].is_array())
       for (const json& o : m["opponents"]) if (o.is_number_integer()) e.opponents.push_back(o.get<int>());
     if (has(m, "names") && m["names"].is_object())
@@ -245,10 +268,10 @@ std::atomic<bool> g_checking{false};
 std::thread g_check_thread;
 void check_speed_later(const Entry& e);
 
-// The policy for this pro on this character against that opponent: the highest priority one trained
-// for it (Phillip's newest self-play, then older matchup self-play, then imitation). Only installed
-// files are used; a missing better one is fetched for next time. MELEE_PRO_AI_FORCE_P<n>=<file>
-// (tests) plays that file for port n.
+// The policy for this pro on this character against that opponent: first one trained as this pro (or
+// cleared by the likeness table), then the highest priority (Phillip's newest self-play, then older
+// matchup self-play, then imitation). Only installed files are used; a missing better one is fetched
+// for next time. MELEE_PRO_AI_FORCE_P<n>=<file> (tests) plays that file for port n.
 const Entry* choose(unsigned pro, unsigned slot, int character, int opponent) {
   read_catalog();
   char force_key[32];
@@ -269,7 +292,8 @@ const Entry* choose(unsigned pro, unsigned slot, int character, int opponent) {
     if (e.character != character || e.name[pro] < 0) continue;
     if (!e.opponents.empty() && std::find(e.opponents.begin(), e.opponents.end(), opponent) == e.opponents.end()) continue;
     if (e.heavy && (large < 0 || choice == kStrongerNever)) continue;
-    const int rank = e.priority;
+    // Like the pro first: trained as this pro (or cleared) outranks every generation of one that was not.
+    const int rank = e.priority + ((e.pro_trained[pro] || e.likeness_ok) ? 100 : 0);
     const bool here = present(e);
     if ((!e.heavy || choice == kStrongerAlways || here) && rank > wanted_rank) { wanted_rank = rank; wanted = &e; }
     if (e.heavy && here && large == 0 && rank > stronger_rank) { stronger_rank = rank; stronger = &e; }
@@ -585,7 +609,8 @@ void put_fighter(const Policy& p, Buffers& b, const std::string& pre, const MuGh
   put(p, b, pre + "invulnerable", f.hurtbox != 0 ? 1 : 0);
 }
 
-void observe(const Policy& p, Buffers& b, const MuGhostObs& o, int name_code, bool reset, std::mt19937& rng, Memory& mem) {
+void observe(const Policy& p, Buffers& b, const MuGhostObs& o, int name_code, bool reset, std::mt19937& rng, Memory& mem,
+             float temperature = 1.f) {
   if (reset) mem.reset();
   // The opponent's neutral, forward and backward tech start the same: for its first frames the policy
   // sees every one of them as a neutral tech, as in its training.
@@ -646,7 +671,9 @@ void observe(const Policy& p, Buffers& b, const MuGhostObs& o, int name_code, bo
   }
   put(p, b, "name", name_code);
   put(p, b, "needs_reset", reset ? 1 : 0);
-  put(p, b, "temperature", 1.0);
+  // The catalog's temperature for this policy; MELEE_PRO_AI_TEMP (tests) steps every policy at one value.
+  static const char* forced_temp = std::getenv("MELEE_PRO_AI_TEMP");
+  put(p, b, "temperature", forced_temp ? std::atof(forced_temp) : (double)temperature);
   put(p, b, "rating", p.rating);
   // The policy samples its controller from these uniform numbers. MELEE_PRO_AI_FIXED_NOISE (tests: the
   // parity check against slippi-ai's Python) holds them at one value.
@@ -803,7 +830,7 @@ void work(Slot* s) {
     bool stepped = false;
     if (s->policy) {
       const double t0 = host::now_seconds();
-      observe(*s->policy, s->buffers, job.obs, job.name, job.reset, s->rng, s->memory);
+      observe(*s->policy, s->buffers, job.obs, job.name, job.reset, s->rng, s->memory, job.entry->temperature);
       stepped = run(*s->policy, s->buffers);
       if (stepped) a = decode(*s->policy, s->buffers);
       const double took = host::now_seconds() - t0;
@@ -933,8 +960,9 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
       s.jobs.clear();
       s.answers.clear();
     }
-    host::log("pro ai: P%u plays pro %u with %s (%s, %d frames of delay) from frame %u", (unsigned)o.slot + 1, o.pro,
-              e->file.c_str(), e->kind.c_str(), e->delay, o.frame);
+    host::log("pro ai: P%u plays pro %u with %s (%s%s%s, %d frames of delay, temperature %.2f) from frame %u",
+              (unsigned)o.slot + 1, o.pro, e->file.c_str(), e->kind.c_str(), e->trained_as.empty() ? "" : ", trained as ",
+              e->trained_as.c_str(), e->delay, e->temperature, o.frame);
     s.entry = e;
     s.first = o.frame;
     s.live = true;
@@ -980,7 +1008,7 @@ StrongerStatus stronger_status(int pro) {
     if (!mine && pro < (int)kPros) mine = e.name[pro] >= 0;
     if (!mine) continue;
     ++s.total;
-    if (!present(e)) { ++s.missing; s.missing_mb += 90.0; }   // each is 89.6 MB (Phillip's v6 policies)
+    if (!present(e)) { ++s.missing; s.missing_mb += e.size ? e.size / 1e6 : 90.0; }   // catalog size; 90 MB when an old catalog has none
   }
   std::lock_guard<std::mutex> lk(g_fetch_mutex);
   s.downloading = g_fetching.load();

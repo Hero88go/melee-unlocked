@@ -8,6 +8,15 @@ port/runtime/hle/phillip_ai.cpp. Only policies whose inputs the game provides ar
 --bundle kinds (imitation: one per pro) are copied into the folder; the game downloads the others
 (one per matchup) from the catalog's pinned URL the first time that matchup is played.
 
+Each entry also records who the policy really is (owner rule 2026-11-05, "like the pro first"):
+"trained_as" is the policy's own agent_config.name, the players its self-play ran as; "pro_trained"
+says per pro whether that pro is among them (imitation policies count as trained). The game never
+lets a policy trained as other players beat one trained as the pro, whatever its generation, unless
+--likeness marks it "likeness_ok" from tools/ghost_ai/phillip_likeness.py measurements. "temperature"
+is the sampling temperature the game steps it with (1.0 as published), "size" its bytes.
+The index was last refreshed to Hugging Face commit 383dabf (2026-10-31, "updated" is kept in the
+catalog); phillip_ai.cpp only downloads from the pinned per-file URLs.
+
     py -3.12 tools/ghost_ai/phillip_catalog.py --models <download dir> --out <ProAI dir> [--kinds imitation,rl]
 """
 from __future__ import annotations
@@ -24,7 +33,8 @@ from pathlib import Path
 INDEX_URL = "https://huggingface.co/vladfi/phillip-models/resolve/main/index-v1.json"
 # Fight a pro's players (their index is ghost_ai's and the game's), the character each one plays and
 # the connect code Phillip's policies know them by.
-PROS = {1: ("zain", "MARTH", ["ZAIN#0", "Zain"]),
+PROS = {0: ("mang0", "FALCO", ["MANG#0", "Mang0", "mang0"]),   # no published policy knows him yet (fine-tunes will)
+        1: ("zain", "MARTH", ["ZAIN#0", "Zain"]),
         3: ("cody", "FOX", ["IBDW#0", "Cody"]),
         4: ("amsa", "YOSHI", ["AMSA#0", "Amsa"])}
 # libmelee character names -> the game's internal fighter kind.
@@ -105,7 +115,20 @@ def main() -> None:
     ap.add_argument("--max-mb", type=float, default=50.0,
                     help="leave out larger policies (Phillip's 90 MB ones need more than a frame a step on most PCs)")
     ap.add_argument("--delays", default="18", help="reaction delays to take, comma separated")
+    ap.add_argument("--extra", type=Path, action="append", default=[],
+                    help="folder(s) of our own fine-tuned policies (phillip_export.py): listed as imitation, bundled, "
+                         "priority 2 (above the published imitation), trained as every pro they name")
+    ap.add_argument("--extra-opponents", type=Path,
+                    help="JSON {file: [opponent, ...]} (libmelee names) for --extra policies fine-tuned for a matchup: "
+                         "listed as self-play, priority 4 (above Phillip's matchup policies), only against those opponents")
+    ap.add_argument("--likeness", type=Path,
+                    help="JSON {file: true} of policies the likeness measurements cleared (catalog likeness_ok)")
+    ap.add_argument("--temperature", type=Path,
+                    help="JSON {file: temperature} of per-policy sampling temperatures (default 1.0)")
     args = ap.parse_args()
+    likeness = json.loads(args.likeness.read_text()) if args.likeness else {}
+    temperatures = json.loads(args.temperature.read_text()) if args.temperature else {}
+    extra_opponents = json.loads(args.extra_opponents.read_text()) if args.extra_opponents else {}
 
     if args.index:
         index = json.loads(args.index.read_text())
@@ -153,6 +176,12 @@ def main() -> None:
         if not names:
             skipped.append((e["name"], "no Fight a pro player in its names"))
             continue
+        # Who the self-play really trained as (imitation: nobody in particular, so every pro counts).
+        trained_as = (m.get("agent_config") or {}).get("name") or []
+        if isinstance(trained_as, str):
+            trained_as = [trained_as]
+        trained_codes = {m["name_map"].get(n) for n in trained_as}
+        pro_trained = {pro: kind == "imitation" or code in trained_codes for pro, code in names.items()}
         opponents = [] if kind == "imitation" else sorted(KINDS[o] for o in e["opponents"])
         # Which plays first: Phillip's newest self-play for the matchup (it beat the older matchup
         # policies 7 of 8 head to head), then the older matchup self-play, then its newest policy for
@@ -171,13 +200,47 @@ def main() -> None:
             (args.out / path.name).unlink()
         models.append({"file": path.name, "sha256": e["sha256"], "kind": kind, "character": character,
                        "opponents": opponents, "delay": int(m["config"]["policy"]["delay"]), "names": names,
-                       "priority": priority, "heavy": path.stat().st_size > 50 * 1024 * 1024, "source": e["url"]})
+                       "priority": priority, "heavy": path.stat().st_size > 50 * 1024 * 1024, "source": e["url"],
+                       "size": path.stat().st_size, "trained_as": trained_as, "pro_trained": pro_trained,
+                       "likeness_ok": bool(likeness.get(path.name, False)),
+                       "temperature": float(temperatures.get(path.name, 1.0))})
+    # Our fine-tunes: no Hugging Face source (nothing to download), the pro's own name in the table.
+    for folder in args.extra:
+        for path in sorted(folder.glob("*.onnx")):
+            m = metadata(path)
+            why = supported(m)
+            if why:
+                skipped.append((path.name, why))
+                continue
+            char_name = m["config"]["dataset"].get("allowed_characters", "") if isinstance(m["config"].get("dataset"), dict) else ""
+            character = KINDS.get(str(char_name).upper(), -1)
+            names = {}
+            for pro, (_, char, ids) in PROS.items():
+                if KINDS[char] != character:
+                    continue
+                code = next((m["name_map"][i] for i in ids if i in m["name_map"]), None)
+                if code is not None:
+                    names[str(pro)] = int(code)
+            if character < 0 or not names:
+                skipped.append((path.name, "no Fight a pro player in its names"))
+                continue
+            shutil.copy2(path, args.out / path.name)
+            matchup = sorted(KINDS[o.upper()] for o in extra_opponents.get(path.name, []))
+            models.append({"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                           "kind": "rl" if matchup else "imitation", "character": character, "opponents": matchup,
+                           "delay": int(m["config"]["policy"]["delay"]), "names": names,
+                           "priority": 4 if matchup else 2, "heavy": False, "source": "", "size": path.stat().st_size,
+                           "trained_as": [n for n in m["name_map"] if str(m["name_map"][n]) in {str(c) for c in names.values()}][:4],
+                           "pro_trained": {pro: True for pro in names}, "likeness_ok": False,
+                           "temperature": float(temperatures.get(path.name, 1.0))})
     catalog = {"version": 1, "credit": "Phillip (slippi-ai) by Vlad Firoiu, MIT license; models from "
-               "huggingface.co/vladfi/phillip-models", "models": models}
+               "huggingface.co/vladfi/phillip-models", "index_updated": index.get("updated", ""), "models": models}
     (args.out / "catalog.json").write_text(json.dumps(catalog, indent=1) + "\n")
     for pro, (name, char, _) in PROS.items():
         have = [x["file"] for x in models if str(pro) in x["names"]]
-        print(f"{name}: {len(have)} policies")
+        not_as_pro = [x["file"] for x in models if str(pro) in x["names"] and not x["pro_trained"][str(pro)]]
+        print(f"{name}: {len(have)} policies, {len(not_as_pro)} trained as other players"
+              + (": " + ", ".join(not_as_pro) if not_as_pro else ""))
     for name, why in skipped:
         print(f"skipped {name}: {why}")
     shipped = [x for x in models if (args.out / x["file"]).is_file()]
