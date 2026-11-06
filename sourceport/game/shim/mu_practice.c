@@ -29,7 +29,8 @@ struct gm_80479D58_t* mu_gm_engine_state(void);
 
 /* An explicit practice handoff owns one pending destination while the origin scene runs
  * its ordinary decide/unload callbacks. TM-CE's event decide normally selects the menu;
- * that must not replace the accepted online destination. Clear on entering another mode.
+ * that must not replace the accepted online destination. Clear when the destination is entered.
+ * Re-entering the origin (Fight a pro restarts Training) completes the handoff too.
  * These are host handoff bookkeeping, never synchronized match state. */
 static int practice_pending_mode = -1;
 static int practice_origin_mode = -1;
@@ -44,7 +45,8 @@ int mu_practice_resolve_pending_mode(int requested)
 
 void mu_practice_enter_mode(int mode)
 {
-    if (practice_pending_mode >= 0 && mode != practice_origin_mode) {
+    (void) mode;
+    if (practice_pending_mode >= 0) {
         practice_pending_mode = practice_origin_mode = -1;
     }
 }
