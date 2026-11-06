@@ -3136,6 +3136,60 @@ void write_replay_recording() {
 
 const MuReplayStart* h_replay_start() { return g_replay ? &g_replay_start : nullptr; }
 
+// A recording that was never finished (the game or Dolphin closed in the middle of the match, so the
+// file has no Game End and no metadata) gets no more frames. The game does not stop on a frame it
+// cannot fetch: the match went on with nobody pressing anything until its timer ran out, or for good
+// in a match without one. Such a file counts as over when it has not changed for a few seconds (its
+// write time on the first look: a file from an earlier session ends at its last frame at once) and
+// no other program holds it open for writing. A live broadcast keeps growing, and its writer keeps
+// it open even while the match is paused, so it is still waited for.
+static bool replay_recording_abandoned() {
+  static std::string for_path;
+  static bool abandoned = false;
+  static std::uintmax_t last_size = 0;
+  static double last_growth = 0.0, last_look = -1.0;
+  const double now = host::now_seconds();
+  if (for_path != g_replay_path) {   // a new file: forget the last one's observations
+    for_path = g_replay_path; abandoned = false; last_size = ~std::uintmax_t{0}; last_look = -1.0;
+  }
+  if (abandoned) return true;
+  if (last_look >= 0.0 && now - last_look < 0.5) return false;   // asked again every retrace while waiting
+  last_look = now;
+  std::error_code ec;
+  const std::filesystem::path path = std::filesystem::u8path(g_replay_path);
+  const std::uintmax_t size = std::filesystem::file_size(path, ec);
+  if (ec) return false;
+  if (size != last_size) {
+    const bool first = last_size == ~std::uintmax_t{0};
+    last_size = size;
+    last_growth = now;
+    if (!first) return false;                      // it grew while we watched: still being written
+    const auto written = std::filesystem::last_write_time(path, ec);
+    if (!ec) {
+      const double age = std::chrono::duration<double>(std::filesystem::file_time_type::clock::now() - written).count();
+      if (age > 0.0) last_growth = now - age;
+    }
+  }
+  if (now - last_growth < 3.0) return false;
+#ifdef _WIN32
+  // Opening it for writing while only allowing others to read fails with a sharing violation exactly
+  // when another handle can write it. Nothing is written; the handle is closed at once.
+  HANDLE h = CreateFileW(path.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); return abandoned = true; }
+  if (GetLastError() == ERROR_SHARING_VIOLATION) return false;
+#endif
+  return abandoned = now - last_growth >= 30.0;   // no way to ask who writes it (read-only file, other systems)
+}
+
+// WAIT for a frame that has not arrived yet, unless the recording was abandoned (above).
+static int32_t replay_wait_or_end(int32_t frame) {
+  if (!replay_recording_abandoned()) return MU_REPLAY_WAIT;
+  host::log("replay: %s stops at frame %d with no Game End and nothing writing it any more; playback ends there",
+            g_replay_path.c_str(), frame - 1);
+  return MU_REPLAY_TERMINATE;
+}
+
 void h_replay_frame(int32_t frame, MuReplayFrame* out) {
   *out = MuReplayFrame{};
   if (!g_replay) { out->result = MU_REPLAY_TERMINATE; return; }
@@ -3143,13 +3197,13 @@ void h_replay_frame(int32_t frame, MuReplayFrame* out) {
   // Game End yet: a frame that is not there, not fully received or not yet finalized is waited for,
   // as Dolphin's mirror mode does. Once Game End is read, a missing frame ends playback.
   const bool complete = g_replay->IsProcessingComplete();
-  if (!g_replay->DoesFrameExist(frame)) { out->result = complete ? MU_REPLAY_TERMINATE : MU_REPLAY_WAIT; return; }
+  if (!g_replay->DoesFrameExist(frame)) { out->result = complete ? MU_REPLAY_TERMINATE : replay_wait_or_end(frame); return; }
   Slippi::FrameData* f = g_replay->GetFrame(frame);
   if (!complete) {
     const auto v = g_replay->GetVersion();
     const bool has_finalized = v[0] > 3 || (v[0] == 3 && v[1] >= 7);
     if (!f->inputsFullyFetched || (has_finalized && g_replay->GetLastFinalizedFrame() < frame)) {
-      out->result = MU_REPLAY_WAIT;
+      out->result = replay_wait_or_end(frame);
       return;
     }
   }

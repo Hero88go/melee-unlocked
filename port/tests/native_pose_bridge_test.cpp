@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <type_traits>
 #include <cmath>
 
@@ -41,13 +42,14 @@ int main() {
   // A rigid pose keeps its joints in the chain it shares with every draw of that joint.
   const auto* joints = pose && pose->chain ? &pose->chain->joints : nullptr;
   if (!joints || joints->size() != 1 || (*joints)[0].tracks.size() != 1 ||
-      (*joints)[0].tracks[0].bytes != std::vector<uint8_t>(bytes.begin(), bytes.end())) {
+      (*joints)[0].tracks[0].size() != bytes.size() ||
+      std::memcmp((*joints)[0].tracks[0].data(), bytes.data(), bytes.size()) != 0) {
     std::fputs("valid native pose payload was not copied\n", stderr);
     return 1;
   }
 
   bytes[0] = 0xFF;
-  if ((*joints)[0].tracks[0].bytes[0] != 0x10) {
+  if ((*joints)[0].tracks[0].data() == bytes.data() || (*joints)[0].tracks[0].data()[0] != 0x10) {
     std::fputs("native pose retained callback-scoped track memory\n", stderr);
     return 1;
   }

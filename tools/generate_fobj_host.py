@@ -99,15 +99,15 @@ void Receive(void* object, u8, HSD_ObjData* data) {
 bool SamplePacked(const PackedTrack& track, float frame, float& value, PackedSampleCursor* cursor) {
   if (cursor) cursor->track=nullptr;
   if (!std::isfinite(frame)) throw std::invalid_argument("invalid animation time");
-  if (track.bytes.empty()) return false;
-  if (track.bytes.size() > 65535) throw std::invalid_argument("oversized fighter track");
+  if (track.size() == 0) return false;
+  if (track.size() > 65535) throw std::invalid_argument("oversized fighter track");
   HSD_FObj fobj{};
   fobj.startframe=track.start_frame; fobj.obj_type=track.channel;
   fobj.frac_value=track.value_format; fobj.frac_slope=track.slope_format;
   // The original interpreter only reads byte data; its mutable pointer is local.
-  fobj.ad_head=const_cast<u8*>(track.bytes.data());
-  fobj.length=static_cast<u32>(track.bytes.size());
-  stream_end=track.bytes.data()+track.bytes.size();
+  fobj.ad_head=const_cast<u8*>(track.data());
+  fobj.length=static_cast<u32>(track.size());
+  stream_end=track.data()+track.size();
   HSD_FObjReqAnim(&fobj, frame);
   const float initial_time=fobj.time;
   Result result;
