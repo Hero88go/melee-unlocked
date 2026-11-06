@@ -2870,8 +2870,14 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     uint32_t specular = 0;
     float roughness = 0.85f;
     rtx_material_params(material, &specular, &roughness);
+    // The material's painted shadow textures (TEX_COORD_SHADOW), left out of the G-buffer colour while
+    // ray-traced fighter shadows replace them.
+    uint32_t shadow_maps = 0;
+    if (opts_.rtx_shadows && opts_.rtx_fighter_shadows)
+      for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t)
+        if (material->tobjs[t].coord == 3 && material->tobjs[t].texmap < 8) shadow_maps |= 1u << material->tobjs[t].texmap;
     int32_t lanes[4] = {draw_index < frame.draws.size() ? (int32_t)draw_index + 1 : 0, 0,
-                        (int32_t)rtx_layer(dc.bp.blendmode(), dc.bp.zmode()), 0};
+                        (int32_t)rtx_layer(dc.bp.blendmode(), dc.bp.zmode()), (int32_t)shadow_maps};
     std::memcpy(&lanes[1], &roughness, sizeof roughness);
     std::memcpy(ccpu + offsetof(PSConstants, flags), lanes, sizeof lanes);
   }

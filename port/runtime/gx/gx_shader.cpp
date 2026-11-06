@@ -703,6 +703,12 @@ std::string generate_pixel_shader(const PSUid& uid) {
     // albedo's alpha its material's roughness (flags.y, float bits), so last present's surfaces carry
     // their material too.
     o.w("col0 = rtxUnlit0;\ncol1 = rtxUnlit1;\nc0 = colors[1]; c1 = colors[2]; c2 = colors[3]; prev = colors[0];\n");
+    // The game's painted shadows (flags.w: texmaps whose texture is a shadow) read white here, so
+    // only the ray-traced shadow darkens the surface.
+    for (uint32_t n = 0; n < numStages; ++n) {
+      if (!bp.order_enable(n)) continue;
+      o.w("if (((uint)flags.w >> %d) & 1u) tex_ta[%u] = wu4(255,255,255,255);\n", bp.order_texmap(n), n);
+    }
     RegState albedo_rs;
     emit_tev_stages(albedo_rs);
     o.w("oalbedo = float4(saturate(float3(prev.rgb) / 255.0), saturate(asfloat(flags.y)));\n");

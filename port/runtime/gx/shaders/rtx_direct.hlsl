@@ -273,6 +273,15 @@ float3 floor_reflection(float3 origin, float3 n, float3 v, float3 own, float3 am
   const Hit h = trace_surface(origin, dir, 150.0);
   return h.found ? hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng) : own;
 }
+// Fighters' shadows on the stage: from the stage's light direction lifted to about 57 degrees, so
+// the shadow lands at their feet on every stage, with soft edges. 1 lit, else how much light is left.
+float fighter_shadow(float3 origin, float3 n, float3 sun_dir, float look, inout uint rng) {
+  const float3 d = -sun_dir;
+  const float2 lean = length(d.xz) > 1e-4 ? normalize(d.xz) * 0.65 : float2(0.0, 0.0);
+  const float3 dir = cone_direction(normalize(float3(lean.x, 1.0, lean.y)), 0.06, rng);
+  if (dot(n, dir) <= 0.0) return 1.0;
+  return visible(origin, dir, kBakedShadowReach, kFighterCasters) ? 1.0 : lerp(0.6, 0.45, look);
+}
 void write_guides(uint2 px, float3 diffuse, float3 specular, float3 view_normal, float roughness) {
   GuideDiffuse[px] = float4(saturate(diffuse), 1);
   GuideSpecular[px] = float4(specular, 1);
@@ -378,9 +387,8 @@ void main(uint3 id : SV_DispatchThreadID) {
       const float3 to_sun = cone_direction(-sun_dir, sun_radius, rng);
       // Fighters' shadows reach kBakedShadowReach; the stage's own only its near parts (eaves,
       // platforms, ledges), not across to a far backdrop.
-      const bool by_fighter = (switches & kFighterShadows) != 0u && !visible(origin, to_sun, kBakedShadowReach, kFighterCasters);
       const bool by_stage = stage_shade && !visible(origin, to_sun, 100.0, kCasters);
-      if (dot(n, to_sun) > 0.0 && (by_fighter || by_stage)) {
+      if (dot(n, to_sun) > 0.0 && by_stage) {
         // As dark as the stage's own shade: GX's share of ambient in its light (Faithful, softened),
         // or the physical one (Remastered).
         const float3 amb_e = linear_to_srgb(ambient_light), sun_e = linear_to_srgb(sun);
@@ -389,6 +397,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         baked *= lerp(faithful, remastered, look);
       }
     }
+    if (shadows && (switches & kFighterShadows) != 0u) baked *= fighter_shadow(origin, n, sun_dir, look, rng);
     if ((switches & kReflections) != 0u && roughness <= 0.3) {
       // The game faked this surface's shine with an environment map; a traced reflection of the
       // real scene goes over it.
@@ -516,6 +525,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 faithful = srgb_to_linear(GAlbedo[px].rgb * saturate(gx_sum));
   faithful += 0.5 * albedo * bounce_extra;
   float3 shaded = lerp(faithful, pbr, look) + reflection;
+  if (shadows && (switches & kFighterShadows) != 0u && !fighter) shaded *= fighter_shadow(origin, n, sun_dir, look, rng);
   if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0) {
     const float3 fresnel = floor_fresnel(n, v);
     shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng);
