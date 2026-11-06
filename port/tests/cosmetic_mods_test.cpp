@@ -578,6 +578,31 @@ int main(int argc, char** argv) {
   std::error_code ec; fs::remove_all(folder, ec); fs::create_directories(folder, ec);
   check(!ec, "create temporary directory");
 
+  if (argc == 5 && std::string(argv[1]) == "--build-looks") {
+    host::cosmetics::configure((folder / L"settings.ini").string());
+    std::string message;
+    const bool ok = host::cosmetics::build_look_packs(argv[2], argv[3], argv[4], &message);
+    std::printf("Diet look build: %s\n", message.c_str());
+    fs::remove_all(folder, ec);
+    return ok ? 0 : 1;
+  }
+  if (argc == 5 && std::string(argv[1]) == "--install-official") {
+    host::cosmetics::configure((folder / L"settings.ini").string());
+    const int which = std::atoi(argv[2]);
+    const std::string mods = (folder / L"Mods").u8string();
+    host::cosmetics::install_official_look(which, argv[3], argv[4], mods);
+    host::cosmetics::OfficialLookState state;
+    for (int tick = 0; tick < 9000; ++tick) {
+      state = host::cosmetics::official_look_state(which, mods);
+      if (!state.busy) break;
+      Sleep(100);
+    }
+    std::printf("Official look install: %s\n", state.message.c_str());
+    const bool ok = !state.busy && state.installed;
+    if (!state.busy) fs::remove_all(folder, ec);
+    return ok ? 0 : 1;
+  }
+
   if ((argc == 3 || argc == 4) && std::string(argv[1]) == "--patch-tool") {
     host::cosmetics::configure((folder / L"settings.ini").string());
     const fs::path cache = folder / L"CosmeticMods" / L"tools" / L"xdelta3.exe";
