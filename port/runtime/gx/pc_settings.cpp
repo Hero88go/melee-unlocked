@@ -2382,6 +2382,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rtxskin") options.rtx_skin = value == "1";
       else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
       else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
+      else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
       else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
       else if (key == "rtxradiancecache") options.rtx_radiance_cache = value == "1";
       else if (key == "hdroutput") options.hdr_output = value == "1";
@@ -4264,7 +4265,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nrtxintegrator " << options.rtx_integrator
        << "\nrtxbounce " << (options.rtx_bounce ? 1 : 0) << "\nrtxreflections " << (options.rtx_reflections ? 1 : 0)
        << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0)
-       << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0)
+       << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0) << "\nrtxbrightness " << options.rtx_brightness
        << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
        << "\nrtxradiancecache " << (options.rtx_radiance_cache ? 1 : 0)
        << "\nhdroutput " << (options.hdr_output ? 1 : 0) << "\nhdrpaperwhite " << options.hdr_paper_white
@@ -6767,6 +6768,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Faithful: the game's own lighting, with ray-traced shadows on top.\n"
                           "Remastered: physically based light (deeper shade, real highlights).");
+      if (settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%")) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How bright the path-traced picture is. Changes show at once behind this panel.");
       if (settings_toggle("Ray-traced shadows", &options.rtx_shadows)) changed = true;
       if (settings_toggle("Ambient occlusion", &options.rtx_ao)) changed = true;
       if (settings_toggle("Bounce light", &options.rtx_bounce)) changed = true;

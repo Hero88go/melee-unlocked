@@ -265,10 +265,13 @@ float3 specular_albedo(float3 f0, float nv, float roughness) {
 // Glossy stage floors: a polished floor (F0 0.10, roughness 0.10), the reflection up to half the
 // picture at a glancing view.
 static const float kFloorRoughness = 0.10;
-float3 floor_fresnel(float3 n, float3 v) { return min(2.0 * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), 0.5); }
-float3 floor_reflection(float3 origin, float3 n, float3 v, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
+float3 floor_fresnel(float3 n, float3 v) { return min(2.0 * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), 0.35); }
+// What the floor reflects: something near (a fighter, the stage, an effect); open sky or a far
+// backdrop leaves the floor's own colour (`own`), so grass and painted ground stay as they are.
+float3 floor_reflection(float3 origin, float3 n, float3 v, float3 own, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
   const float3 dir = glossy_direction(n, v, kFloorRoughness, rng);
-  return hit_radiance(trace_surface(origin, dir, 1.0e5), ambient_light, sun, sun_dir, sun_radius, rng);
+  const Hit h = trace_surface(origin, dir, 150.0);
+  return h.found ? hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng) : own;
 }
 void write_guides(uint2 px, float3 diffuse, float3 specular, float3 view_normal, float roughness) {
   GuideDiffuse[px] = float4(saturate(diffuse), 1);
@@ -397,7 +400,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && n.y > 0.85 && nd.w < 800.0) {
       // Glossy stage floors: a polished floor reflects the scene, more at a glancing view.
       const float3 fresnel = floor_fresnel(n, v);
-      baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng);
+      baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng);
       write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
     }
     emit(px, baked, albedo);
@@ -515,7 +518,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 shaded = lerp(faithful, pbr, look) + reflection;
   if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0) {
     const float3 fresnel = floor_fresnel(n, v);
-    shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng);
+    shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng);
     write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
   }
   emit(px, shaded * light_scale, albedo);

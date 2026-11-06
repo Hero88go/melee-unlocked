@@ -391,6 +391,7 @@ struct RenderOptions {
   bool rtx_reflections = true;     // traced reflections on glossy and mirror-like surfaces
   bool rtx_skin = true;            // soft skin: light scattering under fighters' matte surfaces
   bool rtx_stage_shade = true;     // the stage's own sun shadows and contact shade where its light is painted in
+  int rtx_brightness = 115;        // relit picture brightness, percent (50..200)
   bool rtx_glossy_floors = true;   // the stage's floors reflect the scene (fighters, effects, its own lights)
   bool rtx_photo_mode = true;      // a still (paused) scene keeps refining to a clean, converged picture
   bool rtx_radiance_cache = true;  // multi-bounce light from a world-space radiance cache (NVIDIA build: SHaRC)
