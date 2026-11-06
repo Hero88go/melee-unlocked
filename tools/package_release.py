@@ -619,14 +619,20 @@ def main():
         total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
         print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
 
-    path_shader = args.exe.parent / "dxr_pathtrace.dxil"
-    if not path_shader.is_file():
-        raise SystemExit(f"missing DXR shader: {path_shader}")
-    shutil.copy2(path_shader, folder / path_shader.name)
+    # The path tracer's shaders. A build made with the local NVIDIA SDK module (its RTXDI and SHaRC
+    # shaders sit beside the exe) is never packaged: that code may not be distributed.
+    for private in ("rtxdi_melee.dxil", "sharc_update.dxil", "sharc_resolve.dxil"):
+        if (args.exe.parent / private).exists():
+            raise SystemExit(f"{private} beside the exe: this build has the local NVIDIA module; package a release build")
+    for shader in ("dxr_pathtrace.dxil", "rtx_transform.dxil", "rtx_trace.dxil", "rtx_direct.dxil"):
+        path_shader = args.exe.parent / shader
+        if not path_shader.is_file():
+            raise SystemExit(f"missing path tracing shader: {path_shader}")
+        shutil.copy2(path_shader, folder / path_shader.name)
     (folder / "README.txt").write_text(readme_text(args.version, args.playback_exe, args.local_candidate) +
         "\nThis experimental Mod Update includes Source Port and Static Recomp game builds.\n"
         "DLSS 5 requires NVIDIA's separate model (nvngx_dlssnr.dll), which is not included.\n"
-        "Experimental DXR path tracing and Ray Reconstruction are off by default.\n",
+        "Path tracing (Settings, Video, Ray tracing) is off by default; it needs an RTX GPU and Direct3D 12.\n",
         encoding="utf-8")
     zip_folder(args.out / f"{name}-win64.zip")
 
