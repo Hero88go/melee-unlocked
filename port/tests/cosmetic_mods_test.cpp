@@ -2091,6 +2091,9 @@ int main(int argc, char** argv) {
     host::cosmetics::thaw_after_online_session();
     check(!host::cosmetics::cycle_character_live(26, 0, 1).pick.changed, "added fighters do not borrow another fighter's skins");
     check(!host::cosmetics::cycle_character_live(1, 0, 1).pick.changed, "a fighter without installed skins leaves L/R alone");
+    const auto from_extra = host::cosmetics::cycle_character_live(2, 6, 1);
+    check(from_extra.pick.changed && from_extra.costume >= 0 && from_extra.costume < 4,
+          "an m-ex added color can enter the installed-skin cycle on a real native slot");
 
     // The character select's fighter numbers and costume order.
     check(host::cosmetics::costume_slot_file(2, 0) == "PlFxNr.dat" && host::cosmetics::costume_slot_file(2, 3) == "PlFxGr.dat" &&

@@ -1589,8 +1589,8 @@ void report_selftest(int32_t frame, std::vector<uint8_t>& reply) {
 }
 
 // ---- character select L / R skin cycling (mn/mncharsel.c, shim/mu_content.c) ----
-// payload: port, character select fighter number, costume, direction (1 next, 0 previous).
-// reply: 1 when the slot's skin changed (0 otherwise), then the choice's name for the door label.
+// payload: port, fighter, costume, direction; optional fifth byte is the allowed offline colors.
+// reply: changed, optional new costume for a five-byte request, then the choice's name.
 constexpr uint8_t CMD_SKIN_CYCLE = 0xF9;
 
 // The slot's disc files after the catalog published it again: each one gets the entry that serves
@@ -1682,7 +1682,9 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
   reply.assign(1, 0);
   if (g_replaying || g_cosmetic_fst.empty()) return;
   std::string slot = host::cosmetics::costume_slot_file(character, costume);
-  if (slot.empty()) return;
+  // An m-ex screen may currently show an added color. The offline fighter-wide request can
+  // return to a native slot; the original per-color command still requires a native slot.
+  if (slot.empty() && !allowed_costumes) return;
   host::cosmetics::LiveCycle pick;
   if (allowed_costumes) {
     const auto cycle = host::cosmetics::cycle_character_live(character, costume, direction, allowed_costumes);
