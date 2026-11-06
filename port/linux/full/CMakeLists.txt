@@ -105,10 +105,17 @@ foreach(removed
     runtime/gx/gx_d3d11.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_dlss5.cpp runtime/gx/gx_dlss5_scaling.cpp
     runtime/gx/gx_dxr_gpu_scene.cpp runtime/gx/gx_dxr_path_tracer.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp runtime/gx/gx_fsr.cpp runtime/gx/gx_fsr_vk.cpp
     runtime/gx/rtx_scene.cpp runtime/gx/rtx_tracer.cpp runtime/gx/rtx_melee_integrator.cpp
-    runtime/gx/gx_backend.cpp runtime/gx/pc_settings_dx11.cpp runtime/host/audio.cpp)
+    runtime/gx/gx_backend.cpp runtime/gx/pc_settings_dx11.cpp runtime/host/audio.cpp
+    runtime/gx/gx_dxc_linux.cpp)
   list(REMOVE_ITEM FULL_RUNTIME_SOURCES "${PORT}/${removed}")
 endforeach()
-add_library(full_runtime STATIC ${FULL_RUNTIME_SOURCES} "${PORT}/third_party/slippilib/SlippiGame.cpp"
+# DXC's loader (gx_dxc_linux.cpp) without the Win32 compatibility preinclude: DXC's own header defines
+# those types.
+add_library(full_dxc OBJECT "${PORT}/runtime/gx/gx_dxc_linux.cpp")
+target_include_directories(full_dxc PRIVATE "${PORT}/third_party")
+target_compile_features(full_dxc PRIVATE cxx_std_17)
+set_target_properties(full_dxc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(full_runtime STATIC ${FULL_RUNTIME_SOURCES} $<TARGET_OBJECTS:full_dxc> "${PORT}/third_party/slippilib/SlippiGame.cpp"
   "${COMPAT}/compat.cpp" "${COMPAT}/winhttp_ws.cpp" ../xinput_sdl.cpp ../hid_linux.cpp ../renderer_gl.cpp ../renderer_presenter.cpp
   gx_backend_linux.cpp pc_settings_gl.cpp audio_sdl.cpp linux_media.cpp gpu_features_linux.cpp)
 target_compile_definitions(full_runtime PUBLIC MELEE_LINUX GX_PC_SETTINGS MELEE_LINUX_X11_EMBED

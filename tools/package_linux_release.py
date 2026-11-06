@@ -320,8 +320,8 @@ def main():
             owner = subprocess.run(['dpkg', '-S', path], capture_output=True, text=True).stdout
         if owner:
             packages.add(owner.split(':')[0].strip())
-    for name in ('LICENSE-LLVM.txt', 'LICENSE-MS.txt'):
-        shutil.copy2(ROOT / 'port/third_party/dxc' / name, licenses / f'directx-shader-compiler-{name[8:]}')
+    for dxc_licence in ('LICENSE-LLVM.txt', 'LICENSE-MS.txt'):
+        shutil.copy2(ROOT / 'port/third_party/dxc' / dxc_licence, licenses / f'directx-shader-compiler-{dxc_licence[8:]}')
     for package in sorted(packages):
         copyright_file = Path('/usr/share/doc') / package / 'copyright'
         if copyright_file.is_file():
