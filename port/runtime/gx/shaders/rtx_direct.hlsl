@@ -142,6 +142,22 @@ bool visible(float3 origin, float3 dir, float length, uint mask) {
   q.Proceed();
   return q.CommittedStatus() == COMMITTED_NOTHING;
 }
+// The stage's own shade on painted surfaces skips what lies within kOutlineReach of the surface: toon
+// mods (Animelee) draw each stage piece a second time over itself, or in a shell just around it, for
+// their outlines, and that copy caught every ray leaving the surface (all of it shaded). Back faces
+// pass too. Real occluders (eaves, platforms, ledges) are further away than this.
+static const float kOutlineReach = 1.0;
+bool visible_outside(float3 origin, float3 dir, float length, uint mask) {
+  RayDesc ray;
+  ray.Origin = origin;
+  ray.Direction = dir;
+  ray.TMin = kOutlineReach;
+  ray.TMax = length;
+  RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
+  q.TraceRayInline(Scene, RAY_FLAG_NONE, mask, ray);
+  q.Proceed();
+  return q.CommittedStatus() == COMMITTED_NOTHING;
+}
 static const uint kCasters = 0x0Bu, kFighterCasters = 0x08u;
 static const float kBakedShadowReach = 250.0;   // painted surfaces take shadows from this close only
 static const float kShadowFill = 0.2;           // what a blocked light still gives (sky and bounce)
@@ -370,7 +386,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float roughness = 0.85;
   float3 f0 = 0.04;
   uint first = 0, count = min(main_light_count, light_count);
-  bool lit_by_gx = true, own_ambient = false;
+  bool lit_by_gx = true, own_ambient = false, fighter_draw = false;
   uint channel = 0;
   float3 ambient_gx = 0;   // GX's ambient register, as GX uses it (encoded)
   const uint record = draw - 1u < draw_count ? DrawRecords[draw - 1u] : kNone;
@@ -380,6 +396,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     f0 = unpack_rgb8(r.specular);
     if ((r.flags & kGeometryTintedReflection) != 0u) f0 = albedo * srgb_to_linear(f0);   // its own colour, tinted
     lit_by_gx = (r.channel & 1u) != 0u;
+    fighter_draw = (r.flags & 2u) != 0u;   // kRtxGeometryFighter
     own_ambient = (r.channel & 2u) == 0u;
     channel = r.channel;
     ambient_gx = unpack_rgb8(r.ambient);
@@ -402,17 +419,24 @@ void main(uint3 id : SV_DispatchThreadID) {
     // GX does not light this draw: its light is baked in, and it stays as drawn, except where a
     // fighter stands between it and the stage's sun (the stage's own shadows are already baked).
     float3 baked = albedo;
+    // A fighter the game does not light paints its own shading into its textures (Animelee and other
+    // cel-shaded fighter mods): it keeps it. Shadow and occlusion rays from its surface would hit the
+    // fighter itself and darken all of it.
+    if (fighter_draw) {
+      emit(px, baked, albedo);
+      return;
+    }
     // Stage shadows and contact shade: the stage's own geometry casts the sun's shadow too, and a
     // short ray finds the corners and contacts (softened: the painted light has some already).
     const bool stage_shade = shadows && (switches & kStageShade) != 0u && nd.w < 800.0;   // not far backgrounds
     if (stage_shade && (switches & kAmbientOcclusion) != 0u &&
-        !visible(origin, cosine_direction(n, rng), ao_radius, kCasters))
+        !visible_outside(origin, cosine_direction(n, rng), ao_radius, kCasters))
       baked *= darken(lerp(0.85, 0.7, look));
     if (shadows && ((switches & kFighterShadows) != 0u || stage_shade) && any(sun > 0.0)) {
       const float3 to_sun = cone_direction(-sun_dir, sun_radius, rng);
       // Fighters' shadows reach kBakedShadowReach; the stage's own only its near parts (eaves,
       // platforms, ledges), not across to a far backdrop.
-      const bool by_stage = stage_shade && !visible(origin, to_sun, 100.0, kCasters);
+      const bool by_stage = stage_shade && !visible_outside(origin, to_sun, 100.0, kCasters);
       if (dot(n, to_sun) > 0.0 && by_stage) {
         // As dark as the stage's own shade: GX's share of ambient in its light (Faithful, softened),
         // or the physical one (Remastered).

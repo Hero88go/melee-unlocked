@@ -817,6 +817,7 @@ class D3D12Backend : public Backend {
   // The path tracer's GPU scene (rtx_scene.h). While a present captures it (rtx_capture_), every
   // scene draw the raster issues is handed to it, and present_efb builds the structures from them.
   RtxScene rtx_scene_;
+  uint64_t rtx_hull_draws_ = 0;   // inverted-hull outline draws kept out of the ray-traced scene
   RtxTracer rtx_tracer_;
   // The lighting (rtx_integrator.h): the Melee integrator and, in a local build that has it, the
   // module made from NVIDIA's SDKs. Settings pick one per present (RenderOptions::rtx_integrator).
@@ -3271,6 +3272,10 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
                                    D3D12_GPU_VIRTUAL_ADDRESS vs_constants, D3D12_GPU_DESCRIPTOR_HANDLE textures,
                                    const DrawMatrices* override_matrices, const D3D12_VIEWPORT& viewport) {
   if (dc.rtx.camera != rtx_main_camera_ || index_count < 3 || !vertices || !indices || !vs_constants) return;
+  // An inverted hull (front faces culled: a slightly larger shell whose back faces draw a cel outline,
+  // as Animelee and other toon mods add to fighters and stages) is an outline, not a surface. In the
+  // ray-traced scene it would enclose its model and shadow, occlude and darken everything inside it.
+  if (dc.bp.cullmode() == 2) { ++rtx_hull_draws_; return; }
   if (&dc < frame.draws.data() || &dc >= frame.draws.data() + frame.draws.size()) return;
   if (!rtx_have_camera_) {
     // Primary rays (the debug view) are cast through exactly the projection and viewport the raster
@@ -3339,6 +3344,18 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
   if (in.channel & kRtxChannelLit) {
     const std::pair<uint32_t, uint32_t> range = rtx_gx_lights(dc, light_mask, in.light_first, in.light_count);
     if (range.second) { in.light_first = range.first; in.light_count = range.second; }
+  }
+  // Test runs (MELEE_RTX_DRAWLOG=<sim frame>): every draw the path tracer takes on that frame, with its class.
+  {
+    static const uint64_t log_at = [] { const char* v = host::test_env::getenv("MELEE_RTX_DRAWLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+    if (log_at && frame.sequence == log_at) {
+      uint32_t coords = 0;
+      for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t) coords |= 1u << (material->tobjs[t].coord & 7);
+      host::log("rtx draw: #%u owner %u skinned %u cls %u flags %X chan %X amb %08X bm %04X zm %X at %06X cull %u rmode %08X coords %X spec %08X rough %.2f lights %u",
+                in.draw_index, (unsigned)dc.owner_player, (unsigned)dc.skinned, (unsigned)in.cls, in.flags, in.channel, in.ambient,
+                bm & 0xFFFF, zm & 0x1F, at & 0xFFFFFF, dc.bp.cullmode(), material ? material->rendermode : 0u, coords,
+                in.specular, in.roughness, in.light_count);
+    }
   }
   rtx_scene_.add(in);
 }
@@ -3474,8 +3491,8 @@ bool D3D12Backend::rtx_build_scene() {
   const bool built = rtx_scene_.build(dxr_list_.Get(), (unsigned)slot_, rtx_view_to_world_,
                                       rtx_heap_generation_, rtx_frame_draws_, &error);
   if (built && !rtx_logged_) {
-    host::log("rtx: scene built (%u geometries, %u triangles)", rtx_scene_.geometry_count((unsigned)slot_),
-              rtx_scene_.vertex_count((unsigned)slot_) / 3);
+    host::log("rtx: scene built (%u geometries, %u triangles, %llu outline-hull draws left out so far)", rtx_scene_.geometry_count((unsigned)slot_),
+              rtx_scene_.vertex_count((unsigned)slot_) / 3, (unsigned long long)rtx_hull_draws_);
     rtx_logged_ = true;
   } else if (!built && !rtx_failure_logged_) {
     host::log("rtx: scene build skipped: %s", error.c_str());
