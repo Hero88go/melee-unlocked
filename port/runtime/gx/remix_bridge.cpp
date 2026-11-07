@@ -23,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -76,8 +77,10 @@ inline float quant(int32_t v) { return (float)(std::clamp((v + 8) / 17, 0, 15) *
 
 // ras0/ras1: the draw's two colour channels. other_black: texture maps other than this one read as
 // black (a fighter's extra maps are shine/reflection layers added over it), else as white.
+// other/other_mask: texels of the draw's other texture maps at this point (maps sharing its texture
+// coordinates, decoded beside it), used where a stage samples them.
 void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float ras0[4], const float ras1[4], bool other_black,
-               float out[4]) {
+               float out[4], const float (*other)[4] = nullptr, uint32_t other_mask = 0) {
   const BPMemory& bp = d.bp;
   float reg[4][4];
   for (int r = 0; r < 4; ++r)
@@ -87,7 +90,9 @@ void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float
   for (uint32_t n = 0; n < stages && n < 16; ++n) {
     float tex[4] = {255, 255, 255, 255};
     if (bp.order_enable((int)n)) {
-      if (bp.order_texmap((int)n) == own_map) for (int k = 0; k < 4; ++k) tex[k] = texel[k];
+      const int map = bp.order_texmap((int)n);
+      if (map == own_map) for (int k = 0; k < 4; ++k) tex[k] = texel[k];
+      else if (other && map < 8 && ((other_mask >> map) & 1)) for (int k = 0; k < 4; ++k) tex[k] = other[map][k];
       else if (other_black) tex[0] = tex[1] = tex[2] = tex[3] = 0.0f;
     }
     static const float zero[4] = {0, 0, 0, 0};
@@ -145,7 +150,7 @@ void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float
 }
 
 // Bumped whenever the texture bake changes, so baked files from older builds are not reused.
-constexpr uint32_t kBakeVersion = 4;
+constexpr uint32_t kBakeVersion = 6;
 
 LRESULT CALLBACK remix_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcW(hwnd, msg, wp, lp); }
 
@@ -477,7 +482,8 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         const float ras1[4] = {(float)((c1 >> 24) & 0xFF), (float)((c1 >> 16) & 0xFF), (float)((c1 >> 8) & 0xFF), (float)(c1 & 0xFF)};
         const bool fighter = d.skinned && d.owner_player < 6;
         static const bool log_mats = std::getenv("MELEE_REMIX_LOG_MATS") != nullptr;
-        if (log_mats && fighter && m.rgba.size() >= 4) {
+        static const bool log_stage = log_mats && std::string(std::getenv("MELEE_REMIX_LOG_MATS")) == "stage";
+        if (log_mats && (log_stage ? (!fighter && !unlit) : fighter) && m.rgba.size() >= 4) {
           const size_t mid = (m.rgba.size() / 8) * 4;
           const float texel[4] = {(float)m.rgba[mid], (float)m.rgba[mid + 1], (float)m.rgba[mid + 2], (float)m.rgba[mid + 3]};
           float o[4];
@@ -499,13 +505,42 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
                     d.owner_player, chan, chan & 1, (d.components & VB_HAS_COL0) ? 1 : 0, d.xf_regs[0x0A], d.xf_regs[0x0C], tint[0], tint[1], tint[2],
                     own_map, t.width, t.height, t.format, texel[0], texel[1], texel[2], o[0], o[1], o[2], st.c_str());
         }
+        // The draw's other textures read at the same coordinates (Pokemon Stadium's floor: grass over
+        // its markings), decoded once each; maps with other coordinates stay neutral.
+        std::vector<uint8_t> others_rgba[8];
+        uint32_t other_mask = 0;
+        {
+          int own_coord = -1;
+          for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n)
+            if (d.bp.order_enable((int)n) && d.bp.order_texmap((int)n) == own_map) { own_coord = d.bp.order_texcoord((int)n); break; }
+          for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) {
+            if (!d.bp.order_enable((int)n)) continue;
+            const int map = d.bp.order_texmap((int)n);
+            if (map == own_map || map >= 8 || ((other_mask >> map) & 1) || d.bp.order_texcoord((int)n) != own_coord) continue;
+            const TextureRef& o = d.textures[map];
+            if (!o.used || !o.data || !o.width || !o.height || o.width > 1024 || o.height > 1024) continue;
+            decode_texture(o.data->image.data(), o.width, o.height, o.format, o.data->palette.empty() ? nullptr : o.data->palette.data(),
+                           o.tlut_format, others_rgba[map]);
+            if (others_rgba[map].size() >= (size_t)o.width * o.height * 4) other_mask |= 1u << map;
+          }
+        }
+        float other_texel[8][4] = {};
         for (size_t i = 0; i + 3 < m.rgba.size(); i += 4) {
+          if (other_mask) {
+            const uint32_t px = (uint32_t)(i / 4) % t.width, py = (uint32_t)(i / 4) / t.width;
+            for (int map = 0; map < 8; ++map) {
+              if (!((other_mask >> map) & 1)) continue;
+              const TextureRef& o = d.textures[map];
+              const size_t at = ((size_t)(py * o.height / t.height) * o.width + px * o.width / t.width) * 4;
+              for (int k = 0; k < 4; ++k) other_texel[map][k] = others_rgba[map][at + k];
+            }
+          }
           // Fighters: texture x material. Their later stages blend toward white by a register that only
           // means something with GX lighting (baked flat it turns every fighter pastel).
           if (no_tev || (fighter && !unlit)) { for (int k = 0; k < 3; ++k) m.rgba[i + k] = (uint8_t)std::min(255.0f, m.rgba[i + k] * tint[k] + 0.5f); continue; }
           const float texel[4] = {(float)m.rgba[i], (float)m.rgba[i + 1], (float)m.rgba[i + 2], (float)m.rgba[i + 3]};
           float o[4];
-          tev_texel(d, own_map, texel, ras, ras1, fighter, o);
+          tev_texel(d, own_map, texel, ras, ras1, fighter, o, other_texel, other_mask);
           for (int k = 0; k < 4; ++k) m.rgba[i + k] = (uint8_t)(o[k] + 0.5f);
         }
         if (fog_q) {
@@ -523,6 +558,24 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
           else stbi_write_png(path.u8string().c_str(), (int)t.width, (int)t.height, 4, m.rgba.data(), (int)t.width * 4);
         }
         const std::wstring wpath = path.wstring();
+        // A painted (unlit) stage surface emits its picture; its albedo is a dimmer copy, so the sun
+        // adds shadows and bounce without blowing it out (Pokemon Stadium's white floor).
+        // MELEE_REMIX_BAKED_ALBEDO scales it (1 = the picture itself).
+        static const float baked_albedo = [] { const char* v = std::getenv("MELEE_REMIX_BAKED_ALBEDO"); return v ? (float)std::atof(v) : 0.4f; }();
+        std::wstring albedo_path = wpath;
+        if (emissive > 0.0f && !additive && baked_albedo < 0.999f) {
+          char aname[48];
+          std::snprintf(aname, sizeof aname, dds ? "%016llx_a.dds" : "%016llx_a.png", (unsigned long long)mat_key);
+          const std::filesystem::path apath = m.tex_dir / aname;
+          if (!std::filesystem::exists(apath)) {
+            std::vector<uint8_t> dim = m.rgba;
+            for (size_t i = 0; i + 3 < dim.size(); i += 4)
+              for (int k = 0; k < 3; ++k) dim[i + k] = (uint8_t)(dim[i + k] * baked_albedo + 0.5f);
+            if (dds) write_dds(apath, t.width, t.height, dim);
+            else stbi_write_png(apath.u8string().c_str(), (int)t.width, (int)t.height, 4, dim.data(), (int)t.width * 4);
+          }
+          albedo_path = apath.wstring();
+        }
         remixapi_MaterialInfoOpaqueEXT op{};
         op.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
         op.albedoConstant = {1, 1, 1};
@@ -535,7 +588,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
         mi.pNext = &op;
         mi.hash = mat_key;
-        mi.albedoTexture = wpath.c_str();
+        mi.albedoTexture = albedo_path.c_str();
         mi.emissiveTexture = emissive > 0.0f ? wpath.c_str() : nullptr;
         mi.emissiveIntensity = emissive;
         mi.emissiveColorConstant = {1.0f, 1.0f, 1.0f};
