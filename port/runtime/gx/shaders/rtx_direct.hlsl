@@ -558,19 +558,10 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float lit = shadows && !fill && !visible(origin, to_light, distance, fighter ? kCasters : kFighterCasters) ? darken(kShadowFill) : 1.0;
     irradiance += direct * lit;
     if (lit < 1.0) { gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0) * lit; continue; }
-    // Fighters: a physical highlight. Stage pieces: GX's own, where GX draws one (a specular channel
-    // the colour combiner reads): Phong at the material's exponent and strength. A normalized
-    // highlight there is tens of times brighter than the game's and washes dark colours to grey
-    // (Final Destination's blue panels under its two white side lights).
-    if (fighter) {
-      highlight += l.radiance * falloff * kPi * ggx_specular(n_gx, v, to_light, roughness, f0);
-    } else if ((channel & (1u << 19)) != 0u) {
-      const float a = roughness * roughness;                      // GGX alpha (perceptual roughness squared)
-      const float exponent = max(2.0 / max(a * a, 1e-4) - 2.0, 1.0);   // back to the Blinn-Phong exponent
-      const float strength = saturate((f0.g - 0.04) / 0.16);      // HSD's specular strength (rtx_material_params)
-      const float3 hv = normalize(to_light + v);
-      highlight += l.radiance * falloff * srgb_to_linear(strength * pow(saturate(dot(n_gx, hv)), exponent));
-    }
+    // Fighters: a physical highlight. Stage pieces keep GX's own (below, from the raster): a
+    // normalized highlight there is tens of times brighter than the game's and washes dark colours
+    // to grey (Final Destination's blue panels under its two white side lights).
+    if (fighter) highlight += l.radiance * falloff * kPi * ggx_specular(n_gx, v, to_light, roughness, f0);
     gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0);
   }
   // GX clamps ambient plus lights at 1 per channel, so a surface facing the sun shows exactly its
@@ -593,7 +584,19 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
   float3 faithful = srgb_to_linear(GAlbedo[px].rgb * saturate(gx_sum));
   faithful += 0.5 * albedo * bounce_extra;
-  float3 shaded = lerp(faithful, pbr, look) + reflection;
+  // A stage piece with a GX specular channel: what that channel added (its own lights and colour,
+  // Final Destination's bright blue panels) is the raster's surface over channel 0's lighting, kept
+  // as the game drew it.
+  float3 gx_extra = 0;
+  if (!fighter && (channel & (1u << 19)) != 0u) {
+    const float3 t = Trans[px].rgb;
+    if (all(t > 0.05)) {
+      const float3 surface_gx = saturate((Raster[px].rgb - Overlay[px].rgb) / t);
+      const float3 chan0_gx = saturate(GAlbedo[px].rgb * saturate(gx_open));
+      gx_extra = max(srgb_to_linear(surface_gx) - srgb_to_linear(chan0_gx), 0.0);
+    }
+  }
+  float3 shaded = lerp(faithful, pbr, look) + reflection + gx_extra;
   if (shadows && (switches & kFighterShadows) != 0u && !fighter) shaded *= fighter_shadow(origin, n, sun_dir, look, rng);
   if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0) {
     const float3 fresnel = floor_fresnel(n, v);
