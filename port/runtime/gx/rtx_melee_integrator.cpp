@@ -3,6 +3,7 @@
 // (shaders/rtx_direct.hlsl). ReSTIR and the radiance cache build on it.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "rtx_integrator.h"
+#include "test_env.h"
 
 #include <wrl/client.h>
 
@@ -226,6 +227,11 @@ class MeleeIntegrator final : public RtxIntegrator {
     k.switches = (in.shadows ? 1u : 0u) | (in.ambient_occlusion ? 2u : 0u) | (in.fighter_shadows ? 4u : 0u) |
                  (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u) |
                  (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u);
+    // Test runs only (MELEE_TEST_RTX_ALBEDO=1): the G-buffer albedo as the picture.
+    static const bool show_albedo = host::test_env::getenv("MELEE_TEST_RTX_ALBEDO") != nullptr;
+    if (show_albedo) k.switches |= 1u << 30;
+    static const bool no_highlight = host::test_env::getenv("MELEE_TEST_RTX_NO_HIGHLIGHT") != nullptr;
+    if (no_highlight) k.switches |= 1u << 29;
     std::memcpy(s.constants_cpu, &k, sizeof k);
 
     in.list->SetComputeRootSignature(root_.Get());

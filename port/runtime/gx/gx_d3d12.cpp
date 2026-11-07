@@ -3341,6 +3341,18 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
   // The lights GX lights it with: the channel's light mask (XF colour control bits 2-5, 11-14).
   const uint32_t light_mask = ((chan >> 2) & 0xFu) | (((chan >> 11) & 0xFu) << 4);
   in.channel |= (light_mask << 8) | kRtxChannelMaskKnown | (((chan >> 7) & 3u) << kRtxChannelDiffuseShift);
+  // GX shows a highlight only where a specular channel reaches the picture: a TEV stage reads it.
+  for (uint32_t j = 0; j < 2 && j < (dc.xf_regs[0x09] & 3); ++j) {
+    const uint32_t cc = dc.xf_regs[0x0E + j];
+    if (!lit_enable(cc) || lit_attnfunc(cc) != 1) continue;
+    for (uint32_t n = 0; n <= dc.bp.numtevstages() && n < 16; ++n) {
+      if ((uint32_t)dc.bp.order_colorchan((int)n) != j) continue;
+      const uint32_t tc = dc.bp.tev_color((int)n);
+      bool reads = false;
+      for (int sh = 0; sh < 16; sh += 4) { const uint32_t sel = (tc >> sh) & 15; if (sel == 10 || sel == 11) reads = true; }
+      if (reads) in.channel |= kRtxChannelGxSpecular;
+    }
+  }
   if (in.channel & kRtxChannelLit) {
     const std::pair<uint32_t, uint32_t> range = rtx_gx_lights(dc, light_mask, in.light_first, in.light_count);
     if (range.second) { in.light_first = range.first; in.light_count = range.second; }

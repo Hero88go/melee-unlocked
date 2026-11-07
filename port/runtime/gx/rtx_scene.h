@@ -50,6 +50,8 @@ enum : uint32_t {
   // Bits 8-15: the channel's GX light mask (lights 0-7); bit 16 set when the mask is known.
   kRtxChannelMaskKnown = 1u << 16,
   kRtxChannelDiffuseShift = 17,     // bits 17-18: GX's diffuse function (0 none: no N.L, 1 sign, 2 clamp)
+  kRtxChannelGxSpecular = 1u << 19, // GX draws a highlight on it: a lit colour channel with the specular
+                                    // attenuation function (HSD's specular channel)
 };
 
 // One raster draw handed over by execute_draw.

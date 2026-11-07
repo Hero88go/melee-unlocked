@@ -404,6 +404,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
 
   write_guides(px, albedo, specular_albedo(f0, saturate(dot(n, v)), roughness), nd.xyz, roughness);
+  if ((switches & (1u << 30)) != 0u) { emit(px, albedo, albedo); return; }   // test view: the albedo
 
   // The set's ambient light and sun.
   float3 ambient_light = 0, sun = 0;
@@ -557,7 +558,19 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float lit = shadows && !fill && !visible(origin, to_light, distance, fighter ? kCasters : kFighterCasters) ? darken(kShadowFill) : 1.0;
     irradiance += direct * lit;
     if (lit < 1.0) { gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0) * lit; continue; }
-    highlight += l.radiance * falloff * kPi * ggx_specular(n_gx, v, to_light, roughness, f0);
+    // Fighters: a physical highlight. Stage pieces: GX's own, where GX draws one (a specular channel
+    // the colour combiner reads): Phong at the material's exponent and strength. A normalized
+    // highlight there is tens of times brighter than the game's and washes dark colours to grey
+    // (Final Destination's blue panels under its two white side lights).
+    if (fighter) {
+      highlight += l.radiance * falloff * kPi * ggx_specular(n_gx, v, to_light, roughness, f0);
+    } else if ((channel & (1u << 19)) != 0u) {
+      const float a = roughness * roughness;                      // GGX alpha (perceptual roughness squared)
+      const float exponent = max(2.0 / max(a * a, 1e-4) - 2.0, 1.0);   // back to the Blinn-Phong exponent
+      const float strength = saturate((f0.g - 0.04) / 0.16);      // HSD's specular strength (rtx_material_params)
+      const float3 hv = normalize(to_light + v);
+      highlight += l.radiance * falloff * srgb_to_linear(strength * pow(saturate(dot(n_gx, hv)), exponent));
+    }
     gx_sum += linear_to_srgb(l.radiance) * falloff * max(nl, 0.0);
   }
   // GX clamps ambient plus lights at 1 per channel, so a surface facing the sun shows exactly its
@@ -567,6 +580,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     if (Lights[k].type != 0u && in_light_mask(channel, Lights[k])) total += Lights[k].radiance;
   const float clamp_scale = 1.0 / max(1.0, max(total.r, max(total.g, total.b)));
   const float3 gx_lit = srgb_to_linear(GAlbedo[px].rgb * saturate(gx_open));
+  if ((switches & (1u << 29)) != 0u) highlight = 0;   // test view: no highlights
   const float3 pbr = gx_lit * min(irradiance / max(irradiance_open, 1e-4), 2.0) + highlight * clamp_scale;
   // Reflections: a glossy surface (roughness up to 0.5) sees the real scene in its highlight.
   float3 reflection = 0;
