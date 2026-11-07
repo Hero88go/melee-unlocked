@@ -50,6 +50,9 @@
 #include "gx_dxr_gpu_scene.h"
 #include "gx_dxr_path_tracer.h"
 #include "rtx_scene.h"
+#ifdef MELEE_REMIX_SPIKE
+#include "remix_bridge.h"
+#endif
 #include "rtx_lights.h"
 #include "rtx_integrator.h"
 #include "rtx_tracer.h"
@@ -818,6 +821,11 @@ class D3D12Backend : public Backend {
   // scene draw the raster issues is handed to it, and present_efb builds the structures from them.
   RtxScene rtx_scene_;
   uint64_t rtx_hull_draws_ = 0;   // inverted-hull outline draws kept out of the ray-traced scene
+#ifdef MELEE_REMIX_SPIKE
+  std::unique_ptr<RemixBridge> remix_;
+  bool remix_failed_ = false;
+  void remix_present(const Frame& frame);
+#endif
   RtxTracer rtx_tracer_;
   // The lighting (rtx_integrator.h): the Melee integrator and, in a local build that has it, the
   // module made from NVIDIA's SDKs. Settings pick one per present (RenderOptions::rtx_integrator).
@@ -1043,6 +1051,11 @@ void D3D12Backend::init() {
     // The startup panel: a progress bar in the middle of the window from here until the game starts,
     // so a slow driver or DLSS start never looks like a hang.
     host::loading_show(L"Starting NVIDIA DLSS and Reflex", 1, 4);
+#ifdef MELEE_REMIX_SPIKE
+    // Remix brings its own Vulkan device and DLSS; Streamline's process-wide hooks crash it.
+    if (remix_requested()) host::log("remix: Streamline not loaded while Remix renders");
+    else
+#endif
     if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0)
     // DLSS Frame Generation's plugin only for a DLSS mode: with an FSR mode, frame generation is AMD's.
     streamline::init(dir, opts_.frame_generation_mode > 0 && !fsr::is_fsr_mode(opts_.dlss_mode));
@@ -3140,6 +3153,42 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     rtx_record_draw(frame, dc, vgpu, igpu, index_count, vs_gpu, srvs, override_matrices, viewport);
 }
 
+#ifdef MELEE_REMIX_SPIKE
+// ---------------- RTX Remix bridge (local experiment, remix_bridge.h) ----------------
+// MELEE_REMIX=1: each match frame also goes to the Remix runtime, which path traces it in its own
+// window. MELEE_REMIX_CAPTURE=<file.ppm> with MELEE_REMIX_CAPTURE_FRAME=<sim frame> saves its picture.
+void D3D12Backend::remix_present(const Frame& frame) {
+  if (!remix_requested() || remix_failed_) return;
+  gx::set_rtx_semantics(true);
+  if (!in_match_ || skip_present_ || !frame.rtx.present || frame.rtx.cameras.empty()) return;
+  int camera = -1;
+  for (const DrawCall& d : frame.draws)
+    if (d.skinned && d.owner_player < 4 && d.rtx.camera >= 0) { camera = d.rtx.camera; break; }
+  if (camera < 0 || camera >= (int)frame.rtx.cameras.size()) return;
+  float view_to_world[12];
+  if (!rtx_invert_affine(frame.rtx.cameras[(size_t)camera].view, view_to_world)) return;
+  if (!remix_) {
+    remix_ = std::make_unique<RemixBridge>();
+    std::string error;
+    if (!remix_->start(1280, 960, true, &error)) { host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; return; }
+  }
+  std::vector<RtxLightRecord> lights, set_lights;
+  const int main_set = rtx_main_light_set(frame, camera);
+  rtx_build_lights(frame.rtx, main_set, lights);
+  remix_->frame(frame, camera, view_to_world, lights);
+  static uint64_t remix_frames = 0;
+  if (++remix_frames % 300 == 1) {
+    const RemixBridge::Stats& st = remix_->stats();
+    host::log("remix: frame %llu: %u instances, %u meshes (%u new), %u materials, %u lights, %.2f ms on the CPU",
+              (unsigned long long)frame.sequence, st.instances, st.meshes, st.created, st.materials, st.lights, st.cpu_ms);
+  }
+  static const char* capture = std::getenv("MELEE_REMIX_CAPTURE");
+  static const uint64_t capture_at = [] { const char* v = std::getenv("MELEE_REMIX_CAPTURE_FRAME"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+  static bool captured = false;
+  if (capture && !captured && frame.sequence >= capture_at) captured = remix_->capture(capture);
+}
+#endif
+
 // ---------------- path tracing: the GPU scene (rtx_scene.h) ----------------
 bool D3D12Backend::rtx_wanted() const {
   // Video > Ray tracing > Path tracing; MELEE_RTX=1 forces it for test runs.
@@ -4773,6 +4822,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     }
   }
   rtx_begin_present(frame);
+#ifdef MELEE_REMIX_SPIKE
+  remix_present(frame);
+#endif
   bind_efb_targets();
   if (dlss_active_) {
     D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
