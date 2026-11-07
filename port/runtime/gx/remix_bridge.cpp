@@ -345,6 +345,14 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         const uint32_t mat = d.xf_regs[0x0C];
         tint[0] = ((mat >> 24) & 0xFF) / 255.0f; tint[1] = ((mat >> 16) & 0xFF) / 255.0f; tint[2] = ((mat >> 8) & 0xFF) / 255.0f;
       }
+      // A lit draw: GX's colour is its ambient register plus the material colour under the lights.
+      // HSD keeps a fighter's skin and cloth tone in the ambient colour, so the average lit colour
+      // (light at about 0.7 across the surface) is what its combiner sees.
+      if (!unlit) {
+        const uint32_t amb = d.xf_regs[0x0A];
+        const float a[3] = {((amb >> 24) & 0xFF) / 255.0f, ((amb >> 16) & 0xFF) / 255.0f, ((amb >> 8) & 0xFF) / 255.0f};
+        for (int k = 0; k < 3; ++k) tint[k] = std::min(1.0f, a[k] + 0.7f * tint[k]);
+      }
       static const bool no_tint = std::getenv("MELEE_REMIX_NO_TINT") != nullptr;
       if (no_tint) tint[0] = tint[1] = tint[2] = 1.0f;
     }
