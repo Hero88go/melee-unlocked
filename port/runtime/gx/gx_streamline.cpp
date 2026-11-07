@@ -119,6 +119,7 @@ uint32_t g_out_w = 0, g_out_h = 0;
 float g_prev_proj[16] = {};
 bool g_have_prev = false;
 
+
 void log_callback(sl::LogType type, const char* msg) {
   // MELEE_TEST_SL_VERBOSE (tests only): Streamline's verbose log, information lines included.
   static const bool verbose = host::test_env::getenv("MELEE_TEST_SL_VERBOSE") != nullptr;
@@ -704,6 +705,20 @@ bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList* list, const RayRecon
   options.outputHeight = in.out_h;
   options.colorBuffersHDR = sl::Boolean::eTrue;
   options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+  // The normal guide is in camera view space (rtx_direct.hlsl write_guides), so world and view are
+  // the same space to Ray Reconstruction. Left unset these matrices are all zeros, and RR's
+  // normals collapsed: every edge shimmered from frame to frame on a still scene.
+  float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  options.worldToCameraView = to_sl_matrix(ident);
+  options.cameraViewToWorld = to_sl_matrix(ident);
+  // Ray Reconstruction's model: preset E in every mode. The default model shimmered on every edge
+  // of a still Melee scene (Battlefield: frame-to-frame edge flicker 2.6 against 0.65 without path
+  // tracing); E holds them as steady as the game (0.54) and halves it on Yoshi's Story.
+  // MELEE_TEST_RR_PRESET=<n> (tests only) picks another.
+  sl::DLSSDPreset preset = sl::DLSSDPreset::ePresetE;
+  if (const char* p = host::test_env::getenv("MELEE_TEST_RR_PRESET")) preset = (sl::DLSSDPreset)std::atoi(p);
+  options.dlaaPreset = options.qualityPreset = options.balancedPreset = options.performancePreset =
+      options.ultraPerformancePreset = options.ultraQualityPreset = preset;
   sl::Result result = driver_call([&] { return slDLSSDSetOptions(g_viewport, options); });
   if (result != sl::Result::eOk) {
     host::log("dlss-rr: slDLSSDSetOptions failed (%d)", (int)result);

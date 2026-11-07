@@ -352,7 +352,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float4 nd = GNormal[px];
   if (draw == 0u || nd.w <= 0.0) {
     Output[px] = float4(srgb_to_linear(Raster[px].rgb), 1);
-    write_guides(px, 1.0, 0.0, 0.0, 1.0);
+    write_guides(px, 1.0, 0.0, float3(0, 0, 1), 1.0);   // a valid normal (facing the camera) for Ray Reconstruction
     return;
   }
 
