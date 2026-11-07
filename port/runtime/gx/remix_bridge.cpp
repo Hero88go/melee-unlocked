@@ -70,28 +70,40 @@ bool write_dds(const std::filesystem::path& path, uint32_t w, uint32_t h, const 
 // neutral light. Remix gets that as its texture, so constant-coloured lines and tinted stages keep their
 // colours. Inputs follow GX: only the texmap `own_map` is the given texel (other textures read white),
 // the rasterized colour is `ras` (0..255), comparison modes are passed as plain adds.
-void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float ras[4], float out[4]) {
+// Colour registers as the bake reads them: 16 levels a channel, so registers a stage animates
+// (Battlefield's light strips) make a bounded set of materials instead of one per frame.
+inline float quant(int32_t v) { return (float)(std::clamp((v + 8) / 17, 0, 15) * 17); }
+
+// ras0/ras1: the draw's two colour channels. other_black: texture maps other than this one read as
+// black (a fighter's extra maps are shine/reflection layers added over it), else as white.
+void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float ras0[4], const float ras1[4], bool other_black,
+               float out[4]) {
   const BPMemory& bp = d.bp;
   float reg[4][4];
   for (int r = 0; r < 4; ++r)
-    for (int k = 0; k < 4; ++k) reg[r][k] = (float)d.tev_colors[r][k];
+    for (int k = 0; k < 4; ++k) reg[r][k] = quant(d.tev_colors[r][k]);
   const uint32_t stages = bp.numtevstages() + 1;
   static const float kconst[8] = {255.0f, 223.0f, 191.0f, 159.0f, 128.0f, 96.0f, 64.0f, 32.0f};
   for (uint32_t n = 0; n < stages && n < 16; ++n) {
     float tex[4] = {255, 255, 255, 255};
-    if (bp.order_enable((int)n) && bp.order_texmap((int)n) == own_map)
-      for (int k = 0; k < 4; ++k) tex[k] = texel[k];
+    if (bp.order_enable((int)n)) {
+      if (bp.order_texmap((int)n) == own_map) for (int k = 0; k < 4; ++k) tex[k] = texel[k];
+      else if (other_black) tex[0] = tex[1] = tex[2] = tex[3] = 0.0f;
+    }
+    static const float zero[4] = {0, 0, 0, 0};
+    const int chan_sel = bp.order_colorchan((int)n);
+    const float* ras = chan_sel == 0 ? ras0 : chan_sel == 1 ? ras1 : zero;
     float konst[4];
     const int kc = bp.ksel_kc((int)n), ka = bp.ksel_ka((int)n);
     auto kval = [&](int sel, int ch) -> float {
       if (sel < 8) return kconst[sel];
-      if (sel >= 12 && sel < 16) return (float)d.tev_kcolors[sel - 12][ch];
-      if (sel >= 16 && sel < 32) return (float)d.tev_kcolors[(sel - 16) & 3][(sel - 16) >> 2];
+      if (sel >= 12 && sel < 16) return quant(d.tev_kcolors[sel - 12][ch]);
+      if (sel >= 16 && sel < 32) return quant(d.tev_kcolors[(sel - 16) & 3][(sel - 16) >> 2]);
       return 0.0f;
     };
     for (int k = 0; k < 3; ++k) konst[k] = kval(kc, k);
     konst[3] = kval(ka < 12 ? ka : (ka >= 28 ? ka : ka), 3);
-    if (ka >= 16 && ka < 32) konst[3] = (float)d.tev_kcolors[(ka - 16) & 3][(ka - 16) >> 2];
+    if (ka >= 16 && ka < 32) konst[3] = quant(d.tev_kcolors[(ka - 16) & 3][(ka - 16) >> 2]);
     const uint32_t cc = bp.tev_color((int)n), ac = bp.tev_alpha((int)n);
     auto cin = [&](uint32_t sel, int ch) -> float {
       switch (sel) {
@@ -132,6 +144,9 @@ void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float
   }
 }
 
+// Bumped whenever the texture bake changes, so baked files from older builds are not reused.
+constexpr uint32_t kBakeVersion = 4;
+
 LRESULT CALLBACK remix_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcW(hwnd, msg, wp, lp); }
 
 }  // namespace
@@ -147,6 +162,7 @@ struct RemixBridge::Impl {
   struct MeshEntry { remixapi_MeshHandle handle = nullptr; uint64_t last = 0; };
   std::unordered_map<uint64_t, MeshEntry> meshes;
   std::unordered_map<uint64_t, remixapi_MaterialHandle> materials;
+  std::unordered_map<uint64_t, uint64_t> material_last;   // frame each material was last drawn
   std::vector<remixapi_LightHandle> lights;
   uint64_t frame_no = 0;
   std::vector<remixapi_HardcodedVertex> verts;
@@ -181,6 +197,26 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error) 
     dir = std::filesystem::path(exe).parent_path() / L"Remix";
   }
   SetDllDirectoryW(dir.c_str());   // the runtime's own DLLs (DLSS, NRD, USD) sit beside it
+  // Picture settings Remix reads at startup (it ignores most of them when set later): a fixed
+  // exposure on the global tone mapper (Melee's colours are already display-referred), no fog.
+  // MELEE_REMIX_CONF="key = value;..." adds to them. An existing DXVK_CONFIG_FILE wins.
+  if (!_wgetenv(L"DXVK_CONFIG_FILE")) {
+    wchar_t tmp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    const std::filesystem::path conf = std::filesystem::path(tmp) / L"melee-remix.conf";
+    std::string text =
+        "rtx.autoExposure.enabled = False\nrtx.tonemappingMode = 0\nrtx.volumetrics.enable = False\n"
+        "rtx.tonemap.exposureBias = -1\nrtx.useLegacyACES = False\n"
+        "rtx.tonemap.colorGradingEnabled = True\nrtx.tonemap.saturation = 0.8\nrtx.tonemap.contrast = 0.9\n";
+    if (const char* v = std::getenv("MELEE_REMIX_CONF"))
+      for (const char* c = v; *c; ++c) text += *c == ';' ? '\n' : *c;
+    if (FILE* f = _wfopen(conf.c_str(), L"wb")) {
+      std::fwrite(text.data(), 1, text.size(), f);
+      std::fputc('\n', f);
+      std::fclose(f);
+      _wputenv_s(L"DXVK_CONFIG_FILE", conf.c_str());
+    }
+  }
   const std::wstring dll = (std::filesystem::path(dir) / L"d3d9.dll").wstring();
   const remixapi_ErrorCode rc = remixapi_lib_loadRemixDllAndInitialize(dll.c_str(), &m.api, &m.dll);
   if (rc != REMIXAPI_ERROR_CODE_SUCCESS) { if (error) *error = "loading the Remix runtime failed (" + std::to_string((int)rc) + ")"; return false; }
@@ -285,6 +321,9 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     const uint32_t bm = d.bp.blendmode();
     const bool blended = bm & 1;
     const bool additive = blended && ((bm >> 5) & 7) == 1;   // destination factor ONE: glows, fire, sparks
+    // A fighter's additive pass is its painted shine (env/highlight map over the model), not a light:
+    // Remix's own specular replaces it.
+    if (additive && d.skinned && d.owner_player < 6) continue;
     // Additive draws (glows, the fountain's light, sparks) come in as emissive cut-outs.
     // Blended surfaces (leaves, the sky's cut-out clouds, decals) and alpha-tested ones become cutouts.
     const uint32_t at = d.bp.alpha_test();
@@ -296,7 +335,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // (MELEE_REMIX_EMISSIVE scales it; additive glows emit more).
     const uint32_t chan = d.xf_regs[0x0E];
     const bool unlit = (d.xf_regs[0x09] & 3) == 0 || ((chan >> 1) & 1) == 0;
-    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 0.8f; }();
+    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 1.3f; }();
     const float emissive = additive ? 2.0f * emissive_scale : unlit && d.owner_player >= 6 ? emissive_scale : 0.0f;
     m.prim.clear();
     if (d.segment_count) {
@@ -307,6 +346,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     } else append_segment_indices(m.prim, d.primitive, d.vertex_count, 0);
     if (m.prim.size() < 3 || d.first_vertex + (size_t)d.vertex_count > f.vertices.size()) continue;
     m.verts.resize(d.vertex_count);
+    double view_z_sum = 0.0;
     for (uint32_t i = 0; i < d.vertex_count; ++i) {
       const Vertex& v = f.vertices[d.first_vertex + i];
       const int row = (int)(v.posmtx & 0x3F);
@@ -314,6 +354,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       const float* pm = &d.posMatrices[row * 4];
       float view[3];
       for (int k = 0; k < 3; ++k) view[k] = pm[k * 4] * v.pos[0] + pm[k * 4 + 1] * v.pos[1] + pm[k * 4 + 2] * v.pos[2] + pm[k * 4 + 3];
+      view_z_sum += view[2];
       remixapi_HardcodedVertex& o = m.verts[i];
       o = {};
       for (int k = 0; k < 3; ++k) o.position[k] = vw[k * 4] * view[0] + vw[k * 4 + 1] * view[1] + vw[k * 4 + 2] * view[2] + vw[k * 4 + 3];
@@ -333,6 +374,42 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // The draw's colour source, which GX multiplies its texture by: the vertex colours (their average)
     // or the material colour register (XF 0x0C, RGBA from the high byte). Melee's textures are often
     // grey and get their colour here (Final Destination's lines, Fountain of Dreams' pastels).
+    // GX fog at the draw's average depth, as the pixel shader computes it (gx_shader.cpp): Melee
+    // fades distant backdrops toward a haze colour (Yoshi's Story's pale sky). Stage draws only.
+    float fog = 0.0f, fog_rgb[3] = {0, 0, 0};
+    const uint32_t fog_fsel = (d.bp.fogparam3() >> 21) & 7;
+    static const bool no_fog = std::getenv("MELEE_REMIX_NO_FOG") != nullptr;
+    if (fog_fsel && !no_fog && d.owner_player >= 6 && d.xf_regs[0x26] == 0) {
+      auto f11 = [](uint32_t v) { uint32_t b = ((v >> 20) & 1) << 31 | ((v >> 11) & 0xFF) << 23 | (v & 0x7FF) << 12; float x; std::memcpy(&x, &b, 4); return x; };
+      const float* proj = (const float*)&d.xf_regs[0x20];
+      const float* vpt = (const float*)&d.xf_regs[0x1A];
+      const float vz = (float)(view_z_sum / d.vertex_count);
+      if (vz < -1e-3f) {
+        const float zndc = (proj[4] * vz + proj[5]) / -vz;
+        const float z24 = std::clamp(zndc * vpt[2] + vpt[5], 0.0f, 16777215.0f);
+        const uint32_t shift = d.bp.fog_bshift() & 0x1F;
+        const float denom = (float)(d.bp.fog_bmag() & 0xFFFFFF) - (float)((uint32_t)z24 >> shift);
+        const float ze = (d.bp.fogparam3() >> 20) & 1 ? f11(d.bp.fogparam0()) * (z24 / 16777216.0f)
+                                                         : denom != 0.0f ? f11(d.bp.fogparam0()) * 16777216.0f / denom : 0.0f;
+        float x = std::clamp(ze - f11(d.bp.fogparam3()), 0.0f, 1.0f);
+        if (fog_fsel == 4) x = 1.0f - std::exp2(-8.0f * x);
+        else if (fog_fsel == 5) x = 1.0f - std::exp2(-8.0f * x * x);
+        else if (fog_fsel == 6) x = std::exp2(-8.0f * (1.0f - x));
+        else if (fog_fsel == 7) { x = 1.0f - x; x = std::exp2(-8.0f * x * x); }
+        fog = x;
+        const uint32_t fc = d.bp.fogcolor();
+        fog_rgb[0] = (float)((fc >> 16) & 0xFF); fog_rgb[1] = (float)((fc >> 8) & 0xFF); fog_rgb[2] = (float)(fc & 0xFF);
+        static const bool log_fog = std::getenv("MELEE_REMIX_LOG_MATS") != nullptr;
+        static int logged = 0;
+        if (log_fog && logged < 40 && m.frame_no > 600) {
+          ++logged;
+          host::log("remix fog: fsel %u vz %.1f zndc %.4f z24 %.0f bmag %u shift %u A %g C %g ze %.3f fog %.3f colour %06x proj %g %g vp %g %g",
+                    fog_fsel, vz, zndc, z24, d.bp.fog_bmag() & 0xFFFFFF, shift, f11(d.bp.fogparam0()), f11(d.bp.fogparam3()), ze, fog, fc & 0xFFFFFF,
+                    proj[4], proj[5], vpt[2], vpt[5]);
+        }
+      }
+    }
+    const uint32_t fog_q = (uint32_t)(fog * 31.0f + 0.5f);
     float tint[3] = {1.0f, 1.0f, 1.0f};
     {
       const bool from_vertex = (chan & 1) != 0 && (d.components & VB_HAS_COL0);
@@ -345,14 +422,8 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         const uint32_t mat = d.xf_regs[0x0C];
         tint[0] = ((mat >> 24) & 0xFF) / 255.0f; tint[1] = ((mat >> 16) & 0xFF) / 255.0f; tint[2] = ((mat >> 8) & 0xFF) / 255.0f;
       }
-      // A lit draw: GX's colour is its ambient register plus the material colour under the lights.
-      // HSD keeps a fighter's skin and cloth tone in the ambient colour, so the average lit colour
-      // (light at about 0.7 across the surface) is what its combiner sees.
-      if (!unlit) {
-        const uint32_t amb = d.xf_regs[0x0A];
-        const float a[3] = {((amb >> 24) & 0xFF) / 255.0f, ((amb >> 16) & 0xFF) / 255.0f, ((amb >> 8) & 0xFF) / 255.0f};
-        for (int k = 0; k < 3; ++k) tint[k] = std::min(1.0f, a[k] + 0.7f * tint[k]);
-      }
+      // A lit draw: GX gives material x (ambient + lights). The lights are Remix's job now, so the
+      // material colour alone is the albedo.
       static const bool no_tint = std::getenv("MELEE_REMIX_NO_TINT") != nullptr;
       if (no_tint) tint[0] = tint[1] = tint[2] = 1.0f;
     }
@@ -361,7 +432,30 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     uint64_t mat_key = 0;
     const TextureRef& t = d.textures[0];
     if (!no_textures && t.used && t.data && t.width && t.height && t.width <= 1024 && t.height <= 1024) {
-      mat_key = fnv(&t.data->hash, 8, fnv(&t.format, 4, fnv(&t.mode0, 4, fnv(&emissive, 4, fnv(&tint_q, 4, cutout ? 0x9E3779B97F4A7C15ull : 1469598103934665603ull)))));
+      // Keyed by everything the bake reads: texture, colour source, and (for baked draws) the
+      // combiner stages with only the colour registers they read, so animated registers a draw
+      // ignores do not make new materials every frame. Fighters bake without the combiner.
+      const bool lit_fighter = d.skinned && d.owner_player < 6 && !unlit;
+      uint64_t tev_key = lit_fighter ? 0x46494748ull : 0;
+      if (!lit_fighter) {
+        const uint32_t stages_n = d.bp.numtevstages() + 1;
+        tev_key = stages_n;
+        uint32_t regs = 0, konsts = 0;
+        for (uint32_t n = 0; n < stages_n && n < 16; ++n) {
+          const uint32_t cc = d.bp.tev_color((int)n), ac = d.bp.tev_alpha((int)n);
+          for (int sh = 0; sh < 16; sh += 4) { const uint32_t sel = (cc >> sh) & 15; if (sel < 8) regs |= 1u << (sel / 2); if (sel == 14) konsts |= 1u << n; }
+          for (int sh = 4; sh < 16; sh += 3) { const uint32_t sel = (ac >> sh) & 7; if (sel < 4) regs |= 1u << sel; if (sel == 6) konsts |= 1u << n; }
+          const uint32_t st[5] = {cc, ac, (uint32_t)d.bp.order_texmap((int)n), (uint32_t)d.bp.order_colorchan((int)n),
+                                  (uint32_t)(d.bp.ksel_kc((int)n) | (d.bp.ksel_ka((int)n) << 8))};
+          tev_key = fnv(st, sizeof st, tev_key);
+          if (konsts & (1u << n))
+            for (int r = 0; r < 4; ++r) { float q[4]; for (int k = 0; k < 4; ++k) q[k] = quant(d.tev_kcolors[r][k]); tev_key = fnv(q, sizeof q, tev_key); }
+        }
+        for (int r = 0; r < 4; ++r)
+          if (regs & (1u << r)) { float q[4]; for (int k = 0; k < 4; ++k) q[k] = quant(d.tev_colors[r][k]); tev_key = fnv(q, sizeof q, tev_key); }
+      }
+      if (fog_q) tev_key = fnv(&fog_q, 4, fnv(fog_rgb, sizeof fog_rgb, tev_key));
+      mat_key = fnv(&kBakeVersion, 4, fnv(&t.data->hash, 8, tev_key ^ fnv(&t.format, 4, fnv(&t.mode0, 4, fnv(&emissive, 4, fnv(&tint_q, 4, cutout ? 0x9E3779B97F4A7C15ull : 1469598103934665603ull))))));
       if (!m.materials.count(mat_key)) {
         decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.empty() ? nullptr : t.data->palette.data(),
                        t.tlut_format, m.rgba);
@@ -369,12 +463,55 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         static const bool no_tev = std::getenv("MELEE_REMIX_NO_TEV") != nullptr;
         const int own_map = [&] { for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) if (d.bp.order_enable((int)n)) return d.bp.order_texmap((int)n); return 0; }();
         const float ras[4] = {tint[0] * 255.0f, tint[1] * 255.0f, tint[2] * 255.0f, 255.0f};
+        const bool fighter_draw = d.skinned && d.owner_player < 6;
+        // Channel 1 (HSD's specular colour): lit draws get none (specular is Remix's
+        // job), unlit ones their channel-1 material colour.
+        uint32_t c1 = d.xf_regs[0x0D];
+        if (!unlit) {   // lit: material x (ambient + about half the light), as GX's channel 1 averages
+          const uint32_t a1 = d.xf_regs[0x0B];
+          uint32_t out = c1 & 0xFF;
+          for (int sh = 8; sh < 32; sh += 8)
+            out |= (uint32_t)std::min(255.0f, ((c1 >> sh) & 0xFF) * std::min(1.0f, ((a1 >> sh) & 0xFF) / 255.0f + 0.5f)) << sh;
+          c1 = fighter_draw ? 0x000000FFu : out;
+        }
+        const float ras1[4] = {(float)((c1 >> 24) & 0xFF), (float)((c1 >> 16) & 0xFF), (float)((c1 >> 8) & 0xFF), (float)(c1 & 0xFF)};
+        const bool fighter = d.skinned && d.owner_player < 6;
+        static const bool log_mats = std::getenv("MELEE_REMIX_LOG_MATS") != nullptr;
+        if (log_mats && fighter && m.rgba.size() >= 4) {
+          const size_t mid = (m.rgba.size() / 8) * 4;
+          const float texel[4] = {(float)m.rgba[mid], (float)m.rgba[mid + 1], (float)m.rgba[mid + 2], (float)m.rgba[mid + 3]};
+          float o[4];
+          tev_texel(d, own_map, texel, ras, ras1, fighter, o);
+          std::string st;
+          for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) {
+            char b[96];
+            std::snprintf(b, sizeof b, " [%u map%d en%d ch%d c%06x a%06x kc%d]", n, d.bp.order_texmap((int)n), d.bp.order_enable((int)n),
+                          d.bp.order_colorchan((int)n), d.bp.tev_color((int)n) & 0xFFFFFF, d.bp.tev_alpha((int)n) & 0xFFFFFF, d.bp.ksel_kc((int)n));
+            st += b;
+          }
+          for (int r = 0; r < 4; ++r) {
+            char b[96];
+            std::snprintf(b, sizeof b, " reg%d(%d %d %d %d) k%d(%d %d %d %d)", r, d.tev_colors[r][0], d.tev_colors[r][1], d.tev_colors[r][2],
+                          d.tev_colors[r][3], r, d.tev_kcolors[r][0], d.tev_kcolors[r][1], d.tev_kcolors[r][2], d.tev_kcolors[r][3]);
+            st += b;
+          }
+          host::log("remix mat: p%u chan %08x matsrc %u vc %d amb %08x mat %08x tint %.2f %.2f %.2f own %d tex %ux%u fmt %u texel %.0f %.0f %.0f -> %.0f %.0f %.0f%s",
+                    d.owner_player, chan, chan & 1, (d.components & VB_HAS_COL0) ? 1 : 0, d.xf_regs[0x0A], d.xf_regs[0x0C], tint[0], tint[1], tint[2],
+                    own_map, t.width, t.height, t.format, texel[0], texel[1], texel[2], o[0], o[1], o[2], st.c_str());
+        }
         for (size_t i = 0; i + 3 < m.rgba.size(); i += 4) {
-          if (no_tev) { for (int k = 0; k < 3; ++k) m.rgba[i + k] = (uint8_t)std::min(255.0f, m.rgba[i + k] * tint[k] + 0.5f); continue; }
+          // Fighters: texture x material. Their later stages blend toward white by a register that only
+          // means something with GX lighting (baked flat it turns every fighter pastel).
+          if (no_tev || (fighter && !unlit)) { for (int k = 0; k < 3; ++k) m.rgba[i + k] = (uint8_t)std::min(255.0f, m.rgba[i + k] * tint[k] + 0.5f); continue; }
           const float texel[4] = {(float)m.rgba[i], (float)m.rgba[i + 1], (float)m.rgba[i + 2], (float)m.rgba[i + 3]};
           float o[4];
-          tev_texel(d, own_map, texel, ras, o);
+          tev_texel(d, own_map, texel, ras, ras1, fighter, o);
           for (int k = 0; k < 4; ++k) m.rgba[i + k] = (uint8_t)(o[k] + 0.5f);
+        }
+        if (fog_q) {
+          const float w = fog_q / 31.0f;
+          for (size_t i = 0; i + 3 < m.rgba.size(); i += 4)
+            for (int k = 0; k < 3; ++k) m.rgba[i + k] = (uint8_t)(m.rgba[i + k] * (1.0f - w) + fog_rgb[k] * w + 0.5f);
         }
         char name[40];
         // PNG: Remix 1.6.1's loader divided by zero on these uncompressed DDS files (MELEE_REMIX_DDS=1 keeps DDS).
@@ -432,6 +569,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       }
     }
     const remixapi_MaterialHandle material = m.materials[mat_key];
+    m.material_last[mat_key] = m.frame_no;
     uint64_t key = fnv(m.verts.data(), m.verts.size() * sizeof(remixapi_HardcodedVertex));
     key = fnv(m.prim.data(), m.prim.size() * 4, key);
     key = fnv(&mat_key, 8, key);
@@ -457,18 +595,35 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     m.api.DrawInstance(&inst);
     ++stats_.instances;
   }
-  // Meshes not drawn for a few frames (fighter poses already shown) go.
+  // Meshes not drawn for a few frames (fighter poses already shown) go, then materials no mesh has
+  // used for two seconds.
   for (auto it = m.meshes.begin(); it != m.meshes.end();) {
     if (m.frame_no - it->second.last > 3) { m.api.DestroyMesh(it->second.handle); it = m.meshes.erase(it); }
     else ++it;
   }
+  if (m.frame_no % 30 == 0 && m.api.DestroyMaterial)
+    for (auto it = m.material_last.begin(); it != m.material_last.end();) {
+      if (m.frame_no - it->second > 120) {
+        if (auto h = m.materials.find(it->first); h != m.materials.end()) { if (h->second) m.api.DestroyMaterial(h->second); m.materials.erase(h); }
+        it = m.material_last.erase(it);
+      } else ++it;
+    }
 
   // Lights: the stage's sun as a distant light, its point and spot lights as spheres, scaled up
   // from GX's 0..1 colours to Remix's physical units (MELEE_REMIX_LIGHT scales them all).
   for (auto l : m.lights) m.api.DestroyLight(l);
   m.lights.clear();
   static const float scale = [] { const char* v = std::getenv("MELEE_REMIX_LIGHT"); return v ? (float)std::atof(v) : 1.0f; }();
+  // The sun's irradiance (MELEE_REMIX_SUN) and the solid angle of its disc.
+  constexpr float kSunDegrees = 1.5f;
+  static const float sun = [] { const char* v = std::getenv("MELEE_REMIX_SUN"); return v ? (float)std::atof(v) : 2.0f; }();
+  static const float sun_disc = 2.0f * 3.14159265f * (1.0f - std::cos(kSunDegrees * 0.5f * 3.14159265f / 180.0f));
   uint64_t n = 0;
+  static const bool log_lights = std::getenv("MELEE_REMIX_LOG_MATS") != nullptr;
+  if (log_lights && m.frame_no % 600 == 300)
+    for (const RtxLightRecord& l : lights)
+      host::log("remix light: type %u radiance %.3f %.3f %.3f dir %.2f %.2f %.2f pos %.1f %.1f %.1f", l.type, l.radiance[0], l.radiance[1], l.radiance[2],
+                l.direction[0], l.direction[1], l.direction[2], l.position[0], l.position[1], l.position[2]);
   for (const RtxLightRecord& l : lights) {
     if (no_lights) break;
     remixapi_LightInfo li{};
@@ -494,11 +649,15 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       li.radiance = {l.radiance[0] * sky * scale, l.radiance[1] * sky * scale, l.radiance[2] * sky * scale};
     } else if (l.type == kRtxLightDirectional) {
       dist.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
-      dist.direction = {l.direction[0], l.direction[1], l.direction[2]};
-      dist.angularDiameterDegrees = 1.5f;
+      // Remix takes the direction towards the light (captures: fighters lit from behind otherwise).
+      static const float flip = -1.0f;
+      dist.direction = {flip * l.direction[0], flip * l.direction[1], flip * l.direction[2]};
+      dist.angularDiameterDegrees = kSunDegrees;
       dist.volumetricRadianceScale = 1.0f;
       li.pNext = &dist;
-      li.radiance = {l.radiance[0] * 6.0f * scale, l.radiance[1] * 6.0f * scale, l.radiance[2] * 6.0f * scale};
+      // Remix takes a distant light's radiance over its disc; GX's colour is the light on the surface.
+      const float r = sun * scale / sun_disc;
+      li.radiance = {l.radiance[0] * r, l.radiance[1] * r, l.radiance[2] * r};
     } else if (l.type == kRtxLightPoint || l.type == kRtxLightSpot) {
       sph.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
       sph.position = {l.position[0], l.position[1], l.position[2]};
@@ -514,14 +673,15 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
   if (m.lights.empty() && !no_lights) {
     remixapi_LightInfoDistantEXT dist{};
     dist.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
-    dist.direction = {0.3f, -0.85f, -0.43f};
-    dist.angularDiameterDegrees = 2.0f;
+    dist.direction = {-0.3f, 0.85f, 0.43f};   // towards the light: above, front, right
+    dist.angularDiameterDegrees = kSunDegrees;
     dist.volumetricRadianceScale = 1.0f;
     remixapi_LightInfo li{};
     li.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     li.pNext = &dist;
     li.hash = 0x4D454C45ull;
-    li.radiance = {5.0f * scale, 4.8f * scale, 4.5f * scale};
+    const float r = 0.8f * sun * scale / sun_disc;
+    li.radiance = {1.0f * r, 0.96f * r, 0.9f * r};
     remixapi_LightHandle h = nullptr;
     if (m.api.CreateLight(&li, &h) == REMIXAPI_ERROR_CODE_SUCCESS) { m.lights.push_back(h); m.api.DrawLightInstance(h); }
   }
