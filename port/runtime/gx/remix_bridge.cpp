@@ -300,7 +300,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // (MELEE_REMIX_EMISSIVE scales it; additive glows emit more).
     const uint32_t chan = d.xf_regs[0x0E];
     const bool unlit = (d.xf_regs[0x09] & 3) == 0 || ((chan >> 1) & 1) == 0;
-    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 0.8f; }();
+    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 0.6f; }();
     // A fighter glows a little with its own colours (MELEE_REMIX_FIGHTER_GLOW), so it reads on dark
     // stages as it does in the game, with Remix's light and shadow on top.
     static const float fighter_glow = [] { const char* v = std::getenv("MELEE_REMIX_FIGHTER_GLOW"); return v ? (float)std::atof(v) : 0.35f; }();
@@ -404,6 +404,32 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
               for (int k = 0; k < 3; ++k) m.rgba[i + k] = (uint8_t)std::min(255.0f, m.rgba[i + k] * tint[k] + 0.5f);
           }
         }
+        // How shiny it is, as our path tracer decides (rtx_material_params, rtx_direct.hlsl
+        // polished_floor): the game's own specular and shininess; an environment-mapped (shiny) stage
+        // material; or a dark, grey stage surface (Final Destination's stone, metal decks), polished.
+        float rough = 0.85f;
+        {
+          const RtxMaterial* mat = d.rtx.material >= 0 && (size_t)d.rtx.material < f.rtx.materials.size()
+                                       ? &f.rtx.materials[(size_t)d.rtx.material] : nullptr;
+          uint32_t spec = 0;
+          rtx_material_params(mat, &spec, &rough);
+          if (!fighter && !additive) {
+            bool env_mapped = false;
+            for (uint32_t k = 0; mat && k < mat->tobj_count && k < 8; ++k) env_mapped = env_mapped || mat->tobjs[k].coord == 1;
+            double sum[3] = {0, 0, 0};
+            size_t n = 0;
+            for (size_t i = 0; i + 3 < m.rgba.size(); i += 16, ++n)
+              for (int k = 0; k < 3; ++k) { const float c = m.rgba[i + k] / 255.0f; sum[k] += c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
+            const float a[3] = {(float)(sum[0] / std::max<size_t>(n, 1)), (float)(sum[1] / std::max<size_t>(n, 1)), (float)(sum[2] / std::max<size_t>(n, 1))};
+            const float lum = 0.2126f * a[0] + 0.7152f * a[1] + 0.0722f * a[2];
+            const float sat = std::max({a[0], a[1], a[2]}) - std::min({a[0], a[1], a[2]});
+            const float polished = std::clamp((0.30f - lum) / 0.15f, 0.0f, 1.0f) * std::clamp((0.20f - sat) / 0.10f, 0.0f, 1.0f);
+            if (env_mapped) rough = std::min(rough, 0.2f);
+            else if (polished > 0.5f) rough = std::min(rough, 0.12f);
+          }
+        }
+        static const float rough_scale = [] { const char* v = std::getenv("MELEE_REMIX_ROUGHNESS"); return v ? (float)std::atof(v) : 1.0f; }();
+        rough = std::clamp(rough * rough_scale, 0.02f, 1.0f);
         char name[40];
         // PNG: Remix 1.6.1's loader divided by zero on these uncompressed DDS files (MELEE_REMIX_DDS=1 keeps DDS).
         static const bool dds = std::getenv("MELEE_REMIX_DDS") != nullptr;
@@ -418,7 +444,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         op.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
         op.albedoConstant = {1, 1, 1};
         op.opacityConstant = 1.0f;
-        op.roughnessConstant = 0.55f;
+        op.roughnessConstant = rough;
         op.metallicConstant = 0.0f;
         op.alphaTestType = cutout ? 4 : 7;   // greater (cut-outs) or always
         op.alphaReferenceValue = cutout ? 96 : 0;
@@ -430,7 +456,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         mi.emissiveTexture = emissive > 0.0f ? wpath.c_str() : nullptr;
         mi.emissiveIntensity = emissive;
         mi.emissiveColorConstant = {1.0f, 1.0f, 1.0f};
-        mi.filterMode = 1;
+        mi.filterMode = (uint8_t)((t.mode0 >> 4) & 1);   // the game's magnification filter (0 nearest: pixel-art stages)
         const uint32_t wrap_s = t.mode0 & 3, wrap_t = (t.mode0 >> 2) & 3;
         mi.wrapModeU = (uint8_t)(wrap_s == 0 ? 2 : wrap_s == 2 ? 1 : 0);   // GX clamp/repeat/mirror -> clamp/mirror/repeat ids
         mi.wrapModeV = (uint8_t)(wrap_t == 0 ? 2 : wrap_t == 2 ? 1 : 0);
@@ -482,6 +508,13 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     inst.mesh = e.handle;
     inst.transform = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
     inst.doubleSided = 1;
+    // A blended stage piece that does not write depth lies on another surface (Whispy's face, signs,
+    // painted marks): a decal, so Remix draws it over that surface instead of fighting it.
+    {
+      const uint32_t zm = d.bp.zmode();
+      const bool writes_depth = (zm & 1) && ((zm >> 4) & 1);
+      if (blended && !additive && !writes_depth && d.owner_player >= 6) inst.categoryFlags |= REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC;
+    }
     m.api.DrawInstance(&inst);
     ++stats_.instances;
   }
