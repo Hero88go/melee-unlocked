@@ -649,8 +649,8 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       li.radiance = {l.radiance[0] * sky * scale, l.radiance[1] * sky * scale, l.radiance[2] * sky * scale};
     } else if (l.type == kRtxLightDirectional) {
       dist.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
-      // Remix takes the direction towards the light (captures: fighters lit from behind otherwise).
-      static const float flip = -1.0f;
+      // Remix's direction is the way the light points (remix_c.h), as GX's light travels.
+      static const float flip = 1.0f;
       dist.direction = {flip * l.direction[0], flip * l.direction[1], flip * l.direction[2]};
       dist.angularDiameterDegrees = kSunDegrees;
       dist.volumetricRadianceScale = 1.0f;
@@ -673,7 +673,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
   if (m.lights.empty() && !no_lights) {
     remixapi_LightInfoDistantEXT dist{};
     dist.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
-    dist.direction = {-0.3f, 0.85f, 0.43f};   // towards the light: above, front, right
+    dist.direction = {0.3f, -0.85f, -0.43f};   // pointing down and away: lit from above, front, right
     dist.angularDiameterDegrees = kSunDegrees;
     dist.volumetricRadianceScale = 1.0f;
     remixapi_LightInfo li{};
