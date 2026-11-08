@@ -62812,7 +62812,7 @@ index 640a32499..c602a06c0 100644
  /* 081140 */ void ftDrawCommon_80081140(void);
  /* 081168 */ void ftDrawCommon_80081168(void);
 diff --git a/src/melee/ft/ftdynamics.c b/src/melee/ft/ftdynamics.c
-index b31a2f58a..9069556be 100644
+index b31a2f58a..a695d08f5 100644
 --- a/src/melee/ft/ftdynamics.c
 +++ b/src/melee/ft/ftdynamics.c
 @@ -15,6 +15,11 @@
@@ -62996,7 +62996,7 @@ index b31a2f58a..9069556be 100644
      HSD_ASSERTREPORT(421, fp->dynamics_num < Ft_Dynamics_NumMax,
                       "fighter dynamics num over!\n");
      {
-@@ -283,21 +288,21 @@ void ftCo_8009DB50(Fighter* fp)
+@@ -283,35 +288,58 @@ void ftCo_8009DB50(Fighter* fp)
  {
      KirbyHatStruct* hat = ft_80459B88.hats[Ft_Kind_Purin];
      PAD_STACK(2 * 4);
@@ -63022,7 +63022,34 @@ index b31a2f58a..9069556be 100644
                  &fp->dynamic_bone_sets[i].dyn_desc);
          }
      }
-@@ -309,9 +314,9 @@ void ftCo_8009DC54(Fighter* fp)
+ }
+ 
++#ifdef MU_NATIVE
++/* The console's walk of Jigglypuff's accessory tree, joint by joint (children first, then the next
++ * sibling, climbing back up as needed), for the given number of steps; NULL for no accessory or a
++ * walk that leaves the tree. */
++static HSD_JObj* ftCo_8009DC54_Walk(HSD_JObj* cur, s32 steps)
++{
++    s32 j;
++    for (j = 0; cur != NULL && j < steps; j++) {
++        if (cur->child != NULL) {
++            cur = cur->child;
++            continue;
++        }
++        while (cur != NULL && cur->next == NULL) {
++            cur = cur->parent;
++        }
++        if (cur != NULL) {
++            cur = cur->next;
++        }
++    }
++    return cur;
++}
++#endif
++
+ void ftCo_8009DC54(Fighter* fp)
+ {
+     DynamicsDesc* desc;
      ssize_t i;
      ssize_t idx;
      ftData* data = fp->ft_data;
@@ -63034,7 +63061,7 @@ index b31a2f58a..9069556be 100644
          idx = 1;
      } else {
          return;
-@@ -320,17 +325,18 @@ void ftCo_8009DC54(Fighter* fp)
+@@ -320,17 +348,28 @@ void ftCo_8009DC54(Fighter* fp)
      HSD_ASSERTREPORT(490, fp->dynamics_num < Ft_Dynamics_NumMax,
                       "fighter dynamics num over!\n");
      {
@@ -63053,6 +63080,16 @@ index b31a2f58a..9069556be 100644
 +            HSD_JObj* cur = fp->u.pr.x223C;
 +            ftDynamics* dynamics = DP(data->x2C);
 +            ArticleDynamicBones* bones = DP(dynamics->ftDynamicBones);
++#ifdef MU_NATIVE
++            /* An accessory with fewer joints than the costume's dynamics name (a skin's): the
++             * walk leaves its tree. The sets made so far stay; this one and the rest are not. */
++            cur = ftCo_8009DC54_Walk(
++                cur, (s32) DP(dynamics->ftDynamicBones)->array[bone_idx].bone_id);
++            if (cur == NULL) {
++                fp->dynamics_num = 1 + i;
++                return;
++            }
++#else
              ssize_t j;
              for (j = 0;
                   j <
@@ -63061,7 +63098,13 @@ index b31a2f58a..9069556be 100644
                   j++)
              {
                  if (cur->child != NULL) {
-@@ -347,16 +353,31 @@ void ftCo_8009DC54(Fighter* fp)
+@@ -342,21 +381,37 @@ void ftCo_8009DC54(Fighter* fp)
+                 }
+                 cur = cur->next;
+             }
++#endif
+             {
+                 desc = &fp->dynamic_bone_sets[i + 1].dyn_desc;
                  lb_8000FD48(cur, desc, bones->array[bone_idx].dyn_desc.count);
                  fp->dynamic_bone_sets[dyn_idx + 1].bone_id = FtPart_TopN;
                  lb_80011710(
@@ -63098,7 +63141,7 @@ index b31a2f58a..9069556be 100644
  void ftCo_8009DD94(Fighter_GObj* gobj, bool arg1)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -429,6 +450,11 @@ void ftCo_8009DD94(Fighter_GObj* gobj, bool arg1)
+@@ -429,6 +484,11 @@ void ftCo_8009DD94(Fighter_GObj* gobj, bool arg1)
              dyn++;
          }
      }
@@ -63110,7 +63153,7 @@ index b31a2f58a..9069556be 100644
  }
  
  void ftCo_8009E0A8(Fighter_GObj* gobj)
-@@ -529,13 +555,14 @@ void ftCo_8009E4A8(Fighter* fp)
+@@ -529,13 +589,14 @@ void ftCo_8009E4A8(Fighter* fp)
      int i;
  
      if (fp->x594_b4) {
@@ -63128,7 +63171,7 @@ index b31a2f58a..9069556be 100644
                          fp->x590, frame, speed);
                  }
              }
-@@ -545,7 +572,7 @@ void ftCo_8009E4A8(Fighter* fp)
+@@ -545,7 +606,7 @@ void ftCo_8009E4A8(Fighter* fp)
              ftCo_8009CB40(fp, i, 0, NULL);
              if (fp->x590 != NULL) {
                  ftAnim_8006EED4(
@@ -63137,7 +63180,7 @@ index b31a2f58a..9069556be 100644
                      fp->x590, frame, speed);
              }
          }
-@@ -569,7 +596,7 @@ void ftCo_8009E614(Fighter* fp)
+@@ -569,7 +630,7 @@ void ftCo_8009E614(Fighter* fp)
              cur_anim_frame = fp->cur_anim_frame;
              frame_speed_mul = fp->frame_speed_mul;
              if (fp->x594_b4 || fp->x594_b3) {
@@ -63146,7 +63189,7 @@ index b31a2f58a..9069556be 100644
                      ftCo_8009CB40(fp, i, 1, NULL);
                  }
                  if (fp->x590 != 0) {
-@@ -639,17 +666,17 @@ void ftCo_8009E7B4(Fighter* fp, u8 (*arg1)[2])
+@@ -639,17 +700,17 @@ void ftCo_8009E7B4(Fighter* fp, u8 (*arg1)[2])
                  }
              } else {
                  if (fp->x594_b4) {
@@ -63168,7 +63211,7 @@ index b31a2f58a..9069556be 100644
                      if (tree == NULL) {
                          for (i = 0; i < fp->dynamics_num; i++) {
                              ftCo_8009CB40(fp, i, 0, NULL);
-@@ -658,11 +685,11 @@ void ftCo_8009E7B4(Fighter* fp, u8 (*arg1)[2])
+@@ -658,11 +719,11 @@ void ftCo_8009E7B4(Fighter* fp, u8 (*arg1)[2])
                      }
                      {
                          s32 j;
@@ -94921,7 +94964,7 @@ index 9b1d85cb5..5fecee5ea 100644
  
  union ftPp_MotionVars {
 diff --git a/src/melee/ft/kinds/ftPurin/ftpurin.c b/src/melee/ft/kinds/ftPurin/ftpurin.c
-index 5781099cc..b6d87b8d4 100644
+index 5781099cc..2243d142b 100644
 --- a/src/melee/ft/kinds/ftPurin/ftpurin.c
 +++ b/src/melee/ft/kinds/ftPurin/ftpurin.c
 @@ -1,4 +1,17 @@
@@ -94942,7 +94985,28 @@ index 5781099cc..b6d87b8d4 100644
  
  #include <melee/ft/kinds/ftCommon/forward.h>
  
-@@ -462,46 +475,88 @@ void ftPr_Init_8013C360(HSD_GObj* gobj)
+@@ -457,51 +470,115 @@ void ftPr_Init_OnUserDataRemove(HSD_GObj* gobj)
+     ftPr_Init_8013C494(gobj);
+ }
+ 
++#ifdef MU_NATIVE
++/* The costume's accessory joint, looked up in the costume file once per scene as below; NULL when
++ * the file has no joint under the accessory's retail name. */
++static HSD_Joint* ftPr_Init_AccessoryJoint(Fighter* fp, HSD_Joint** joints)
++{
++    if (!joints[fp->costume_id]) {
++        UnkCostumeStruct* costume_list =
++            CostumeListsForeachCharacter[fp->kind].costume_list;
++        joints[fp->costume_id] = HSD_ArchiveGetPublicAddress(
++            costume_list[fp->costume_id].x14_archive,
++            ftPr_Init_803D05B4[fp->costume_id]);
++    }
++    return joints[fp->costume_id];
++}
++#endif
++
+ void ftPr_Init_8013C360(HSD_GObj* gobj)
+ {
      HSD_Joint** joints = ft_8045A1E0;
      Fighter* fp = GET_FIGHTER(gobj);
  
@@ -94957,6 +95021,12 @@ index 5781099cc..b6d87b8d4 100644
 +    } else if (fp->costume_id >= ARRAY_SIZE(ftPr_Init_803D05B4)) {
 +        /* An m-ex costume past the retail five: built on the retail costume it names (m-ex's
 +         * parts index), which for Jigglypuff's added costumes is the one without an accessory. */
++    } else if (ftPr_Init_803D05B4[fp->costume_id] != NULL &&
++               ftPr_Init_AccessoryJoint(fp, joints) == NULL)
++    {
++        /* A costume file without this costume's accessory (a skin or a mod's file made from a
++         * costume that has none): no accessory, as for the costumes without one. The code below
++         * would load an empty joint and its costume dynamics would walk from it. */
 +    } else
 +#endif
 +    if (ftPr_Init_803D05B4[fp->costume_id]) {
@@ -95043,7 +95113,7 @@ index 5781099cc..b6d87b8d4 100644
      }
  }
  
-@@ -509,25 +564,50 @@ void ftPr_Init_UnkMtxFunc0(HSD_GObj* gobj, int arg1, Mtx vmtx)
+@@ -509,25 +586,50 @@ void ftPr_Init_UnkMtxFunc0(HSD_GObj* gobj, int arg1, Mtx vmtx)
  {
      Fighter* fp = GET_FIGHTER(gobj);
  
@@ -95094,7 +95164,7 @@ index 5781099cc..b6d87b8d4 100644
          }
      }
  }
-@@ -536,11 +616,17 @@ HSD_JObj* ftPr_Init_UnkMotionStates6(HSD_GObj* gobj)
+@@ -536,11 +638,17 @@ HSD_JObj* ftPr_Init_UnkMotionStates6(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
  
