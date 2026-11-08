@@ -2476,6 +2476,7 @@ static int melee_main(int argc, char** argv) {
   host::install_console_clock();
   host::install_language_override();
   host::install_low_poly_fighters();
+  host::install_costume_texture_anims();
 #endif
   if (gx::RenderOptions::mod_features_available() && source_port::mods::auto_detect() && !gfx.native_source) {
     source_port::mods::StartupOptions scan;

@@ -227,6 +227,7 @@ bool grow_object_heap(uint32_t heap, uint32_t bytes);   // a full heap: add spac
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language
+void install_costume_texture_anims();   // Static Recomp: a costume missing a texture animation no longer stops the game (ftanim.c:1236)
 void install_low_poly_fighters();  // Static Recomp: the fighter parts hook behind "Low poly fighters" (gx::low_poly_fighters_active)
 void apply_player_tags_always();   // Static Recomp, once per game frame: keeps the P1 / P2 markers up while the option is on
 void apply_arcade_hitboxes();      // Static Recomp, once per game frame: the Arcade look's hitbox switches as the code's own words

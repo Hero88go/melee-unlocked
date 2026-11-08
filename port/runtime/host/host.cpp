@@ -1550,6 +1550,53 @@ void install_low_poly_fighters() {
     log("low poly: the fighter parts function has no dispatch entry; the option has no effect");
   }
 }
+// A costume from a look or a skin (Diet Melee 64's in a 0.9.106 report) can lack a texture animation
+// that the fighter's data lists for its costume textures (the eyes): the game stopped with "can't
+// find fighter texture anim!" (OSPanic at ftanim.c:1236). ftAnim_80070200 runs here instead, as the
+// Source Port's does: the list of animated costume textures ends at the first one without an
+// animation, and those textures stay still. Display only; with retail files it does what the game
+// does (the list, then each animation's rate set to 0). Offsets are the console's: Fighter +0x619
+// costume, CostumeTObjList {count, texture ids, 5 TObjs}, HSD_TObj +0x64 aobj, HSD_AObj +0x10 rate.
+static void costume_texture_anims(ppc::Context& c, uint8_t* m) {
+  constexpr uint32_t kCostumeTObj = 0x80075240u;   // ftParts_80075240(DObjList*, int): the n-th TObj
+  const uint32_t fp = c.r[3], data = c.r[4], list = c.r[5], dobjs = c.r[6];
+  const uint32_t return_lr = c.lr, saved_r1 = c.r[1];
+  static bool told_missing = false, told_over = false;
+  uint32_t count = rd32(data);
+  if (count > 5) {   // the game's own "fighter tobj num over!" (ftanim.c:1228): the list holds five
+    if (!told_over) { told_over = true; log("fighters: a costume lists %u animated textures; the first 5 animate", count); }
+    count = 5;
+  }
+  const uint32_t table = rd32(data + 4);
+  uint32_t ids = rd32(table + 4u * rd8(fp + 0x619));
+  if (ids == 0) ids = rd32(table);
+  wr32(list, count);
+  wr32(list + 4, ids);
+  // A frame of its own below the caller's, back-chained, for the calls (as call_guest does).
+  c.r[1] = (saved_r1 - 0x40u) & ~7u;
+  wr32(c.r[1], saved_r1);
+  for (uint32_t i = 0; i < count; ++i) {
+    c.r[3] = dobjs;
+    c.r[4] = rd16(ids + 2 * i);
+    c.lr = 0;
+    ppc::call(c, m, kCostumeTObj);
+    const uint32_t tobj = c.r[3];
+    wr32(list + 8 + 4 * i, tobj);
+    const uint32_t aobj = tobj ? rd32(tobj + 0x64) : 0;
+    if (aobj == 0) {
+      wr32(list, i);
+      if (!told_missing) { told_missing = true; log("fighters: a costume has no animation for one of its animated textures; it stays still"); }
+      break;
+    }
+    wr32(aobj + 0x10, 0);   // HSD_AObjSetRate(aobj, 0.0F)
+  }
+  c.r[1] = saved_r1;
+  c.lr = return_lr;
+}
+void install_costume_texture_anims() {
+  if (!ppc::redirect_to_host(0x80070200u, costume_texture_anims))
+    log("fighters: the costume texture setup keeps the game's own code");
+}
 // MELEE_TEST_ADVENTURE_SCENE=<decimal scene id> (tests only, Static Recomp): Adventure starts at
 // that scene (stage * 8 + part: 25 is the Zelda fight, 33 the Kirby team), as the Source Port's hook
 // of the same name does, so a hidden run can reach a later stage. The game's own start function
