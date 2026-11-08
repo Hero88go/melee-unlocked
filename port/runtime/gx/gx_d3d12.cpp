@@ -3539,9 +3539,12 @@ void D3D12Backend::remix_finish(const Frame& frame) {
   // Asked for before the frame, so the picture saved is this frame's.
   auto capture_due = [&](bool menu) {
     static const char* capture = std::getenv("MELEE_REMIX_CAPTURE");
+    // MELEE_REMIX_CAPTURE_MATCH_FRAME instead counts the match's own frames: the same moment however
+    // late a busy PC reaches the match.
+    static const bool by_match = std::getenv("MELEE_REMIX_CAPTURE_MATCH_FRAME") != nullptr;
     static const std::vector<uint64_t> capture_at = [] {
       std::vector<uint64_t> at;
-      for (const char* v = std::getenv("MELEE_REMIX_CAPTURE_FRAME"); v && *v;) {
+      for (const char* v = std::getenv(by_match ? "MELEE_REMIX_CAPTURE_MATCH_FRAME" : "MELEE_REMIX_CAPTURE_FRAME"); v && *v;) {
         char* end = nullptr;
         at.push_back(std::strtoull(v, &end, 10));
         v = (end && *end == ',') ? end + 1 : nullptr;
@@ -3557,7 +3560,9 @@ void D3D12Backend::remix_finish(const Frame& frame) {
       if (menu_capture && !menu_captured && frame.sequence >= menu_at) menu_captured = remix_->capture(menu_capture);
       return;
     }
-    if (capture && next_capture < capture_at.size() && frame.sequence >= capture_at[next_capture]) {
+    const uint64_t now = by_match ? (uint64_t)frame.source_match_frame : frame.sequence;
+    if (capture && next_capture < capture_at.size() && now >= capture_at[next_capture]) {
+      host::log("remix: capture at match frame %u, simulation frame %llu", frame.source_match_frame, (unsigned long long)frame.sequence);
       std::string path = capture;
       if (capture_at.size() > 1) {
         const size_t dot = path.rfind('.');
@@ -3599,6 +3604,8 @@ void D3D12Backend::remix_finish(const Frame& frame) {
 bool D3D12Backend::rtx_wanted() const {
   // Video > Ray tracing > Path tracing; MELEE_RTX=1 forces it for test runs.
   static const bool env = [] { const char* v = std::getenv("MELEE_RTX"); return v && v[0] == '1'; }();
+  // Path tracing on stage mods off: a modded stage shows as its maker drew it.
+  if (!opts_.rtx_modded_stages && host::g_stage_file_modded.load(std::memory_order_relaxed) && !env) return false;
   return (env || opts_.path_tracing) && rtx_scene_.ready() && rtx_integrator_ && !remix_mode_;
 }
 
@@ -3712,7 +3719,15 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
                ((d.xf_regs[0x09] & 3) == 0 || ((d.xf_regs[0x0E] >> 1) & 1) == 0))
         rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_, 4);
     }
-    std::sort(rtx_fx_lights_.begin(), rtx_fx_lights_.end(), [](const FxLight& a, const FxLight& b) { return a.power > b.power; });
+    // Only what can light the match: near the fighters (within half again the camera's distance to
+    // them), the nearest and brightest first.
+    float focus[3];
+    if (fx_focus(frame, rtx_main_camera_, rtx_view_to_world_, focus)) {
+      const float cx = rtx_view_to_world_[3] - focus[0], cy = rtx_view_to_world_[7] - focus[1], cz = rtx_view_to_world_[11] - focus[2];
+      fx_keep_near(rtx_fx_lights_, focus, std::max(150.0f, 1.5f * std::sqrt(cx * cx + cy * cy + cz * cz)), 16);
+    } else {
+      rtx_fx_lights_.clear();
+    }
     for (const FxLight& f : rtx_fx_lights_) {
       if (rtx_fx_count_ >= 16 || rtx_lights_.size() >= kMaxTableLights || f.power <= 0.01f) break;
       RtxLightRecord r{};
@@ -3725,6 +3740,17 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
       rtx_lights_.push_back(r);
       ++rtx_fx_count_;
     }
+    static uint64_t fx_logged = 0;
+    if (!rtx_fx_lights_.empty() && fx_logged++ % 600 == 0)
+      host::log("rtx: %zu bright effect draws, %u as lights (brightest %.3f %.3f %.3f, radius %.1f, at %.1f %.1f %.1f; camera at %.1f %.1f %.1f)",
+                rtx_fx_lights_.size(), rtx_fx_count_, rtx_fx_lights_[0].rgb[0], rtx_fx_lights_[0].rgb[1], rtx_fx_lights_[0].rgb[2],
+                rtx_fx_lights_[0].radius, rtx_fx_lights_[0].pos[0], rtx_fx_lights_[0].pos[1], rtx_fx_lights_[0].pos[2],
+                rtx_view_to_world_[3], rtx_view_to_world_[7], rtx_view_to_world_[11]);
+    static const uint64_t fx_dump = [] { const char* v = host::test_env::getenv("MELEE_TEST_RTX_FX_DUMP"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+    if (fx_dump && frame.sequence == fx_dump)
+      for (const FxLight& f : rtx_fx_lights_)
+        host::log("rtx fx light: at %.1f %.1f %.1f radius %.1f colour %.2f %.2f %.2f power %.3f", f.pos[0], f.pos[1], f.pos[2], f.radius,
+                  f.rgb[0], f.rgb[1], f.rgb[2], f.power);
   }
   rtx_gx_light_ranges_.clear();   // lit draws add the GX lights they use (rtx_record_draw)
   if (!rtx_lights_logged_ && !rtx_lights_.empty()) {
@@ -4162,9 +4188,10 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.stage_shade = opts_.rtx_stage_shade;
   in.fx_light_first = std::min(rtx_fx_first_, (uint32_t)light_count);
   in.fx_light_count = std::min(rtx_fx_count_, (uint32_t)light_count - in.fx_light_first);
-  static const float fx_strength = [] { const char* v = host::test_env::getenv("MELEE_RTX_FX_LIGHT"); return v ? (float)std::atof(v) : 0.6f; }();
+  static const float fx_strength = [] { const char* v = host::test_env::getenv("MELEE_RTX_FX_LIGHT"); return v ? (float)std::atof(v) : 1.5f; }();
   in.fx_light_strength = opts_.rtx_effect_light || opts_.rtx_glow_light ? fx_strength : 0.0f;
-  in.glossy_floors = opts_.rtx_glossy_floors && !host::g_stage_file_modded.load(std::memory_order_relaxed);
+  in.glossy_floors = opts_.rtx_glossy_floors;
+  in.modded_stage = host::g_stage_file_modded.load(std::memory_order_relaxed);
   in.light_scale = opts_.rtx_brightness / 100.0f;
   in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;
   in.floor_strength = opts_.rtx_floor_strength / 100.0f;
@@ -5583,6 +5610,15 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   }
   if (presented && !opts_.capture_path.empty()) {
     capture_sequence_ = frame.sequence;
+    // Test runs (MELEE_TEST_CAPTURE_MATCH_FRAME=N): the capture starts at match frame N instead of a
+    // simulation frame, so a busy PC that reaches the match later still captures the same moment.
+    {
+      static const uint32_t at_match = [] { const char* v = host::test_env::getenv("MELEE_TEST_CAPTURE_MATCH_FRAME"); return v ? (uint32_t)std::strtoul(v, nullptr, 10) : 0u; }();
+      if (at_match && !opts_.capture_sim_frame && in_match_ && frame.source_match_frame >= at_match) {
+        opts_.capture_sim_frame = frame.sequence;
+        host::log("capture: match frame %u at simulation frame %llu", frame.source_match_frame, (unsigned long long)frame.sequence);
+      }
+    }
     if (opts_.capture_sim_frame && !opts_.capture_frame && frame.sequence >= opts_.capture_sim_frame) opts_.capture_frame = frames_presented_;
     bool burst = opts_.capture_burst && opts_.capture_frame && frames_presented_ >= opts_.capture_frame && frames_presented_ < opts_.capture_frame + opts_.capture_burst;
     if (frames_presented_ == opts_.capture_frame && (rtx_wanted() || rtx_capture_))

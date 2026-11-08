@@ -112,12 +112,21 @@ bool FxLightCollector::add(const Frame& f, const DrawCall& d, const float vw[12]
       std::vector<uint8_t> rgba;
       decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.empty() ? nullptr : t.data->palette.data(),
                      t.tlut_format, rgba);
-      double sum[4] = {0, 0, 0, 0};
+      // The colour of the texels that show (weighted by their alpha), and how much of the texture
+      // shows (a sprite fills part of its square: three times its mean alpha, at most opaque). A
+      // plain mean took the transparent surround in and made a fireball's light a third as bright.
+      double sum[3] = {0, 0, 0}, alpha = 0;
       const size_t n = rgba.size() / 4;
-      for (size_t i = 0; i < n; ++i)
-        for (int k = 0; k < 4; ++k) sum[k] += rgba[i * 4 + k];
+      for (size_t i = 0; i < n; ++i) {
+        const double a = rgba[i * 4 + 3];
+        for (int k = 0; k < 3; ++k) sum[k] += rgba[i * 4 + k] * a;
+        alpha += a;
+      }
       std::array<float, 4> mean{255.0f, 255.0f, 255.0f, 255.0f};
-      if (n) for (int k = 0; k < 4; ++k) mean[(size_t)k] = (float)(sum[k] / n);
+      if (n && alpha > 0.0) {
+        for (int k = 0; k < 3; ++k) mean[(size_t)k] = (float)(sum[k] / alpha);
+        mean[3] = (float)std::min(255.0, 3.0 * alpha / (double)n);
+      }
       if (texel_mean_.size() > 4096) texel_mean_.clear();
       it = texel_mean_.emplace(t.data->hash, mean).first;
     }
@@ -136,6 +145,10 @@ bool FxLightCollector::add(const Frame& f, const DrawCall& d, const float vw[12]
     if (hi[k] - lo[k] > extent) { extent = hi[k] - lo[k]; axis = k; }
   }
   for (int k = 0; k < 3; ++k) l.rgb[k] = std::clamp(o[k] / 255.0f * weight, 0.0f, 1.0f);
+  // An effect's light: its hue at three times the drawn brightness, at most full (the particle's own
+  // colour registers and fading alpha leave a fireball's drawn colour near a fifth of its glow).
+  const float peak = std::max({l.rgb[0], l.rgb[1], l.rgb[2]});
+  if (peak > 1e-4f) for (float& c : l.rgb) c *= std::min(1.0f, peak * 3.0f) / peak;
   const int n = std::max(1, segments);
   const float piece = extent / (float)n;   // each light covers its share of the long side
   l.radius = std::clamp((n > 1 ? piece : extent) * 0.2f, 0.3f, 4.0f);
@@ -146,6 +159,37 @@ bool FxLightCollector::add(const Frame& f, const DrawCall& d, const float vw[12]
     out.push_back(s);
   }
   return true;
+}
+
+bool fx_focus(const Frame& f, int camera, const float vw[12], float out[3]) {
+  double sum[3] = {0, 0, 0};
+  int n = 0;
+  for (const DrawCall& d : f.draws) {
+    if (!d.skinned || d.owner_player >= 6 || d.rtx.camera != camera || d.vertex_count == 0) continue;
+    if (d.first_vertex + (size_t)d.vertex_count > f.vertices.size()) continue;
+    const Vertex& v = f.vertices[d.first_vertex];
+    const int row = (int)(v.posmtx & 0x3F);
+    if (row + 2 >= 64) continue;
+    const float* pm = &d.posMatrices[row * 4];
+    float view[3];
+    for (int k = 0; k < 3; ++k) view[k] = pm[k * 4] * v.pos[0] + pm[k * 4 + 1] * v.pos[1] + pm[k * 4 + 2] * v.pos[2] + pm[k * 4 + 3];
+    for (int k = 0; k < 3; ++k) sum[k] += vw[k * 4] * view[0] + vw[k * 4 + 1] * view[1] + vw[k * 4 + 2] * view[2] + vw[k * 4 + 3];
+    ++n;
+  }
+  if (!n) return false;
+  for (int k = 0; k < 3; ++k) out[k] = (float)(sum[k] / n);
+  return true;
+}
+
+void fx_keep_near(std::vector<FxLight>& lights, const float focus[3], float reach, size_t keep) {
+  auto dist = [&](const FxLight& l) {
+    const float dx = l.pos[0] - focus[0], dy = l.pos[1] - focus[1], dz = l.pos[2] - focus[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+  };
+  lights.erase(std::remove_if(lights.begin(), lights.end(), [&](const FxLight& l) { return dist(l) > reach; }), lights.end());
+  for (FxLight& l : lights) { const float d = dist(l) / 100.0f; l.power /= 1.0f + d * d; }
+  std::sort(lights.begin(), lights.end(), [](const FxLight& a, const FxLight& b) { return a.power > b.power; });
+  if (lights.size() > keep) lights.resize(keep);
 }
 
 }  // namespace gx

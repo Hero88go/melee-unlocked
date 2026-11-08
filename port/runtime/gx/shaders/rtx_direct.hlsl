@@ -77,7 +77,7 @@ cbuffer Frame : register(b0) {
   uint frame_pad;
 };
 static const uint kShadows = 1u, kAmbientOcclusion = 2u, kFighterShadows = 4u, kBounce = 8u, kReflections = 16u, kSkin = 32u,
-                  kStageShade = 64u, kGlossyFloors = 128u;
+                  kStageShade = 64u, kGlossyFloors = 128u, kModdedStage = 256u;
 
 static const float kPi = 3.14159265;
 static const uint kNone = 0xFFFFFFFFu;
@@ -488,6 +488,10 @@ void main(uint3 id : SV_DispatchThreadID) {
 
   write_guides(px, albedo, specular_albedo(f0, saturate(dot(n, v)), roughness), nd.xyz, roughness);
   if ((switches & (1u << 30)) != 0u) { emit(px, albedo, albedo); return; }   // test view: the albedo
+  if ((switches & (1u << 27)) != 0u) {   // test view: the effects' light on a white surface, and where lights are
+    emit(px, fx_light_count != 0u ? fx_light(p, n) * 4.0 : float3(1, 0, 1), 1.0);
+    return;
+  }
   if ((switches & (1u << 28)) != 0u && draw - 1u < kMaxDrawColours) {   // test view: each draw's averaged albedo
     const uint4 sum = DrawColour[draw - 1u];
     const float3 avg = sum.w ? float3(sum.xyz) / (255.0 * (float)sum.w) : float3(1, 0, 1);
@@ -551,7 +555,10 @@ void main(uint3 id : SV_DispatchThreadID) {
       // Destination's stone, metal decks). Grass, felt and paper (Yoshi's Story, Dream Land) stay
       // matte, or the mirror shows the cut-outs and trees through the ground.
       // The game made it shiny (an environment map: FoD's water, metal decks): polished at any colour.
-      const float3 fresnel = floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : polished_floor(albedo));
+      // A stage mod: only floors its own material makes shiny. Its dark, grey ground is not taken for
+      // polished stone (a mod's matte floors turned into mirrors).
+      const float guess = (switches & kModdedStage) != 0u ? 0.0 : polished_floor(albedo);
+      const float3 fresnel = floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : guess);
       if (fresnel.x > 0.0) {
         baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng);
         if (fx_light_count != 0u) baked += fresnel * fx_mirror(p, n, v, kFloorRoughness);
@@ -691,7 +698,8 @@ void main(uint3 id : SV_DispatchThreadID) {
   if (fx_light_count != 0u && roughness <= 0.6)
     shaded += specular_albedo(f0, saturate(dot(n, v)), roughness) * fx_mirror(p, n, v, roughness);
   if (shadows && (switches & kFighterShadows) != 0u && !fighter) shaded *= fighter_shadow(origin, n, sun_dir, look, rng);
-  if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0) {
+  if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0 &&
+      ((switches & kModdedStage) == 0u || roughness <= 0.3)) {
     const float3 fresnel = floor_fresnel(n, v);
     shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng);
     if (fx_light_count != 0u) shaded += fresnel * fx_mirror(p, n, v, kFloorRoughness);

@@ -644,8 +644,14 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
   // off; MELEE_REMIX_FX_LIGHT scales their strength).
   {
     static const int fx_max = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHTS"); return v ? std::atoi(v) : 8; }();
-    static const float fx_scale = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHT"); return v ? (float)std::atof(v) : 40.0f; }();
-    std::sort(m.fx_lights.begin(), m.fx_lights.end(), [](const FxLight& a, const FxLight& b) { return a.power > b.power; });
+    static const float fx_scale = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHT"); return v ? (float)std::atof(v) : 7.0f; }();
+    float focus[3];
+    if (fx_focus(f, camera, vw, focus)) {
+      const float cx = vw[3] - focus[0], cy = vw[7] - focus[1], cz = vw[11] - focus[2];
+      fx_keep_near(m.fx_lights, focus, std::max(150.0f, 1.5f * std::sqrt(cx * cx + cy * cy + cz * cz)), (size_t)std::max(fx_max, 0));
+    } else {
+      m.fx_lights.clear();
+    }
     for (int i = 0; i < fx_max && i < (int)m.fx_lights.size(); ++i) {
       const FxLight& l = m.fx_lights[(size_t)i];
       if (l.power <= 0.01f) break;

@@ -33,4 +33,13 @@ class FxLightCollector {
   std::unordered_map<uint64_t, std::array<float, 4>> texel_mean_;   // by texture content hash
 };
 
+// Where the match is: the middle of the fighters this camera draws (world space through view_to_world).
+// False when it draws none.
+bool fx_focus(const Frame& f, int camera, const float view_to_world[12], float out[3]);
+
+// Keeps the lights that can light the match: within `reach` of `focus`, the nearest and brightest first
+// (power over 1 + (distance / 100)^2), at most `keep`. A stage's far background glows and sky effects
+// (Final Destination's shooting stars, thousands of units away) took every slot from a fireball.
+void fx_keep_near(std::vector<FxLight>& lights, const float focus[3], float reach, size_t keep);
+
 }  // namespace gx

@@ -249,10 +249,12 @@ class MeleeIntegrator final : public RtxIntegrator {
     k.fx_light_strength = in.fx_light_strength;
     k.switches = (in.shadows ? 1u : 0u) | (in.ambient_occlusion ? 2u : 0u) | (in.fighter_shadows ? 4u : 0u) |
                  (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u) |
-                 (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u);
+                 (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u) | (in.modded_stage ? 256u : 0u);
     // Test runs only (MELEE_TEST_RTX_ALBEDO=1): the G-buffer albedo as the picture.
     static const bool show_albedo = host::test_env::getenv("MELEE_TEST_RTX_ALBEDO") != nullptr;
     if (show_albedo) k.switches |= 1u << 30;
+    static const bool fx_view = host::test_env::getenv("MELEE_TEST_RTX_FX_VIEW") != nullptr;   // test view: the effects' light alone
+    if (fx_view) k.switches |= 1u << 27;
     static const bool no_highlight = host::test_env::getenv("MELEE_TEST_RTX_NO_HIGHLIGHT") != nullptr;
     if (no_highlight) k.switches |= 1u << 29;
     static const bool show_draw_colour = host::test_env::getenv("MELEE_TEST_RTX_DRAW_COLOUR") != nullptr;
