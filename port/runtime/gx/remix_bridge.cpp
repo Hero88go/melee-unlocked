@@ -314,7 +314,23 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // A fighter glows a little with its own colours (MELEE_REMIX_FIGHTER_GLOW), so it reads on dark
     // stages as it does in the game, with Remix's light and shadow on top.
     static const float fighter_glow = [] { const char* v = std::getenv("MELEE_REMIX_FIGHTER_GLOW"); return v ? (float)std::atof(v) : 0.35f; }();
-    const float emissive = additive ? 2.0f * emissive_scale : unlit && d.owner_player >= 6 ? emissive_scale : fighter ? fighter_glow : 0.0f;
+    // A lit stage piece whose combiner reads a GX specular channel (Final Destination's blue panels under
+    // its two side lights) shows that light as its colour in the game: it glows like painted art, or
+    // Remix's own lights leave it dark.
+    const bool gx_specular = [&] {
+      if (unlit || fighter) return false;
+      for (uint32_t j = 0; j < 2 && j < (d.xf_regs[0x09] & 3); ++j) {
+        const uint32_t cc = d.xf_regs[0x0E + j];
+        if (!lit_enable(cc) || lit_attnfunc(cc) != 1) continue;
+        for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) {
+          if ((uint32_t)d.bp.order_colorchan((int)n) != j) continue;
+          const uint32_t tc = d.bp.tev_color((int)n);
+          for (int sh = 0; sh < 16; sh += 4) { const uint32_t sel = (tc >> sh) & 15; if (sel == 10 || sel == 11) return true; }
+        }
+      }
+      return false;
+    }();
+    const float emissive = additive ? 2.0f * emissive_scale : (unlit || gx_specular) && d.owner_player >= 6 ? emissive_scale : fighter ? fighter_glow : 0.0f;
     m.prim.clear();
     if (d.segment_count) {
       for (uint32_t i = 0; i < d.segment_count; ++i) {
