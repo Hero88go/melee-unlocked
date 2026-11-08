@@ -58,6 +58,7 @@
 #include "rtx_tracer.h"
 #include "rtx_semantics.h"
 #include "../abi/mu_rtx_tokens.h"
+static_assert(MU_RTX_PASS_PARTICLES == 1, "remix_effect_draw (gx_core.h) tests the particle pass by value");
 #include "gx_texture.h"
 #include "gx_streamline.h"
 #include <system_error>
@@ -503,6 +504,10 @@ class D3D12Backend : public Backend {
   // previous presented pose per draw identity for motion vectors, per-frame jitter.
   bool dlss_active_ = false;
   bool hud_max_ = false;   // HUD mask blended with MAX: the Remix bridge reads it as coverage
+  // The Remix bridge's effects layer: the path tracer's overlay and transmittance bound as targets 3
+  // and 4, written by effects (remix_effect_draw) and emptied by surfaces drawn in front of them.
+  bool remix_layer_ = false;
+  uint64_t remix_log_seq_ = 0;   // the frame being submitted (test logs)
   size_t hud_first_scene_draw_ = 0;   // this frame's first 3D scene draw (earlier 2D draws are backdrops)
   // DLAA renders and outputs at the same size, so it anti-aliases the EFB in place and the ordinary
   // present blit letterboxes the result, instead of DLSS producing a window-sized image.
@@ -826,17 +831,26 @@ class D3D12Backend : public Backend {
 #ifdef MELEE_REMIX_SPIKE
   std::unique_ptr<RemixBridge> remix_;
   bool remix_failed_ = false;
-  void remix_present(const Frame& frame);
-  // The HUD for Remix's picture: each present copies the EFB colour and HUD mask of the shown
-  // region to this slot's readback buffers; the slot's next turn (its fence passed) hands them over.
+  void remix_present(const Frame& frame);   // frame start: the runtime, the layer's targets
+  void remix_finish(const Frame& frame);    // after the frame's commands: its layer and scene to Remix
+  bool remix_pending_ = false;
+  // The layer over Remix's picture: each present composes the HUD (the EFB where the HUD mask is)
+  // over the effects (overlay and transmittance) into remix_ui_ as premultiplied BGRA, or the whole
+  // picture on menus, and copies the shown region to this slot's readback buffer; the slot's next turn
+  // (its fence passed) hands it to the bridge.
   bool remix_hud_ = false;
-  ComPtr<ID3D12Resource> remix_hud_rb_[2][2];
-  D3D12_PLACED_SUBRESOURCE_FOOTPRINT remix_hud_fp_[2][2]{};
+  bool remix_whole_ = false;   // this present is not a match: the layer is the game's whole picture
+  ComPtr<ID3D12Resource> remix_ui_;
+  ComPtr<ID3D12PipelineState> remix_compose_pso_;
+  bool remix_compose_failed_ = false;
+  ComPtr<ID3D12Resource> remix_hud_rb_[2];
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT remix_hud_fp_[2]{};
   uint32_t remix_hud_rect_[2][4]{};
   bool remix_hud_filled_[2]{};
   std::vector<uint8_t> remix_hud_bgra_;
+  bool remix_ensure_compose();
   void remix_copy_hud(const EfbCopy& c);
-  void remix_take_hud(bool whole_picture);   // whole_picture: menus, the raster as it is
+  void remix_take_hud();
 #endif
   RtxTracer rtx_tracer_;
   // The lighting (rtx_integrator.h): the Melee integrator and, in a local build that has it, the
@@ -1167,7 +1181,7 @@ void D3D12Backend::init() {
   create_swapchain(waitable_wanted() && !opts_.exclusive_fullscreen);
 
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
-  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 16;   // 8: the MSAA EFB; 9-13: the path tracer's G-buffer and overlay; 14: frame generation's UI layer; 15: FSR frame generation's rendered picture
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 17;   // 8: the MSAA EFB; 9-13: the path tracer's G-buffer and overlay; 14: frame generation's UI layer; 15: FSR frame generation's rendered picture; 16: the Remix bridge's layer
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)), "rtv heap");
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; hd.NumDescriptors = 2;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)), "dsv heap");
@@ -1674,6 +1688,12 @@ void D3D12Backend::bind_efb_targets() {
     list_->OMSetRenderTargets(8, all, FALSE, &dsv);
     return;
   }
+  if (remix_layer_ && mvec_out() && rtx_overlay_ && rtx_trans_) {   // the Remix layer: overlay and transmittance as 3 and 4
+    D3D12_CPU_DESCRIPTOR_HANDLE all[5] = {rtvs[0], rtvs[1], rtvs[2], {}, {}};
+    for (UINT i = 0; i < 2; ++i) { all[3 + i] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); all[3 + i].ptr += (kRtxGbufferRtv + 3 + i) * rtv_size_; }
+    list_->OMSetRenderTargets(5, all, FALSE, &dsv);
+    return;
+  }
   list_->OMSetRenderTargets(mvec_out() ? 3 : 1, rtvs, FALSE, &dsv);
 }
 
@@ -2161,26 +2181,11 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
       h.BlendOp = h.BlendOpAlpha = D3D12_BLEND_OP_MAX;
     }
   }
-  if (key.mvec & 2) {
-    // The path tracer's G-buffer (gx_shader.cpp, motion_vectors bit 2): albedo, view normal + linear
-    // depth, draw id. The surface in the depth buffer owns these pixels, as with motion vectors, so
-    // only depth-writing draws write them.
-    pd.NumRenderTargets = 8;
-    pd.RTVFormats[3] = kRtxAlbedoFormat;
-    pd.RTVFormats[4] = kRtxNormalFormat;
-    pd.RTVFormats[5] = kRtxIdFormat;
-    pd.RTVFormats[6] = kRtxOverlayFormat;
-    pd.RTVFormats[7] = kRtxOverlayFormat;
-    const RtxLayer layer = rtx_layer(bm, zm);
-    for (int i = 3; i < 8; ++i) {
-      pd.BlendState.RenderTarget[i] = D3D12_RENDER_TARGET_BLEND_DESC{};
-      pd.BlendState.RenderTarget[i].RenderTargetWriteMask = layer == kRtxLayerSurface ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
-    }
-    // The overlay O and transmittance T (kRtxOverlayRtv). The EFB after a draw is A + B * EFB; with
-    // EFB = lit * T + O that is O' = A + B * O and T' = B * T. O takes the EFB's own blend (a factor
-    // on the destination then reads O, which is what the algebra wants); T takes B alone.
-    auto& ov = pd.BlendState.RenderTarget[6];
-    auto& tr = pd.BlendState.RenderTarget[7];
+  // The overlay O and transmittance T over a traced picture (the path tracer's targets 6 and 7, the
+  // Remix layer's 3 and 4). The EFB after a draw is A + B * EFB; with
+  // EFB = lit * T + O that is O' = A + B * O and T' = B * T. O takes the EFB's own blend (a factor
+  // on the destination then reads O, which is what the algebra wants); T takes B alone.
+  auto overlay_blend = [&](D3D12_RENDER_TARGET_BLEND_DESC& ov, D3D12_RENDER_TARGET_BLEND_DESC& tr, RtxLayer layer) {
     const UINT colour_mask = bits(bm, 3, 1) ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
     if (layer == kRtxLayerSurface) {
       ov.RenderTargetWriteMask = tr.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;   // O = 0, T = 1
@@ -2210,8 +2215,38 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
       }
       tr.RenderTargetWriteMask = colour_mask;
     }
+  };
+  if (key.mvec & 2) {
+    // The path tracer's G-buffer (gx_shader.cpp, motion_vectors bit 2): albedo, view normal + linear
+    // depth, draw id. The surface in the depth buffer owns these pixels, as with motion vectors, so
+    // only depth-writing draws write them.
+    pd.NumRenderTargets = 8;
+    pd.RTVFormats[3] = kRtxAlbedoFormat;
+    pd.RTVFormats[4] = kRtxNormalFormat;
+    pd.RTVFormats[5] = kRtxIdFormat;
+    pd.RTVFormats[6] = kRtxOverlayFormat;
+    pd.RTVFormats[7] = kRtxOverlayFormat;
+    const RtxLayer layer = rtx_layer(bm, zm);
+    for (int i = 3; i < 8; ++i) {
+      pd.BlendState.RenderTarget[i] = D3D12_RENDER_TARGET_BLEND_DESC{};
+      pd.BlendState.RenderTarget[i].RenderTargetWriteMask = layer == kRtxLayerSurface ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+    }
+    overlay_blend(pd.BlendState.RenderTarget[6], pd.BlendState.RenderTarget[7], layer);
   }
-  pd.SampleDesc.Count = std::max(1u, key.mvec >> 4);   // MSAA sample count rides in mvec's high bits (0 when off)
+  if ((key.mvec & 17) == 17 && !(key.mvec & 2)) {
+    // The Remix bridge's effects layer (targets 3 and 4): an effect (key.mvec & 32) composes into it
+    // with its own blend, a surface drawn in front of it empties it, and every other draw (the HUD,
+    // the stage's blended pieces Remix draws itself) leaves it as it is.
+    pd.NumRenderTargets = 5;
+    pd.RTVFormats[3] = pd.RTVFormats[4] = kRtxOverlayFormat;
+    pd.BlendState.IndependentBlendEnable = TRUE;
+    auto& ov = pd.BlendState.RenderTarget[3];
+    auto& tr = pd.BlendState.RenderTarget[4];
+    ov = tr = D3D12_RENDER_TARGET_BLEND_DESC{};
+    if (key.mvec & 32) overlay_blend(ov, tr, bits(bm, 0, 1) ? kRtxLayerBlended : kRtxLayerReplace);
+    else if (rtx_layer(bm, zm) == kRtxLayerSurface) overlay_blend(ov, tr, kRtxLayerSurface);
+  }
+  pd.SampleDesc.Count = std::max(1u, key.mvec >> 8);   // MSAA sample count rides in mvec's high bits (0 when off)
 }
 
 // The calls into Windows' pipeline code, each under SEH. One player's game stopped in a long online
@@ -2452,6 +2487,7 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
   generic.blend = blended ? key.blend : 0x18;   // blended: the draw's own mode; otherwise write RGBA, blending disabled
   generic.zmode = blended ? key.zmode : 0;      // blended: the draw's own depth test (no write); otherwise depth disabled
   generic.cull = 0;     // no culling
+  generic.mvec &= ~48u;   // the stand-in shader has no Remix layer outputs: it leaves that layer alone
   describe_pipeline(pd, generic, topo, root_.Get(), vsb.Get(), psb.Get());
   ComPtr<ID3D12PipelineState> pso;
   ID3D12PipelineState* raw = nullptr;
@@ -2503,14 +2539,24 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   // Four ids a backend keeps these far below the D3D11 backend's id base, so the two spaces stay disjoint.
   const uint32_t wire = look_wire(lightweight_filter_, dc) ? 4u : 0u;
   const uint32_t gbuffer = rtx_gbuffer_ ? 2u : 0u;   // the path tracer's G-buffer variant
-  const uint64_t owner = backend_id_ * 8 + (gbuffer ? 4u : 0u) + (mvec_out() ? 2u : 0u) + (wire ? 1u : 0u);
+  const uint64_t owner = backend_id_ * 8 + (gbuffer || remix_layer_ ? 4u : 0u) + (mvec_out() ? 2u : 0u) + (wire ? 1u : 0u);
   if (dc.cached_pipeline && dc.cached_pipeline_owner == owner) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
   Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
   vsu.motion_vectors = psu.motion_vectors = (mvec_out() ? 1u : 0u) | gbuffer;
+  // The Remix layer: the pixel shader also writes the overlay and transmittance (gx_shader.cpp), and
+  // an effect composes into them with its own blend (describe_pipeline).
+  const bool remix_layer = remix_layer_ && !gbuffer && mvec_out();
+  if (remix_layer) psu.motion_vectors |= 4u;
+  const uint32_t remix_bits = remix_layer ? 16u | (remix_effect_draw(dc) && is_scene_draw(dc) ? 32u : 0u) : 0u;
+  {
+    static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+    if (fx_log && remix_effect_draw(dc) && remix_log_seq_ == fx_log)
+      host::log("remix pso: bits %X owner %02X bm %04X", remix_bits, (unsigned)dc.owner_player, dc.bp.blendmode() & 0xFFFF);
+  }
   uint64_t vh = vsu.hash(), ph = psu.hash();
-  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, (mvec_out() ? 1u : 0u) | (hud_max_ ? 8u : 0u) | gbuffer | (msaa_on() ? msaa_samples_ << 4 : 0u)};
+  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, (mvec_out() ? 1u : 0u) | (hud_max_ ? 8u : 0u) | gbuffer | remix_bits | (msaa_on() ? msaa_samples_ << 8 : 0u)};
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
@@ -3136,6 +3182,14 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     int32_t lanes[4] = {draw_index < frame.draws.size() ? (int32_t)draw_index + 1 : 0, 0, layer_lane, (int32_t)shadow_maps};
     std::memcpy(&lanes[1], &roughness, sizeof roughness);
     std::memcpy(ccpu + offsetof(PSConstants, flags), lanes, sizeof lanes);
+  } else if (remix_layer_) {
+    // The Remix layer's lane (flags.z, gx_shader.cpp): an effect blends into it (1) or replaces it (2).
+    const int32_t lane = remix_effect_draw(dc) && is_scene_draw(dc) ? ((dc.bp.blendmode() & 1) ? 1 : 2) : 0;
+    std::memcpy(ccpu + offsetof(PSConstants, flags) + 2 * sizeof(int32_t), &lane, sizeof lane);
+    static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+    if (fx_log && frame.sequence == fx_log && remix_effect_draw(dc))
+      host::log("remix lane: draw %zu lane %d scene %d owner %02X bm %04X cached %d", draw_index, lane, is_scene_draw(dc) ? 1 : 0,
+                (unsigned)dc.owner_player, dc.bp.blendmode() & 0xFFFF, dc.cached_pipeline ? 1 : 0);
   }
   g_prof[2] += sw.lap();   // constants
   // Pipeline
@@ -3187,77 +3241,157 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
 // ---------------- RTX Remix bridge (local experiment, remix_bridge.h) ----------------
 // MELEE_REMIX=1: each match frame also goes to the Remix runtime, which path traces it in its own
 // window. MELEE_REMIX_CAPTURE=<file.ppm> with MELEE_REMIX_CAPTURE_FRAME=<sim frame> saves its picture.
-// This present's shown EFB region and HUD mask, copied for the bridge (read on the slot's next turn).
-void D3D12Backend::remix_copy_hud(const EfbCopy& c) {
-  const int s = slot_ % 2;
-  ID3D12Resource* src[2] = {efb_color_.Get(), hud_mask_.Get()};
-  for (int i = 0; i < 2; ++i) {
-    if (!src[i]) return;
-    const D3D12_RESOURCE_DESC desc = src[i]->GetDesc();
-    UINT64 total = 0;
-    device_->GetCopyableFootprints(&desc, 0, 1, 0, &remix_hud_fp_[s][i], nullptr, nullptr, &total);
-    if (!remix_hud_rb_[s][i] || remix_hud_rb_[s][i]->GetDesc().Width < total) {
-      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
-      D3D12_RESOURCE_DESC rd{};
-      rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = total; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
-      rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-      remix_hud_rb_[s][i].Reset();
-      if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                  IID_PPV_ARGS(&remix_hud_rb_[s][i])))) return;
+// The layer over Remix's picture, composed on the GPU (t0 EFB, t1 HUD mask, t2 overlay, t3
+// transmittance; c.x 1 = the whole picture, c.y 1 = effects present). Premultiplied: the HUD over the
+// effects, which lie over Remix's picture as O + picture * T (T's mean as the cover). Written in BGRA
+// order for the bridge's D3D9 texture.
+static const char* kRemixComposeShader = R"(
+Texture2D<float4> efb : register(t0);
+Texture2D<float> hud : register(t1);
+Texture2D<float4> over : register(t2);
+Texture2D<float4> trans : register(t3);
+cbuffer C : register(b0) { float4 c; };
+float4 VS(uint id : SV_VertexID) : SV_Position { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, 0, 1); }
+float4 PS(float4 pos : SV_Position) : SV_Target {
+  int3 q = int3(pos.xy, 0);
+  float3 col = efb.Load(q).rgb;
+  float4 o = float4(col, 1.0);
+  if (c.x < 0.5) {
+    float m = hud.Load(q);
+    float3 fx = c.y > 0.5 ? min(over.Load(q).rgb, 1.0) : float3(0.0, 0.0, 0.0);
+    float cover = c.y > 0.5 ? saturate(1.0 - dot(trans.Load(q).rgb, float3(1.0, 1.0, 1.0) / 3.0)) : 0.0;
+    o = float4(col * m + (1.0 - m) * fx, m + (1.0 - m) * cover);
+  }
+  if (c.z > 0.5) {   // test views: 1 overlay, 2 transmittance, 3 HUD mask, 4 EFB
+    const float4 ov = over.Load(q), tr = trans.Load(q);
+    o = c.z < 1.5 ? float4(saturate(ov.rgb * 0.5 + 0.5), 1.0) : c.z < 2.5 ? float4(saturate(tr.rgb), 1.0)
+      : c.z < 3.5 ? float4(hud.Load(q).xxx, 1.0) : float4(col, 1.0);
+  }
+  return o.bgra;
+}
+)";
+
+bool D3D12Backend::remix_ensure_compose() {
+  if (remix_compose_failed_) return false;
+  if (!remix_ui_ || remix_ui_->GetDesc().Width != (UINT64)efb_w_ || remix_ui_->GetDesc().Height != (UINT)efb_h_) {
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = efb_w_; rd.Height = efb_h_; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_CLEAR_VALUE cv{DXGI_FORMAT_R8G8B8A8_UNORM, {0, 0, 0, 0}};
+    remix_ui_.Reset();
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv, IID_PPV_ARGS(&remix_ui_)))) {
+      host::log("remix: the layer target could not be made"); remix_compose_failed_ = true; return false;
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += 16 * rtv_size_;
+    device_->CreateRenderTargetView(remix_ui_.Get(), nullptr, h);
+  }
+  if (!remix_compose_pso_) {
+    ComPtr<ID3DBlob> vs, ps, err;
+    if (FAILED(D3DCompile(kRemixComposeShader, strlen(kRemixComposeShader), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vs, &err)) ||
+        FAILED(D3DCompile(kRemixComposeShader, strlen(kRemixComposeShader), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &ps, &err))) {
+      host::log("remix: layer shader failed: %s", err ? (const char*)err->GetBufferPointer() : "?"); remix_compose_failed_ = true; return false;
+    }
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = blit_root_.Get();
+    pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()}; pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+    pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID; pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.SampleDesc.Count = 1;
+    if (FAILED(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&remix_compose_pso_)))) {
+      host::log("remix: layer pipeline failed"); remix_compose_failed_ = true; return false;
     }
   }
-  D3D12_RESOURCE_BARRIER b[2]{};
-  for (int i = 0; i < 2; ++i) {
-    b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b[i].Transition = {src[i], 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
-  }
-  list_->ResourceBarrier(2, b);
-  for (int i = 0; i < 2; ++i) {
-    D3D12_TEXTURE_COPY_LOCATION dst{remix_hud_rb_[s][i].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-    dst.PlacedFootprint = remix_hud_fp_[s][i];
-    D3D12_TEXTURE_COPY_LOCATION from{src[i], D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-    from.SubresourceIndex = 0;
-    list_->CopyTextureRegion(&dst, 0, 0, 0, &from, nullptr);
-  }
-  for (auto& x : b) std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
-  list_->ResourceBarrier(2, b);
+  return true;
+}
+
+// This present's layer (the shown EFB region), composed and copied for the bridge (read on the slot's next turn).
+void D3D12Backend::remix_copy_hud(const EfbCopy& c) {
+  const int s = slot_ % 2;
+  if (!hud_mask_ || !remix_ensure_compose()) return;
+  const bool fx = remix_layer_ && rtx_overlay_ && rtx_trans_;
   const float sc = (float)scale_;
-  remix_hud_rect_[s][0] = (uint32_t)(c.src_x * sc); remix_hud_rect_[s][1] = (uint32_t)(c.src_y * sc);
-  remix_hud_rect_[s][2] = (uint32_t)(c.src_w * sc); remix_hud_rect_[s][3] = (uint32_t)(c.src_h * sc);
+  const uint32_t x0 = std::min((uint32_t)(c.src_x * sc), (uint32_t)efb_w_), y0 = std::min((uint32_t)(c.src_y * sc), (uint32_t)efb_h_);
+  const uint32_t w = std::min((uint32_t)(c.src_w * sc), (uint32_t)efb_w_ - x0), h = std::min((uint32_t)(c.src_h * sc), (uint32_t)efb_h_ - y0);
+  if (!w || !h) return;
+  // Compose.
+  ID3D12Resource* src[4] = {efb_color_.Get(), hud_mask_.Get(), fx ? rtx_overlay_.Get() : nullptr, fx ? rtx_trans_.Get() : nullptr};
+  D3D12_RESOURCE_BARRIER b[4]{};
+  UINT nb = 0;
+  for (ID3D12Resource* r : src) {
+    if (!r) continue;
+    b[nb].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b[nb++].Transition = {r, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  }
+  list_->ResourceBarrier(nb, b);
+  const uint32_t srv = reserve_srvs(4);
+  for (int k = 0; k < 4; ++k) {
+    D3D12_CPU_DESCRIPTOR_HANDLE hk = srv_heap_->GetCPUDescriptorHandleForHeapStart(); hk.ptr += (srv + k) * srv_size_;
+    device_->CreateShaderResourceView(src[k] ? src[k] : efb_color_.Get(), nullptr, hk);
+  }
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); gpu.ptr += srv * srv_size_;
+  D3D12_CPU_DESCRIPTOR_HANDLE ui_rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); ui_rtv.ptr += 16 * rtv_size_;
+  list_->OMSetRenderTargets(1, &ui_rtv, FALSE, nullptr);
+  D3D12_VIEWPORT vp{0, 0, (float)efb_w_, (float)efb_h_, 0, 1};
+  D3D12_RECT sc_rect{(LONG)x0, (LONG)y0, (LONG)(x0 + w), (LONG)(y0 + h)};
+  list_->RSSetViewports(1, &vp); list_->RSSetScissorRects(1, &sc_rect);
+  list_->SetPipelineState(remix_compose_pso_.Get());
+  list_->SetGraphicsRootSignature(blit_root_.Get());
+  list_->SetGraphicsRootDescriptorTable(0, gpu);
+  static const float layer_view = [] { const char* v = std::getenv("MELEE_REMIX_LAYER_VIEW"); return v ? (float)std::atof(v) : 0.0f; }();
+  const float consts[4] = {remix_whole_ ? 1.0f : 0.0f, fx ? 1.0f : 0.0f, layer_view, 0.0f};
+  list_->SetGraphicsRoot32BitConstants(1, 4, consts, 0);
+  list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  list_->DrawInstanced(3, 1, 0, 0);
+  for (UINT i = 0; i < nb; ++i) std::swap(b[i].Transition.StateBefore, b[i].Transition.StateAfter);
+  list_->ResourceBarrier(nb, b);
+  // Copy the shown region out.
+  const D3D12_RESOURCE_DESC desc = remix_ui_->GetDesc();
+  UINT64 total = 0;
+  device_->GetCopyableFootprints(&desc, 0, 1, 0, &remix_hud_fp_[s], nullptr, nullptr, &total);
+  if (!remix_hud_rb_[s] || remix_hud_rb_[s]->GetDesc().Width < total) {
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = total; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    remix_hud_rb_[s].Reset();
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                IID_PPV_ARGS(&remix_hud_rb_[s])))) { bind_efb_targets(); return; }
+  }
+  D3D12_RESOURCE_BARRIER u{};
+  u.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  u.Transition = {remix_ui_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+  list_->ResourceBarrier(1, &u);
+  D3D12_TEXTURE_COPY_LOCATION dst{remix_hud_rb_[s].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+  dst.PlacedFootprint = remix_hud_fp_[s];
+  D3D12_TEXTURE_COPY_LOCATION from{remix_ui_.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+  from.SubresourceIndex = 0;
+  D3D12_BOX box{x0, y0, 0, x0 + w, y0 + h, 1};
+  list_->CopyTextureRegion(&dst, x0, y0, 0, &from, &box);
+  std::swap(u.Transition.StateBefore, u.Transition.StateAfter);
+  list_->ResourceBarrier(1, &u);
+  bind_efb_targets();
+  remix_hud_rect_[s][0] = x0; remix_hud_rect_[s][1] = y0; remix_hud_rect_[s][2] = w; remix_hud_rect_[s][3] = h;
   remix_hud_filled_[s] = true;
 }
 
-// The HUD this slot copied last time (its fence has passed): colour where the HUD mask is, as BGRA
-// with the mask in alpha, handed to the bridge.
-void D3D12Backend::remix_take_hud(bool whole_picture) {
+// The layer this slot composed last time (its fence has passed), handed to the bridge.
+void D3D12Backend::remix_take_hud() {
   const int s = slot_ % 2;
-  if (!remix_ || !remix_hud_filled_[s]) return;
+  if (!remix_ || !remix_hud_filled_[s] || !remix_hud_rb_[s]) return;
   remix_hud_filled_[s] = false;
-  const uint32_t x0 = remix_hud_rect_[s][0], y0 = remix_hud_rect_[s][1];
-  const uint32_t w = std::min(remix_hud_rect_[s][2], remix_hud_fp_[s][0].Footprint.Width - std::min(x0, remix_hud_fp_[s][0].Footprint.Width));
-  const uint32_t h = std::min(remix_hud_rect_[s][3], remix_hud_fp_[s][0].Footprint.Height - std::min(y0, remix_hud_fp_[s][0].Footprint.Height));
-  if (!w || !h) return;
-  void* colour = nullptr;
-  void* mask = nullptr;
-  const D3D12_RANGE all{0, (SIZE_T)remix_hud_rb_[s][0]->GetDesc().Width};
-  const D3D12_RANGE all_mask{0, (SIZE_T)remix_hud_rb_[s][1]->GetDesc().Width};
-  if (FAILED(remix_hud_rb_[s][0]->Map(0, &all, &colour))) return;
-  if (FAILED(remix_hud_rb_[s][1]->Map(0, &all_mask, &mask))) { remix_hud_rb_[s][0]->Unmap(0, nullptr); return; }
-  const uint8_t* cbase = (const uint8_t*)colour + remix_hud_fp_[s][0].Offset;
-  const uint8_t* mbase = (const uint8_t*)mask + remix_hud_fp_[s][1].Offset;
-  const uint32_t cpitch = remix_hud_fp_[s][0].Footprint.RowPitch, mpitch = remix_hud_fp_[s][1].Footprint.RowPitch;
+  const uint32_t x0 = remix_hud_rect_[s][0], y0 = remix_hud_rect_[s][1], w = remix_hud_rect_[s][2], h = remix_hud_rect_[s][3];
+  void* data = nullptr;
+  const D3D12_RANGE all{0, (SIZE_T)remix_hud_rb_[s]->GetDesc().Width};
+  if (FAILED(remix_hud_rb_[s]->Map(0, &all, &data))) return;
+  const uint8_t* base = (const uint8_t*)data + remix_hud_fp_[s].Offset;
+  const uint32_t pitch = remix_hud_fp_[s].Footprint.RowPitch;
   remix_hud_bgra_.resize((size_t)w * h * 4);
-  for (uint32_t y = 0; y < h; ++y) {
-    const uint8_t* cr = cbase + (size_t)(y0 + y) * cpitch + (size_t)x0 * 4;
-    const uint8_t* mr = mbase + (size_t)(y0 + y) * mpitch + x0;
-    uint8_t* o = remix_hud_bgra_.data() + (size_t)y * w * 4;
-    for (uint32_t x = 0; x < w; ++x) {
-      o[x * 4 + 0] = cr[x * 4 + 2]; o[x * 4 + 1] = cr[x * 4 + 1]; o[x * 4 + 2] = cr[x * 4 + 0];
-      o[x * 4 + 3] = whole_picture ? 255 : mr[x];
-    }
-  }
-  remix_hud_rb_[s][0]->Unmap(0, nullptr);
-  remix_hud_rb_[s][1]->Unmap(0, nullptr);
+  for (uint32_t y = 0; y < h; ++y)
+    std::memcpy(remix_hud_bgra_.data() + (size_t)y * w * 4, base + (size_t)(y0 + y) * pitch + (size_t)x0 * 4, (size_t)w * 4);
+  remix_hud_rb_[s]->Unmap(0, nullptr);
   remix_->set_hud(remix_hud_bgra_.data(), (int)w, (int)h);
 }
 
@@ -3274,15 +3408,56 @@ void D3D12Backend::remix_present(const Frame& frame) {
     g_hud_solid_coverage = true;
     hud_max_ = true;
   }
-  if (skip_present_) return;
-  const bool match = in_match_ && frame.rtx.present && !frame.rtx.cameras.empty();
-  if (!match) {
-    // Test runs: MELEE_REMIX_MENU_CAPTURE=<ppm> at MELEE_REMIX_MENU_CAPTURE_FRAME (a menu frame).
+  // The effects layer: the path tracer's overlay and transmittance targets (made once).
+  remix_layer_ = remix_hud_ && !dlss_active_ && rtx_ensure_gbuffer();
+  remix_log_seq_ = frame.sequence;
+  if (remix_layer_) rtx_write_gbuffer_rtvs();
+  remix_pending_ = !skip_present_;
+  remix_whole_ = !(in_match_ && frame.rtx.present && !frame.rtx.cameras.empty());
+}
+
+// After this frame's commands are submitted: its layer (composed by present_efb) and its scene go to
+// Remix together, so the effects and the HUD sit on the fighters they belong to. The wait is for the
+// raster's own small frame (the readback of the layer), not for the picture to be shown.
+void D3D12Backend::remix_finish(const Frame& frame) {
+  if (!remix_ || !remix_pending_) return;
+  remix_pending_ = false;
+  wait_fence(slot_fence_[slot_]);
+  // Test runs: MELEE_REMIX_CAPTURE=<ppm> at MELEE_REMIX_CAPTURE_FRAME, which may list several frames
+  // ("1318,1678"; each lands as <file>_<frame>.ppm); MELEE_REMIX_MENU_CAPTURE[_FRAME] on a menu frame.
+  // Asked for before the frame, so the picture saved is this frame's.
+  auto capture_due = [&](bool menu) {
+    static const char* capture = std::getenv("MELEE_REMIX_CAPTURE");
+    static const std::vector<uint64_t> capture_at = [] {
+      std::vector<uint64_t> at;
+      for (const char* v = std::getenv("MELEE_REMIX_CAPTURE_FRAME"); v && *v;) {
+        char* end = nullptr;
+        at.push_back(std::strtoull(v, &end, 10));
+        v = (end && *end == ',') ? end + 1 : nullptr;
+      }
+      if (at.empty()) at.push_back(0);
+      return at;
+    }();
+    static size_t next_capture = 0;
     static const char* menu_capture = std::getenv("MELEE_REMIX_MENU_CAPTURE");
     static const uint64_t menu_at = [] { const char* v = std::getenv("MELEE_REMIX_MENU_CAPTURE_FRAME"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
     static bool menu_captured = false;
-    if (menu_capture && !menu_captured && frame.sequence >= menu_at) menu_captured = remix_->capture(menu_capture);
-    remix_take_hud(true);
+    if (menu) {
+      if (menu_capture && !menu_captured && frame.sequence >= menu_at) menu_captured = remix_->capture(menu_capture);
+      return;
+    }
+    if (capture && next_capture < capture_at.size() && frame.sequence >= capture_at[next_capture]) {
+      std::string path = capture;
+      if (capture_at.size() > 1) {
+        const size_t dot = path.rfind('.');
+        path.insert(dot == std::string::npos ? path.size() : dot, "_" + std::to_string(capture_at[next_capture]));
+      }
+      if (remix_->capture(path)) ++next_capture;
+    }
+  };
+  remix_take_hud();
+  if (remix_whole_) {
+    capture_due(true);
     remix_->present_2d();
     return;
   }
@@ -3291,24 +3466,18 @@ void D3D12Backend::remix_present(const Frame& frame) {
     if (d.skinned && d.owner_player < 4 && d.rtx.camera >= 0) { camera = d.rtx.camera; break; }
   if (camera < 0 || camera >= (int)frame.rtx.cameras.size()) return;
   float view_to_world[12];
-  if (!rtx_invert_affine(frame.rtx.cameras[(size_t)camera].view, view_to_world)) {
-    remix_take_hud(true); remix_->present_2d(); return;
-  }
-  remix_take_hud(false);
-  std::vector<RtxLightRecord> lights, set_lights;
+  if (!rtx_invert_affine(frame.rtx.cameras[(size_t)camera].view, view_to_world)) { remix_->present_2d(); return; }
+  std::vector<RtxLightRecord> lights;
   const int main_set = rtx_main_light_set(frame, camera);
   rtx_build_lights(frame.rtx, main_set, lights);
+  capture_due(false);
   remix_->frame(frame, camera, view_to_world, lights);
   static uint64_t remix_frames = 0;
   if (++remix_frames % 300 == 1) {
     const RemixBridge::Stats& st = remix_->stats();
-    host::log("remix: frame %llu: %u instances, %u meshes (%u new), %u materials, %u lights, %.2f ms on the CPU",
-              (unsigned long long)frame.sequence, st.instances, st.meshes, st.created, st.materials, st.lights, st.cpu_ms);
+    host::log("remix: frame %llu: %u instances, %u meshes (%u new), %u materials, %u lights (%u from effects), %.2f ms on the CPU",
+              (unsigned long long)frame.sequence, st.instances, st.meshes, st.created, st.materials, st.lights, st.fx_lights, st.cpu_ms);
   }
-  static const char* capture = std::getenv("MELEE_REMIX_CAPTURE");
-  static const uint64_t capture_at = [] { const char* v = std::getenv("MELEE_REMIX_CAPTURE_FRAME"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
-  static bool captured = false;
-  if (capture && !captured && frame.sequence >= capture_at) captured = remix_->capture(capture);
 }
 #endif
 
@@ -3893,7 +4062,7 @@ void D3D12Backend::clear_efb(const EfbCopy& c) {
   list_->ClearRenderTargetView(rtv, color, 1, &r);
   // Not after the copy to the screen: that set is next present's previous frame, and the next present
   // empties its own set when it starts.
-  if (rtx_gbuffer_ && !msaa && !c.to_xfb) rtx_clear_gbuffer(&r);
+  if ((rtx_gbuffer_ || remix_layer_) && !msaa && !c.to_xfb) rtx_clear_gbuffer(&r);
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
   if (msaa) dsv.ptr += device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
   list_->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f - (float)c.clear_z / 16777215.0f, 0, 1, &r);
@@ -4965,6 +5134,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
     D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
     list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
+    if (remix_layer_) rtx_clear_gbuffer(nullptr);   // the effects layer: no overlay, full transmittance
   }
 #endif
   if (dlss_active_) {
@@ -5241,6 +5411,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   queue_->Signal(fence_.Get(), fence_value_);
   slot_fence_[slot_] = fence_value_;
   if (geometry_frame_) geometry_frame_->fence = fence_value_;
+#ifdef MELEE_REMIX_SPIKE
+  remix_finish(frame);
+#endif
   // F2: write the next N presented frames out, whatever the capture options say.
   if (presented) {
     unsigned want = g_capture_request.load(std::memory_order_relaxed);

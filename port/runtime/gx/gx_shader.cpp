@@ -488,6 +488,10 @@ std::string generate_pixel_shader(const PSUid& uid) {
   else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   if (gbuffer) o.w(", out float4 oalbedo : SV_Target3, out float4 onormal : SV_Target4, out uint oid : SV_Target5"
                    ", out float4 oover : SV_Target6, out float4 otrans : SV_Target7");
+  // The RTX Remix bridge's effects layer (motion_vectors bit 4, never with the G-buffer): the same
+  // overlay and transmittance as the G-buffer's, as targets 3 and 4.
+  const bool remix_layer = (uid.motion_vectors & 4) != 0 && !gbuffer;
+  if (remix_layer) o.w(", out float4 oover : SV_Target3, out float4 otrans : SV_Target4");
   if (texture_depth) o.w(", out float odepth : SV_Depth");
   for (uint32_t i = 0; i < numTexgen; ++i) o.w(", in float3 uv%d : TEXCOORD%d", i, i);
   if (uid.motion_vectors) o.w(", in float4 clipPos : TEXCOORD%d, in float4 curPos : TEXCOORD%d, in float4 prevPos : TEXCOORD%d", numTexgen, numTexgen + 1, numTexgen + 2);
@@ -731,6 +735,12 @@ std::string generate_pixel_shader(const PSUid& uid) {
         "else if (flags.z == 1) { oover = ocol0; otrans = ocol0; }\n"
         "else { oover = ocol0; otrans = float4(0.0, 0.0, 0.0, 0.0); }\n");
   }
+  // Remix's layer (flags.z from the renderer): an effect blends into it (1) or replaces it (2); any
+  // other draw that reaches these targets is a surface in front, which empties it.
+  if (remix_layer)
+    o.w("if (flags.z == 1) { oover = ocol0; otrans = ocol0; }\n"
+        "else if (flags.z == 2) { oover = ocol0; otrans = float4(0.0, 0.0, 0.0, 0.0); }\n"
+        "else { oover = float4(0.0, 0.0, 0.0, 0.0); otrans = float4(1.0, 1.0, 1.0, 1.0); }\n");
   o.w("}\n");
   return o.s;
 }

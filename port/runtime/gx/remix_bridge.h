@@ -10,6 +10,7 @@
 namespace gx {
 struct Frame;
 struct RtxLightRecord;
+struct DrawCall;
 
 class RemixBridge {
  public:
@@ -27,13 +28,14 @@ class RemixBridge {
   void present_2d();
   // Saves Remix's last finished picture as a PPM (development captures).
   bool capture(const std::string& path);
-  struct Stats { uint32_t meshes = 0, created = 0, materials = 0, instances = 0, lights = 0; double cpu_ms = 0; };
+  struct Stats { uint32_t meshes = 0, created = 0, materials = 0, instances = 0, lights = 0, fx_lights = 0; double cpu_ms = 0; };
   const Stats& stats() const { return stats_; }
 
  private:
   struct Impl;
   bool capture_output(const std::string& path, int type);
   void present_d3d9();
+  void add_fx_light(const Frame& f, const DrawCall& d, const float vw[12]);   // one bright effect as a light (frame())
   Impl* impl_ = nullptr;
   bool started_ = false;
   Stats stats_;

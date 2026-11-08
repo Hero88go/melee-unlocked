@@ -16,6 +16,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -166,6 +167,10 @@ struct RemixBridge::Impl {
   std::vector<uint8_t> hud;
   bool hud_new = false;
   std::string backbuffer_capture;   // D3D9 mode: save the next presented picture here
+  // This frame's bright effects (remix_effect_draw, additive) as lights: where, how big, what colour.
+  struct FxLight { float pos[3]; float radius; float rgb[3]; float power; };
+  std::vector<FxLight> fx_lights;
+  std::unordered_map<uint64_t, std::array<float, 4>> texel_mean;   // a texture's mean texel, decoded once
 };
 
 RemixBridge::RemixBridge() : impl_(new Impl) {}
@@ -267,6 +272,69 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error) 
   return true;
 }
 
+// One effect draw as a light: the centre and size of its world-space vertices, and its colour from
+// its combiner over its texture's mean texel (the per-particle colour registers included), weighted as
+// it adds to the picture (source alpha or one).
+void RemixBridge::add_fx_light(const Frame& f, const DrawCall& d, const float vw[12]) {
+  Impl& m = *impl_;
+  if (d.first_vertex + (size_t)d.vertex_count > f.vertices.size() || d.vertex_count == 0) return;
+  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  for (uint32_t i = 0; i < d.vertex_count; ++i) {
+    const Vertex& v = f.vertices[d.first_vertex + i];
+    const int row = (int)(v.posmtx & 0x3F);
+    if (row + 2 >= 64) continue;
+    const float* pm = &d.posMatrices[row * 4];
+    float view[3], w[3];
+    for (int k = 0; k < 3; ++k) view[k] = pm[k * 4] * v.pos[0] + pm[k * 4 + 1] * v.pos[1] + pm[k * 4 + 2] * v.pos[2] + pm[k * 4 + 3];
+    for (int k = 0; k < 3; ++k) {
+      w[k] = vw[k * 4] * view[0] + vw[k * 4 + 1] * view[1] + vw[k * 4 + 2] * view[2] + vw[k * 4 + 3];
+      lo[k] = std::min(lo[k], w[k]); hi[k] = std::max(hi[k], w[k]);
+    }
+  }
+  if (lo[0] > hi[0]) return;
+  // The colour source the combiner reads (vertex colours or the material register), with alpha.
+  float ras[4] = {255.0f, 255.0f, 255.0f, 255.0f};
+  if ((d.xf_regs[0x0E] & 1) && (d.components & VB_HAS_COL0)) {
+    double sum[4] = {0, 0, 0, 0};
+    for (uint32_t i = 0; i < d.vertex_count; ++i)
+      for (int k = 0; k < 4; ++k) sum[k] += f.vertices[d.first_vertex + i].col0[k];
+    for (int k = 0; k < 4; ++k) ras[k] = (float)(sum[k] / d.vertex_count);
+  } else {
+    const uint32_t mat = d.xf_regs[0x0C];
+    for (int k = 0; k < 4; ++k) ras[k] = (float)((mat >> (24 - 8 * k)) & 0xFF);
+  }
+  float texel[4] = {255.0f, 255.0f, 255.0f, 255.0f};
+  const TextureRef& t = d.textures[0];
+  if (t.used && t.data && t.width && t.height && t.width <= 1024 && t.height <= 1024) {
+    auto it = m.texel_mean.find(t.data->hash);
+    if (it == m.texel_mean.end()) {
+      std::vector<uint8_t> rgba;
+      decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.empty() ? nullptr : t.data->palette.data(),
+                     t.tlut_format, rgba);
+      double sum[4] = {0, 0, 0, 0};
+      const size_t n = rgba.size() / 4;
+      for (size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 4; ++k) sum[k] += rgba[i * 4 + k];
+      std::array<float, 4> mean{255.0f, 255.0f, 255.0f, 255.0f};
+      if (n) for (int k = 0; k < 4; ++k) mean[(size_t)k] = (float)(sum[k] / n);
+      it = m.texel_mean.emplace(t.data->hash, mean).first;
+    }
+    for (int k = 0; k < 4; ++k) texel[k] = it->second[(size_t)k];
+  }
+  const int own_map = [&] { for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) if (d.bp.order_enable((int)n)) return d.bp.order_texmap((int)n); return 0; }();
+  float o[4];
+  tev_texel(d, own_map, texel, ras, o);
+  const uint32_t src = (d.bp.blendmode() >> 8) & 7;   // GX source factor: 1 one, 4 source alpha
+  const float weight = src == 4 ? o[3] / 255.0f : src == 1 ? 1.0f : 0.0f;
+  Impl::FxLight l{};
+  float extent = 0.0f;
+  for (int k = 0; k < 3; ++k) { l.pos[k] = 0.5f * (lo[k] + hi[k]); extent = std::max(extent, hi[k] - lo[k]); }
+  l.radius = std::clamp(extent * 0.2f, 0.3f, 4.0f);
+  for (int k = 0; k < 3; ++k) l.rgb[k] = std::clamp(o[k] / 255.0f * weight, 0.0f, 1.0f);
+  l.power = (0.2126f * l.rgb[0] + 0.7152f * l.rgb[1] + 0.0722f * l.rgb[2]) * l.radius * l.radius;
+  m.fx_lights.push_back(l);
+}
+
 void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const std::vector<RtxLightRecord>& lights) {
   if (!started_ || camera < 0 || (size_t)camera >= f.rtx.cameras.size()) return;
   Impl& m = *impl_;
@@ -309,6 +377,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     m.api.SetupCamera(&c);
   }
 
+  m.fx_lights.clear();
   // Draws: world-space vertices from the GX matrices, one surface per draw, cached by content.
   for (const DrawCall& d : f.draws) {
     if (no_meshes || d.rtx.camera != camera || d.vertex_count < 3) continue;
@@ -319,6 +388,19 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // Remix's own specular replaces it.
     const bool fighter = d.skinned && d.owner_player < 6;
     if (additive && fighter) continue;
+    // Effects reach Remix's picture through the layer the renderer composes over it, exactly as the
+    // game drew them (remix_effect_draw). The bright ones (additive: fire, sparks, flashes, glows)
+    // also light the scene, as lights at their place in their own colour.
+    if (remix_effect_draw(d)) {
+      if (additive && !no_lights) add_fx_light(f, d, vw);
+      // Test runs (MELEE_REMIX_FXLOG=<sim frame>): each effect draw's owner and GX blend/depth state.
+      static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+      if (fx_log && f.sequence == fx_log)
+        host::log("remix fx: owner %02X pass %u bm %04X zm %02X at %06X verts %u tex %ux%u fmt %u",
+                  (unsigned)d.owner_player, (unsigned)d.rtx.pass, d.bp.blendmode() & 0xFFFF, d.bp.zmode() & 0x1F,
+                  d.bp.alpha_test() & 0xFFFFFF, d.vertex_count, d.textures[0].width, d.textures[0].height, d.textures[0].format);
+      continue;
+    }
     // Additive draws (glows, the fountain's light, sparks) come in as emissive cut-outs.
     // Blended surfaces (leaves, the sky's cut-out clouds, decals) and alpha-tested ones become cutouts.
     const uint32_t at = d.bp.alpha_test();
@@ -616,6 +698,29 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     remixapi_LightHandle h = nullptr;
     if (m.api.CreateLight(&li, &h) == REMIXAPI_ERROR_CODE_SUCCESS) { m.lights.push_back(h); m.api.DrawLightInstance(h); }
   }
+  // The brightest effects as small sphere lights (MELEE_REMIX_FX_LIGHTS caps the count, 0 turns them
+  // off; MELEE_REMIX_FX_LIGHT scales their strength).
+  {
+    static const int fx_max = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHTS"); return v ? std::atoi(v) : 8; }();
+    static const float fx_scale = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHT"); return v ? (float)std::atof(v) : 40.0f; }();
+    std::sort(m.fx_lights.begin(), m.fx_lights.end(), [](const Impl::FxLight& a, const Impl::FxLight& b) { return a.power > b.power; });
+    for (int i = 0; i < fx_max && i < (int)m.fx_lights.size(); ++i) {
+      const Impl::FxLight& l = m.fx_lights[(size_t)i];
+      if (l.power <= 0.01f) break;
+      remixapi_LightInfoSphereEXT sph{};
+      sph.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
+      sph.position = {l.pos[0], l.pos[1], l.pos[2]};
+      sph.radius = l.radius;
+      sph.volumetricRadianceScale = 1.0f;
+      remixapi_LightInfo li{};
+      li.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
+      li.pNext = &sph;
+      li.hash = 0x46584C00ull + (uint64_t)i;
+      li.radiance = {l.rgb[0] * fx_scale * scale, l.rgb[1] * fx_scale * scale, l.rgb[2] * fx_scale * scale};
+      remixapi_LightHandle h = nullptr;
+      if (m.api.CreateLight(&li, &h) == REMIXAPI_ERROR_CODE_SUCCESS) { m.lights.push_back(h); m.api.DrawLightInstance(h); ++stats_.fx_lights; }
+    }
+  }
   if (m.d3d9_mode && m.device) {
     present_d3d9();
   } else {
@@ -659,7 +764,7 @@ void RemixBridge::present_d3d9() {
       dev->SetRenderState(D3DRS_LIGHTING, FALSE);
       dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
       dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-      dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+      dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);   // premultiplied: the HUD over the effects (gx_d3d12.cpp)
       dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
       dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
       dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -673,6 +778,12 @@ void RemixBridge::present_d3d9() {
     }
     dev->EndScene();
     if (!m.backbuffer_capture.empty()) {
+      // The layer this present laid over the picture (<capture>.layer.png, premultiplied RGBA).
+      if (m.hud_w > 0 && m.hud_h > 0 && m.hud.size() >= (size_t)m.hud_w * m.hud_h * 4) {
+        std::vector<uint8_t> rgba(m.hud.begin(), m.hud.begin() + (size_t)m.hud_w * m.hud_h * 4);
+        for (size_t i = 0; i + 3 < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
+        stbi_write_png((m.backbuffer_capture + ".layer.png").c_str(), m.hud_w, m.hud_h, 4, rgba.data(), m.hud_w * 4);
+      }
       // What goes to the screen: the back buffer as Remix leaves it before present.
       IDirect3DSurface9* bb = nullptr;
       IDirect3DSurface9* sys = nullptr;
@@ -721,11 +832,11 @@ void RemixBridge::set_hud(const uint8_t* bgra, int w, int h) {
 }
 
 bool RemixBridge::capture(const std::string& path) {
-  // The final picture, then the UI layer alone beside it (<path>.gui.ppm): Remix's composite of the
-  // HUD happens at present, after both.
-  if (impl_->d3d9_mode) impl_->backbuffer_capture = path + ".bb.ppm";
+  // The final picture, and the layer laid over it (<path>.layer.png, premultiplied RGBA): Remix's
+  // composite of that layer happens at present, after both.
+  Impl& m = *impl_;
+  if (m.d3d9_mode) m.backbuffer_capture = path + ".bb.ppm";
   const bool ok = capture_output(path, (int)REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_FINAL_COLOR);
-  capture_output(path + ".gui.ppm", (int)REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_GUI);
   return ok;
 }
 bool RemixBridge::capture_output(const std::string& path, int type) {
