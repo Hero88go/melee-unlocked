@@ -46,7 +46,11 @@ RWTexture2D<float4> Output : register(u0);
 RWTexture2D<float4> GuideDiffuse : register(u1);
 RWTexture2D<float4> GuideSpecular : register(u2);
 RWTexture2D<float4> GuideNormal : register(u3);
-RWTexture2D<float4> Accum : register(u4);                 // photo mode: the picture so far while the scene is still
+RWTexture2D<float4> Accum : register(u4);
+// Per draw: the summed on-screen albedo (linear, x 255) and the pixel count, rebuilt each present.
+RWStructuredBuffer<uint4> DrawColour : register(u5);
+static const uint kMaxDrawColours = 16384u;
+cbuffer Pass : register(b1) { uint pass_index; };                 // photo mode: the picture so far while the scene is still
 
 cbuffer Frame : register(b0) {
   float4 view_to_world[3];
@@ -211,6 +215,8 @@ struct Hit {
   float3 albedo;           // linear: texture 0 times the vertex colour (as GX drew it for baked draws)
   bool lit;                // GX lights it (else its light is baked into the albedo)
   float3 ambient;          // its GX ambient (linear)
+  uint draw;               // the frame draw it belongs to
+  bool fighter;            // a player's draw
 };
 
 float4 unpack_rgba8(uint word) { return float4(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu, word >> 24) / 255.0; }
@@ -239,7 +245,7 @@ Hit trace_surface(float3 origin, float3 dir, float tmax) {
   const float4 c = unpack_rgba8(v0.color) * w.x + unpack_rgba8(v1.color) * w.y + unpack_rgba8(v2.color) * w.z;
   const float2 uv = v0.uv[0] * w.x + v1.uv[0] * w.y + v2.uv[0] * w.z;
   float4 t = float4(1, 1, 1, 1);
-  if (r.texture_set != kNoTextures) t = Textures[NonUniformResourceIndex(r.texture_set)].SampleLevel(LinearWrap, uv, 2);
+  if (r.texture_set != kNoTextures) t = Textures[NonUniformResourceIndex(r.texture_set)].SampleLevel(LinearWrap, uv, 0);
   const bool vertex_colour = (r.channel & 4u) != 0u || (r.channel & 1u) == 0u;
   h.found = true;
   h.position = origin + dir * q.CommittedRayT();
@@ -247,6 +253,15 @@ Hit trace_surface(float3 origin, float3 dir, float tmax) {
   h.albedo = srgb_to_linear(saturate((vertex_colour ? c.rgb : 1.0) * t.rgb));
   h.lit = (r.channel & 1u) != 0u;
   h.ambient = srgb_to_linear(unpack_rgb8(r.ambient));
+  h.draw = r.draw_index;
+  h.fighter = (r.flags & 2u) != 0u;
+  // A fighter's part (cap, shirt, skin) takes the colour the game shows it in where it is on
+  // screen: its first texture alone is often a light shading ramp the colour combiner tints
+  // (painted mods), and reflections showed pale blobs.
+  if (h.fighter && h.draw < kMaxDrawColours) {
+    const uint4 sum = DrawColour[h.draw];
+    if (sum.w > 8u) h.albedo = float3(sum.xyz) / (255.0 * (float)sum.w);
+  }
   return h;
 }
 
@@ -289,7 +304,7 @@ float3 specular_albedo(float3 f0, float nv, float roughness) {
 }
 // Glossy stage floors: a polished floor (F0 0.10, roughness 0.10), the reflection up to half the
 // picture at a glancing view.
-static const float kFloorRoughness = 0.10;
+static const float kFloorRoughness = 0.03;
 float3 floor_fresnel(float3 n, float3 v) {
   return min(2.0 * floor_strength * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), min(0.5 * floor_strength, 0.9));
 }
@@ -346,8 +361,36 @@ void emit(uint2 px, float3 lit, float3 albedo) {
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
+  if (pass_index == 0u) {   // empty the per-draw colour sums
+    const uint i = id.x + id.y * (kMaxDrawColours / 8u);   // 8x8 groups laid along x
+    if (i < kMaxDrawColours) DrawColour[i] = uint4(0, 0, 0, 0);
+    return;
+  }
   const uint2 px = id.xy;
   if (px.x >= size.x || px.y >= size.y) return;
+  if (pass_index == 1u) {   // every surface pixel's albedo into its draw's sum
+    const uint g = GId[px];
+    const bool valid = g != 0u && g - 1u < kMaxDrawColours && GNormal[px].w > 0.0;
+    const uint d = valid ? g - 1u : 0xFFFFFFFFu;
+    const uint3 c = valid ? uint3(saturate(srgb_to_linear(GAlbedo[px].rgb)) * 255.0 + 0.5) : uint3(0, 0, 0);
+    // Most waves cover one draw (a stage floor fills much of the screen): one atomic per wave.
+    if (WaveActiveAllEqual(d)) {
+      const uint3 sum = WaveActiveSum(c);
+      const uint n = WaveActiveCountBits(valid);
+      if (WaveIsFirstLane() && d != 0xFFFFFFFFu) {
+        InterlockedAdd(DrawColour[d].x, sum.x);
+        InterlockedAdd(DrawColour[d].y, sum.y);
+        InterlockedAdd(DrawColour[d].z, sum.z);
+        InterlockedAdd(DrawColour[d].w, n);
+      }
+    } else if (valid) {
+      InterlockedAdd(DrawColour[d].x, c.x);
+      InterlockedAdd(DrawColour[d].y, c.y);
+      InterlockedAdd(DrawColour[d].z, c.z);
+      InterlockedAdd(DrawColour[d].w, 1u);
+    }
+    return;
+  }
   const uint draw = GId[px];
   const float4 nd = GNormal[px];
   if (draw == 0u || nd.w <= 0.0) {
@@ -405,6 +448,12 @@ void main(uint3 id : SV_DispatchThreadID) {
 
   write_guides(px, albedo, specular_albedo(f0, saturate(dot(n, v)), roughness), nd.xyz, roughness);
   if ((switches & (1u << 30)) != 0u) { emit(px, albedo, albedo); return; }   // test view: the albedo
+  if ((switches & (1u << 28)) != 0u && draw - 1u < kMaxDrawColours) {   // test view: each draw's averaged albedo
+    const uint4 sum = DrawColour[draw - 1u];
+    const float3 avg = sum.w ? float3(sum.xyz) / (255.0 * (float)sum.w) : float3(1, 0, 1);
+    emit(px, avg, max(avg, 0.02));
+    return;
+  }
 
   // The set's ambient light and sun.
   float3 ambient_light = 0, sun = 0;

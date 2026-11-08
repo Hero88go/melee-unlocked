@@ -17,7 +17,9 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-enum Root : UINT { kFrame = 0, kScene, kLights, kDrawTable, kRecords, kInputs, kOutputs, kVertices, kTextures, kRootCount };
+enum Root : UINT { kFrame = 0, kScene, kLights, kDrawTable, kRecords, kInputs, kOutputs, kVertices, kTextures, kDrawColour, kPass, kRootCount };
+// The average on-screen albedo of each draw (rtx_direct.hlsl DrawColour): sums of r, g, b and a count.
+constexpr UINT kMaxDrawColours = 16384;
 
 struct FrameConstants {        // cbuffer Frame in rtx_direct.hlsl
   float view_to_world[12];
@@ -89,6 +91,10 @@ class MeleeIntegrator final : public RtxIntegrator {
     D3D12_DESCRIPTOR_RANGE textures{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 1, 0};
     p[kTextures].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     p[kTextures].DescriptorTable = {1, &textures};
+    p[kDrawColour].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    p[kDrawColour].Descriptor = {5, 0};   // u5
+    p[kPass].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    p[kPass].Constants = {1, 0, 1};       // b1: which pass of the shader runs
     for (auto& x : p) x.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -128,6 +134,17 @@ class MeleeIntegrator final : public RtxIntegrator {
       return false;
     }
     Slot& s = slots_[in.slot];
+    if (!draw_colours_) {
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC d{};
+      d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; d.Width = (UINT64)kMaxDrawColours * 16; d.Height = 1; d.DepthOrArraySize = 1;
+      d.MipLevels = 1; d.SampleDesc.Count = 1; d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                  IID_PPV_ARGS(&draw_colours_)))) {
+        if (error) *error = "draw colour buffer could not be made";
+        return false;
+      }
+    }
     if (!s.constants) {
       D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
       D3D12_RESOURCE_DESC d{};
@@ -232,6 +249,8 @@ class MeleeIntegrator final : public RtxIntegrator {
     if (show_albedo) k.switches |= 1u << 30;
     static const bool no_highlight = host::test_env::getenv("MELEE_TEST_RTX_NO_HIGHLIGHT") != nullptr;
     if (no_highlight) k.switches |= 1u << 29;
+    static const bool show_draw_colour = host::test_env::getenv("MELEE_TEST_RTX_DRAW_COLOUR") != nullptr;
+    if (show_draw_colour) k.switches |= 1u << 28;
     std::memcpy(s.constants_cpu, &k, sizeof k);
 
     in.list->SetComputeRootSignature(root_.Get());
@@ -245,6 +264,19 @@ class MeleeIntegrator final : public RtxIntegrator {
     in.list->SetComputeRootDescriptorTable(kOutputs, uav_gpu);
     in.list->SetComputeRootShaderResourceView(kVertices, in.vertices->GetGPUVirtualAddress());
     in.list->SetComputeRootDescriptorTable(kTextures, in.heap->GetGPUDescriptorHandleForHeapStart());
+    in.list->SetComputeRootUnorderedAccessView(kDrawColour, draw_colours_->GetGPUVirtualAddress());
+    // Pass 0 empties the per-draw colour sums, pass 1 adds every pixel's albedo to its draw's,
+    // pass 2 lights the picture (reflections of fighters read their parts' colours from them).
+    D3D12_RESOURCE_BARRIER between{};
+    between.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    between.UAV.pResource = draw_colours_.Get();
+    in.list->SetComputeRoot32BitConstant(kPass, 0u, 0);
+    in.list->Dispatch(kMaxDrawColours / 64, 1, 1);
+    in.list->ResourceBarrier(1, &between);
+    in.list->SetComputeRoot32BitConstant(kPass, 1u, 0);
+    in.list->Dispatch((in.width + 7) / 8, (in.height + 7) / 8, 1);
+    in.list->ResourceBarrier(1, &between);
+    in.list->SetComputeRoot32BitConstant(kPass, 2u, 0);
     in.list->Dispatch((in.width + 7) / 8, (in.height + 7) / 8, 1);
     D3D12_RESOURCE_BARRIER b[kSlotTargets + 1]{};
     for (UINT i = 0; i < kSlotTargets; ++i) {
@@ -276,6 +308,7 @@ class MeleeIntegrator final : public RtxIntegrator {
   ComPtr<ID3D12RootSignature> root_;
   ComPtr<ID3D12PipelineState> pso_;
   ComPtr<ID3D12Resource> accum_;   // photo mode
+  ComPtr<ID3D12Resource> draw_colours_;   // per draw: summed on-screen albedo
   Slot slots_[kSlots];
 };
 
