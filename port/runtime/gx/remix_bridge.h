@@ -20,6 +20,9 @@ class RemixBridge {
   bool started() const { return started_; }
   // One match frame: the draws of `camera`, `view_to_world` (row major 3x4) and the lights in world space.
   void frame(const Frame& f, int camera, const float view_to_world[12], const std::vector<RtxLightRecord>& lights);
+  // The game's HUD for the next frame: `bgra` w x h (alpha = HUD coverage), drawn over Remix's
+  // picture as a screen-space layer (D3D9 mode).
+  void set_hud(const uint8_t* bgra, int w, int h);
   // Saves Remix's last finished picture as a PPM (development captures).
   bool capture(const std::string& path);
   struct Stats { uint32_t meshes = 0, created = 0, materials = 0, instances = 0, lights = 0; double cpu_ms = 0; };
@@ -27,6 +30,7 @@ class RemixBridge {
 
  private:
   struct Impl;
+  bool capture_output(const std::string& path, int type);
   Impl* impl_ = nullptr;
   bool started_ = false;
   Stats stats_;

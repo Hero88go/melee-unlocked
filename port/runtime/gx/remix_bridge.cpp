@@ -154,6 +154,14 @@ struct RemixBridge::Impl {
   std::vector<uint8_t> rgba;
   IDirect3D9Ex* d3d9 = nullptr;
   IDirect3DDevice9Ex* device = nullptr;
+  // D3D9 mode: a Remix device on Remix's window presents each frame (Remix composites its
+  // screen-space draws, the HUD, over the path-traced picture); else the API's own Present.
+  bool d3d9_mode = false;
+  IDirect3DTexture9* hud_tex = nullptr;
+  int hud_w = 0, hud_h = 0;
+  std::vector<uint8_t> hud;
+  bool hud_new = false;
+  std::string backbuffer_capture;   // D3D9 mode: save the next presented picture here
 };
 
 RemixBridge::RemixBridge() : impl_(new Impl) {}
@@ -162,6 +170,7 @@ RemixBridge::~RemixBridge() {
     for (auto& m : impl_->meshes) impl_->api.DestroyMesh(m.second.handle);
     for (auto& m : impl_->materials) impl_->api.DestroyMaterial(m.second);
     for (auto l : impl_->lights) impl_->api.DestroyLight(l);
+    if (impl_->hud_tex) impl_->hud_tex->Release();
     if (impl_->device) impl_->device->Release();
     if (impl_->d3d9) impl_->d3d9->Release();
     impl_->api.Shutdown();
@@ -196,6 +205,22 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error) 
   if (!m.hwnd) { if (error) *error = "no window for Remix"; return false; }
   if (!hidden) ShowWindow(m.hwnd, SW_SHOWNOACTIVATE);
   m.width = width; m.height = height;
+  // D3D9 mode (MELEE_REMIX_API_PRESENT=1 keeps the API's own presenter): the documented D3D9
+  // interop, a device from the runtime registered with it, presenting on Remix's window.
+  if (!_wgetenv(L"MELEE_REMIX_API_PRESENT") && m.api.dxvk_CreateD3D9 && m.api.dxvk_RegisterD3D9Device &&
+      m.api.dxvk_CreateD3D9(0, &m.d3d9) == REMIXAPI_ERROR_CODE_SUCCESS && m.d3d9) {
+    D3DPRESENT_PARAMETERS pp{};
+    pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD; pp.hDeviceWindow = m.hwnd;
+    pp.BackBufferWidth = (UINT)width; pp.BackBufferHeight = (UINT)height; pp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    pp.EnableAutoDepthStencil = TRUE; pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    HRESULT hr = m.d3d9->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, m.hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED,
+                                        &pp, nullptr, &m.device);
+    const remixapi_ErrorCode reg = SUCCEEDED(hr) ? m.api.dxvk_RegisterD3D9Device(m.device) : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    m.d3d9_mode = SUCCEEDED(hr) && reg == REMIXAPI_ERROR_CODE_SUCCESS;
+    host::log("remix: D3D9 mode %s (device %08X, register %d)", m.d3d9_mode ? "on" : "failed", (unsigned)hr, (int)reg);
+    if (!m.d3d9_mode) { if (error) *error = "Remix D3D9 device failed"; return false; }
+  }
   remixapi_StartupInfo info{};
   info.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
   info.hwnd = m.hwnd;
@@ -203,7 +228,7 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error) 
   info.forceNoVkSwapchain = 0;
   info.editorModeEnabled = 0;
   info.combineGuiInFinalColor = 1;
-  const remixapi_ErrorCode s = m.api.Startup(&info);
+  const remixapi_ErrorCode s = m.d3d9_mode ? REMIXAPI_ERROR_CODE_SUCCESS : m.api.Startup(&info);
   if (s != REMIXAPI_ERROR_CODE_SUCCESS) { if (error) *error = "Remix startup failed (" + std::to_string((int)s) + ")"; return false; }
   // Melee's vertex colours tint surfaces (backdrops, stage pieces); they are not baked lighting to drop.
   if (m.api.SetConfigVariable) {
@@ -214,7 +239,7 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error) 
   // A D3D9 device on the runtime, only for reading the finished picture back (captures).
   // Off by default: Remix 1.6.1 divides by zero after a second swap chain appears. Captures use Remix's
   // own DXVK_DUMP_SCREENSHOT_FRAME instead.
-  if (_wgetenv(L"MELEE_REMIX_D3D9_READBACK") && m.api.dxvk_CreateD3D9 && m.api.dxvk_CreateD3D9(0, &m.d3d9) == REMIXAPI_ERROR_CODE_SUCCESS && m.d3d9) {
+  if (!m.d3d9_mode && _wgetenv(L"MELEE_REMIX_D3D9_READBACK") && m.api.dxvk_CreateD3D9 && m.api.dxvk_CreateD3D9(0, &m.d3d9) == REMIXAPI_ERROR_CODE_SUCCESS && m.d3d9) {
     // Its own small hidden window: a swap chain on Remix's window would take it from Remix's presenter.
     m.readback_hwnd = CreateWindowExW(0, wc.lpszClassName, L"Melee Unlocked: Remix readback", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64,
                                       nullptr, nullptr, wc.hInstance, nullptr);
@@ -586,22 +611,115 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     remixapi_LightHandle h = nullptr;
     if (m.api.CreateLight(&li, &h) == REMIXAPI_ERROR_CODE_SUCCESS) { m.lights.push_back(h); m.api.DrawLightInstance(h); }
   }
-  remixapi_PresentInfo pi{};
-  pi.sType = REMIXAPI_STRUCT_TYPE_PRESENT_INFO;
-  m.api.Present(&pi);
+  if (m.d3d9_mode && m.device) {
+    // The HUD: one screen-space textured quad over the whole picture (Remix treats pre-transformed
+    // draws as UI and composites them after path tracing).
+    IDirect3DDevice9Ex* dev = m.device;
+    dev->BeginScene();
+    if (m.hud_new && m.hud_w > 0 && m.hud_h > 0) {
+      if (m.hud_tex) {
+        D3DSURFACE_DESC desc{};
+        m.hud_tex->GetLevelDesc(0, &desc);
+        if ((int)desc.Width != m.hud_w || (int)desc.Height != m.hud_h) { m.hud_tex->Release(); m.hud_tex = nullptr; }
+      }
+      if (!m.hud_tex) dev->CreateTexture((UINT)m.hud_w, (UINT)m.hud_h, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m.hud_tex, nullptr);
+      D3DLOCKED_RECT lr{};
+      if (m.hud_tex && SUCCEEDED(m.hud_tex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD))) {
+        for (int y = 0; y < m.hud_h; ++y) std::memcpy((uint8_t*)lr.pBits + (size_t)y * lr.Pitch, m.hud.data() + (size_t)y * m.hud_w * 4, (size_t)m.hud_w * 4);
+        m.hud_tex->UnlockRect(0);
+      }
+      m.hud_new = false;
+    }
+    if (m.hud_tex) {
+      struct V { float x, y, z, rhw, u, v; };
+      const float w = (float)m.width, h = (float)m.height;
+      const V quad[4] = {{-0.5f, -0.5f, 0, 1, 0, 0}, {w - 0.5f, -0.5f, 0, 1, 1, 0}, {-0.5f, h - 0.5f, 0, 1, 0, 1}, {w - 0.5f, h - 0.5f, 0, 1, 1, 1}};
+      dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+      dev->SetTexture(0, m.hud_tex);
+      dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+      dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+      dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+      dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+      dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+      dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+      dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+      dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+      dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+      dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+      dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+      dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+      const HRESULT drew = dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V));
+      static int drawn_logged = 0;
+      if (drawn_logged++ < 2) host::log("remix: HUD layer drawn (%08X)", (unsigned)drew);
+    }
+    dev->EndScene();
+    if (!m.backbuffer_capture.empty()) {
+      // What goes to the screen: the back buffer as Remix leaves it before present.
+      IDirect3DSurface9* bb = nullptr;
+      IDirect3DSurface9* sys = nullptr;
+      D3DSURFACE_DESC desc{};
+      bool ok = SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && SUCCEEDED(bb->GetDesc(&desc)) &&
+                SUCCEEDED(dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr)) &&
+                SUCCEEDED(dev->GetRenderTargetData(bb, sys));
+      D3DLOCKED_RECT lr{};
+      if (ok) ok = SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY));
+      if (ok) {
+        std::ofstream out(m.backbuffer_capture, std::ios::binary);
+        out << "P6\n" << desc.Width << " " << desc.Height << "\n255\n";
+        std::vector<uint8_t> row(desc.Width * 3);
+        for (UINT y = 0; y < desc.Height; ++y) {
+          const uint8_t* p = (const uint8_t*)lr.pBits + (size_t)y * lr.Pitch;
+          for (UINT x = 0; x < desc.Width; ++x) { row[x * 3] = p[x * 4 + 2]; row[x * 3 + 1] = p[x * 4 + 1]; row[x * 3 + 2] = p[x * 4]; }
+          out.write((const char*)row.data(), (std::streamsize)row.size());
+        }
+        sys->UnlockRect();
+      }
+      host::log("remix: back buffer %s %s (format %d)", m.backbuffer_capture.c_str(), ok ? "saved" : "failed", (int)desc.Format);
+      if (sys) sys->Release();
+      if (bb) bb->Release();
+      m.backbuffer_capture.clear();
+    }
+    dev->PresentEx(nullptr, nullptr, nullptr, nullptr, 0);
+  } else {
+    remixapi_PresentInfo pi{};
+    pi.sType = REMIXAPI_STRUCT_TYPE_PRESENT_INFO;
+    m.api.Present(&pi);
+  }
   stats_.meshes = (uint32_t)m.meshes.size();
   stats_.materials = (uint32_t)m.materials.size();
   stats_.lights = (uint32_t)m.lights.size();
   stats_.cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+void RemixBridge::set_hud(const uint8_t* bgra, int w, int h) {
+  Impl& m = *impl_;
+  if (!bgra || w <= 0 || h <= 0) return;
+  m.hud.assign(bgra, bgra + (size_t)w * h * 4);
+  m.hud_w = w; m.hud_h = h; m.hud_new = true;
+  static int logged = 0;
+  if (logged < 3) {
+    ++logged;
+    size_t covered = 0;
+    for (size_t i = 3; i < m.hud.size(); i += 4) covered += m.hud[i] > 8;
+    host::log("remix: HUD %dx%d, %zu covered pixels", w, h, covered);
+  }
+}
+
 bool RemixBridge::capture(const std::string& path) {
+  // The final picture, then the UI layer alone beside it (<path>.gui.ppm): Remix's composite of the
+  // HUD happens at present, after both.
+  if (impl_->d3d9_mode) impl_->backbuffer_capture = path + ".bb.ppm";
+  const bool ok = capture_output(path, (int)REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_FINAL_COLOR);
+  capture_output(path + ".gui.ppm", (int)REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_GUI);
+  return ok;
+}
+bool RemixBridge::capture_output(const std::string& path, int type) {
   Impl& m = *impl_;
   if (!started_ || !m.device || !m.api.dxvk_CopyRenderingOutput) return false;
   IDirect3DSurface9* rt = nullptr;
   if (FAILED(m.device->CreateRenderTarget((UINT)m.width, (UINT)m.height, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &rt, nullptr)))
     return false;
-  bool ok = m.api.dxvk_CopyRenderingOutput(rt, REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_FINAL_COLOR) == REMIXAPI_ERROR_CODE_SUCCESS;
+  bool ok = m.api.dxvk_CopyRenderingOutput(rt, (remixapi_dxvk_CopyRenderingOutputType)type) == REMIXAPI_ERROR_CODE_SUCCESS;
   IDirect3DSurface9* sys = nullptr;
   if (ok) ok = SUCCEEDED(m.device->CreateOffscreenPlainSurface((UINT)m.width, (UINT)m.height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr)) &&
                SUCCEEDED(m.device->GetRenderTargetData(rt, sys));
@@ -632,6 +750,8 @@ RemixBridge::~RemixBridge() {}
 bool RemixBridge::start(int, int, bool, std::string* error) { if (error) *error = "Windows only"; return false; }
 void RemixBridge::frame(const Frame&, int, const float*, const std::vector<RtxLightRecord>&) {}
 bool RemixBridge::capture(const std::string&) { return false; }
+bool RemixBridge::capture_output(const std::string&, int) { return false; }
+void RemixBridge::set_hud(const uint8_t*, int, int) {}
 #endif
 
 }  // namespace gx

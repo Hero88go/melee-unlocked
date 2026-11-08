@@ -84,6 +84,8 @@ void arcade_orthographic(const float* p, float d, float m[16]);
 // with the timer, stocks and percentages, player tags, overlays) is shown as rendered.
 void set_main_projection(const DrawCall* scene);
 bool is_scene_draw(const DrawCall& dc);
+// The Remix bridge reads the HUD mask as coverage: non-blended HUD draws mark their pixels fully.
+extern bool g_hud_solid_coverage;
 void fill_vs_constants(const DrawCall& dc, VSConstants& out, int efb_scale, const DrawMatrices* override_matrices = nullptr, const MotionInfo* motion = nullptr);
 void fill_ps_constants(const DrawCall& dc, PSConstants& out, int efb_scale);
 

@@ -694,7 +694,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
   // brightness kept so the stage's light and shade still read.
   o.w("ocol0.rgb = tint.w < 0.0 ? tint.rgb * (0.45 + 0.55 * dot(ocol0.rgb, float3(0.299, 0.587, 0.114)))"
       " : lerp(ocol0.rgb, ocol0.rgb * tint.rgb + tint.rgb * 0.35, tint.w);\n");
-  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\nohud = mvscale.z * saturate(ocol0.a);\n");
+  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\nohud = mvscale.z > 1.5 ? 1.0 : mvscale.z * saturate(ocol0.a);\n");
   if (gbuffer) {
     // The path tracer's G-buffer. Albedo: the same TEV over GX lighting's material colours (the
     // textures were sampled once, above), before fog. Normal: the vertex normal in view space, or
@@ -810,6 +810,7 @@ float true_widescreen_factor() { return g_true_widen.load(std::memory_order_rela
 
 static uint32_t g_main_proj[7];
 static bool g_main_proj_valid = false;
+bool g_hud_solid_coverage = false;
 void set_main_projection(const DrawCall* scene) {
   g_main_proj_valid = scene != nullptr;
   if (scene) std::memcpy(g_main_proj, &scene->xf_regs[0x20], sizeof g_main_proj);
@@ -1049,7 +1050,15 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
   }
   c.efbscale[0] = 1.0f / efb_scale; c.efbscale[1] = 1.0f / efb_scale;
   { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale;
-    c.mvscale[2] = is_scene_draw(dc) ? 0.0f : 1.0f; }   // not the 3D scene (HUD, tags): shown as rendered, not from DLSS
+    c.mvscale[2] = is_scene_draw(dc) ? 0.0f : 1.0f;   // not the 3D scene (HUD, tags): shown as rendered, not from DLSS
+    // Solid HUD coverage (the Remix bridge's HUD layer): a HUD draw that is not alpha-blended covers
+    // its pixels whatever alpha it writes (the P1/P2 letters are drawn with alpha 0).
+    if (g_hud_solid_coverage && c.mvscale[2] > 0.0f && dc.xf_regs[0x26] != 0) {   // 2D (orthographic) HUD only, not backdrops
+      const uint32_t bm = dc.bp.blendmode(), src = (bm >> 8) & 7;
+      if (!((bm >> 3) & 1)) c.mvscale[2] = 0.0f;   // writes no colour (an invisible box): covers nothing
+      else if (!(bm & 1) || (src != 4 && src != 5)) c.mvscale[2] = 2.0f;
+    }
+  }
   c.tint[0] = c.tint[1] = c.tint[2] = 1.0f; c.tint[3] = 0.0f;
   // The model only, as the Gecko code does. Tinting every draw the player owns also caught the
   // shadow and the effects around the fighter, which is the tint appearing where it should not.
