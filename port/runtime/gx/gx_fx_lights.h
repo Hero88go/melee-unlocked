@@ -29,8 +29,14 @@ class FxLightCollector {
   // lights along its longest side.
   bool add(const Frame& f, const DrawCall& d, const float view_to_world[12], std::vector<FxLight>& out, int segments = 1);
 
+  // A stage piece that reads as glowing art without being additive: unlit, a thin strip (much longer
+  // than it is wide) and bright and saturated, or bright white (Battlefield's neon edges, Final
+  // Destination's lines). Added as a row of lights along it; false when it is not one.
+  bool add_glow_strip(const Frame& f, const DrawCall& d, const float view_to_world[12], std::vector<FxLight>& out);
+
  private:
   std::unordered_map<uint64_t, std::array<float, 4>> texel_mean_;   // by texture content hash
+  bool strip_test_ = false;   // add() for add_glow_strip: only long, thin, bright pieces
 };
 
 // Where the match is: the middle of the fighters this camera draws (world space through view_to_world).

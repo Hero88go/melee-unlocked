@@ -3713,11 +3713,14 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
     for (const DrawCall& d : frame.draws) {
       if (d.rtx.camera != rtx_main_camera_) continue;
       const uint32_t bm = d.bp.blendmode();
-      if (!((bm & 1) && ((bm >> 5) & 7) == 1)) continue;   // additive: it adds light to the picture
-      if (opts_.rtx_effect_light && remix_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
-      else if (opts_.rtx_glow_light && d.owner_player == 0xFF && d.xf_regs[0x26] == 0 &&
-               ((d.xf_regs[0x09] & 3) == 0 || ((d.xf_regs[0x0E] >> 1) & 1) == 0))
-        rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_, 4);
+      const bool additive = (bm & 1) && ((bm >> 5) & 7) == 1;   // it adds light to the picture
+      const bool stage_unlit = d.owner_player == 0xFF && d.xf_regs[0x26] == 0 &&
+                               ((d.xf_regs[0x09] & 3) == 0 || ((d.xf_regs[0x0E] >> 1) & 1) == 0);
+      if (additive && opts_.rtx_effect_light && remix_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+      else if (opts_.rtx_glow_light && stage_unlit) {
+        if (additive) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_, 4);
+        else rtx_fx_collector_.add_glow_strip(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+      }
     }
     // Only what can light the match: near the fighters (within half again the camera's distance to
     // them), the nearest and brightest first.
