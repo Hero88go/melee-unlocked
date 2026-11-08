@@ -171,6 +171,7 @@ struct RemixBridge::Impl {
   struct FxLight { float pos[3]; float radius; float rgb[3]; float power; };
   std::vector<FxLight> fx_lights;
   std::unordered_map<uint64_t, std::array<float, 4>> texel_mean;   // a texture's mean texel, decoded once
+  std::unordered_map<uint64_t, uint32_t> baked_mean;   // test logs: each baked material's mean colour
 };
 
 RemixBridge::RemixBridge() : impl_(new Impl) {}
@@ -573,17 +574,35 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         mi.wrapModeU = (uint8_t)(wrap_s == 0 ? 2 : wrap_s == 2 ? 1 : 0);   // GX clamp/repeat/mirror -> clamp/mirror/repeat ids
         mi.wrapModeV = (uint8_t)(wrap_t == 0 ? 2 : wrap_t == 2 ? 1 : 0);
         remixapi_MaterialHandle h = nullptr;
+        {
+          double sum[4] = {0, 0, 0, 0};
+          const size_t n = m.rgba.size() / 4;
+          for (size_t i = 0; i < n; ++i) for (int k = 0; k < 4; ++k) sum[k] += m.rgba[i * 4 + k];
+          if (n) m.baked_mean[mat_key] = ((uint32_t)(sum[0] / n) << 24) | ((uint32_t)(sum[1] / n) << 16) | ((uint32_t)(sum[2] / n) << 8) | (uint32_t)(sum[3] / n);
+        }
         if (m.api.CreateMaterial(&mi, &h) == REMIXAPI_ERROR_CODE_SUCCESS) m.materials[mat_key] = h;
         else m.materials[mat_key] = nullptr;
       }
     }
-    // No texture: the colour source alone, as a constant.
+    // No texture: what the combiner makes of the colour source and its constant and register colours
+    // (Final Destination's magenta and orange lines are a constant colour on an untextured draw), as a
+    // constant. Fighters keep their colour source, as their textures do.
     if (!mat_key) {
-      mat_key = fnv(&tint_q, 4, fnv(&emissive, 4, 0x51ED270B27ull));
+      static const bool no_tev = std::getenv("MELEE_REMIX_NO_TEV") != nullptr;
+      float col[3] = {tint[0], tint[1], tint[2]};
+      if (!no_tev && !fighter) {
+        const float white[4] = {255.0f, 255.0f, 255.0f, 255.0f};
+        const float ras[4] = {tint[0] * 255.0f, tint[1] * 255.0f, tint[2] * 255.0f, 255.0f};
+        float o[4];
+        tev_texel(d, -1, white, ras, o);   // no stage reads a texture here: texture inputs read white
+        for (int k = 0; k < 3; ++k) col[k] = o[k] / 255.0f;
+      }
+      const uint32_t col_q = ((uint32_t)(col[0] * 63.0f + 0.5f) << 12) | ((uint32_t)(col[1] * 63.0f + 0.5f) << 6) | (uint32_t)(col[2] * 63.0f + 0.5f);
+      mat_key = fnv(&col_q, 4, fnv(&emissive, 4, 0x51ED270B27ull));
       if (!m.materials.count(mat_key)) {
         remixapi_MaterialInfoOpaqueEXT op{};
         op.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
-        op.albedoConstant = {tint[0], tint[1], tint[2]};
+        op.albedoConstant = {col[0], col[1], col[2]};
         op.opacityConstant = 1.0f;
         op.roughnessConstant = 0.55f;
         op.alphaTestType = 7;
@@ -592,12 +611,34 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         mi.pNext = &op;
         mi.hash = mat_key;
         mi.emissiveIntensity = emissive;
-        mi.emissiveColorConstant = {tint[0], tint[1], tint[2]};
+        mi.emissiveColorConstant = {col[0], col[1], col[2]};
+        m.baked_mean[mat_key] = ((uint32_t)(col[0] * 255.0f) << 24) | ((uint32_t)(col[1] * 255.0f) << 16) | ((uint32_t)(col[2] * 255.0f) << 8) | 255u;
         remixapi_MaterialHandle h = nullptr;
         m.materials[mat_key] = m.api.CreateMaterial(&mi, &h) == REMIXAPI_ERROR_CODE_SUCCESS ? h : nullptr;
       }
     }
     const remixapi_MaterialHandle material = m.materials[mat_key];
+    // Test runs (MELEE_REMIX_DRAWLOG=<sim frame>): each scene draw Remix gets, with its colour sources
+    // and combiner and the mean of the texture it was baked to.
+    {
+      static const uint64_t draw_log = [] { const char* v = std::getenv("MELEE_REMIX_DRAWLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+      if (draw_log && f.sequence == draw_log) {
+        const auto bm_it = m.baked_mean.find(mat_key);
+        std::string tev;
+        char buf[64];
+        for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) {
+          std::snprintf(buf, sizeof buf, " [%06X %06X k%d/%d t%d]", d.bp.tev_color((int)n) & 0xFFFFFF, d.bp.tev_alpha((int)n) & 0xFFFFFF,
+                        d.bp.ksel_kc((int)n), d.bp.ksel_ka((int)n), d.bp.order_enable((int)n) ? d.bp.order_texmap((int)n) : -1);
+          tev += buf;
+        }
+        host::log("remix draw: #%zu owner %02X unlit %d add %d cut %d emis %.2f chan %08X amb %08X mat %08X vc %d tint %.2f %.2f %.2f "
+                  "tex %ux%u f%u baked %08X c0 %d,%d,%d k0 %d,%d,%d%s",
+                  (size_t)(&d - f.draws.data()), (unsigned)d.owner_player, unlit ? 1 : 0, additive ? 1 : 0, cutout ? 1 : 0, emissive,
+                  d.xf_regs[0x0E], d.xf_regs[0x0A], d.xf_regs[0x0C], (d.components & VB_HAS_COL0) ? 1 : 0, tint[0], tint[1], tint[2],
+                  t.width, t.height, t.format, bm_it != m.baked_mean.end() ? bm_it->second : 0u,
+                  d.tev_colors[1][0], d.tev_colors[1][1], d.tev_colors[1][2], d.tev_kcolors[0][0], d.tev_kcolors[0][1], d.tev_kcolors[0][2], tev.c_str());
+      }
+    }
     uint64_t key = fnv(m.verts.data(), m.verts.size() * sizeof(remixapi_HardcodedVertex));
     key = fnv(m.prim.data(), m.prim.size() * 4, key);
     key = fnv(&mat_key, 8, key);
