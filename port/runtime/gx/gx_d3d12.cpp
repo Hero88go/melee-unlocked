@@ -3086,8 +3086,11 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     if (opts_.rtx_shadows && opts_.rtx_fighter_shadows)
       for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t)
         if (material->tobjs[t].coord == 3 && material->tobjs[t].texmap < 8) shadow_maps |= 1u << material->tobjs[t].texmap;
-    int32_t lanes[4] = {draw_index < frame.draws.size() ? (int32_t)draw_index + 1 : 0, 0,
-                        (int32_t)rtx_layer(dc.bp.blendmode(), dc.bp.zmode()), (int32_t)shadow_maps};
+    // Layer 3: a surface the game also blends (it writes depth with blending on): its see-through
+    // pixels are marked in the id (gx_shader.cpp) and keep the game's picture.
+    const RtxLayer layer = rtx_layer(dc.bp.blendmode(), dc.bp.zmode());
+    const int32_t layer_lane = layer == kRtxLayerSurface && (dc.bp.blendmode() & 1) ? 3 : (int32_t)layer;
+    int32_t lanes[4] = {draw_index < frame.draws.size() ? (int32_t)draw_index + 1 : 0, 0, layer_lane, (int32_t)shadow_maps};
     std::memcpy(&lanes[1], &roughness, sizeof roughness);
     std::memcpy(ccpu + offsetof(PSConstants, flags), lanes, sizeof lanes);
   }
@@ -3671,7 +3674,7 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.reflections = opts_.rtx_reflections;
   in.skin = opts_.rtx_skin;
   in.stage_shade = opts_.rtx_stage_shade;
-  in.glossy_floors = opts_.rtx_glossy_floors;
+  in.glossy_floors = opts_.rtx_glossy_floors && !host::g_stage_file_modded.load(std::memory_order_relaxed);
   in.light_scale = opts_.rtx_brightness / 100.0f;
   in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;
   in.floor_strength = opts_.rtx_floor_strength / 100.0f;

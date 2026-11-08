@@ -35,7 +35,7 @@ SamplerState LinearWrap : register(s0);
 RWTexture2D<float4> Output : register(u0);
 Texture2D<float4> GAlbedo : register(t3);   // the raster pass's G-buffer (gx_shader.cpp, G-buffer variant)
 Texture2D<float4> GNormal : register(t4);   // view normal, linear depth
-Texture2D<uint> GId : register(t5);         // draw index + 1
+Texture2D<uint> GId : register(t5);         // draw index + 1 (top bit: see-through pixel)
 
 cbuffer FrameConstants : register(b0) {
   float4 view_to_world[3];   // rows
@@ -105,7 +105,7 @@ void RayGen() {
     if (mode == 4) g = GAlbedo[px].rgb;
     else if (mode == 5) { const float4 n = GNormal[px]; if (n.w > 0.0) g = n.xyz * 0.5 + 0.5; }
     else if (mode == 7) { const uint id = GId[px]; g = float3((id & 0xFFu) / 255.0, ((id >> 8) & 0xFFu) / 255.0, 0.0); }   // raw draw id
-    else { const uint id = GId[px]; if (id != 0u) g = hash_colour((id - 1u) * 2654435761u + 1u); }
+    else { const uint id = GId[px] & 0x7FFFFFFFu; if (id != 0u) g = hash_colour((id - 1u) * 2654435761u + 1u); }
     Output[px] = float4(g, 1);
     return;
   }

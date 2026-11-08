@@ -38,7 +38,7 @@ StructuredBuffer<uint> DrawRecords : register(t2);        // frame draw index ->
 StructuredBuffer<GeometryRecord> Records : register(t3);
 Texture2D<float4> GAlbedo : register(t4);
 Texture2D<float4> GNormal : register(t5);                 // view normal xyz, linear view depth w
-Texture2D<uint> GId : register(t6);                       // draw index + 1
+Texture2D<uint> GId : register(t6);                       // draw index + 1; the top bit marks a see-through pixel of a blended piece
 Texture2D<float4> Raster : register(t7);                  // the picture as GX drew it
 Texture2D<float4> Overlay : register(t8);                 // what the raster drew over the surface
 Texture2D<float4> Trans : register(t9);                   // and how much of the surface shows through it
@@ -369,7 +369,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const uint2 px = id.xy;
   if (px.x >= size.x || px.y >= size.y) return;
   if (pass_index == 1u) {   // every surface pixel's albedo into its draw's sum
-    const uint g = GId[px];
+    const uint g = GId[px] & 0x7FFFFFFFu;
     const bool valid = g != 0u && g - 1u < kMaxDrawColours && GNormal[px].w > 0.0;
     const uint d = valid ? g - 1u : 0xFFFFFFFFu;
     const uint3 c = valid ? uint3(saturate(srgb_to_linear(GAlbedo[px].rgb)) * 255.0 + 0.5) : uint3(0, 0, 0);
@@ -391,9 +391,12 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
     return;
   }
-  const uint draw = GId[px];
+  const uint gid = GId[px];
+  const uint draw = gid & 0x7FFFFFFFu;
   const float4 nd = GNormal[px];
-  if (draw == 0u || nd.w <= 0.0) {
+  // No surface, or a see-through pixel of a piece the game blends over what is behind it (a stage
+  // mod's spotlight cones, glass): the picture as the game drew it there.
+  if (draw == 0u || nd.w <= 0.0 || (gid & 0x80000000u) != 0u) {
     Output[px] = float4(srgb_to_linear(Raster[px].rgb), 1);
     write_guides(px, 1.0, 0.0, float3(0, 0, 1), 1.0);   // a valid normal (facing the camera) for Ray Reconstruction
     return;

@@ -1398,6 +1398,7 @@ std::atomic<int> g_game_language{0};
 std::atomic<bool> g_cpu_20xx{false};   // "20XX CPUs", see hackpack_ai.cpp
 std::atomic<bool> g_freeze_fd{false};   // "Freeze Final Destination", see apply_freeze_final_destination
 std::atomic<bool> g_hide_ko_explosions{false};   // "Hide KO explosions", see apply_ko_explosions
+std::atomic<bool> g_stage_file_modded{false};
 std::atomic<bool> g_hide_hud_emblems{false};   // "Hide emblems behind percents", see apply_hud_emblems
 std::atomic<uint32_t> g_community_codes{0};       // "Community codes", MU_DISPLAY_OPTION_CODES_ALL bits
 int game_language_override() {

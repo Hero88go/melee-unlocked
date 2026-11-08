@@ -2423,8 +2423,28 @@ bool jukebox_disc_read(uint32_t offset, void* dst, uint32_t size) {
     ok = host::disc_read(offset, dst, size);
   return ok;
 }
+// Disc offsets where a stage file starts, and whether a mod replaced that file. A read starting there is
+// the game loading that stage (host::g_stage_file_modded).
+std::unordered_map<uint32_t, bool> g_stage_file_starts;
+bool g_stage_file_starts_built = false;
+void note_stage_file_read(uint32_t offset) {
+  if (!g_stage_file_starts_built) {
+    g_stage_file_starts_built = true;
+    std::unordered_set<std::string> modded;
+    for (const auto& file : g_mod_overlay.files()) modded.insert(file.path);
+    for (const auto& [path, entry] : g_paths) {
+      if (entry <= 0 || (size_t)entry >= g_fst.size() || g_fst[(size_t)entry].dir) continue;
+      const bool stage = path.rfind("/gr", 0) == 0 && path.find('/', 1) == std::string::npos && path.size() > 7 &&
+                         (path.compare(path.size() - 4, 4, ".dat") == 0 || path.compare(path.size() - 4, 4, ".usd") == 0);
+      if (stage) g_stage_file_starts[g_fst[(size_t)entry].offset] = modded.count(path) != 0;
+    }
+  }
+  const auto it = g_stage_file_starts.find(offset);
+  if (it != g_stage_file_starts.end()) host::g_stage_file_modded.store(it->second, std::memory_order_relaxed);
+}
 void h_disc_read(uint32_t offset, void* dst, uint32_t size, MuDiscDone done, void* user) {
   bool ok = false;
+  note_stage_file_read(offset);
   const auto began = std::chrono::steady_clock::now();
   if (!read_cosmetic(offset, dst, size, &ok) && !read_system_file(offset, dst, size, &ok) &&
       !read_overlay(offset, dst, size, &ok))

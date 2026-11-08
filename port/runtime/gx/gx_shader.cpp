@@ -719,12 +719,15 @@ std::string generate_pixel_shader(const PSUid& uid) {
         "if (rtx_derived) rtx_n = cross(ddx(rtxViewPos), ddy(rtxViewPos));\n"
         "rtx_n = dot(rtx_n, rtx_n) > 1e-20 ? normalize(rtx_n) : float3(0.0, 0.0, 1.0);\n"
         "if (rtx_derived && dot(rtx_n, rtxViewPos) > 0.0) rtx_n = -rtx_n;\n"
-        "onormal = float4(rtx_n, -rtxViewPos.z);\noid = uint(flags.x);\n");
+        "onormal = float4(rtx_n, -rtxViewPos.z);\noid = uint(flags.x);\n"
+        // A blended piece that also writes depth (flags.z 3) is the surface where it is opaque; where
+        // the game lets what is behind show through, the pixel is marked and stays as the game drew it.
+        "if (flags.z == 3 && ocol0.a < 0.98) oid |= 0x80000000u;\n");
     // The overlay over the G-buffer's surface (flags.z, the renderer's RtxLayer): the surface itself
     // clears it (overlay 0, transmittance 1); a blended draw gives its colour to both targets, whose
     // blend states compose it (gx_d3d12.cpp); any other draw replaces the pixel (overlay its colour,
     // transmittance 0).
-    o.w("if (flags.z == 0) { oover = float4(0.0, 0.0, 0.0, 0.0); otrans = float4(1.0, 1.0, 1.0, 1.0); }\n"
+    o.w("if (flags.z == 0 || flags.z == 3) { oover = float4(0.0, 0.0, 0.0, 0.0); otrans = float4(1.0, 1.0, 1.0, 1.0); }\n"
         "else if (flags.z == 1) { oover = ocol0; otrans = ocol0; }\n"
         "else { oover = ocol0; otrans = float4(0.0, 0.0, 0.0, 0.0); }\n");
   }

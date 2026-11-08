@@ -357,6 +357,10 @@ extern std::atomic<bool> g_hide_ko_explosions;
 // "Hide emblems behind percents" (Video tab, both engines): the emblem behind each damage percent is
 // not drawn. Source Port: MU_DISPLAY_OPTION_NO_HUD_EMBLEMS; Static Recomp: apply_hud_emblems().
 extern std::atomic<bool> g_hide_hud_emblems;
+// The stage file the game loaded last came from a mod (Source Port: set on the disc read that starts
+// a stage file). Path tracing's polished-floor look is tuned on the original stages; a mod's floors
+// are kept as drawn.
+extern std::atomic<bool> g_stage_file_modded;
 // "Community codes" (HUD tab): the native versions of players' favourite Gecko codes, as the
 // MU_DISPLAY_OPTION_* bits in MU_DISPLAY_OPTION_CODES_ALL. Source Port only; picture and sound only.
 extern std::atomic<uint32_t> g_community_codes;
