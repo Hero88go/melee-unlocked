@@ -37,8 +37,11 @@ struct FrameConstants {        // cbuffer Frame in rtx_direct.hlsl
   uint32_t switches;          // 1 shadows, 2 ambient occlusion, 4 fighters' shadows on baked stages
   uint32_t still_frames;      // photo mode
   float reflection_strength, floor_strength, shadow_strength, bounce_strength;
+  uint32_t fx_light_first, fx_light_count;   // bright effects as lights (rtx_direct.hlsl fx_light)
+  float fx_light_strength;
+  uint32_t frame_pad;
 };
-static_assert(sizeof(FrameConstants) == 192, "Frame layout");
+static_assert(sizeof(FrameConstants) == 208, "Frame layout");
 
 constexpr DXGI_FORMAT kOutputFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr D3D12_RESOURCE_STATES kShaderRead =
@@ -241,9 +244,12 @@ class MeleeIntegrator final : public RtxIntegrator {
     k.floor_strength = in.floor_strength;
     k.shadow_strength = in.shadow_strength;
     k.bounce_strength = in.bounce_strength;
+    k.fx_light_first = in.fx_light_first;
+    k.fx_light_count = in.fx_light_count;
+    k.fx_light_strength = in.fx_light_strength;
     k.switches = (in.shadows ? 1u : 0u) | (in.ambient_occlusion ? 2u : 0u) | (in.fighter_shadows ? 4u : 0u) |
                  (in.bounce ? 8u : 0u) | (in.reflections ? 16u : 0u) | (in.skin ? 32u : 0u) |
-                 (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u);
+                 (in.stage_shade ? 64u : 0u) | (in.glossy_floors ? 128u : 0u) | (in.modded_stage ? 256u : 0u);
     // Test runs only (MELEE_TEST_RTX_ALBEDO=1): the G-buffer albedo as the picture.
     static const bool show_albedo = host::test_env::getenv("MELEE_TEST_RTX_ALBEDO") != nullptr;
     if (show_albedo) k.switches |= 1u << 30;

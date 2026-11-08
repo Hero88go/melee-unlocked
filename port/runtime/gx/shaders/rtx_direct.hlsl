@@ -71,12 +71,48 @@ cbuffer Frame : register(b0) {
   float floor_strength;
   float shadow_strength;
   float bounce_strength;
+  uint fx_light_first;       // bright effects as small lights: Lights[fx_light_first .. + fx_light_count)
+  uint fx_light_count;
+  float fx_light_strength;   // Video > Ray tracing > Effects light the stage (0 off)
+  uint frame_pad;
 };
 static const uint kShadows = 1u, kAmbientOcclusion = 2u, kFighterShadows = 4u, kBounce = 8u, kReflections = 16u, kSkin = 32u,
-                  kStageShade = 64u, kGlossyFloors = 128u;
+                  kStageShade = 64u, kGlossyFloors = 128u, kModdedStage = 256u;
 
 static const float kPi = 3.14159265;
 static const uint kNone = 0xFFFFFFFFu;
+
+// The light of this frame's bright effects (fire, sparks, flashes: the renderer's FxLightCollector) on
+// a surface, unshadowed: each a small sphere whose light falls off over about its own size.
+float3 fx_light(float3 p, float3 n) {
+  float3 sum = 0;
+  for (uint j = fx_light_first; j < fx_light_first + fx_light_count; ++j) {
+    const Light l = Lights[j];
+    const float3 d = l.position - p;
+    const float dist2 = dot(d, d);
+    const float reach = max(l.radius * 4.0, 2.0);
+    sum += l.radiance * saturate(dot(n, d * rsqrt(max(dist2, 1e-6)))) * (reach * reach / (reach * reach + dist2));
+  }
+  return sum * fx_light_strength;
+}
+
+// The same effects seen in a glossy surface (a polished floor, a shiny fighter): where the mirror
+// direction meets a light's sphere (widened by the surface's roughness), that light's colour. The
+// effects are not in the traced scene, so the floor's own traced reflection cannot show them.
+float3 fx_mirror(float3 p, float3 n, float3 v, float roughness) {
+  const float3 r = reflect(-v, n);
+  float3 sum = 0;
+  for (uint j = fx_light_first; j < fx_light_first + fx_light_count; ++j) {
+    const Light l = Lights[j];
+    const float3 d = l.position - p;
+    const float dist = max(length(d), 1e-3);
+    const float half_angle = atan(max(l.radius, 0.5) / dist) + roughness * 0.6;
+    const float cos_half = cos(min(half_angle, 1.5));
+    const float t = saturate((dot(r, d / dist) - cos_half) / max(1.0 - cos_half, 1e-4));
+    sum += l.radiance * t * t;
+  }
+  return sum * fx_light_strength * 2.0;
+}
 
 uint hash32(uint x) {
   x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
@@ -424,6 +460,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float3 n_gx = normalize(to_world_direction(nd.xyz));
   const float3 n = dot(n_gx, v) < 0.0 ? -n_gx : n_gx;
   const float3 albedo = srgb_to_linear(GAlbedo[px].rgb);
+  const float3 fx = fx_light_count != 0u ? albedo * fx_light(p, n) : 0;   // effects lighting the surface
   const bool shadows = (switches & kShadows) != 0u;
   uint rng = hash32(px.x + px.y * 4099u + frame_index * 0x9e3779b9u);
   const float3 origin = p + n * (0.02 + nd.w * 0.0004);   // off the surface, more so far away
@@ -476,7 +513,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     // cel-shaded fighter mods): it keeps it. Shadow and occlusion rays from its surface would hit the
     // fighter itself and darken all of it.
     if (fighter_draw) {
-      emit(px, baked, albedo);
+      emit(px, baked + fx, albedo);
       return;
     }
     // Stage shadows and contact shade: the stage's own geometry casts the sun's shadow too, and a
@@ -507,19 +544,24 @@ void main(uint3 id : SV_DispatchThreadID) {
       const Hit h = trace_surface(origin, dir, 1.0e5);
       baked += 0.5 * reflection_strength * specular_albedo(f0, saturate(dot(n, v)), roughness) *
                hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng);
+      if (fx_light_count != 0u) baked += 0.5 * specular_albedo(f0, saturate(dot(n, v)), roughness) * fx_mirror(p, n, v, roughness);
     }
     if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && n.y > 0.85 && nd.w < 800.0) {
       // Glossy stage floors on painted ground: only dark, grey floors are polished (Final
       // Destination's stone, metal decks). Grass, felt and paper (Yoshi's Story, Dream Land) stay
       // matte, or the mirror shows the cut-outs and trees through the ground.
       // The game made it shiny (an environment map: FoD's water, metal decks): polished at any colour.
-      const float3 fresnel = floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : polished_floor(albedo));
+      // A stage mod: only floors its own material makes shiny. Its dark, grey ground is not taken for
+      // polished stone (a mod's matte floors turned into mirrors).
+      const float guess = (switches & kModdedStage) != 0u ? 0.0 : polished_floor(albedo);
+      const float3 fresnel = floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : guess);
       if (fresnel.x > 0.0) {
         baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng);
+        if (fx_light_count != 0u) baked += fresnel * fx_mirror(p, n, v, kFloorRoughness);
         write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
       }
     }
-    emit(px, baked, albedo);
+    emit(px, baked + fx, albedo);
     return;
   }
 
@@ -649,11 +691,15 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
   }
   float3 shaded = lerp(faithful, pbr, look) + reflection + gx_extra;
+  if (fx_light_count != 0u && roughness <= 0.6)
+    shaded += specular_albedo(f0, saturate(dot(n, v)), roughness) * fx_mirror(p, n, v, roughness);
   if (shadows && (switches & kFighterShadows) != 0u && !fighter) shaded *= fighter_shadow(origin, n, sun_dir, look, rng);
-  if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0) {
+  if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0 &&
+      ((switches & kModdedStage) == 0u || roughness <= 0.3)) {
     const float3 fresnel = floor_fresnel(n, v);
     shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng);
+    if (fx_light_count != 0u) shaded += fresnel * fx_mirror(p, n, v, kFloorRoughness);
     write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
   }
-  emit(px, shaded * light_scale, albedo);
+  emit(px, (shaded + fx) * light_scale, albedo);
 }

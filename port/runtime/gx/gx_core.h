@@ -440,6 +440,20 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
   return e.level >= 3 && dc.owner_player == kEffectOwner;
 }
 
+// One of the scene's effects: a particle, one of the game's effect objects, or an item or model effect
+// (a projectile's glow, the shield bubble) that blends or does not write depth. The path tracer makes
+// the bright ones light the scene (gx_fx_lights.h).
+inline bool scene_effect_draw(const DrawCall& dc) {
+  if (dc.xf_regs[0x26] != 0) return false;   // orthographic: the HUD's
+  const bool particle = dc.rtx.pass == 1;   // MU_RTX_PASS_PARTICLES (abi/mu_rtx_tokens.h)
+  const bool effect_owner = dc.owner_player == kEffectOwner || dc.owner_player == kModelEffectOwner ||
+                            dc.owner_player == kGameplayOwner;
+  if (!particle && !effect_owner) return false;
+  const uint32_t zm = dc.bp.zmode();
+  const bool writes_depth = (zm & 1) && ((zm >> 4) & 1);
+  return (dc.bp.blendmode() & 1) || !writes_depth;
+}
+
 // "Lightweight" (RenderOptions::lightweight, 0 to 5): one ladder of display-only savings for weak
 // PCs, each level including the ones below it. 1 low poly fighters, 2 no stage backgrounds, 3 flat
 // shading (no textures, Visual effects at Minimal), 4 the lowest image settings, 5 wireframe.

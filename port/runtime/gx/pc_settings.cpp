@@ -2179,6 +2179,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rtxreflections") options.rtx_reflections = value == "1";
       else if (key == "rtxskin") options.rtx_skin = value == "1";
       else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
+      else if (key == "rtxmoddedstages") options.rtx_modded_stages = value == "1";
+      else if (key == "rtxeffectlight") options.rtx_effect_light = value == "1";
       else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
       else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
       else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
@@ -4302,7 +4304,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nrtxao " << (options.rtx_ao ? 1 : 0) << "\nrtxfightershadows " << (options.rtx_fighter_shadows ? 1 : 0)
        << "\nrtxintegrator " << options.rtx_integrator
        << "\nrtxbounce " << (options.rtx_bounce ? 1 : 0) << "\nrtxreflections " << (options.rtx_reflections ? 1 : 0)
-       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0)
+       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0) << "\nrtxmoddedstages " << (options.rtx_modded_stages ? 1 : 0) << "\nrtxeffectlight " << (options.rtx_effect_light ? 1 : 0)
        << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0) << "\nrtxbrightness " << options.rtx_brightness
        << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
        << "\nrtxpreset " << options.rtx_preset << "\nrtxreflstrength " << options.rtx_reflection_strength
@@ -6973,6 +6975,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
                           "trees cast the sun's shadows, and corners and contacts get soft shade.");
+      if (settings_toggle("Path tracing on stage mods", &options.rtx_modded_stages)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On a stage whose files come from a mod: path traced like the game's own stages, or\n"
+                          "off to show the mod exactly as its maker drew it.");
+      if (settings_toggle("Effects light the stage", &options.rtx_effect_light)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fire, sparks, shines and flashes cast their own light on the stage and the fighters\n"
+                          "near them, in their own colour.");
       if (rtx_nvidia_integrator_available()) {
         const char* integrators[] = {"Melee Unlocked", "NVIDIA RTXDI (this PC only)"};
         if (settings_combo("Lighting", &options.rtx_integrator, integrators, 2)) changed = true;

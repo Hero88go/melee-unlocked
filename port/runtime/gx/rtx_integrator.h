@@ -78,6 +78,10 @@ struct RtxFrameInputs {
   bool bounce = true, reflections = true;         // bounce light (one diffuse bounce), traced reflections
   bool skin = true;                               // soft skin: subsurface approximation on fighters
   bool stage_shade = true;                        // baked stages: their own sun shadows and contact shade
+  bool modded_stage = false;                      // the stage's files come from a mod: no polished-floor guess
+  // Bright effects as small lights after the light sets: lights[fx_light_first .. + fx_light_count).
+  uint32_t fx_light_first = 0, fx_light_count = 0;
+  float fx_light_strength = 0.0f;                 // Effects light the stage (0 off)
   bool glossy_floors = true;                      // the stage's floors reflect the scene
   // Strengths (Video > Ray tracing, 1 = the Remastered look): traced reflections, glossy floors,
   // how deep shadows go, how much bounce light adds.

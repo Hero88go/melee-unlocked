@@ -17,6 +17,7 @@ enum RtxLightType : uint32_t {
   kRtxLightDirectional = 1,   // LOBJ_INFINITE: the sun of the stage
   kRtxLightPoint = 2,         // LOBJ_POINT
   kRtxLightSpot = 3,          // LOBJ_SPOT
+  kRtxLightEffect = 4,        // a bright effect this frame (gx_fx_lights.h), after the light sets
 };
 
 // One light, 64 bytes, as a StructuredBuffer element.

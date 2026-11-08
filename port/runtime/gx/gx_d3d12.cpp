@@ -51,6 +51,7 @@
 #include "gx_dxr_path_tracer.h"
 #include "rtx_scene.h"
 #include "rtx_lights.h"
+#include "gx_fx_lights.h"
 #include "rtx_integrator.h"
 #include "rtx_tracer.h"
 #include "rtx_semantics.h"
@@ -818,6 +819,10 @@ class D3D12Backend : public Backend {
   // scene draw the raster issues is handed to it, and present_efb builds the structures from them.
   RtxScene rtx_scene_;
   uint64_t rtx_hull_draws_ = 0;   // inverted-hull outline draws kept out of the ray-traced scene
+  // Bright effects as lights (gx_fx_lights.h): this present's, after the light sets in rtx_lights_.
+  FxLightCollector rtx_fx_collector_;
+  std::vector<FxLight> rtx_fx_lights_;
+  uint32_t rtx_fx_first_ = 0, rtx_fx_count_ = 0;
   RtxTracer rtx_tracer_;
   // The lighting (rtx_integrator.h): the Melee integrator and, in a local build that has it, the
   // module made from NVIDIA's SDKs. Settings pick one per present (RenderOptions::rtx_integrator).
@@ -3144,6 +3149,8 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
 bool D3D12Backend::rtx_wanted() const {
   // Video > Ray tracing > Path tracing; MELEE_RTX=1 forces it for test runs.
   static const bool env = [] { const char* v = std::getenv("MELEE_RTX"); return v && v[0] == '1'; }();
+  // Path tracing on stage mods off: a modded stage shows as its maker drew it.
+  if (!opts_.rtx_modded_stages && host::g_stage_file_modded.load(std::memory_order_relaxed) && !env) return false;
   return (env || opts_.path_tracing) && rtx_scene_.ready() && rtx_integrator_;
 }
 
@@ -3240,6 +3247,40 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
   }
   for (const DrawCall& d : frame.draws)
     if (d.rtx.camera == rtx_main_camera_) add_set(d.rtx.light_set);
+  // Bright effects (additive particles, sparks, flashes) as small lights after the sets, the nearest
+  // and brightest few (Video > Ray tracing > Effects light the stage).
+  rtx_fx_first_ = (uint32_t)rtx_lights_.size();
+  rtx_fx_count_ = 0;
+  if (opts_.rtx_effect_light) {
+    rtx_fx_lights_.clear();
+    for (const DrawCall& d : frame.draws) {
+      if (d.rtx.camera != rtx_main_camera_) continue;
+      const uint32_t bm = d.bp.blendmode();
+      if (!((bm & 1) && ((bm >> 5) & 7) == 1)) continue;   // additive: it adds light to the picture
+      if (scene_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+    }
+    // Only what can light the match: near the fighters (within half again the camera's distance to
+    // them), the nearest and brightest first.
+    float focus[3];
+    if (fx_focus(frame, rtx_main_camera_, rtx_view_to_world_, focus)) {
+      const float cx = rtx_view_to_world_[3] - focus[0], cy = rtx_view_to_world_[7] - focus[1], cz = rtx_view_to_world_[11] - focus[2];
+      fx_keep_near(rtx_fx_lights_, focus, std::max(150.0f, 1.5f * std::sqrt(cx * cx + cy * cy + cz * cz)), 16);
+    } else {
+      rtx_fx_lights_.clear();
+    }
+    for (const FxLight& f : rtx_fx_lights_) {
+      if (rtx_fx_count_ >= 16 || rtx_lights_.size() >= kMaxTableLights || f.power <= 0.01f) break;
+      RtxLightRecord r{};
+      std::memcpy(r.position, f.pos, sizeof r.position);
+      r.type = kRtxLightEffect;
+      r.cos_cutoff = -1.0f;
+      std::memcpy(r.radiance, f.rgb, sizeof r.radiance);
+      r.radius = f.radius;
+      r.flags = 0xFF000000u;
+      rtx_lights_.push_back(r);
+      ++rtx_fx_count_;
+    }
+  }
   rtx_gx_light_ranges_.clear();   // lit draws add the GX lights they use (rtx_record_draw)
   if (!rtx_lights_logged_ && !rtx_lights_.empty()) {
     rtx_lights_logged_ = true;
@@ -3674,7 +3715,12 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.reflections = opts_.rtx_reflections;
   in.skin = opts_.rtx_skin;
   in.stage_shade = opts_.rtx_stage_shade;
-  in.glossy_floors = opts_.rtx_glossy_floors && !host::g_stage_file_modded.load(std::memory_order_relaxed);
+  in.fx_light_first = std::min(rtx_fx_first_, (uint32_t)light_count);
+  in.fx_light_count = std::min(rtx_fx_count_, (uint32_t)light_count - in.fx_light_first);
+  static const float fx_strength = [] { const char* v = host::test_env::getenv("MELEE_RTX_FX_LIGHT"); return v ? (float)std::atof(v) : 1.5f; }();
+  in.fx_light_strength = opts_.rtx_effect_light ? fx_strength : 0.0f;
+  in.glossy_floors = opts_.rtx_glossy_floors;
+  in.modded_stage = host::g_stage_file_modded.load(std::memory_order_relaxed);
   in.light_scale = opts_.rtx_brightness / 100.0f;
   in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;
   in.floor_strength = opts_.rtx_floor_strength / 100.0f;
