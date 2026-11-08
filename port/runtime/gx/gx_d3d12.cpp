@@ -5409,17 +5409,19 @@ bool d3d12_usable() {
   for (UINT i = 0; enum_adapter_fastest_first(factory.Get(), i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc;
     if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
-    if (desc.VendorId == 0x10DE && dxgi_test_fault() < 2) return true;
-    const HRESULT device = guarded_device_check(adapter.Get());
     // An Intel GPU whose highest level is Direct3D 11 (HD 4600 and others of its age) runs Direct3D 12
     // through an old driver path that loses the device in a match (0.8.98 and 0.9.106 reports). It
     // starts on Direct3D 11, which draws the same picture there, instead of crashing once first.
     // MELEE_TEST_OLD_INTEL=1 (tests only) treats the first adapter as one.
     const char* old_intel_test = host::test_env::getenv("MELEE_TEST_OLD_INTEL");
-    const bool old_intel = SUCCEEDED(device) &&
-        ((old_intel_test && std::atoi(old_intel_test) == 1) ||
-         (desc.VendorId == 0x8086 && FAILED(guarded_device_check(adapter.Get(), D3D_FEATURE_LEVEL_12_0))));
-    if (old_intel) {
+    if (old_intel_test && std::atoi(old_intel_test) == 1) {
+      host::log("d3d12: this Intel GPU's highest level is Direct3D 11; starting on Direct3D 11 (test)");
+      return false;
+    }
+    if (desc.VendorId == 0x10DE && dxgi_test_fault() < 2) return true;
+    const HRESULT device = guarded_device_check(adapter.Get());
+    if (SUCCEEDED(device) && desc.VendorId == 0x8086 &&
+        FAILED(guarded_device_check(adapter.Get(), D3D_FEATURE_LEVEL_12_0))) {
       host::log("d3d12: this Intel GPU's highest level is Direct3D 11; starting on Direct3D 11");
       return false;
     }

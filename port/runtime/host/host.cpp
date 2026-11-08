@@ -1552,15 +1552,15 @@ void install_low_poly_fighters() {
 }
 // A costume from a look or a skin (Diet Melee 64's in a 0.9.106 report) can lack a texture animation
 // that the fighter's data lists for its costume textures (the eyes): the game stopped with "can't
-// find fighter texture anim!" (OSPanic at ftanim.c:1236). ftAnim_80070200 runs here instead, as the
-// Source Port's does: the list of animated costume textures ends at the first one without an
-// animation, and those textures stay still. Display only; with retail files it does what the game
-// does (the list, then each animation's rate set to 0). Offsets are the console's: Fighter +0x619
-// costume, CostumeTObjList {count, texture ids, 5 TObjs}, HSD_TObj +0x64 aobj, HSD_AObj +0x10 rate.
-static void costume_texture_anims(ppc::Context& c, uint8_t* m) {
+// find fighter texture anim!" (OSPanic at ftanim.c:1236). That setup is ftAnim_80070200, which the
+// game's own compiler also built into ftAnim_80070308 (the fighter's animation setup at every load),
+// so both run here instead, as the Source Port's does: the list of animated costume textures ends at
+// the first one without an animation, and those textures stay still. Display only; with retail files
+// it does what the game does. Offsets are the console's: Fighter +0x4 kind, +0x10C ft_data, +0x5CC
+// CostumeTObjList {count, texture ids, 5 TObjs}, +0x5EC DObjList, +0x619 costume; ftData +0x8 -> +0x8
+// {count, per-costume id lists}; HSD_TObj +0x64 aobj; HSD_AObj +0x10 rate.
+static void costume_texture_list(ppc::Context& c, uint8_t* m, uint32_t fp, uint32_t data, uint32_t list, uint32_t dobjs) {
   constexpr uint32_t kCostumeTObj = 0x80075240u;   // ftParts_80075240(DObjList*, int): the n-th TObj
-  const uint32_t fp = c.r[3], data = c.r[4], list = c.r[5], dobjs = c.r[6];
-  const uint32_t return_lr = c.lr, saved_r1 = c.r[1];
   static bool told_missing = false, told_over = false;
   uint32_t count = rd32(data);
   if (count > 5) {   // the game's own "fighter tobj num over!" (ftanim.c:1228): the list holds five
@@ -1572,9 +1572,6 @@ static void costume_texture_anims(ppc::Context& c, uint8_t* m) {
   if (ids == 0) ids = rd32(table);
   wr32(list, count);
   wr32(list + 4, ids);
-  // A frame of its own below the caller's, back-chained, for the calls (as call_guest does).
-  c.r[1] = (saved_r1 - 0x40u) & ~7u;
-  wr32(c.r[1], saved_r1);
   for (uint32_t i = 0; i < count; ++i) {
     c.r[3] = dobjs;
     c.r[4] = rd16(ids + 2 * i);
@@ -1590,12 +1587,89 @@ static void costume_texture_anims(ppc::Context& c, uint8_t* m) {
     }
     wr32(aobj + 0x10, 0);   // HSD_AObjSetRate(aobj, 0.0F)
   }
+}
+// The host functions below make a frame of their own below the caller's, back-chained, for the
+// calls they make (as call_guest does), and give back r1 and LR as the guest function would.
+static void costume_texture_anims(ppc::Context& c, uint8_t* m) {   // ftAnim_80070200(fp, data, list, dobjs)
+  const uint32_t fp = c.r[3], data = c.r[4], list = c.r[5], dobjs = c.r[6];
+  const uint32_t return_lr = c.lr, saved_r1 = c.r[1];
+  c.r[1] = (saved_r1 - 0x40u) & ~7u;
+  wr32(c.r[1], saved_r1);
+  costume_texture_list(c, m, fp, data, list, dobjs);
+  c.r[1] = saved_r1;
+  c.lr = return_lr;
+}
+static void fighter_anim_setup(ppc::Context& c, uint8_t* m) {   // ftAnim_80070308(gobj)
+  constexpr uint32_t kCostumeLists = 0x803C0EC0u;   // CostumeListsForeachCharacter: {costume list, count} per kind
+  constexpr uint32_t kJObjAddAnimAll = 0x8036FB5Cu, kJObjReqAnimAll = 0x8036F8BCu;
+  const uint32_t gobj = c.r[3];
+  const uint32_t return_lr = c.lr, saved_r1 = c.r[1];
+  const uint32_t fp = rd32(gobj + 0x2C), jobj = rd32(gobj + 0x28);
+  c.r[1] = (saved_r1 - 0x40u) & ~7u;
+  wr32(c.r[1], saved_r1);
+  // HSD_JObjAddAnimAll(jobj, NULL, the costume's material animation joint, NULL)
+  const uint32_t costume = rd32(kCostumeLists + 8u * rd32(fp + 4)) + 24u * rd8(fp + 0x619);
+  c.r[3] = jobj; c.r[4] = 0; c.r[5] = rd32(costume + 4); c.r[6] = 0;
+  c.lr = 0;
+  ppc::call(c, m, kJObjAddAnimAll);
+  // HSD_JObjReqAnimAll(jobj, the game's 0.0F constant)
+  c.r[3] = jobj;
+  c.f[1].ps0 = c.f[1].ps1 = ppc::float_bits_to_double(rd32(c.r[2] - 30532u));
+  c.lr = 0;
+  ppc::call(c, m, kJObjReqAnimAll);
+  costume_texture_list(c, m, fp, rd32(rd32(fp + 0x10C) + 8) + 8, fp + 0x5CC, fp + 0x5EC);
+  c.r[1] = saved_r1;
+  c.lr = return_lr;
+}
+// Then the game animates those textures by index (ftAnim_80070458, and the same built into
+// ftAnim_800704F0): an index past the shortened list stopped it with "texture no exist!"
+// (ftanim.c:1264). As in the Source Port, that texture stays still and the rest runs as before.
+static void costume_tobj_anim(ppc::Context& c, uint8_t* m, uint32_t tobj, const ppc::FPR& frame) {
+  c.r[3] = rd32(tobj + 0x64);   // HSD_AObjReqAnim(tobj->aobj, frame)
+  c.f[1] = frame;
+  c.lr = 0;
+  ppc::call(c, m, 0x8036410Cu);
+  c.r[3] = tobj;                // HSD_TObjAnim(tobj)
+  c.lr = 0;
+  ppc::call(c, m, 0x8035EB6Cu);
+}
+static void costume_texture_frame(ppc::Context& c, uint8_t* m) {   // ftAnim_80070458(fp, list, index, frame)
+  const uint32_t list = c.r[4], index = c.r[5];
+  const ppc::FPR frame = c.f[1];
+  const uint32_t return_lr = c.lr, saved_r1 = c.r[1];
+  if (index < rd32(list)) {
+    c.r[1] = (saved_r1 - 0x40u) & ~7u;
+    wr32(c.r[1], saved_r1);
+    costume_tobj_anim(c, m, rd32(list + 8 + 4 * index), frame);
+    c.r[1] = saved_r1;
+  }
+  c.lr = return_lr;
+}
+static void fighter_texture_frame(ppc::Context& c, uint8_t* m) {   // ftAnim_800704F0(gobj, index, frame)
+  constexpr uint32_t kTextureCallbacks = 0x803C2258u;   // ftData_UnkCallbackPairs0: {x0, x4} per kind
+  const uint32_t gobj = c.r[3], index = c.r[4];
+  const ppc::FPR frame = c.f[1];
+  const uint32_t return_lr = c.lr, saved_r1 = c.r[1];
+  const uint32_t fp = rd32(gobj + 0x2C);
+  c.r[1] = (saved_r1 - 0x40u) & ~7u;
+  wr32(c.r[1], saved_r1);
+  if (index < rd32(fp + 0x5CC)) costume_tobj_anim(c, m, rd32(fp + 0x5D4 + 4 * index), frame);
+  const uint32_t callback = rd32(kTextureCallbacks + 8u * rd32(fp + 4) + 4);
+  if (callback != 0) {
+    c.r[3] = gobj; c.r[4] = index; c.f[1] = frame;
+    c.lr = 0;
+    ppc::call(c, m, callback);
+  }
+  wr8(fp + 0x221E, (uint8_t)(rd8(fp + 0x221E) | 1));   // fp->x221E_b7 = true
   c.r[1] = saved_r1;
   c.lr = return_lr;
 }
 void install_costume_texture_anims() {
-  if (!ppc::redirect_to_host(0x80070200u, costume_texture_anims))
-    log("fighters: the costume texture setup keeps the game's own code");
+  const bool list = ppc::redirect_to_host(0x80070200u, costume_texture_anims);
+  const bool setup = ppc::redirect_to_host(0x80070308u, fighter_anim_setup);
+  const bool frame = ppc::redirect_to_host(0x80070458u, costume_texture_frame);
+  const bool fighter_frame = ppc::redirect_to_host(0x800704F0u, fighter_texture_frame);
+  if (!list || !setup || !frame || !fighter_frame) log("fighters: the costume texture setup keeps the game's own code");
 }
 // MELEE_TEST_ADVENTURE_SCENE=<decimal scene id> (tests only, Static Recomp): Adventure starts at
 // that scene (stage * 8 + part: 25 is the Zelda fight, 33 the Kirby team), as the Source Port's hook
