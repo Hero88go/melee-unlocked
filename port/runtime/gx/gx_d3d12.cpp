@@ -836,7 +836,7 @@ class D3D12Backend : public Backend {
   bool remix_hud_filled_[2]{};
   std::vector<uint8_t> remix_hud_bgra_;
   void remix_copy_hud(const EfbCopy& c);
-  void remix_take_hud();
+  void remix_take_hud(bool whole_picture);   // whole_picture: menus, the raster as it is
 #endif
   RtxTracer rtx_tracer_;
   // The lighting (rtx_integrator.h): the Melee integrator and, in a local build that has it, the
@@ -3229,7 +3229,7 @@ void D3D12Backend::remix_copy_hud(const EfbCopy& c) {
 
 // The HUD this slot copied last time (its fence has passed): colour where the HUD mask is, as BGRA
 // with the mask in alpha, handed to the bridge.
-void D3D12Backend::remix_take_hud() {
+void D3D12Backend::remix_take_hud(bool whole_picture) {
   const int s = slot_ % 2;
   if (!remix_ || !remix_hud_filled_[s]) return;
   remix_hud_filled_[s] = false;
@@ -3253,7 +3253,7 @@ void D3D12Backend::remix_take_hud() {
     uint8_t* o = remix_hud_bgra_.data() + (size_t)y * w * 4;
     for (uint32_t x = 0; x < w; ++x) {
       o[x * 4 + 0] = cr[x * 4 + 2]; o[x * 4 + 1] = cr[x * 4 + 1]; o[x * 4 + 2] = cr[x * 4 + 0];
-      o[x * 4 + 3] = mr[x];
+      o[x * 4 + 3] = whole_picture ? 255 : mr[x];
     }
   }
   remix_hud_rb_[s][0]->Unmap(0, nullptr);
@@ -3264,22 +3264,37 @@ void D3D12Backend::remix_take_hud() {
 void D3D12Backend::remix_present(const Frame& frame) {
   if (!remix_requested() || remix_failed_) return;
   gx::set_rtx_semantics(true);
-  if (!in_match_ || skip_present_ || !frame.rtx.present || frame.rtx.cameras.empty()) return;
+  // Remix runs from the first present: menus and everything outside a match reach its window as the
+  // game drew them (the whole picture as the UI layer over an empty scene).
+  if (!remix_) {
+    remix_ = std::make_unique<RemixBridge>();
+    std::string error;
+    if (!remix_->start(1280, 960, !remix_visible(), &error)) { host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; return; }
+    remix_hud_ = true;   // from now on the raster writes the HUD mask the bridge's HUD layer is cut from
+    g_hud_solid_coverage = true;
+    hud_max_ = true;
+  }
+  if (skip_present_) return;
+  const bool match = in_match_ && frame.rtx.present && !frame.rtx.cameras.empty();
+  if (!match) {
+    // Test runs: MELEE_REMIX_MENU_CAPTURE=<ppm> at MELEE_REMIX_MENU_CAPTURE_FRAME (a menu frame).
+    static const char* menu_capture = std::getenv("MELEE_REMIX_MENU_CAPTURE");
+    static const uint64_t menu_at = [] { const char* v = std::getenv("MELEE_REMIX_MENU_CAPTURE_FRAME"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+    static bool menu_captured = false;
+    if (menu_capture && !menu_captured && frame.sequence >= menu_at) menu_captured = remix_->capture(menu_capture);
+    remix_take_hud(true);
+    remix_->present_2d();
+    return;
+  }
   int camera = -1;
   for (const DrawCall& d : frame.draws)
     if (d.skinned && d.owner_player < 4 && d.rtx.camera >= 0) { camera = d.rtx.camera; break; }
   if (camera < 0 || camera >= (int)frame.rtx.cameras.size()) return;
   float view_to_world[12];
-  if (!rtx_invert_affine(frame.rtx.cameras[(size_t)camera].view, view_to_world)) return;
-  if (!remix_) {
-    remix_ = std::make_unique<RemixBridge>();
-    std::string error;
-    if (!remix_->start(1280, 960, true, &error)) { host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; return; }
-    remix_hud_ = true;   // from now on the raster writes the HUD mask the bridge's HUD layer is cut from
-    g_hud_solid_coverage = true;
-    hud_max_ = true;
+  if (!rtx_invert_affine(frame.rtx.cameras[(size_t)camera].view, view_to_world)) {
+    remix_take_hud(true); remix_->present_2d(); return;
   }
-  remix_take_hud();
+  remix_take_hud(false);
   std::vector<RtxLightRecord> lights, set_lights;
   const int main_set = rtx_main_light_set(frame, camera);
   rtx_build_lights(frame.rtx, main_set, lights);

@@ -32,6 +32,10 @@ bool remix_requested() {
   static const bool on = [] { const char* v = std::getenv("MELEE_REMIX"); return v && v[0] == '1'; }();
   return on;
 }
+bool remix_visible() {
+  static const bool on = [] { const char* v = std::getenv("MELEE_REMIX_SHOW"); return v && v[0] == '1'; }();
+  return on;
+}
 
 #ifdef REMIX_BRIDGE_ON
 namespace {
@@ -173,7 +177,8 @@ RemixBridge::~RemixBridge() {
     if (impl_->hud_tex) impl_->hud_tex->Release();
     if (impl_->device) impl_->device->Release();
     if (impl_->d3d9) impl_->d3d9->Release();
-    impl_->api.Shutdown();
+    // D3D9 mode never called Startup: releasing the device ends Remix's frame loop.
+    if (!impl_->d3d9_mode) impl_->api.Shutdown();
   }
   if (impl_->hwnd) DestroyWindow(impl_->hwnd);
   if (impl_->readback_hwnd) DestroyWindow(impl_->readback_hwnd);
@@ -612,6 +617,20 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     if (m.api.CreateLight(&li, &h) == REMIXAPI_ERROR_CODE_SUCCESS) { m.lights.push_back(h); m.api.DrawLightInstance(h); }
   }
   if (m.d3d9_mode && m.device) {
+    present_d3d9();
+  } else {
+    remixapi_PresentInfo pi{};
+    pi.sType = REMIXAPI_STRUCT_TYPE_PRESENT_INFO;
+    m.api.Present(&pi);
+  }
+  stats_.meshes = (uint32_t)m.meshes.size();
+  stats_.materials = (uint32_t)m.materials.size();
+  stats_.lights = (uint32_t)m.lights.size();
+  stats_.cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+void RemixBridge::present_d3d9() {
+  Impl& m = *impl_;
     // The HUD: one screen-space textured quad over the whole picture (Remix treats pre-transformed
     // draws as UI and composites them after path tracing).
     IDirect3DDevice9Ex* dev = m.device;
@@ -680,15 +699,11 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       m.backbuffer_capture.clear();
     }
     dev->PresentEx(nullptr, nullptr, nullptr, nullptr, 0);
-  } else {
-    remixapi_PresentInfo pi{};
-    pi.sType = REMIXAPI_STRUCT_TYPE_PRESENT_INFO;
-    m.api.Present(&pi);
-  }
-  stats_.meshes = (uint32_t)m.meshes.size();
-  stats_.materials = (uint32_t)m.materials.size();
-  stats_.lights = (uint32_t)m.lights.size();
-  stats_.cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+void RemixBridge::present_2d() {
+  if (!started_ || !impl_->d3d9_mode || !impl_->device) return;
+  present_d3d9();
 }
 
 void RemixBridge::set_hud(const uint8_t* bgra, int w, int h) {
@@ -751,6 +766,8 @@ bool RemixBridge::start(int, int, bool, std::string* error) { if (error) *error 
 void RemixBridge::frame(const Frame&, int, const float*, const std::vector<RtxLightRecord>&) {}
 bool RemixBridge::capture(const std::string&) { return false; }
 bool RemixBridge::capture_output(const std::string&, int) { return false; }
+void RemixBridge::present_2d() {}
+void RemixBridge::present_d3d9() {}
 void RemixBridge::set_hud(const uint8_t*, int, int) {}
 #endif
 

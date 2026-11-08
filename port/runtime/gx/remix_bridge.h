@@ -23,6 +23,8 @@ class RemixBridge {
   // The game's HUD for the next frame: `bgra` w x h (alpha = HUD coverage), drawn over Remix's
   // picture as a screen-space layer (D3D9 mode).
   void set_hud(const uint8_t* bgra, int w, int h);
+  // A frame with no scene: Remix's window shows the HUD layer alone (set_hud with full alpha: menus).
+  void present_2d();
   // Saves Remix's last finished picture as a PPM (development captures).
   bool capture(const std::string& path);
   struct Stats { uint32_t meshes = 0, created = 0, materials = 0, instances = 0, lights = 0; double cpu_ms = 0; };
@@ -31,6 +33,7 @@ class RemixBridge {
  private:
   struct Impl;
   bool capture_output(const std::string& path, int type);
+  void present_d3d9();
   Impl* impl_ = nullptr;
   bool started_ = false;
   Stats stats_;
@@ -38,5 +41,7 @@ class RemixBridge {
 
 // MELEE_REMIX=1: the D3D12 renderer feeds the bridge during matches.
 bool remix_requested();
+// Remix's window is shown (MELEE_REMIX_SHOW=1 or the Remix renderer setting); hidden test runs keep it hidden.
+bool remix_visible();
 
 }  // namespace gx
