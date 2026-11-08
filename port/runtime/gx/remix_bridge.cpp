@@ -4,6 +4,7 @@
 #include "gx_core.h"
 #include "gx_texture.h"
 #include "rtx_lights.h"
+#include "gx_fx_lights.h"
 #include "texture_snapshot.h"
 #include "host.h"
 #include "stb/stb_image_write.h"
@@ -70,73 +71,6 @@ bool write_dds(const std::filesystem::path& path, uint32_t w, uint32_t h, const 
   return (bool)f;
 }
 
-// The draw's TEV (colour combiner) for one texel on the CPU, the way Melee composes its colours from
-// textures, the rasterized colour and its constant and register colours: what the surface shows under
-// neutral light. Remix gets that as its texture, so constant-coloured lines and tinted stages keep their
-// colours. Inputs follow GX: only the texmap `own_map` is the given texel (other textures read white),
-// the rasterized colour is `ras` (0..255), comparison modes are passed as plain adds.
-void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float ras[4], float out[4]) {
-  const BPMemory& bp = d.bp;
-  float reg[4][4];
-  for (int r = 0; r < 4; ++r)
-    for (int k = 0; k < 4; ++k) reg[r][k] = (float)d.tev_colors[r][k];
-  const uint32_t stages = bp.numtevstages() + 1;
-  static const float kconst[8] = {255.0f, 223.0f, 191.0f, 159.0f, 128.0f, 96.0f, 64.0f, 32.0f};
-  for (uint32_t n = 0; n < stages && n < 16; ++n) {
-    float tex[4] = {255, 255, 255, 255};
-    if (bp.order_enable((int)n) && bp.order_texmap((int)n) == own_map)
-      for (int k = 0; k < 4; ++k) tex[k] = texel[k];
-    float konst[4];
-    const int kc = bp.ksel_kc((int)n), ka = bp.ksel_ka((int)n);
-    auto kval = [&](int sel, int ch) -> float {
-      if (sel < 8) return kconst[sel];
-      if (sel >= 12 && sel < 16) return (float)d.tev_kcolors[sel - 12][ch];
-      if (sel >= 16 && sel < 32) return (float)d.tev_kcolors[(sel - 16) & 3][(sel - 16) >> 2];
-      return 0.0f;
-    };
-    for (int k = 0; k < 3; ++k) konst[k] = kval(kc, k);
-    konst[3] = kval(ka < 12 ? ka : (ka >= 28 ? ka : ka), 3);
-    if (ka >= 16 && ka < 32) konst[3] = (float)d.tev_kcolors[(ka - 16) & 3][(ka - 16) >> 2];
-    const uint32_t cc = bp.tev_color((int)n), ac = bp.tev_alpha((int)n);
-    auto cin = [&](uint32_t sel, int ch) -> float {
-      switch (sel) {
-        case 0: return reg[0][ch]; case 1: return reg[0][3]; case 2: return reg[1][ch]; case 3: return reg[1][3];
-        case 4: return reg[2][ch]; case 5: return reg[2][3]; case 6: return reg[3][ch]; case 7: return reg[3][3];
-        case 8: return tex[ch]; case 9: return tex[3]; case 10: return ras[ch]; case 11: return ras[3];
-        case 12: return 255.0f; case 13: return 128.0f; case 14: return konst[ch]; default: return 0.0f;
-      }
-    };
-    auto ain = [&](uint32_t sel) -> float {
-      switch (sel) {
-        case 0: return reg[0][3]; case 1: return reg[1][3]; case 2: return reg[2][3]; case 3: return reg[3][3];
-        case 4: return tex[3]; case 5: return ras[3]; case 6: return konst[3]; default: return 0.0f;
-      }
-    };
-    static const float shifts[4] = {1.0f, 2.0f, 4.0f, 0.5f}, biases[3] = {0.0f, 128.0f, -128.0f};
-    float result[4];
-    for (int ch = 0; ch < 3; ++ch) {
-      const float a = cin(bits(cc, 12, 4), ch), b = cin(bits(cc, 8, 4), ch), c = cin(bits(cc, 4, 4), ch), dd = cin(bits(cc, 0, 4), ch);
-      const float lerp_v = (a * (255.0f - c) + b * c) / 255.0f;
-      const uint32_t bias = bits(cc, 16, 2);
-      float v = dd + (bits(cc, 18, 1) ? -lerp_v : lerp_v) + (bias < 3 ? biases[bias] : 0.0f);
-      v *= shifts[bits(cc, 20, 2)];
-      result[ch] = bits(cc, 19, 1) ? std::clamp(v, 0.0f, 255.0f) : std::clamp(v, -1024.0f, 1023.0f);
-    }
-    {
-      const float a = ain(bits(ac, 13, 3)), b = ain(bits(ac, 10, 3)), c = ain(bits(ac, 7, 3)), dd = ain(bits(ac, 4, 3));
-      const float lerp_v = (a * (255.0f - c) + b * c) / 255.0f;
-      const uint32_t bias = bits(ac, 16, 2);
-      float v = dd + (bits(ac, 18, 1) ? -lerp_v : lerp_v) + (bias < 3 ? biases[bias] : 0.0f);
-      v *= shifts[bits(ac, 20, 2)];
-      result[3] = bits(ac, 19, 1) ? std::clamp(v, 0.0f, 255.0f) : std::clamp(v, -1024.0f, 1023.0f);
-    }
-    const uint32_t cdest = bits(cc, 22, 2), adest = bits(ac, 22, 2);
-    for (int ch = 0; ch < 3; ++ch) reg[cdest][ch] = result[ch];
-    reg[adest][3] = result[3];
-    if (n + 1 == stages) for (int k = 0; k < 4; ++k) out[k] = std::clamp(k < 3 ? reg[cdest][k] : reg[adest][3], 0.0f, 255.0f);
-  }
-}
-
 LRESULT CALLBACK remix_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcW(hwnd, msg, wp, lp); }
 
 }  // namespace
@@ -171,10 +105,9 @@ struct RemixBridge::Impl {
   int shown = -1;                    // the window's visibility as show() last set it (-1 not yet)
   int place_x = -1, place_y = -1;    // where place() last put that window
   int want_w = 0, want_h = 0, want_frames = 0;   // a new picture size, held a few frames before the device is reset
-  // This frame's bright effects (remix_effect_draw, additive) as lights: where, how big, what colour.
-  struct FxLight { float pos[3]; float radius; float rgb[3]; float power; };
+  // This frame's bright effects (additive, carried by the layer) as lights.
   std::vector<FxLight> fx_lights;
-  std::unordered_map<uint64_t, std::array<float, 4>> texel_mean;   // a texture's mean texel, decoded once
+  FxLightCollector fx;
   std::unordered_map<uint64_t, uint32_t> baked_mean;   // test logs: each baked material's mean colour
 };
 
@@ -285,69 +218,6 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error, 
   return true;
 }
 
-// One effect draw as a light: the centre and size of its world-space vertices, and its colour from
-// its combiner over its texture's mean texel (the per-particle colour registers included), weighted as
-// it adds to the picture (source alpha or one).
-void RemixBridge::add_fx_light(const Frame& f, const DrawCall& d, const float vw[12]) {
-  Impl& m = *impl_;
-  if (d.first_vertex + (size_t)d.vertex_count > f.vertices.size() || d.vertex_count == 0) return;
-  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
-  for (uint32_t i = 0; i < d.vertex_count; ++i) {
-    const Vertex& v = f.vertices[d.first_vertex + i];
-    const int row = (int)(v.posmtx & 0x3F);
-    if (row + 2 >= 64) continue;
-    const float* pm = &d.posMatrices[row * 4];
-    float view[3], w[3];
-    for (int k = 0; k < 3; ++k) view[k] = pm[k * 4] * v.pos[0] + pm[k * 4 + 1] * v.pos[1] + pm[k * 4 + 2] * v.pos[2] + pm[k * 4 + 3];
-    for (int k = 0; k < 3; ++k) {
-      w[k] = vw[k * 4] * view[0] + vw[k * 4 + 1] * view[1] + vw[k * 4 + 2] * view[2] + vw[k * 4 + 3];
-      lo[k] = std::min(lo[k], w[k]); hi[k] = std::max(hi[k], w[k]);
-    }
-  }
-  if (lo[0] > hi[0]) return;
-  // The colour source the combiner reads (vertex colours or the material register), with alpha.
-  float ras[4] = {255.0f, 255.0f, 255.0f, 255.0f};
-  if ((d.xf_regs[0x0E] & 1) && (d.components & VB_HAS_COL0)) {
-    double sum[4] = {0, 0, 0, 0};
-    for (uint32_t i = 0; i < d.vertex_count; ++i)
-      for (int k = 0; k < 4; ++k) sum[k] += f.vertices[d.first_vertex + i].col0[k];
-    for (int k = 0; k < 4; ++k) ras[k] = (float)(sum[k] / d.vertex_count);
-  } else {
-    const uint32_t mat = d.xf_regs[0x0C];
-    for (int k = 0; k < 4; ++k) ras[k] = (float)((mat >> (24 - 8 * k)) & 0xFF);
-  }
-  float texel[4] = {255.0f, 255.0f, 255.0f, 255.0f};
-  const TextureRef& t = d.textures[0];
-  if (t.used && t.data && t.width && t.height && t.width <= 1024 && t.height <= 1024) {
-    auto it = m.texel_mean.find(t.data->hash);
-    if (it == m.texel_mean.end()) {
-      std::vector<uint8_t> rgba;
-      decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.empty() ? nullptr : t.data->palette.data(),
-                     t.tlut_format, rgba);
-      double sum[4] = {0, 0, 0, 0};
-      const size_t n = rgba.size() / 4;
-      for (size_t i = 0; i < n; ++i)
-        for (int k = 0; k < 4; ++k) sum[k] += rgba[i * 4 + k];
-      std::array<float, 4> mean{255.0f, 255.0f, 255.0f, 255.0f};
-      if (n) for (int k = 0; k < 4; ++k) mean[(size_t)k] = (float)(sum[k] / n);
-      it = m.texel_mean.emplace(t.data->hash, mean).first;
-    }
-    for (int k = 0; k < 4; ++k) texel[k] = it->second[(size_t)k];
-  }
-  const int own_map = [&] { for (uint32_t n = 0; n <= d.bp.numtevstages() && n < 16; ++n) if (d.bp.order_enable((int)n)) return d.bp.order_texmap((int)n); return 0; }();
-  float o[4];
-  tev_texel(d, own_map, texel, ras, o);
-  const uint32_t src = (d.bp.blendmode() >> 8) & 7;   // GX source factor: 1 one, 4 source alpha
-  const float weight = src == 4 ? o[3] / 255.0f : src == 1 ? 1.0f : 0.0f;
-  Impl::FxLight l{};
-  float extent = 0.0f;
-  for (int k = 0; k < 3; ++k) { l.pos[k] = 0.5f * (lo[k] + hi[k]); extent = std::max(extent, hi[k] - lo[k]); }
-  l.radius = std::clamp(extent * 0.2f, 0.3f, 4.0f);
-  for (int k = 0; k < 3; ++k) l.rgb[k] = std::clamp(o[k] / 255.0f * weight, 0.0f, 1.0f);
-  l.power = (0.2126f * l.rgb[0] + 0.7152f * l.rgb[1] + 0.0722f * l.rgb[2]) * l.radius * l.radius;
-  m.fx_lights.push_back(l);
-}
-
 void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const std::vector<RtxLightRecord>& lights,
                         const std::vector<uint8_t>& layer) {
   if (!started_ || camera < 0 || (size_t)camera >= f.rtx.cameras.size()) return;
@@ -406,12 +276,13 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // exactly as the game drew them (`layer`, D3D12Backend::remix_layer_draw). The bright effects
     // (additive: fire, sparks, flashes, glows) also light the scene, at their place in their own colour.
     const size_t draw_index = (size_t)(&d - f.draws.data());
-    if (draw_index < layer.size() && layer[draw_index]) {
-      if (additive && !no_lights && remix_effect_draw(d)) add_fx_light(f, d, vw);
+    const uint8_t in_layer = draw_index < layer.size() ? layer[draw_index] : 0;
+    if (in_layer == 1) {
+      if (additive && !no_lights && remix_effect_draw(d)) m.fx.add(f, d, vw, m.fx_lights);
       // Test runs (MELEE_REMIX_FXLOG=<sim frame>): each effect draw's owner and GX blend/depth state.
       static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
       if (fx_log && f.sequence == fx_log)
-        host::log("remix fx: owner %02X pass %u bm %04X zm %02X at %06X verts %u tex %ux%u fmt %u",
+        host::log("remix fx: #%zu layer %u owner %02X pass %u bm %04X zm %02X at %06X verts %u tex %ux%u fmt %u", draw_index, (unsigned)in_layer,
                   (unsigned)d.owner_player, (unsigned)d.rtx.pass, d.bp.blendmode() & 0xFFFF, d.bp.zmode() & 0x1F,
                   d.bp.alpha_test() & 0xFFFFFF, d.vertex_count, d.textures[0].width, d.textures[0].height, d.textures[0].format);
       continue;
@@ -422,6 +293,18 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     const uint32_t comp0 = (at >> 16) & 7, comp1 = (at >> 19) & 7, logic = (at >> 22) & 3;
     const bool alpha_always = logic == 0 ? (comp0 == 7 && comp1 == 7) : logic == 1 ? (comp0 == 7 || comp1 == 7) : false;
     const bool cutout = blended || !alpha_always;
+    // The game's own alpha test (GX and Remix number their compares alike: never, less, equal, less or
+    // equal, greater, not equal, greater or equal, always); of two real compares the first. A blended
+    // draw cuts at 96 at least, so its soft edges do not come out as solid halos.
+    int test_type = 7;
+    uint32_t test_ref = 0;
+    if (!alpha_always) {
+      const bool second = logic == 0 && comp0 == 7;
+      test_type = (int)(second ? comp1 : comp0);
+      test_ref = second ? (at >> 8) & 0xFF : at & 0xFF;
+    }
+    if (blended && (test_type == 7 || ((test_type == 4 || test_type == 6) && test_ref < 96))) { test_type = 4; test_ref = 96; }
+    const uint32_t test_key = (uint32_t)test_type << 8 | test_ref;
     // GX does not light this draw: its light is painted into its texture and vertex colours (most of a
     // stage). Its texture also emits, so Remix shows it as painted and adds its own light on top
     // (MELEE_REMIX_EMISSIVE scales it; additive glows emit more).
@@ -495,7 +378,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     uint64_t mat_key = 0;
     const TextureRef& t = d.textures[0];
     if (!no_textures && t.used && t.data && t.width && t.height && t.width <= 1024 && t.height <= 1024) {
-      mat_key = fnv(&t.data->hash, 8, fnv(&t.format, 4, fnv(&t.mode0, 4, fnv(&emissive, 4, fnv(&tint_q, 4, cutout ? 0x9E3779B97F4A7C15ull : 1469598103934665603ull)))));
+      mat_key = fnv(&t.data->hash, 8, fnv(&t.format, 4, fnv(&t.mode0, 4, fnv(&emissive, 4, fnv(&tint_q, 4, fnv(&test_key, 4, cutout ? 0x9E3779B97F4A7C15ull : 1469598103934665603ull))))));
       if (!m.materials.count(mat_key)) {
         decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.empty() ? nullptr : t.data->palette.data(),
                        t.tlut_format, m.rgba);
@@ -553,6 +436,9 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
             const float polished = std::clamp((0.30f - lum) / 0.15f, 0.0f, 1.0f) * std::clamp((0.20f - sat) / 0.10f, 0.0f, 1.0f);
             if (env_mapped) rough = std::min(rough, 0.2f);
             else if (polished > 0.5f) rough = std::min(rough, 0.12f);
+            // Stage art GX does not light shows no highlight in the game, whatever its material's
+            // specular says: matte (Yoshi's Story's felt trees went pale with the sky's reflection).
+            else if (unlit) rough = std::max(rough, 0.85f);
           }
         }
         static const float rough_scale = [] { const char* v = std::getenv("MELEE_REMIX_ROUGHNESS"); return v ? (float)std::atof(v) : 1.0f; }();
@@ -573,8 +459,8 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         op.opacityConstant = 1.0f;
         op.roughnessConstant = rough;
         op.metallicConstant = 0.0f;
-        op.alphaTestType = cutout ? 4 : 7;   // greater (cut-outs) or always
-        op.alphaReferenceValue = cutout ? 96 : 0;
+        op.alphaTestType = test_type;
+        op.alphaReferenceValue = (uint8_t)test_ref;
         remixapi_MaterialInfo mi{};
         mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
         mi.pNext = &op;
@@ -645,9 +531,9 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
                         d.bp.ksel_kc((int)n), d.bp.ksel_ka((int)n), d.bp.order_enable((int)n) ? d.bp.order_texmap((int)n) : -1);
           tev += buf;
         }
-        host::log("remix draw: #%zu owner %02X unlit %d add %d cut %d emis %.2f chan %08X amb %08X mat %08X vc %d tint %.2f %.2f %.2f "
+        host::log("remix draw: #%zu layer %u zm %02X bm %04X owner %02X unlit %d add %d cut %d emis %.2f chan %08X amb %08X mat %08X vc %d tint %.2f %.2f %.2f "
                   "tex %ux%u f%u baked %08X c0 %d,%d,%d k0 %d,%d,%d%s",
-                  (size_t)(&d - f.draws.data()), (unsigned)d.owner_player, unlit ? 1 : 0, additive ? 1 : 0, cutout ? 1 : 0, emissive,
+                  (size_t)(&d - f.draws.data()), (unsigned)in_layer, d.bp.zmode() & 0x1F, d.bp.blendmode() & 0xFFFF, (unsigned)d.owner_player, unlit ? 1 : 0, additive ? 1 : 0, cutout ? 1 : 0, emissive,
                   d.xf_regs[0x0E], d.xf_regs[0x0A], d.xf_regs[0x0C], (d.components & VB_HAS_COL0) ? 1 : 0, tint[0], tint[1], tint[2],
                   t.width, t.height, t.format, bm_it != m.baked_mean.end() ? bm_it->second : 0u,
                   d.tev_colors[1][0], d.tev_colors[1][1], d.tev_colors[1][2], d.tev_kcolors[0][0], d.tev_kcolors[0][1], d.tev_kcolors[0][2], tev.c_str());
@@ -680,7 +566,8 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     {
       const uint32_t zm = d.bp.zmode();
       const bool writes_depth = (zm & 1) && ((zm >> 4) & 1);
-      if (blended && !additive && !writes_depth && d.owner_player >= 6) inst.categoryFlags |= REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC;
+      if (in_layer == 2) inst.categoryFlags |= REMIXAPI_INSTANCE_CATEGORY_BIT_SKY;   // shown by the layer; Remix's sky for reflections and light
+      else if (blended && !additive && !writes_depth && d.owner_player >= 6) inst.categoryFlags |= REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC;
     }
     m.api.DrawInstance(&inst);
     ++stats_.instances;
@@ -758,9 +645,9 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
   {
     static const int fx_max = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHTS"); return v ? std::atoi(v) : 8; }();
     static const float fx_scale = [] { const char* v = std::getenv("MELEE_REMIX_FX_LIGHT"); return v ? (float)std::atof(v) : 40.0f; }();
-    std::sort(m.fx_lights.begin(), m.fx_lights.end(), [](const Impl::FxLight& a, const Impl::FxLight& b) { return a.power > b.power; });
+    std::sort(m.fx_lights.begin(), m.fx_lights.end(), [](const FxLight& a, const FxLight& b) { return a.power > b.power; });
     for (int i = 0; i < fx_max && i < (int)m.fx_lights.size(); ++i) {
-      const Impl::FxLight& l = m.fx_lights[(size_t)i];
+      const FxLight& l = m.fx_lights[(size_t)i];
       if (l.power <= 0.01f) break;
       remixapi_LightInfoSphereEXT sph{};
       sph.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;

@@ -54,6 +54,7 @@
 #include "remix_bridge.h"
 #endif
 #include "rtx_lights.h"
+#include "gx_fx_lights.h"
 #include "rtx_integrator.h"
 #include "rtx_tracer.h"
 #include "rtx_semantics.h"
@@ -528,7 +529,7 @@ class D3D12Backend : public Backend {
   // and 4, written by effects (remix_effect_draw) and emptied by surfaces drawn in front of them.
   bool remix_layer_ = false;
   bool remix_mode_ = false;   // RTX Remix draws the matches (the Lighting setting or MELEE_REMIX=1): DLSS and our path tracer stand down
-  bool remix_layer_draw(const DrawCall& dc) const;   // this draw goes to the Remix layer, not Remix's scene
+  uint8_t remix_layer_draw(const DrawCall& dc) const;   // the Remix layer carries this draw: 1 instead of Remix's scene, 2 as well as its sky, 3 over Remix's own
   uint64_t remix_log_seq_ = 0;   // the frame being submitted (test logs)
   size_t hud_first_scene_draw_ = 0;   // this frame's first 3D scene draw (earlier 2D draws are backdrops)
   // DLAA renders and outputs at the same size, so it anti-aliases the EFB in place and the ordinary
@@ -850,6 +851,10 @@ class D3D12Backend : public Backend {
   // scene draw the raster issues is handed to it, and present_efb builds the structures from them.
   RtxScene rtx_scene_;
   uint64_t rtx_hull_draws_ = 0;   // inverted-hull outline draws kept out of the ray-traced scene
+  // Bright effects as lights (gx_fx_lights.h): this present's, after the light sets in rtx_lights_.
+  FxLightCollector rtx_fx_collector_;
+  std::vector<FxLight> rtx_fx_lights_;
+  uint32_t rtx_fx_first_ = 0, rtx_fx_count_ = 0;
 #ifdef MELEE_REMIX_SPIKE
   std::unique_ptr<RemixBridge> remix_;
   bool remix_failed_ = false;
@@ -2772,15 +2777,31 @@ void D3D12Backend::draw_video_background(
 // The Remix layer carries, exactly as the game drew them, the scene's effects (remix_effect_draw) and
 // its live screens: surfaces textured with the game's own EFB copies (Pokemon Stadium's big screen),
 // which Remix cannot load as a file.
-bool D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
-  if (!is_scene_draw(dc)) return false;
-  if (remix_effect_draw(dc)) return true;
+uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
+  if (!is_scene_draw(dc)) return 0;
+  if (remix_effect_draw(dc)) return 1;
+  // A fighter mid-flash (hit, charge, invincibility): shown as the game draws it while Remix keeps
+  // the fighter for its shadow and reflection.
+  static const bool no_overlays = std::getenv("MELEE_REMIX_NO_FIGHTER_OVERLAY") != nullptr;
+  if (!no_overlays && fighter_overlay_draw(dc)) return 3;
   for (const TextureRef& t : dc.textures) {
     if (!t.used) continue;
     const auto ec = efb_copies_.find(t.addr);
-    if (ec != efb_copies_.end() && ec->second.resource) return true;
+    if (ec != efb_copies_.end() && ec->second.resource) return 1;
   }
-  return false;
+  // Painted backdrops (MELEE_REMIX_BACKDROPS: 1 the layer alone, 2 the layer and Remix's sky): the
+  // stage's draws that write no depth and add no light (skies, far scenery, painted marks), as the
+  // game draws them. Its glows stay Remix's own light.
+  static const int backdrops = [] { const char* v = std::getenv("MELEE_REMIX_BACKDROPS"); return v ? std::atoi(v) : 0; }();
+  if (backdrops && dc.owner_player == 0xFF) {
+    const uint32_t bm = dc.bp.blendmode();
+    const bool additive = (bm & 1) && ((bm >> 5) & 7) == 1;
+    // Textured: an untextured screen fill (the stage's clear colour, drawn first) is not scenery.
+    bool textured = false;
+    for (const TextureRef& t : dc.textures) textured = textured || t.used;
+    if (!additive && textured && rtx_layer(bm, dc.bp.zmode()) != kRtxLayerSurface) return backdrops == 2 ? 2 : 1;
+  }
+  return 0;
 }
 
 ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint32_t* h) {
@@ -3498,7 +3519,21 @@ void D3D12Backend::remix_present(const Frame& frame) {
 void D3D12Backend::remix_finish(const Frame& frame) {
   if (!remix_ || !remix_pending_) return;
   remix_pending_ = false;
+  // Frame rate as Remix sees it (frames handed over, 300 at a time) and the wait for our raster's frame.
+  static auto last = std::chrono::steady_clock::now();
+  static double interval_sum = 0.0, wait_sum = 0.0;
+  static uint32_t intervals = 0;
+  const auto wait_start = std::chrono::steady_clock::now();
   wait_fence(slot_fence_[slot_]);
+  const auto now = std::chrono::steady_clock::now();
+  wait_sum += std::chrono::duration<double, std::milli>(now - wait_start).count();
+  interval_sum += std::chrono::duration<double, std::milli>(now - last).count();
+  last = now;
+  if (++intervals == 300) {
+    host::log("remix: %.1f fps (%.2f ms a frame, %.2f ms waiting for the raster)", 1000.0 * intervals / interval_sum,
+              interval_sum / intervals, wait_sum / intervals);
+    intervals = 0; interval_sum = wait_sum = 0.0;
+  }
   // Test runs: MELEE_REMIX_CAPTURE=<ppm> at MELEE_REMIX_CAPTURE_FRAME, which may list several frames
   // ("1318,1678"; each lands as <file>_<frame>.ppm); MELEE_REMIX_MENU_CAPTURE[_FRAME] on a menu frame.
   // Asked for before the frame, so the picture saved is this frame's.
@@ -3549,7 +3584,7 @@ void D3D12Backend::remix_finish(const Frame& frame) {
   capture_due(false);
   // What the layer carries instead of Remix (the same test the draws used): the bridge leaves these out.
   remix_layer_draws_.assign(frame.draws.size(), 0);
-  for (size_t i = 0; i < frame.draws.size(); ++i) remix_layer_draws_[i] = remix_layer_draw(frame.draws[i]) ? 1 : 0;
+  for (size_t i = 0; i < frame.draws.size(); ++i) remix_layer_draws_[i] = remix_layer_draw(frame.draws[i]);
   remix_->frame(frame, camera, view_to_world, lights, remix_layer_draws_);
   static uint64_t remix_frames = 0;
   if (++remix_frames % 300 == 1) {
@@ -3660,6 +3695,37 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
   }
   for (const DrawCall& d : frame.draws)
     if (d.rtx.camera == rtx_main_camera_) add_set(d.rtx.light_set);
+  // Bright effects (additive particles, sparks, flashes) as small lights after the sets, the brightest
+  // few (Video > Ray tracing > Effects light the stage).
+  // The stage's own glowing art (additive, unlit stage draws: Battlefield's neon edges) joins them, a
+  // long strip as a row of lights (Glowing stage art lights the fighters).
+  rtx_fx_first_ = (uint32_t)rtx_lights_.size();
+  rtx_fx_count_ = 0;
+  if (opts_.rtx_effect_light || opts_.rtx_glow_light) {
+    rtx_fx_lights_.clear();
+    for (const DrawCall& d : frame.draws) {
+      if (d.rtx.camera != rtx_main_camera_) continue;
+      const uint32_t bm = d.bp.blendmode();
+      if (!((bm & 1) && ((bm >> 5) & 7) == 1)) continue;   // additive: it adds light to the picture
+      if (opts_.rtx_effect_light && remix_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+      else if (opts_.rtx_glow_light && d.owner_player == 0xFF && d.xf_regs[0x26] == 0 &&
+               ((d.xf_regs[0x09] & 3) == 0 || ((d.xf_regs[0x0E] >> 1) & 1) == 0))
+        rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_, 4);
+    }
+    std::sort(rtx_fx_lights_.begin(), rtx_fx_lights_.end(), [](const FxLight& a, const FxLight& b) { return a.power > b.power; });
+    for (const FxLight& f : rtx_fx_lights_) {
+      if (rtx_fx_count_ >= 16 || rtx_lights_.size() >= kMaxTableLights || f.power <= 0.01f) break;
+      RtxLightRecord r{};
+      std::memcpy(r.position, f.pos, sizeof r.position);
+      r.type = kRtxLightEffect;
+      r.cos_cutoff = -1.0f;
+      std::memcpy(r.radiance, f.rgb, sizeof r.radiance);
+      r.radius = f.radius;
+      r.flags = 0xFF000000u;
+      rtx_lights_.push_back(r);
+      ++rtx_fx_count_;
+    }
+  }
   rtx_gx_light_ranges_.clear();   // lit draws add the GX lights they use (rtx_record_draw)
   if (!rtx_lights_logged_ && !rtx_lights_.empty()) {
     rtx_lights_logged_ = true;
@@ -4094,6 +4160,10 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.reflections = opts_.rtx_reflections;
   in.skin = opts_.rtx_skin;
   in.stage_shade = opts_.rtx_stage_shade;
+  in.fx_light_first = std::min(rtx_fx_first_, (uint32_t)light_count);
+  in.fx_light_count = std::min(rtx_fx_count_, (uint32_t)light_count - in.fx_light_first);
+  static const float fx_strength = [] { const char* v = host::test_env::getenv("MELEE_RTX_FX_LIGHT"); return v ? (float)std::atof(v) : 0.6f; }();
+  in.fx_light_strength = opts_.rtx_effect_light || opts_.rtx_glow_light ? fx_strength : 0.0f;
   in.glossy_floors = opts_.rtx_glossy_floors && !host::g_stage_file_modded.load(std::memory_order_relaxed);
   in.light_scale = opts_.rtx_brightness / 100.0f;
   in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;

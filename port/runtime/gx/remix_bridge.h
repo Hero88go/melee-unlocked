@@ -41,7 +41,6 @@ class RemixBridge {
   struct Impl;
   bool capture_output(const std::string& path, int type);
   void present_d3d9();
-  void add_fx_light(const Frame& f, const DrawCall& d, const float vw[12]);   // one bright effect as a light (frame())
   Impl* impl_ = nullptr;
   bool started_ = false;
   Stats stats_;

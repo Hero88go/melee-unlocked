@@ -2179,6 +2179,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rtxreflections") options.rtx_reflections = value == "1";
       else if (key == "rtxskin") options.rtx_skin = value == "1";
       else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
+      else if (key == "rtxeffectlight") options.rtx_effect_light = value == "1";
+      else if (key == "rtxglowlight") options.rtx_glow_light = value == "1";
       else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
       else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
       else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
@@ -4302,7 +4304,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nrtxao " << (options.rtx_ao ? 1 : 0) << "\nrtxfightershadows " << (options.rtx_fighter_shadows ? 1 : 0)
        << "\nrtxintegrator " << options.rtx_integrator
        << "\nrtxbounce " << (options.rtx_bounce ? 1 : 0) << "\nrtxreflections " << (options.rtx_reflections ? 1 : 0)
-       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0)
+       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0) << "\nrtxeffectlight " << (options.rtx_effect_light ? 1 : 0) << "\nrtxglowlight " << (options.rtx_glow_light ? 1 : 0)
        << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0) << "\nrtxbrightness " << options.rtx_brightness
        << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
        << "\nrtxpreset " << options.rtx_preset << "\nrtxreflstrength " << options.rtx_reflection_strength
@@ -6973,6 +6975,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
                           "trees cast the sun's shadows, and corners and contacts get soft shade.");
+      if (settings_toggle("Effects light the stage", &options.rtx_effect_light)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fire, sparks, shines and flashes cast their own light on the stage and the fighters\n"
+                          "near them, in their own colour.");
+      if (settings_toggle("Glowing stage art lights the fighters", &options.rtx_glow_light)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The stage's own glowing lines and lamps (Battlefield's neon edges) light the\n"
+                          "fighters near them: a rim of their colour.");
       const bool nvidia_ok = rtx_nvidia_integrator_available(), remix_ok = rtx_remix_available();
       if (nvidia_ok || remix_ok) {
         // The renderers this PC has: ours, and the local NVIDIA and RTX Remix ones where present.
