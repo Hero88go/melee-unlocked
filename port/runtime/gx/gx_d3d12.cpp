@@ -100,6 +100,26 @@ namespace { std::atomic<bool> g_rtx_ready{false}, g_rtx_nvidia{false}, g_rtx_kno
 bool rtx_path_tracing_known() { return g_rtx_known.load(std::memory_order_relaxed); }
 bool rtx_path_tracing_ready() { return g_rtx_ready.load(std::memory_order_relaxed); }
 bool rtx_nvidia_integrator_available() { return g_rtx_nvidia.load(std::memory_order_relaxed); }
+// RTX Remix as the match renderer: local builds with the bridge (MELEE_REMIX_SPIKE) whose Remix
+// runtime is beside the game (Remix\d3d9.dll) or named by MELEE_REMIX_DIR.
+bool rtx_remix_available() {
+#ifdef MELEE_REMIX_SPIKE
+  static const bool present = [] {
+    std::wstring dir;
+    if (const wchar_t* v = _wgetenv(L"MELEE_REMIX_DIR")) dir = v;
+    else {
+      wchar_t exe[MAX_PATH] = {};
+      GetModuleFileNameW(nullptr, exe, MAX_PATH);
+      dir = (std::filesystem::path(exe).parent_path() / L"Remix").wstring();
+    }
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path(dir) / L"d3d9.dll", ec);
+  }();
+  return present;
+#else
+  return false;
+#endif
+}
 namespace { std::atomic<bool> g_hdr_display{false}; }
 bool hdr_display_available() { return g_hdr_display.load(std::memory_order_relaxed); }
 bool vram_usage(float* used_gb, float* total_gb) {
@@ -507,6 +527,8 @@ class D3D12Backend : public Backend {
   // The Remix bridge's effects layer: the path tracer's overlay and transmittance bound as targets 3
   // and 4, written by effects (remix_effect_draw) and emptied by surfaces drawn in front of them.
   bool remix_layer_ = false;
+  bool remix_mode_ = false;   // RTX Remix draws the matches (the Lighting setting or MELEE_REMIX=1): DLSS and our path tracer stand down
+  bool remix_layer_draw(const DrawCall& dc) const;   // this draw goes to the Remix layer, not Remix's scene
   uint64_t remix_log_seq_ = 0;   // the frame being submitted (test logs)
   size_t hud_first_scene_draw_ = 0;   // this frame's first 3D scene draw (earlier 2D draws are backdrops)
   // DLAA renders and outputs at the same size, so it anti-aliases the EFB in place and the ordinary
@@ -834,6 +856,9 @@ class D3D12Backend : public Backend {
   void remix_present(const Frame& frame);   // frame start: the runtime, the layer's targets
   void remix_finish(const Frame& frame);    // after the frame's commands: its layer and scene to Remix
   bool remix_pending_ = false;
+  bool remix_wanted() const;
+  void remix_picture_rect(int* x, int* y, int* w, int* h) const;   // the picture in the window's client area
+  std::vector<uint8_t> remix_layer_draws_;   // per draw of the frame handed over: carried by the layer
   // The layer over Remix's picture: each present composes the HUD (the EFB where the HUD mask is)
   // over the effects (overlay and transmittance) into remix_ui_ as premultiplied BGRA, or the whole
   // picture on menus, and copies the shown region to this slot's readback buffer; the slot's next turn
@@ -1861,7 +1886,7 @@ void D3D12Backend::configure_dlss() {
   widenable_scene_ = true;
   int vw, vh; output_size(&vw, &vh);
   widenable_scene_ = saved_widenable;
-  bool want = opts_.dlss_mode != 0 && upscaler_available();
+  bool want = opts_.dlss_mode != 0 && upscaler_available() && !remix_mode_;   // Remix draws the match: no upscaler under it
   if (!want) {
     if (dlss_active_ || forced_scale_) {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0; dlss_hdr_active_ = false;
@@ -2549,7 +2574,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   // an effect composes into them with its own blend (describe_pipeline).
   const bool remix_layer = remix_layer_ && !gbuffer && mvec_out();
   if (remix_layer) psu.motion_vectors |= 4u;
-  const uint32_t remix_bits = remix_layer ? 16u | (remix_effect_draw(dc) && is_scene_draw(dc) ? 32u : 0u) : 0u;
+  const uint32_t remix_bits = remix_layer ? 16u | (remix_layer_draw(dc) ? 32u : 0u) : 0u;
   {
     static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
     if (fx_log && remix_effect_draw(dc) && remix_log_seq_ == fx_log)
@@ -2742,6 +2767,20 @@ void D3D12Backend::draw_video_background(
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
   bind_efb_targets();
+}
+
+// The Remix layer carries, exactly as the game drew them, the scene's effects (remix_effect_draw) and
+// its live screens: surfaces textured with the game's own EFB copies (Pokemon Stadium's big screen),
+// which Remix cannot load as a file.
+bool D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
+  if (!is_scene_draw(dc)) return false;
+  if (remix_effect_draw(dc)) return true;
+  for (const TextureRef& t : dc.textures) {
+    if (!t.used) continue;
+    const auto ec = efb_copies_.find(t.addr);
+    if (ec != efb_copies_.end() && ec->second.resource) return true;
+  }
+  return false;
 }
 
 ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint32_t* h) {
@@ -3184,10 +3223,10 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     std::memcpy(ccpu + offsetof(PSConstants, flags), lanes, sizeof lanes);
   } else if (remix_layer_) {
     // The Remix layer's lane (flags.z, gx_shader.cpp): an effect blends into it (1) or replaces it (2).
-    const int32_t lane = remix_effect_draw(dc) && is_scene_draw(dc) ? ((dc.bp.blendmode() & 1) ? 1 : 2) : 0;
+    const int32_t lane = remix_layer_draw(dc) ? ((dc.bp.blendmode() & 1) ? 1 : 2) : 0;
     std::memcpy(ccpu + offsetof(PSConstants, flags) + 2 * sizeof(int32_t), &lane, sizeof lane);
     static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
-    if (fx_log && frame.sequence == fx_log && remix_effect_draw(dc))
+    if (fx_log && frame.sequence == fx_log && remix_layer_draw(dc))
       host::log("remix lane: draw %zu lane %d scene %d owner %02X bm %04X cached %d", draw_index, lane, is_scene_draw(dc) ? 1 : 0,
                 (unsigned)dc.owner_player, dc.bp.blendmode() & 0xFFFF, dc.cached_pipeline ? 1 : 0);
   }
@@ -3395,18 +3434,55 @@ void D3D12Backend::remix_take_hud() {
   remix_->set_hud(remix_hud_bgra_.data(), (int)w, (int)h);
 }
 
+bool D3D12Backend::remix_wanted() const {
+  return remix_requested() || (opts_.path_tracing && opts_.rtx_integrator == 2 && rtx_remix_available());
+}
+
+void D3D12Backend::remix_picture_rect(int* x, int* y, int* w, int* h) const {
+  const float aspect = output_aspect();
+  float pw = (float)client_w_, ph = pw / std::max(aspect, 0.1f);
+  if (ph > (float)client_h_) { ph = (float)client_h_; pw = ph * aspect; }
+  *w = std::max(64, (int)(pw + 0.5f)); *h = std::max(64, (int)(ph + 0.5f));
+  *x = (client_w_ - *w) / 2; *y = (client_h_ - *h) / 2;
+}
+
 void D3D12Backend::remix_present(const Frame& frame) {
-  if (!remix_requested() || remix_failed_) return;
+  if (!remix_mode_) {
+    if (remix_hud_) {   // the setting went back: the raster draws as it always does
+      remix_hud_ = false; g_hud_solid_coverage = false; hud_max_ = false; remix_layer_ = false; remix_pending_ = false;
+      if (remix_) remix_->show(false);
+      host::log("remix: off");
+    }
+    return;
+  }
   gx::set_rtx_semantics(true);
+  // The setting draws inside the game's window, over its picture; test runs (MELEE_REMIX=1) in Remix's
+  // own window at 1280x960, hidden unless MELEE_REMIX_SHOW=1.
+  const bool embed = !remix_requested();
+  int px = 0, py = 0, pw = 1280, ph = 960;
+  if (embed) remix_picture_rect(&px, &py, &pw, &ph);
   // Remix runs from the first present: menus and everything outside a match reach its window as the
-  // game drew them (the whole picture as the UI layer over an empty scene).
+  // game drew them (the whole picture as the layer over an empty scene).
   if (!remix_) {
     remix_ = std::make_unique<RemixBridge>();
     std::string error;
-    if (!remix_->start(1280, 960, !remix_visible(), &error)) { host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; return; }
-    remix_hud_ = true;   // from now on the raster writes the HUD mask the bridge's HUD layer is cut from
+    if (!remix_->start(pw, ph, true, &error, embed ? (void*)hwnd_ : nullptr)) {
+      host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; remix_mode_ = false; return;
+    }
+  }
+  if (!remix_hud_) {
+    remix_hud_ = true;   // from now on the raster writes the HUD mask and the effects layer the bridge lays over Remix
     g_hud_solid_coverage = true;
     hud_max_ = true;
+    host::log("remix: on (%s)", embed ? "in the game's window" : "its own window");
+  }
+  // The settings panel is the game's own overlay: Remix's window steps aside while it is open.
+  if (embed) {
+    remix_->place(px, py, pw, ph);
+    remix_->show(!opts_.settings_open);
+  } else {
+    static bool shown = false;
+    if (!shown) { remix_->show(remix_visible()); shown = true; }
   }
   // The effects layer: the path tracer's overlay and transmittance targets (made once).
   remix_layer_ = remix_hud_ && !dlss_active_ && rtx_ensure_gbuffer();
@@ -3471,7 +3547,10 @@ void D3D12Backend::remix_finish(const Frame& frame) {
   const int main_set = rtx_main_light_set(frame, camera);
   rtx_build_lights(frame.rtx, main_set, lights);
   capture_due(false);
-  remix_->frame(frame, camera, view_to_world, lights);
+  // What the layer carries instead of Remix (the same test the draws used): the bridge leaves these out.
+  remix_layer_draws_.assign(frame.draws.size(), 0);
+  for (size_t i = 0; i < frame.draws.size(); ++i) remix_layer_draws_[i] = remix_layer_draw(frame.draws[i]) ? 1 : 0;
+  remix_->frame(frame, camera, view_to_world, lights, remix_layer_draws_);
   static uint64_t remix_frames = 0;
   if (++remix_frames % 300 == 1) {
     const RemixBridge::Stats& st = remix_->stats();
@@ -3485,7 +3564,7 @@ void D3D12Backend::remix_finish(const Frame& frame) {
 bool D3D12Backend::rtx_wanted() const {
   // Video > Ray tracing > Path tracing; MELEE_RTX=1 forces it for test runs.
   static const bool env = [] { const char* v = std::getenv("MELEE_RTX"); return v && v[0] == '1'; }();
-  return (env || opts_.path_tracing) && rtx_scene_.ready() && rtx_integrator_;
+  return (env || opts_.path_tracing) && rtx_scene_.ready() && rtx_integrator_ && !remix_mode_;
 }
 
 RtxIntegrator* D3D12Backend::rtx_active_integrator() const {
@@ -5023,6 +5102,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     apply_fullscreen_mode();
     if (pick_scale() != scale_ || opts_.msaa != msaa_applied_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
+#ifdef MELEE_REMIX_SPIKE
+  remix_mode_ = !remix_failed_ && remix_wanted();   // decided before the upscaler, which stands down for it
+#endif
   configure_dlss();
   diag("frame setup");
   // Never block the presentation thread on a driver pipeline compile. A 12 ms

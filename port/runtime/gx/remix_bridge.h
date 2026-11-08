@@ -17,10 +17,16 @@ class RemixBridge {
   RemixBridge();
   ~RemixBridge();
   // Loads the runtime and starts it on a window of its own (hidden when `hidden`). False: not usable.
-  bool start(int width, int height, bool hidden, std::string* error);
+  // parent: the game's window (HWND) to draw inside, over its picture; null: Remix's own window.
+  bool start(int width, int height, bool hidden, std::string* error, void* parent = nullptr);
+  void show(bool on);
+  // Inside the game's window: the picture's rectangle in its client area (follows resizes).
+  void place(int x, int y, int w, int h);
   bool started() const { return started_; }
   // One match frame: the draws of `camera`, `view_to_world` (row major 3x4) and the lights in world space.
-  void frame(const Frame& f, int camera, const float view_to_world[12], const std::vector<RtxLightRecord>& lights);
+  // `layer`: per draw, 1 where the renderer's layer carries it (effects, live screens) and Remix leaves it out.
+  void frame(const Frame& f, int camera, const float view_to_world[12], const std::vector<RtxLightRecord>& lights,
+             const std::vector<uint8_t>& layer);
   // The game's HUD for the next frame: `bgra` w x h (alpha = HUD coverage), drawn over Remix's
   // picture as a screen-space layer (D3D9 mode).
   void set_hud(const uint8_t* bgra, int w, int h);

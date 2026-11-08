@@ -167,6 +167,10 @@ struct RemixBridge::Impl {
   std::vector<uint8_t> hud;
   bool hud_new = false;
   std::string backbuffer_capture;   // D3D9 mode: save the next presented picture here
+  bool child = false;                // drawing inside the game's window (the renderer setting)
+  int shown = -1;                    // the window's visibility as show() last set it (-1 not yet)
+  int place_x = -1, place_y = -1;    // where place() last put that window
+  int want_w = 0, want_h = 0, want_frames = 0;   // a new picture size, held a few frames before the device is reset
   // This frame's bright effects (remix_effect_draw, additive) as lights: where, how big, what colour.
   struct FxLight { float pos[3]; float radius; float rgb[3]; float power; };
   std::vector<FxLight> fx_lights;
@@ -191,7 +195,7 @@ RemixBridge::~RemixBridge() {
   delete impl_;
 }
 
-bool RemixBridge::start(int width, int height, bool hidden, std::string* error) {
+bool RemixBridge::start(int width, int height, bool hidden, std::string* error, void* parent) {
   Impl& m = *impl_;
   std::wstring dir;
   if (const wchar_t* v = _wgetenv(L"MELEE_REMIX_DIR")) dir = v;
@@ -209,11 +213,19 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error) 
   wc.hInstance = GetModuleHandleW(nullptr);
   wc.lpszClassName = L"MeleeUnlockedRemix";
   RegisterClassW(&wc);
-  RECT r{0, 0, width, height};
-  AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-  m.hwnd = CreateWindowExW(0, wc.lpszClassName, L"Melee Unlocked: RTX Remix", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                           r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+  if (parent) {
+    // Inside the game's window, over its picture (place() keeps it there). Disabled, so the mouse and
+    // the keyboard stay with the game's window under it.
+    m.hwnd = CreateWindowExW(WS_EX_NOPARENTNOTIFY, wc.lpszClassName, L"", WS_CHILD | WS_DISABLED | WS_CLIPSIBLINGS,
+                             0, 0, width, height, (HWND)parent, nullptr, wc.hInstance, nullptr);
+  } else {
+    RECT r{0, 0, width, height};
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    m.hwnd = CreateWindowExW(0, wc.lpszClassName, L"Melee Unlocked: RTX Remix", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+                             r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+  }
   if (!m.hwnd) { if (error) *error = "no window for Remix"; return false; }
+  m.child = parent != nullptr;
   if (!hidden) ShowWindow(m.hwnd, SW_SHOWNOACTIVATE);
   m.width = width; m.height = height;
   // D3D9 mode (MELEE_REMIX_API_PRESENT=1 keeps the API's own presenter): the documented D3D9
@@ -336,7 +348,8 @@ void RemixBridge::add_fx_light(const Frame& f, const DrawCall& d, const float vw
   m.fx_lights.push_back(l);
 }
 
-void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const std::vector<RtxLightRecord>& lights) {
+void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const std::vector<RtxLightRecord>& lights,
+                        const std::vector<uint8_t>& layer) {
   if (!started_ || camera < 0 || (size_t)camera >= f.rtx.cameras.size()) return;
   Impl& m = *impl_;
   const auto t0 = std::chrono::steady_clock::now();
@@ -389,11 +402,12 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // Remix's own specular replaces it.
     const bool fighter = d.skinned && d.owner_player < 6;
     if (additive && fighter) continue;
-    // Effects reach Remix's picture through the layer the renderer composes over it, exactly as the
-    // game drew them (remix_effect_draw). The bright ones (additive: fire, sparks, flashes, glows)
-    // also light the scene, as lights at their place in their own colour.
-    if (remix_effect_draw(d)) {
-      if (additive && !no_lights) add_fx_light(f, d, vw);
+    // Effects and live screens reach Remix's picture through the layer the renderer composes over it,
+    // exactly as the game drew them (`layer`, D3D12Backend::remix_layer_draw). The bright effects
+    // (additive: fire, sparks, flashes, glows) also light the scene, at their place in their own colour.
+    const size_t draw_index = (size_t)(&d - f.draws.data());
+    if (draw_index < layer.size() && layer[draw_index]) {
+      if (additive && !no_lights && remix_effect_draw(d)) add_fx_light(f, d, vw);
       // Test runs (MELEE_REMIX_FXLOG=<sim frame>): each effect draw's owner and GX blend/depth state.
       static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
       if (fx_log && f.sequence == fx_log)
@@ -775,6 +789,38 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
   stats_.cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+void RemixBridge::show(bool on) {
+  Impl& m = *impl_;
+  if (!m.hwnd || m.shown == (on ? 1 : 0)) return;
+  ShowWindow(m.hwnd, on ? SW_SHOWNOACTIVATE : SW_HIDE);
+  m.shown = on ? 1 : 0;
+}
+
+// The game's picture moved or changed size (window resized, 4:3 menus and widescreen matches): the
+// window follows at once; the device's picture follows when the new size has held for a few frames
+// (a reset rebuilds Remix's targets, so a drag does not reset on every step).
+void RemixBridge::place(int x, int y, int w, int h) {
+  Impl& m = *impl_;
+  if (!m.child || !m.hwnd || w < 16 || h < 16) return;
+  if (x != m.place_x || y != m.place_y || w != m.want_w || h != m.want_h) {
+    SetWindowPos(m.hwnd, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
+    m.place_x = x; m.place_y = y;
+    if (w != m.want_w || h != m.want_h) { m.want_w = w; m.want_h = h; m.want_frames = 0; }
+  }
+  if ((w != m.width || h != m.height) && m.d3d9_mode && m.device && ++m.want_frames >= 10) {
+    if (m.hud_tex) { m.hud_tex->Release(); m.hud_tex = nullptr; }
+    D3DPRESENT_PARAMETERS pp{};
+    pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD; pp.hDeviceWindow = m.hwnd;
+    pp.BackBufferWidth = (UINT)w; pp.BackBufferHeight = (UINT)h; pp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    pp.EnableAutoDepthStencil = TRUE; pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    const HRESULT hr = m.device->ResetEx(&pp, nullptr);
+    host::log("remix: picture %dx%d -> %dx%d (%08X)", m.width, m.height, w, h, (unsigned)hr);
+    if (SUCCEEDED(hr)) { m.width = w; m.height = h; m.hud_new = !m.hud.empty(); }
+    m.want_frames = 0;
+  }
+}
+
 void RemixBridge::present_d3d9() {
   Impl& m = *impl_;
     // The HUD: one screen-space textured quad over the whole picture (Remix treats pre-transformed
@@ -914,8 +960,10 @@ bool RemixBridge::capture_output(const std::string& path, int type) {
 struct RemixBridge::Impl {};
 RemixBridge::RemixBridge() {}
 RemixBridge::~RemixBridge() {}
-bool RemixBridge::start(int, int, bool, std::string* error) { if (error) *error = "Windows only"; return false; }
-void RemixBridge::frame(const Frame&, int, const float*, const std::vector<RtxLightRecord>&) {}
+bool RemixBridge::start(int, int, bool, std::string* error, void*) { if (error) *error = "Windows only"; return false; }
+void RemixBridge::show(bool) {}
+void RemixBridge::place(int, int, int, int) {}
+void RemixBridge::frame(const Frame&, int, const float*, const std::vector<RtxLightRecord>&, const std::vector<uint8_t>&) {}
 bool RemixBridge::capture(const std::string&) { return false; }
 bool RemixBridge::capture_output(const std::string&, int) { return false; }
 void RemixBridge::present_2d() {}

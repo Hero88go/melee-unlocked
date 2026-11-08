@@ -19,6 +19,8 @@ bool rtx_path_tracing_ready();
 // never starts the path tracer, so it must not switch off what the player chose.
 bool rtx_path_tracing_known();
 bool rtx_nvidia_integrator_available();
+// RTX Remix can draw the matches (local builds with the bridge and its runtime beside the game).
+bool rtx_remix_available();
 // Windows HDR is on for the screen the game is on (Direct3D 12 checks it at each present).
 bool hdr_display_available();
 void gpu_pass_cost(float* dlaa_ms, float* neural_ms);
