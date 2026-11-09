@@ -348,7 +348,7 @@ float3 specular_albedo(float3 f0, float nv, float roughness) {
 // picture at a glancing view.
 static const float kFloorRoughness = 0.03;
 static const float kModSheenRoughness = 0.25;   // a stage mod's floor with Shiny floors on stage mods at Sheen
-static const float kRimStrength = 0.6;          // fighters' rim light
+static const float kRimStrength = 0.3;          // fighters' rim light
 static const float kWaterReflection = 0.30;     // Fountain of Dreams' water: share of its picture that is reflection
 float3 floor_fresnel(float3 n, float3 v) {
   return min(2.0 * floor_strength * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), min(0.5 * floor_strength, 0.9));

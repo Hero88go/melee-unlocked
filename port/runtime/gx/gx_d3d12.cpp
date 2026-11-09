@@ -3390,17 +3390,16 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
   for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t)
     if (material->tobjs[t].coord == 1) in.flags |= kRtxGeometryTintedReflection;
   rtx_material_params(material, &in.specular, &in.roughness);
-  // Water: a stage surface textured by a picture the game captured from the screen (an EFB copy), one the
-  // game maps a painted reflection onto (an environment map), or any stage surface on Fountain of Dreams,
+  // Water: a stage surface textured by a picture the game captured from the screen (an EFB copy), or any
+  // stage surface on Fountain of Dreams,
   // whose water is a fixed painting under Lagless FoD. The shader reflects only its floors
   // (MELEE_RTX_NO_WATER=1 off).
   {
     static const bool no_water = host::test_env::getenv("MELEE_RTX_NO_WATER") != nullptr;
     bool captured = false;
     for (const TextureRef& t : dc.textures) captured = captured || (t.used && efb_copies_.count(t.addr) != 0);
-    const bool painted_reflection = (in.flags & kRtxGeometryTintedReflection) != 0;
     const bool water_stage = host::g_stage_water.load(std::memory_order_relaxed);
-    if (!no_water && (captured || painted_reflection || water_stage) && dc.owner_player == 0xFF && !additive) in.flags |= kRtxGeometryMirrorWater;
+    if (!no_water && (captured || water_stage) && dc.owner_player == 0xFF && !additive) in.flags |= kRtxGeometryMirrorWater;
   }
   // GX's own lighting of the draw (channel 0): its ambient register and whether it is lit at all.
   const uint32_t amb = dc.xf_regs[0x0A], chan = dc.xf_regs[0x0E];
