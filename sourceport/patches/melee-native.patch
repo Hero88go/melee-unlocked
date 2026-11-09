@@ -169546,7 +169546,7 @@ index db7f79319..790ef73eb 100644
              tail = &(*tail)->next;
          }
 diff --git a/src/melee/lb/lbaudio_ax.c b/src/melee/lb/lbaudio_ax.c
-index 0854fb240..78b99bcc7 100644
+index 0854fb240..f5635d010 100644
 --- a/src/melee/lb/lbaudio_ax.c
 +++ b/src/melee/lb/lbaudio_ax.c
 @@ -27,9 +27,12 @@
@@ -170546,7 +170546,7 @@ index 0854fb240..78b99bcc7 100644
  void lbAudioAx_8002838C(void)
  {
      static u32 ar_stack[0x10];
-@@ -2119,28 +2507,33 @@ void lbAudioAx_8002838C(void)
+@@ -2119,28 +2507,41 @@ void lbAudioAx_8002838C(void)
      lbl_804D6438 = lbl_804D643C + lbl_804D6440 + lbl_804D6444;
      lbl_804D3870 = lbl_804D6438;
  
@@ -170572,8 +170572,16 @@ index 0854fb240..78b99bcc7 100644
 -        AXDriver_8038E37C(AXDRIVER_AUX_DELAY, &delay);
 +#endif
 +        HSD_AudioSFXGetDefaultAuxParam(AXDRIVER_AUX_DELAY, &delay);
++#ifdef MU_NATIVE
++        /* The game sizes the delay as a reverb (type 2): that reads a reverb's pre-delay at offset
++         * 0x150, past the end of this delay, from whatever the stack holds there. A large leftover
++         * value failed the check and the game stopped as it started (a Linux report, 11-09). The
++         * delay is sized as a delay (72320 bytes, under 71 KB). */
++        HSD_ASSERT(0xF72, HSD_AudioGetAuxHeapSize(AXDRIVER_AUX_DELAY, &delay) < 71*1024);
++#else
          HSD_ASSERT(0xF72, HSD_AudioGetAuxHeapSize(2, &delay) < 71*1024);
 -        AXDriver_8038E30C(1, 4, &delay, lbl_80441064, sizeof(lbl_80441064));
++#endif
 +        HSD_AudioSFXSetupAux(1, 4, &delay, lbl_80441064, sizeof(lbl_80441064));
      }
  
@@ -170586,7 +170594,7 @@ index 0854fb240..78b99bcc7 100644
          lbl_804337C4[i] = -1;
          lbl_804338A4[i] = -1;
          lbl_80433984[i] = -1;
-@@ -2185,7 +2578,7 @@ void lbAudioAx_80028690(void)
+@@ -2185,7 +2586,7 @@ void lbAudioAx_80028690(void)
          strcpy(&cur_ssm_file[ssm_stem_pos], "smash2.sem");
          AXDriver_8038DA70(cur_ssm_file, lb_800195D0);
  
@@ -170595,7 +170603,7 @@ index 0854fb240..78b99bcc7 100644
              if (i != 0) {
                  lbl_80433A64[i] = -1;
                  lbl_804337C4[i] = -1;
-@@ -2274,3 +2667,30 @@ void lbAudioAx_80028B90(void)
+@@ -2274,3 +2675,30 @@ void lbAudioAx_80028B90(void)
  {
      lbl_804D38CC = 0x7F;
  }
