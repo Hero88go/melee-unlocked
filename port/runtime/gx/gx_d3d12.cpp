@@ -4243,6 +4243,7 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.descriptor_size = srv_size_;
   in.free_slot = rtx_integrator_slot_;
   in.free_slot_count = 32;
+  in.denoise = !(opts_.ray_reconstruction && streamline::ray_reconstruction_available());
   in.raster_color = efb_color_.Get();
   in.albedo = rtx_albedo_.Get();
   in.normal_depth = rtx_normal_.Get();

@@ -95,6 +95,9 @@ struct RtxFrameInputs {
   bool radiance_cache = true;                     // a world-space radiance cache for multi-bounce light (NVIDIA: SHaRC)
   ID3D12Resource* draws = nullptr;                // per draw index: material record for the G-buffer
   uint32_t draw_count = 0;
+  // Ray Reconstruction is not running this frame: an integrator that has its own denoiser (the RTX Pack's
+  // NVIDIA NRD) denoises its output itself.
+  bool denoise = false;
 };
 
 struct RtxFrameOutputs {
@@ -121,7 +124,7 @@ std::unique_ptr<RtxIntegrator> make_melee_integrator();
 //   gx::RtxIntegrator* melee_rtx_create_integrator();   // owned by the caller (deleted through the interface)
 // A DLL built against other headers (an older pack after an update) is refused, never called.
 // Bump kRtxPluginVersion whenever the interface or the light/record layouts change meaning.
-constexpr uint32_t kRtxPluginVersion = 2;
+constexpr uint32_t kRtxPluginVersion = 3;
 constexpr uint32_t rtx_plugin_abi() {
   return (kRtxPluginVersion << 24) ^ ((uint32_t)sizeof(RtxFrameInputs) << 8) ^ (uint32_t)sizeof(RtxFrameOutputs) ^
          ((uint32_t)sizeof(RtxLightRecord) << 16);
