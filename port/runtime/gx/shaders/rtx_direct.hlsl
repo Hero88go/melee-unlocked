@@ -350,6 +350,13 @@ static const float kFloorRoughness = 0.03;
 static const float kModSheenRoughness = 0.25;   // a stage mod's floor with Shiny floors on stage mods at Sheen
 static const float kRimStrength = 0.3;          // fighters' rim light
 static const float kWaterReflection = 0.30;     // Fountain of Dreams' water: share of its picture that is reflection
+// Grass and leaves on a stage mod (green and saturated): never mirrored, even with Shiny floors on
+// stage mods at Mirror (his 11-09 pick: the old guessed mirrors, minus grass turning into a lake).
+float not_grass(float3 albedo) {
+  const float sat = max(albedo.r, max(albedo.g, albedo.b)) - min(albedo.r, min(albedo.g, albedo.b));
+  const bool green = albedo.g > albedo.r * 1.15 && albedo.g > albedo.b * 1.1;
+  return green ? 1.0 - saturate((sat - 0.06) / 0.08) : 1.0;
+}
 float3 floor_fresnel(float3 n, float3 v) {
   return min(2.0 * floor_strength * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), min(0.5 * floor_strength, 0.9));
 }
@@ -588,7 +595,7 @@ void main(uint3 id : SV_DispatchThreadID) {
       // Shiny floors on stage mods: a sheen (half as strong, blurred), or the old guess in full.
       const bool modded = (switches & kModdedStage) != 0u;
       const bool sheen = modded && (switches & kModSheen) != 0u && roughness > 0.3;
-      const float guess = !modded || (switches & kModMirror) != 0u ? polished_floor(albedo) : sheen ? 0.5 * polished_floor(albedo) : 0.0;
+      const float guess = !modded ? polished_floor(albedo) : (switches & kModMirror) != 0u ? polished_floor(albedo) : sheen ? 0.5 * polished_floor(albedo) : 0.0;
       // Water (Fountain of Dreams): at least kWaterReflection of the picture is the traced reflection.
       const float3 fresnel = water ? max(floor_fresnel(n, v), kWaterReflection) : floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : guess);
       if (fresnel.x > 0.0 && water) {
@@ -744,7 +751,8 @@ void main(uint3 id : SV_DispatchThreadID) {
   if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0 &&
       ((switches & kModdedStage) == 0u || roughness <= 0.3 || (switches & (kModSheen | kModMirror)) != 0u)) {
     const bool sheen = (switches & kModdedStage) != 0u && (switches & kModMirror) == 0u && roughness > 0.3;
-    const float3 fresnel = water ? max(floor_fresnel(n, v), kWaterReflection) : floor_fresnel(n, v) * (sheen ? 0.5 : 1.0);
+    const float mod_floor = (switches & kModdedStage) != 0u && roughness > 0.3 ? not_grass(albedo) : 1.0;
+    const float3 fresnel = water ? max(floor_fresnel(n, v), kWaterReflection) : floor_fresnel(n, v) * (sheen ? 0.5 : 1.0) * mod_floor;
     if (water) water_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng, fresnel.x);
     else shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng, sheen ? kModSheenRoughness : kFloorRoughness);
     if (fx_light_count != 0u) shaded += fresnel * fx_mirror(p, n, v, kFloorRoughness);
