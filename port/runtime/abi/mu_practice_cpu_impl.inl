@@ -601,6 +601,17 @@ static int pc_recover(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPc
     return 1;
 }
 
+/* A pick from a group with some of its options taken out (no_attacks). -1 when nothing is left. */
+static int pc_pick_without(MuPcState* s, const mu_pc_u8* odds, int n, const int* drop, int ndrop)
+{
+    mu_pc_u8 copy[32];
+    int i;
+    if (n > 32) n = 32;
+    for (i = 0; i < n; i++) copy[i] = odds[i];
+    for (i = 0; i < ndrop; i++) if (drop[i] >= 0 && drop[i] < n) copy[drop[i]] = 0;
+    return pc_pick(s, copy, n);
+}
+
 int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput* o)
 {
     const MuPcFighter* f = &v->cpu;
@@ -666,7 +677,9 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
     }
     if (!f->airborne) s->tech_pressed = 0;
     if (hitstun_ended && f->airborne) {
-        const int choice = pc_pick(s, c->after_odds, MU_PC_AFTER_COUNT);
+        static const int after_attacks[] = {MU_PC_AFTER_NAIR, MU_PC_AFTER_UP_B};
+        const int choice = c->no_attacks ? pc_pick_without(s, c->after_odds, MU_PC_AFTER_COUNT, after_attacks, 2)
+                                         : pc_pick(s, c->after_odds, MU_PC_AFTER_COUNT);
         s->was_hitstun = 0;
         if (choice > MU_PC_AFTER_NOTHING) {
             pc_start(s, PC_P_AFTER, toward, choice, 1);
@@ -686,18 +699,24 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         return 1;
     }
     if (down && !s->was_down) {
-        int choice = pc_pick(s, c->getup_odds, MU_PC_GETUP_COUNT);
+        static const int getup_attacks[] = {MU_PC_GETUP_ATTACK};
+        int choice = c->no_attacks ? pc_pick_without(s, c->getup_odds, MU_PC_GETUP_COUNT, getup_attacks, 1)
+                                   : pc_pick(s, c->getup_odds, MU_PC_GETUP_COUNT);
         pc_start(s, PC_P_GETUP, toward, choice < 0 ? MU_PC_GETUP_STAND : choice, (int) pc_rand(s, 12));
     }
     s->was_down = down;
     if (ledge && !s->was_ledge) {
-        int choice = pc_pick(s, c->ledge_odds, MU_PC_LEDGE_COUNT);
+        static const int ledge_attacks[] = {MU_PC_LEDGE_ATTACK};
+        int choice = c->no_attacks ? pc_pick_without(s, c->ledge_odds, MU_PC_LEDGE_COUNT, ledge_attacks, 1)
+                                   : pc_pick(s, c->ledge_odds, MU_PC_LEDGE_COUNT);
         pc_start(s, PC_P_LEDGE, toward, choice < 0 ? MU_PC_LEDGE_GETUP : choice,
                  (int) pc_rand(s, (mu_pc_u32) c->ledge_delay + 1u) + 1);
     }
     s->was_ledge = ledge;
     if (shieldstun_ended && !c->freeze) {
-        int choice = pc_pick(s, c->oos_odds, MU_PC_OOS_COUNT);
+        static const int oos_attacks[] = {MU_PC_OOS_NAIR, MU_PC_OOS_UP_B, MU_PC_OOS_SHINE, MU_PC_OOS_GRAB};
+        int choice = c->no_attacks ? pc_pick_without(s, c->oos_odds, MU_PC_OOS_COUNT, oos_attacks, 4)
+                                   : pc_pick(s, c->oos_odds, MU_PC_OOS_COUNT);
         pc_start(s, PC_P_OOS, (int) pc_rand(s, 2) ? toward : -toward, choice < 0 ? MU_PC_OOS_HOLD : choice, 0);
     }
     if (f->motion == MU_PC_MS_GUARD_SET_OFF) {
@@ -743,7 +762,7 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
     }
 
     /* ---- holding the opponent: its throw ---- */
-    if (f->motion == MU_PC_MS_CATCH_WAIT && !s->holding && s->plan != PC_P_THROW) {
+    if (f->motion == MU_PC_MS_CATCH_WAIT && !s->holding && s->plan != PC_P_THROW && !c->no_attacks) {
         const int choice = pc_pick(s, c->throw_odds, MU_PC_THROW_COUNT);
         s->throw_choice = choice;
         if (choice >= 0) pc_start(s, PC_P_THROW, (int) pc_sign(f->facing), choice, 4 + (int) pc_rand(s, 9));
@@ -770,7 +789,7 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
     {
         const float dist = pc_abs(v->opp.x - f->x);
         int atk = -1;
-        if (dist < (float) c->attack_range && pc_chance(s, c->aggression)) atk = pc_pick(s, c->attack_odds, MU_PC_ATK_COUNT);
+        if (!c->no_attacks && dist < (float) c->attack_range && pc_chance(s, c->aggression)) atk = pc_pick(s, c->attack_odds, MU_PC_ATK_COUNT);
         /* A ground attack only reaches an opponent on its own floor: with them on a platform above (or
          * below) it grabbed and jabbed at the air under them for as long as they stood there. It moves
          * instead; aerials and specials still go. */

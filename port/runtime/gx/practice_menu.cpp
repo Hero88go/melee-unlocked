@@ -542,6 +542,7 @@ std::vector<Row> rows_for(Page p) {
     case Page::Cpu:
       rows.push_back(toggle_row("Practice CPU", &c.enabled, "On: the CPU follows these pages. Never online."));
       rows.push_back(toggle_row("Only react", &c.freeze, "It stands still and only DIs, techs and recovers."));
+      rows.push_back(toggle_row("Moving target", &c.no_attacks, "It moves around, shields and dodges, but never attacks or grabs."));
       rows.push_back(page_row("Movement", Page::Moves, top_of_moves(c, kMoves, kMoves2), "What it does between attacks."));
       {
         const practice_cpu::Status st = practice_cpu::status();

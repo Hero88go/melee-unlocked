@@ -222,7 +222,10 @@ typedef struct MuPcConfig {
     mu_pc_u8 aerial_timing;      /* MU_PC_TIMING_* */
     mu_pc_u8 rng_mode;           /* MU_PC_RNG_* (the engine adapters apply it, not the model) */
     mu_pc_u8 rng_seed;           /* 0..255, the seed MU_PC_RNG_SAME and _FROZEN write */
-    mu_pc_u8 reserved2[5];
+    mu_pc_u8 no_attacks;         /* 1: a moving target. It moves, shields, dodges, DIs, techs and recovers,
+                                  * but never attacks: no attacks in range, out of shield, from the ledge,
+                                  * getting up or after a hit, and no grabs (Preflight's Behavior > Attacks off) */
+    mu_pc_u8 reserved2[4];
 } MuPcConfig;
 
 /* Training tools (Source Port's lab, shim/mu_lab.c, and the host overlay). */

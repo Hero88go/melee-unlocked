@@ -380,7 +380,64 @@ static void test_rng_seed() {
   CHECK(mu_pc_rng_seed(5) != mu_pc_rng_seed(6));
 }
 
+// Moving target (no_attacks): every attack at full weight and full aggression, and still no attack,
+// grab or special on stage: in neutral, out of shield, from the ledge and getting up.
+static bool attack_plan(int plan) {
+  return plan == PC_P_GROUND_ATTACK || plan == PC_P_AERIAL || plan == PC_P_SPECIAL || plan == PC_P_THROW;
+}
+static void test_moving_target() {
+  MuPcConfig c;
+  mu_pc_defaults(&c);
+  c.enabled = 1;
+  c.no_attacks = 1;
+  c.aggression = 100;
+  c.attack_range = 80;
+  for (auto& w : c.attack_odds) w = 100;
+  std::memset(c.oos_odds, 0, sizeof c.oos_odds);
+  c.oos_odds[MU_PC_OOS_NAIR] = c.oos_odds[MU_PC_OOS_GRAB] = c.oos_odds[MU_PC_OOS_SHINE] = c.oos_odds[MU_PC_OOS_UP_B] = 100;
+  std::memset(c.ledge_odds, 0, sizeof c.ledge_odds);
+  c.ledge_odds[MU_PC_LEDGE_ATTACK] = 100;
+  std::memset(c.getup_odds, 0, sizeof c.getup_odds);
+  c.getup_odds[MU_PC_GETUP_ATTACK] = 100;
+  MuPcState s;
+  std::memset(&s, 0, sizeof s);
+  s.rng = 12345u;
+  int pressed = 0, plans = 0, moved = 0;
+  for (int frame = 0; frame < 6000; ++frame) {
+    MuPcView v = view();
+    v.frame = (mu_pc_u32) frame;
+    v.opp.x = 10.0f + (float) (frame % 40);
+    const int phase = (frame / 300) % 4;
+    if (phase == 1 && frame % 300 == 0) v.cpu.motion = MU_PC_MS_GUARD_SET_OFF;   // shieldstun, then guard
+    if (phase == 1 && frame % 300 == 1) v.cpu.motion = MU_PC_MS_GUARD;
+    if (phase == 2 && frame % 300 < 2) v.cpu.motion = MU_PC_MS_CLIFF_WAIT;
+    if (phase == 3 && frame % 300 < 2) v.cpu.motion = MU_PC_MS_DOWN_WAIT_U;
+    MuPcInput in;
+    mu_pc_frame(&c, &s, &v, &in);
+    if (in.buttons & (MU_PC_A | MU_PC_B | MU_PC_Z)) ++pressed;
+    if (attack_plan(s.plan)) ++plans;
+    if (in.lx != 0.0f || (in.buttons & (MU_PC_X | MU_PC_Y | MU_PC_L | MU_PC_R))) ++moved;
+  }
+  CHECK(pressed == 0);
+  CHECK(plans == 0);
+  CHECK(moved > 500);   // it still moves around
+  // Off again: the same settings attack.
+  c.no_attacks = 0;
+  std::memset(&s, 0, sizeof s);
+  s.rng = 12345u;
+  int attacks = 0;
+  for (int frame = 0; frame < 600; ++frame) {
+    MuPcView v = view();
+    v.frame = (mu_pc_u32) frame;
+    MuPcInput in;
+    mu_pc_frame(&c, &s, &v, &in);
+    if (attack_plan(s.plan)) ++attacks;
+  }
+  CHECK(attacks > 0);
+}
+
 int main() {
+  test_moving_target();
   test_load_version_1();
   test_throw();
   test_floorhug();

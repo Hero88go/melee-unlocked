@@ -3755,6 +3755,11 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     bool freeze = c.freeze != 0;
     if (settings_toggle("Only react to hits", &freeze)) { c.freeze = freeze; changed = true; }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stands still; only DI, techs, getups, ledge options and recovery stay on.");
+    bool moving_target = c.no_attacks != 0;
+    if (settings_toggle("Moving target (no attacks)", &moving_target)) { c.no_attacks = moving_target; changed = true; }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("It moves around, shields, dodges, DIs, techs and recovers, but never attacks or grabs:\n"
+                        "no attacks in range, out of shield, from the ledge, getting up or after a hit.");
     heading("Style");
     changed |= percent_row("Aggression", &c.aggression, "How often it attacks (rather than moves) when you are in range.");
     changed |= number_row("Attack range", &c.attack_range, 10, 80, "%d units", "How close you must be before it attacks.");
