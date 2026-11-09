@@ -80,6 +80,7 @@ enum {
     PC_P_RUN_PAST,
     PC_P_TURN,
     PC_P_THROW,
+    PC_P_RUN_SHINE,
     PC_P_COUNT
 };
 
@@ -161,6 +162,21 @@ static void pc_start(MuPcState* s, int plan, int dir, int arg, int len)
     s->plan_arg = arg;
     s->plan_len = len;
     s->fall_t = 0;
+}
+
+/* The stick for a roll toward one side of the stage: the nearer ledge, or the middle (x = 0). */
+static float pc_side_stick(int side, float x)
+{
+    const float out = x >= 0.0f ? 1.0f : -1.0f;
+    return side == MU_PC_SIDE_LEDGE ? out : -out;
+}
+/* The stick for a tech: in place, toward or away from the opponent, or toward a side of the stage. */
+static float pc_tech_stick(int choice, int toward, float x)
+{
+    if (choice == MU_PC_TECH_IN) return (float) toward;
+    if (choice == MU_PC_TECH_AWAY) return (float) -toward;
+    if (choice >= MU_PC_TECH_COUNT) return pc_side_stick(choice - MU_PC_TECH_COUNT, x);
+    return 0.0f;
 }
 
 /* The drift of a hop (`hop`) or an aerial: "Mix" keeps the old ways (hops either way, aerials toward). */
@@ -414,6 +430,7 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         return t < 20 && !(t > 4 && !f->airborne);
     case PC_P_OOS: {
         const int which = s->plan_arg;
+        if (s->act_wait > 0) { s->act_wait--; s->plan_t = -1; pc_shield(o); return 1; }   /* CPU delay: still shielding */
         switch (which) {
         case MU_PC_OOS_HOLD: pc_shield(o); return t < 15;
         case MU_PC_OOS_DROP: return 0;
@@ -446,6 +463,8 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
         switch (s->plan_arg) {
         case MU_PC_GETUP_ROLL_IN: o->lx = (float) toward; break;
         case MU_PC_GETUP_ROLL_AWAY: o->lx = (float) -toward; break;
+        case MU_PC_GETUP_COUNT + MU_PC_SIDE_LEDGE: o->lx = pc_side_stick(MU_PC_SIDE_LEDGE, f->x); break;
+        case MU_PC_GETUP_COUNT + MU_PC_SIDE_MIDDLE: o->lx = pc_side_stick(MU_PC_SIDE_MIDDLE, f->x); break;
         case MU_PC_GETUP_ATTACK: o->buttons |= MU_PC_A; break;
         case MU_PC_GETUP_WAIT: return pc_is_down(f->motion) && t < 300;
         default: o->ly = 1.0f; break;
@@ -531,6 +550,12 @@ static int pc_run_plan(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuP
     case PC_P_TURN:
         if (t < 2) o->lx = -0.4f * pc_sign(f->facing);   /* a soft tilt: turns without a dash */
         return t < 10;
+    case PC_P_RUN_SHINE:
+        /* A dash toward it, then the down special out of the run (Fox and Falco: the shine). */
+        if (t < 2) { o->lx = (float) dir; return 1; }
+        if (t < 14 && pc_abs(v->opp.x - f->x) > 14.0f) { o->lx = (float) dir; return 1; }
+        if (!s->plan_len) { o->ly = -1.0f; o->buttons |= MU_PC_B; s->plan_len = 1; return 1; }
+        return t < 30 && !(f->can_act && t > 6);
     case PC_P_THROW:
         /* Holding the opponent: the throw after a short wait; plan_dir is the facing it holds with. */
         if (t < s->plan_len) return f->motion == MU_PC_MS_CATCH_WAIT;
@@ -623,6 +648,13 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
     const int ledge = f->motion == MU_PC_MS_CLIFF_WAIT;
     int busy_reaction = 0;
     pc_clear(o);
+    /* On the respawn platform: it gets off at once ("leave", or half the time with "mix"), else waits as the game does. */
+    if (c != 0 && c->enabled && f->present && f->motion == MU_PC_MS_REBIRTH_WAIT && c->respawn != MU_PC_RESPAWN_WAIT) {
+        if (!(s->respawn & 1)) s->respawn = 1 | ((c->respawn == MU_PC_RESPAWN_LEAVE || pc_rand(s, 2)) ? 2 : 0);
+        if ((s->respawn & 2) && ((mu_pc_u32) v->frame & 1u)) o->ly = -1.0f;   /* down: off the platform */
+        return 1;
+    }
+    s->respawn = 0;
     if (c == 0 || !c->enabled || !f->present || f->motion < MU_PC_MS_WAIT || f->motion == MU_PC_MS_ENTRY) {
         s->plan = PC_P_NONE;
         s->was_hitlag = s->was_hitstun = s->was_shieldstun = s->was_down = s->was_ledge = 0;
@@ -661,18 +693,22 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         return 1;
     }
     if (pc_is_tumble(f) && !s->tech_pressed && v->land_frames >= 0 && v->land_frames <= 6) {
-        int choice = pc_pick(s, c->tech_odds, MU_PC_TECH_COUNT);
+        mu_pc_u8 all[MU_PC_TECH_COUNT + MU_PC_SIDE_COUNT];
+        int i, choice;
+        for (i = 0; i < MU_PC_TECH_COUNT; i++) all[i] = c->tech_odds[i];
+        for (i = 0; i < MU_PC_SIDE_COUNT; i++) all[MU_PC_TECH_COUNT + i] = c->tech2_odds[i];
+        choice = pc_pick(s, all, MU_PC_TECH_COUNT + MU_PC_SIDE_COUNT);
         s->tech_pressed = 1;
         s->tech_choice = choice;
         if (choice >= 0 && choice != MU_PC_TECH_MISS) {
             pc_shield(o);
-            o->lx = choice == MU_PC_TECH_IN ? (float) toward : choice == MU_PC_TECH_AWAY ? (float) -toward : 0.0f;
+            o->lx = pc_tech_stick(choice, toward, f->x);
             s->was_hitstun = f->hitstun;
             return 1;
         }
     }
     if (s->tech_pressed && f->airborne && s->tech_choice >= 0 && s->tech_choice != MU_PC_TECH_MISS) {
-        o->lx = s->tech_choice == MU_PC_TECH_IN ? (float) toward : s->tech_choice == MU_PC_TECH_AWAY ? (float) -toward : 0.0f;
+        o->lx = pc_tech_stick(s->tech_choice, toward, f->x);
         busy_reaction = 1;
     }
     if (!f->airborne) s->tech_pressed = 0;
@@ -681,12 +717,27 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         const int choice = c->no_attacks ? pc_pick_without(s, c->after_odds, MU_PC_AFTER_COUNT, after_attacks, 2)
                                          : pc_pick(s, c->after_odds, MU_PC_AFTER_COUNT);
         s->was_hitstun = 0;
-        if (choice > MU_PC_AFTER_NOTHING) {
+        if (choice > MU_PC_AFTER_NOTHING && c->act_delay) {
+            s->after_pending = choice;   /* CPU delay: the answer comes act_delay frames later */
+            s->act_wait = c->act_delay;
+        } else if (choice > MU_PC_AFTER_NOTHING) {
             pc_start(s, PC_P_AFTER, toward, choice, 1);
             pc_run_plan(c, s, v, o);
             s->plan = PC_P_NONE;
             return 1;
         }
+    }
+    if (s->after_pending && !f->hitstun && f->airborne) {
+        if (s->act_wait > 0) { s->act_wait--; }
+        else {
+            pc_start(s, PC_P_AFTER, toward, s->after_pending, 1);
+            s->after_pending = 0;
+            pc_run_plan(c, s, v, o);
+            s->plan = PC_P_NONE;
+            return 1;
+        }
+    } else if (!f->airborne) {
+        s->after_pending = 0;
     }
     s->was_hitstun = f->hitstun;
     if (f->hitstun) {
@@ -699,10 +750,13 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         return 1;
     }
     if (down && !s->was_down) {
-        static const int getup_attacks[] = {MU_PC_GETUP_ATTACK};
-        int choice = c->no_attacks ? pc_pick_without(s, c->getup_odds, MU_PC_GETUP_COUNT, getup_attacks, 1)
-                                   : pc_pick(s, c->getup_odds, MU_PC_GETUP_COUNT);
-        pc_start(s, PC_P_GETUP, toward, choice < 0 ? MU_PC_GETUP_STAND : choice, (int) pc_rand(s, 12));
+        mu_pc_u8 all[MU_PC_GETUP_COUNT + MU_PC_SIDE_COUNT];
+        int i, choice;
+        for (i = 0; i < MU_PC_GETUP_COUNT; i++) all[i] = c->getup_odds[i];
+        for (i = 0; i < MU_PC_SIDE_COUNT; i++) all[MU_PC_GETUP_COUNT + i] = c->getup2_odds[i];
+        if (c->no_attacks) all[MU_PC_GETUP_ATTACK] = 0;
+        choice = pc_pick(s, all, MU_PC_GETUP_COUNT + MU_PC_SIDE_COUNT);
+        pc_start(s, PC_P_GETUP, toward, choice < 0 ? MU_PC_GETUP_STAND : choice, (int) pc_rand(s, 12) + c->act_delay);
     }
     s->was_down = down;
     if (ledge && !s->was_ledge) {
@@ -718,6 +772,7 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         int choice = c->no_attacks ? pc_pick_without(s, c->oos_odds, MU_PC_OOS_COUNT, oos_attacks, 4)
                                    : pc_pick(s, c->oos_odds, MU_PC_OOS_COUNT);
         pc_start(s, PC_P_OOS, (int) pc_rand(s, 2) ? toward : -toward, choice < 0 ? MU_PC_OOS_HOLD : choice, 0);
+        s->act_wait = c->act_delay;
     }
     if (f->motion == MU_PC_MS_GUARD_SET_OFF) {
         pc_shield(o);   /* in shieldstun: keep the shield up */
@@ -749,9 +804,15 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
         (mu_pc_s32) v->frame - s->opp_attack_t >= (mu_pc_s32) c->reaction_frames &&
         pc_abs(v->opp.x - f->x) < (float) c->attack_range + 25.0f)
     {
-        const int choice = pc_pick(s, c->defend_odds, MU_PC_DEF_COUNT);
+        mu_pc_u8 all[MU_PC_DEF_COUNT + MU_PC_SIDE_COUNT];
+        int i, choice;
+        for (i = 0; i < MU_PC_DEF_COUNT; i++) all[i] = c->defend_odds[i];
+        for (i = 0; i < MU_PC_SIDE_COUNT; i++) all[MU_PC_DEF_COUNT + i] = c->def2_odds[i];
+        choice = pc_pick(s, all, MU_PC_DEF_COUNT + MU_PC_SIDE_COUNT);
         s->opp_attack_seen = 0;   /* one answer per attack */
         switch (choice) {
+        case MU_PC_DEF_COUNT + MU_PC_SIDE_LEDGE: pc_start(s, PC_P_ROLL, (int) pc_side_stick(MU_PC_SIDE_LEDGE, f->x), 0, 2); break;
+        case MU_PC_DEF_COUNT + MU_PC_SIDE_MIDDLE: pc_start(s, PC_P_ROLL, (int) pc_side_stick(MU_PC_SIDE_MIDDLE, f->x), 0, 2); break;
         case MU_PC_DEF_SHIELD: pc_start(s, PC_P_SHIELD, toward, 0, 12 + (int) pc_rand(s, 24)); break;
         case MU_PC_DEF_SPOT_DODGE: pc_start(s, PC_P_SPOT_DODGE, toward, 0, 2); break;
         case MU_PC_DEF_ROLL_IN: pc_start(s, PC_P_ROLL, toward, 0, 2); break;
@@ -765,7 +826,7 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
     if (f->motion == MU_PC_MS_CATCH_WAIT && !s->holding && s->plan != PC_P_THROW && !c->no_attacks) {
         const int choice = pc_pick(s, c->throw_odds, MU_PC_THROW_COUNT);
         s->throw_choice = choice;
-        if (choice >= 0) pc_start(s, PC_P_THROW, (int) pc_sign(f->facing), choice, 4 + (int) pc_rand(s, 9));
+        if (choice >= 0) pc_start(s, PC_P_THROW, (int) pc_sign(f->facing), choice, c->throw_wait ? (int) c->throw_wait : 4 + (int) pc_rand(s, 9));
     }
     s->holding = f->motion == MU_PC_MS_CATCH_WAIT;
 
@@ -789,12 +850,24 @@ int mu_pc_frame(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPcInput*
     {
         const float dist = pc_abs(v->opp.x - f->x);
         int atk = -1;
-        if (!c->no_attacks && dist < (float) c->attack_range && pc_chance(s, c->aggression)) atk = pc_pick(s, c->attack_odds, MU_PC_ATK_COUNT);
+        if (!c->no_attacks && dist < (float) c->attack_range && pc_chance(s, c->aggression)) {
+            mu_pc_u8 all[MU_PC_ATK_COUNT + 1];
+            int i;
+            for (i = 0; i < MU_PC_ATK_COUNT; i++) all[i] = c->attack_odds[i];
+            all[MU_PC_ATK_COUNT] = c->run_shine;
+            atk = pc_pick(s, all, MU_PC_ATK_COUNT + 1);
+        }
+        if (atk == MU_PC_ATK_COUNT) {   /* run shine: a dash in, then the down special */
+            pc_start(s, PC_P_RUN_SHINE, toward, 0, 0);
+            atk = -2;
+        }
         /* A ground attack only reaches an opponent on its own floor: with them on a platform above (or
          * below) it grabbed and jabbed at the air under them for as long as they stood there. It moves
          * instead; aerials and specials still go. */
         if (atk >= 0 && (atk <= MU_PC_ATK_BOOST_GRAB || atk == MU_PC_ATK_WAVEDASH_FTILT) && pc_abs(v->opp.y - f->y) > 12.0f) atk = -1;
-        if (atk >= 0) {
+        if (atk == -2) {
+            /* the run shine plan runs below */
+        } else if (atk >= 0) {
             switch (atk) {
             case MU_PC_ATK_NAIR: case MU_PC_ATK_FAIR: case MU_PC_ATK_BAIR: case MU_PC_ATK_UAIR: case MU_PC_ATK_DAIR: {
                 int flags = 0;
@@ -967,7 +1040,8 @@ int mu_pc_load(const unsigned char* bytes, unsigned int size, MuPcConfig* c)
     unsigned int i;
     if (bytes == 0 || size == 0) return 0;
     if (!(bytes[0] == MU_PC_CONFIG_VERSION && size == sizeof out) &&
-        !(bytes[0] == 1u && size == MU_PC_CONFIG_V1_SIZE))   /* version 1: version 2's fields keep their defaults */
+        !(bytes[0] == 2u && size == MU_PC_CONFIG_V2_SIZE) &&   /* version 2: version 3's fields keep their defaults */
+        !(bytes[0] == 1u && size == MU_PC_CONFIG_V1_SIZE))     /* version 1: so do version 2's */
         return 0;
     mu_pc_defaults(&out);
     for (i = 0; i < size; i++) p[i] = bytes[i];

@@ -559,6 +559,13 @@ std::vector<Row> rows_for(Page p) {
       rows.push_back(percent_row("Aggression", &c.aggression, "How often it attacks rather than moves when you are in range."));
       rows.push_back(number_row("Attack range", &c.attack_range, 10, 80, 5, "%d", "How close you must be before it attacks."));
       rows.push_back(number_row("Reaction", &c.reaction_frames, 0, 40, 1, "%df", "Frames before it answers. People take 15 to 25."));
+      rows.push_back(number_row("CPU delay", &c.act_delay, 0, 30, 1, "%df",
+                                "Frames it waits before it acts out of shield, getting up and leaving hitstun."));
+      {
+        static const char* const kRespawn[MU_PC_RESPAWN_COUNT] = {"Wait", "Get off", "Mix"};
+        rows.push_back(choice_row("Respawn platform", &c.respawn, kRespawn, MU_PC_RESPAWN_COUNT,
+                                  "Wait: it stays as long as the game lets it. Get off: it drops off at once."));
+      }
       rows.push_back(percent_row("L-cancel", &c.l_cancel, "Chance it L-cancels."));
       break;
     case Page::Moves:
@@ -572,6 +579,7 @@ std::vector<Row> rows_for(Page p) {
       break;
     case Page::Throws:
       for (int i = 0; i < MU_PC_THROW_COUNT; ++i) rows.push_back(odds_row(kThrows[i], c.throw_odds, MU_PC_THROW_COUNT, i));
+      rows.push_back(number_row("Throw wait", &c.throw_wait, 0, 60, 1, "%df", "Frames it holds you before it throws. 0: 4 to 12."));
       break;
     case Page::Jumps:
       rows.push_back(choice_row("Drift", &c.jump_drift, kDrift, MU_PC_DRIFT_COUNT,
@@ -590,12 +598,16 @@ std::vector<Row> rows_for(Page p) {
         labels[i] = kAttacks[i];
         if (i >= MU_PC_ATK_NEUTRAL_B && i < MU_PC_ATK_NEUTRAL_B + 4)
           if (const char* name = practice_cpu::special_name(st.kind, i - MU_PC_ATK_NEUTRAL_B)) labels[i] = name;
-        rows.push_back(odds_row(labels[i].c_str(), c.attack_odds, MU_PC_ATK_COUNT, i));
+        rows.push_back(odds_row(labels[i].c_str(), c.attack_odds, MU_PC_ATK_COUNT, i, &c.run_shine, 1));
       }
+      rows.push_back(odds_row("Run shine", &c.run_shine, 1, 0, c.attack_odds, MU_PC_ATK_COUNT));
+      rows.back().about += " A dash in, then its down special.";
       break;
     }
     case Page::Defense:
-      for (int i = 0; i < MU_PC_DEF_COUNT; ++i) rows.push_back(odds_row(kDefend[i], c.defend_odds, MU_PC_DEF_COUNT, i));
+      for (int i = 0; i < MU_PC_DEF_COUNT; ++i) rows.push_back(odds_row(kDefend[i], c.defend_odds, MU_PC_DEF_COUNT, i, c.def2_odds, MU_PC_SIDE_COUNT));
+      rows.push_back(odds_row("Roll to the ledge", c.def2_odds, MU_PC_SIDE_COUNT, MU_PC_SIDE_LEDGE, c.defend_odds, MU_PC_DEF_COUNT));
+      rows.push_back(odds_row("Roll to the middle", c.def2_odds, MU_PC_SIDE_COUNT, MU_PC_SIDE_MIDDLE, c.defend_odds, MU_PC_DEF_COUNT));
       rows.push_back(page_row("Out of shield", Page::Oos, top_of(kOos, c.oos_odds, MU_PC_OOS_COUNT), "Once shieldstun ends."));
       break;
     case Page::Oos:
@@ -613,10 +625,14 @@ std::vector<Row> rows_for(Page p) {
       for (int i = 0; i < MU_PC_DI_COUNT; ++i) rows.push_back(odds_row(kDi[i], c.di_odds, MU_PC_DI_COUNT, i));
       break;
     case Page::Tech:
-      for (int i = 0; i < MU_PC_TECH_COUNT; ++i) rows.push_back(odds_row(kTech[i], c.tech_odds, MU_PC_TECH_COUNT, i));
+      for (int i = 0; i < MU_PC_TECH_COUNT; ++i) rows.push_back(odds_row(kTech[i], c.tech_odds, MU_PC_TECH_COUNT, i, c.tech2_odds, MU_PC_SIDE_COUNT));
+      rows.push_back(odds_row("Roll to the ledge", c.tech2_odds, MU_PC_SIDE_COUNT, MU_PC_SIDE_LEDGE, c.tech_odds, MU_PC_TECH_COUNT));
+      rows.push_back(odds_row("Roll to the middle", c.tech2_odds, MU_PC_SIDE_COUNT, MU_PC_SIDE_MIDDLE, c.tech_odds, MU_PC_TECH_COUNT));
       break;
     case Page::Getup:
-      for (int i = 0; i < MU_PC_GETUP_COUNT; ++i) rows.push_back(odds_row(kGetup[i], c.getup_odds, MU_PC_GETUP_COUNT, i));
+      for (int i = 0; i < MU_PC_GETUP_COUNT; ++i) rows.push_back(odds_row(kGetup[i], c.getup_odds, MU_PC_GETUP_COUNT, i, c.getup2_odds, MU_PC_SIDE_COUNT));
+      rows.push_back(odds_row("Roll to the ledge", c.getup2_odds, MU_PC_SIDE_COUNT, MU_PC_SIDE_LEDGE, c.getup_odds, MU_PC_GETUP_COUNT));
+      rows.push_back(odds_row("Roll to the middle", c.getup2_odds, MU_PC_SIDE_COUNT, MU_PC_SIDE_MIDDLE, c.getup_odds, MU_PC_GETUP_COUNT));
       break;
     case Page::After:
       for (int i = 0; i < MU_PC_AFTER_COUNT; ++i) rows.push_back(odds_row(kAfter[i], c.after_odds, MU_PC_AFTER_COUNT, i));

@@ -3661,6 +3661,18 @@ bool percent_row(const char* label, uint8_t* value, const char* tip) {
   return changed;
 }
 
+// One group in two arrays (version 3 adds options to version 1 groups): shares are of both together.
+bool odds_group2(const char* const* labels, uint8_t* a, int na, const char* const* labels2, uint8_t* b, int nb) {
+  int total = 0;
+  for (int i = 0; i < na; ++i) total += a[i];
+  for (int i = 0; i < nb; ++i) total += b[i];
+  bool changed = false;
+  for (int i = 0; i < na; ++i) changed |= odds_row(labels[i], &a[i], total);
+  for (int i = 0; i < nb; ++i) changed |= odds_row(labels2[i], &b[i], total);
+  return changed;
+}
+static const char* const kSides[MU_PC_SIDE_COUNT] = {"Roll to the ledge", "Roll to the middle"};
+
 bool number_row(const char* label, uint8_t* value, int low, int high, const char* format, const char* tip) {
   ImGui::PushID(label);
   const float avail = ImGui::GetContentRegionAvail().x;
@@ -3764,6 +3776,12 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     changed |= percent_row("Aggression", &c.aggression, "How often it attacks (rather than moves) when you are in range.");
     changed |= number_row("Attack range", &c.attack_range, 10, 80, "%d units", "How close you must be before it attacks.");
     changed |= number_row("Reaction time", &c.reaction_frames, 0, 40, "%d frames", "Frames before it answers an attack. People react in 15 to 25.");
+    changed |= number_row("CPU delay", &c.act_delay, 0, 30, "%d frames", "Frames it waits before it acts out of shield, getting up and leaving hitstun.");
+    {
+      static const char* const respawn[MU_PC_RESPAWN_COUNT] = {"Wait", "Get off at once", "Mix"};
+      int r = c.respawn < MU_PC_RESPAWN_COUNT ? c.respawn : 0;
+      if (settings_combo("Respawn platform", &r, respawn, MU_PC_RESPAWN_COUNT)) { c.respawn = (uint8_t)r; changed = true; }
+    }
     heading("Movement", "What it does between attacks. Weights within the group.");
     {
       // The two movement groups are picked from as one.
@@ -3785,10 +3803,12 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
           std::snprintf(special[k], sizeof special[k], "%s: %s", prefix[k], name);
           labels[MU_PC_ATK_NEUTRAL_B + k] = special[k];
         }
-      changed |= odds_group(labels, c.attack_odds, MU_PC_ATK_COUNT);
+      static const char* const run_shine[1] = {"Run shine (dash in, then down special)"};
+      changed |= odds_group2(labels, c.attack_odds, MU_PC_ATK_COUNT, run_shine, &c.run_shine, 1);
     }
     heading("Throws", "Once it grabs you.");
     changed |= odds_group(kThrows, c.throw_odds, MU_PC_THROW_COUNT);
+    changed |= number_row("Throw wait", &c.throw_wait, 0, 60, "%d frames", "Frames it holds you before it throws. 0: 4 to 12.");
     heading("Jumps and aerials");
     {
       int d = c.jump_drift < MU_PC_DRIFT_COUNT ? c.jump_drift : 0;
@@ -3807,7 +3827,7 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
   case 2:
     ImGui::BeginDisabled(!c.enabled || c.freeze);
     heading("When you attack near it", "Answered once per attack, after its reaction time.");
-    changed |= odds_group(kDefend, c.defend_odds, MU_PC_DEF_COUNT);
+    changed |= odds_group2(kDefend, c.defend_odds, MU_PC_DEF_COUNT, kSides, c.def2_odds, MU_PC_SIDE_COUNT);
     heading("Out of shield", "Once shieldstun ends.");
     changed |= odds_group(kOos, c.oos_odds, MU_PC_OOS_COUNT);
     ImGui::EndDisabled();
@@ -3821,9 +3841,9 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     if (settings_combo("Smash DI", &s, sdi, 4)) { c.sdi_amount = (uint8_t)s; changed = true; }
     changed |= percent_row("Floorhug", &c.floorhug, "Chance it holds down when hit on the ground (ASDI down), so weak hits leave it standing.");
     heading("Tech", "When it lands in tumble.");
-    changed |= odds_group(kTech, c.tech_odds, MU_PC_TECH_COUNT);
+    changed |= odds_group2(kTech, c.tech_odds, MU_PC_TECH_COUNT, kSides, c.tech2_odds, MU_PC_SIDE_COUNT);
     heading("After a missed tech");
-    changed |= odds_group(kGetup, c.getup_odds, MU_PC_GETUP_COUNT);
+    changed |= odds_group2(kGetup, c.getup_odds, MU_PC_GETUP_COUNT, kSides, c.getup2_odds, MU_PC_SIDE_COUNT);
     heading("As hitstun ends in the air");
     changed |= odds_group(kAfter, c.after_odds, MU_PC_AFTER_COUNT);
     ImGui::EndDisabled();

@@ -25,8 +25,9 @@ typedef __UINT32_TYPE__ mu_pc_u32;
 typedef __INT32_TYPE__ mu_pc_s32;
 #endif
 
-#define MU_PC_CONFIG_VERSION 2u
+#define MU_PC_CONFIG_VERSION 3u
 #define MU_PC_CONFIG_V1_SIZE 90u   /* a version 1 setting: the prefix of version 2 */
+#define MU_PC_CONFIG_V2_SIZE 111u  /* a version 2 setting: the prefix of version 3 */
 
 /* preset values for the pro AI: one pro, or (replay takeover) the pro who plays the fighter's character. */
 #define MU_PC_PRESET_PRO(i) (0x80u | (unsigned) (i))
@@ -167,6 +168,12 @@ enum {
     MU_PC_MOVE2_COUNT
 };
 
+/* Version 3: rolls toward one side of the stage rather than toward or away from the opponent
+ * (Preflight's "roll corner / centre", "tech roll edge / centre"). Weighed together with the group
+ * they belong to (defense, tech, missed tech). */
+enum { MU_PC_SIDE_LEDGE, MU_PC_SIDE_MIDDLE, MU_PC_SIDE_COUNT };
+/* On the respawn platform (version 3). */
+enum { MU_PC_RESPAWN_WAIT, MU_PC_RESPAWN_LEAVE, MU_PC_RESPAWN_MIX, MU_PC_RESPAWN_COUNT };
 /* Its throw once it holds the opponent (version 2). Directions are relative to its facing. */
 enum { MU_PC_THROW_FORWARD, MU_PC_THROW_BACK, MU_PC_THROW_UP, MU_PC_THROW_DOWN, MU_PC_THROW_COUNT };
 
@@ -226,6 +233,15 @@ typedef struct MuPcConfig {
                                   * but never attacks: no attacks in range, out of shield, from the ledge,
                                   * getting up or after a hit, and no grabs (Preflight's Behavior > Attacks off) */
     mu_pc_u8 reserved2[4];
+    /* ---- version 3 (the rest of Preflight's CPU options), after version 2's 111 bytes ---- */
+    mu_pc_u8 def2_odds[MU_PC_SIDE_COUNT];     /* Defense: roll toward the nearer ledge, toward the middle */
+    mu_pc_u8 tech2_odds[MU_PC_SIDE_COUNT];    /* Tech: tech roll toward the nearer ledge, toward the middle */
+    mu_pc_u8 getup2_odds[MU_PC_SIDE_COUNT];   /* Missed tech: getup roll toward the nearer ledge, the middle */
+    mu_pc_u8 act_delay;          /* frames it waits before it acts out of shield, getting up or leaving hitstun */
+    mu_pc_u8 throw_wait;         /* frames it holds before it throws; 0: 4 to 12 as before */
+    mu_pc_u8 respawn;            /* MU_PC_RESPAWN_*: on the respawn platform */
+    mu_pc_u8 run_shine;          /* weight, with the attacks: a dash in, then its down special */
+    mu_pc_u8 reserved3[6];
 } MuPcConfig;
 
 /* Training tools (Source Port's lab, shim/mu_lab.c, and the host overlay). */
@@ -276,7 +292,9 @@ typedef struct MuPcState {
     mu_pc_s32 throw_choice, throw_wait;   /* the grab hold: its throw (-1 none) and the frames before it */
     mu_pc_s32 floorhug, fall_t;           /* holding down through this hit; frames falling in this plan */
     mu_pc_s32 holding;                    /* in the grab hold last frame */
-    mu_pc_s32 reserved[3];
+    mu_pc_s32 act_wait;                   /* CPU delay: frames left before its answer */
+    mu_pc_s32 after_pending;              /* the answer to leaving hitstun, waiting out the delay */
+    mu_pc_s32 respawn;                    /* respawn platform: 1 decided, 2 leaving */
 } MuPcState;
 
 void mu_pc_reset(MuPcState* s, mu_pc_u32 seed);
