@@ -257,6 +257,10 @@ double now_seconds();
 // Seconds a short timed sleep wakes late by on this system, as last measured (0 on a healthy one).
 // A wait that must end on time sleeps only when it has that much room, and spins otherwise.
 double sleep_slack();
+// Game frames a second over the last second (the render thread measures it; 0 paused or not known). The
+// FPS counter shows it beside the presented rate when the game runs slower than 60 Hz.
+void set_game_rate(double hz);
+double game_rate();
 bool latency_trace_enabled();
 TickTiming& tick_timing();
 // Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter

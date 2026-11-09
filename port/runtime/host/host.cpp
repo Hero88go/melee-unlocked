@@ -2983,6 +2983,9 @@ static void sleep_probe_start() {
     }).detach();
   });
 }
+static std::atomic<double> g_game_rate{0.0};
+void set_game_rate(double hz) { g_game_rate.store(hz, std::memory_order_relaxed); }
+double game_rate() { return g_game_rate.load(std::memory_order_relaxed); }
 double sleep_slack() {
   sleep_probe_start();
   return coarse_sleep_test() == 2 ? 0.0 : g_sleep_slack.load(std::memory_order_relaxed);
@@ -3097,6 +3100,11 @@ bool wait_until_console_time(uint64_t tb) {
 void retrace() {
   if (!perf::active) perf::active = &perf::sim_timer;
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
+  // Tests: MELEE_TEST_GAME_LOAD_MS=<ms> adds that much work to every game frame, offline too: a PC whose
+  // CPU cannot step the game at 60 Hz (the pacing hold in threaded_backend.cpp).
+  static const double test_load_ms = [] { const char* v = test_env::getenv("MELEE_TEST_GAME_LOAD_MS"); return v ? std::atof(v) : 0.0; }();
+  if (test_load_ms > 0.0)
+    for (const double until = now_seconds() + test_load_ms / 1000.0; now_seconds() < until;) {}
   g_frame_submitted = false;
   ++g_retraces;
   if (!native_retrace) apply_early_rng_seed();

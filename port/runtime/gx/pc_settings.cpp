@@ -10861,7 +10861,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if ((options.show_fps || ping_line || latency_line || vram_line) && !clean_replay) {
       char lines[4][40];
       int n = 0;
-      if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
+      if (options.show_fps) {
+        // Frames shown, and the game's own rate when it falls short of 60 (the frames shown can be many
+        // more than the game steps: a high count over a slow game looked fine while it played badly).
+        const double game_hz = host::game_rate();
+        if (game_hz > 20.0 && game_hz < 57.0)
+          std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f (game %.0f Hz)", ImGui::GetIO().Framerate, game_hz);
+        else
+          std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
+      }
       if (ping_line) {
         // Teams: each other player's ping, in port order, as Slippi shows them.
         const std::vector<int> pings = slippi::online::remote_pings_ms();

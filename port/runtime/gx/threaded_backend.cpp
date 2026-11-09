@@ -91,6 +91,11 @@ class ThreadedBackend final : public Backend {
     double next_present = host::now_seconds();
     double idle_repaint = 0.0;   // when a standing picture is next submitted again (replay_control::repaint_wanted)
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
+    // Held to 60: on a PC whose CPU cannot step the game at 60 Hz while it also draws more frames than
+    // that (a laptop on a 120 Hz screen: the game fell to 54 Hz and below while 120 frames a second were
+    // shown, which looks far worse than its frame rate), the extra frames go until the game keeps up.
+    bool held_to_60 = false;
+    int behind_seconds = 0, caught_up_seconds = 0, holds = 0;   // a second hold stays for the session (no back and forth)
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;
     // Frame pacing for "it feels choppy" reports: the time between two frames handed to the display,
@@ -218,6 +223,7 @@ class ThreadedBackend final : public Backend {
         }
       } else fg_logged = 1;
       renderer->set_display_refresh(last_refresh, vrr == 1);
+      if (held_to_60 && (wanted <= 0.0 || wanted > 1.0 / SIM_PERIOD)) wanted = 1.0 / SIM_PERIOD;
       cap_period = wanted > 0.0 ? 1.0 / wanted : 0.0;
       // With Reflex on, its own limiter holds the rate (in its sleep, at the start of each frame) and
       // this thread's timer stands aside, so the two never wait on each other. "Follow the monitor"
@@ -229,7 +235,8 @@ class ThreadedBackend final : public Backend {
       // Locked (no sub-frames) keeps the old path: one present per game frame, Reflex markers only.
       // On a display known to follow the frames Reflex holds the same rate as above; on one known to
       // refresh at a fixed rate, "follow the monitor" is its full refresh (V-Sync, when on, paces it).
-      const double reflex_hz = vrr == 1 || probe_state == 1 || fg_mult > 1 ? wanted
+      const double reflex_hz = held_to_60 ? wanted
+                             : vrr == 1 || probe_state == 1 || fg_mult > 1 ? wanted
                              : live_options.fps_cap > 0 ? live_options.fps_cap
                              : live_options.fps_cap < 0 ? (live_options.vsync ? 0.0 : vrr == 0 ? last_refresh : vrr_cap)
                              : present_uncapped ? 0.0 : 2.0 * last_refresh;
@@ -665,6 +672,25 @@ class ThreadedBackend final : public Backend {
             line += " | envelope captured " + std::to_string(a.captured_envelope) + " sampled " + std::to_string(a.sampled_envelope);
             line += " | posed draws " + std::to_string(a.posed_draws) + " (envelope " + std::to_string(a.posed_draws_envelope) + ", skinned draws " + std::to_string(a.skinned_draws) + ")";
             host::log("%s", line.c_str());
+          }
+        }
+        {
+          const double sim_hz = stats_sim / (now - stats_time), shown_hz = stats_presented / (now - stats_time);
+          host::set_game_rate(sim_hz);
+          const bool playing = sim_hz > 20.0;   // paused, menus and loading screens step no game frames
+          if (playing && sim_hz < 57.0 && shown_hz > 75.0) { ++behind_seconds; caught_up_seconds = 0; }
+          else if (sim_hz >= 59.5) { ++caught_up_seconds; behind_seconds = 0; }
+          else behind_seconds = 0;
+          if (!held_to_60 && behind_seconds >= 3) {
+            held_to_60 = true;
+            caught_up_seconds = 0;
+            ++holds;
+            host::log("pacing: the game ran at %.0f Hz while %.0f frames a second were drawn: drawing 60 a second %s",
+                      sim_hz, shown_hz, holds >= 2 ? "for the rest of this session" : "until it keeps 60 Hz");
+          } else if (held_to_60 && holds < 2 && caught_up_seconds >= 10) {
+            held_to_60 = false;
+            behind_seconds = 0;
+            host::log("pacing: the game keeps 60 Hz again: back to the chosen frame rate");
           }
         }
         stats_time = now; stats_presented = 0; stats_sim = 0;
