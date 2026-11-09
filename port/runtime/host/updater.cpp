@@ -324,7 +324,10 @@ bool archive_paths_safe(const std::filesystem::path& zip, const std::string& roo
   return zip_entries(zip, entries) && zip_paths_safe(entries, root);
 }
 // Unpacks every entry under `dest` (stored or deflated, CRC checked). Callers check the paths first.
+// Why the last unpack_zip failed on this thread: empty for a damaged archive, else the file it could not write.
+thread_local std::string g_unpack_write_error;
 bool unpack_zip(const std::filesystem::path& zip, const std::filesystem::path& dest) {
+  g_unpack_write_error.clear();
   if (!is_zip(zip)) return tar_unpack(zip, dest);
   std::vector<ZipEntry> entries;
   if (!zip_entries(zip, entries)) return false;
@@ -363,7 +366,7 @@ bool unpack_zip(const std::filesystem::path& zip, const std::filesystem::path& d
     std::ofstream o(target, std::ios::binary | std::ios::trunc);
     if (data.size()) o.write((const char*)data.data(), (std::streamsize)data.size());
     o.close();
-    if (!o) return false;
+    if (!o) { g_unpack_write_error = target.u8string(); return false; }
   }
   return true;
 }
@@ -843,6 +846,61 @@ void download_and_install() {
   });
 }
 
+// ---------------- placing downloaded files ----------------
+// Downloads unpack in a work folder of the player's own (LOCALAPPDATA\MeleeUnlocked\downloads), away
+// from the game's folder: a game kept on the Desktop, in Documents or Downloads can sit in a folder
+// Windows protects (Ransomware protection), and antivirus can hold a file it is still scanning. Only the
+// finished files go beside the game, and that move is tried for a few seconds before it gives up.
+std::filesystem::path download_work(const char* name) {
+  wchar_t buf[MAX_PATH] = {};
+  const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+  std::filesystem::path base = n && n < MAX_PATH ? std::filesystem::path(buf) : std::filesystem::temp_directory_path();
+  return base / L"MeleeUnlocked" / L"downloads" / name;
+}
+// The plain reason for a failed write beside the game, with what to do about the usual one.
+std::string place_error(const std::string& what, const std::filesystem::path& dir, const std::error_code& ec) {
+  std::string m = what + " in " + dir.u8string() + " (" + (ec ? ec.message() : std::string("Windows refused the write")) + ").";
+  if (!ec || ec.value() == ERROR_ACCESS_DENIED || ec == std::errc::permission_denied || ec.value() == ERROR_SHARING_VIOLATION ||
+      ec.value() == ERROR_LOCK_VIOLATION)
+    m += " Windows or an antivirus did not let the game write in its folder: move the Melee Unlocked folder out of "
+         "Program Files, Desktop, Documents and Downloads (for example to C:\\Games), or allow the game under "
+         "Windows Security > Ransomware protection, then try again.";
+  return m;
+}
+// One file into place beside the game: a rename, else a copy, tried for about 5 s while a scanner holds it.
+bool place_file(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
+  namespace fs = std::filesystem;
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    ec.clear();
+    fs::rename(from, to, ec);
+    if (!ec) return true;
+    ec.clear();
+    fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+    if (!ec) { std::error_code ignore; fs::remove(from, ignore); return true; }
+    Sleep(250);
+  }
+  return false;
+}
+// A whole folder into place (the RTX Pack's RTX and Remix): the same, file by file when a rename fails.
+bool place_folder(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
+  namespace fs = std::filesystem;
+  ec.clear();
+  fs::rename(from, to, ec);
+  if (!ec) return true;
+  for (const auto& e : fs::recursive_directory_iterator(from, ec)) {
+    const fs::path target = to / fs::relative(e.path(), from);
+    if (e.is_directory()) { fs::create_directories(target, ec); if (ec) return false; continue; }
+    fs::create_directories(target.parent_path(), ec);
+    if (!place_file(e.path(), target, ec)) return false;
+  }
+  return !ec;
+}
+std::string last_unpack_write_error() { return g_unpack_write_error; }
+std::string unpack_failure(const std::string& label) {
+  if (g_unpack_write_error.empty()) return label + ": the download is damaged; try again";
+  return label + ": cannot write the unpacked files (" + g_unpack_write_error + "). Check the free space on that drive.";
+}
+
 // ---------------- one verified file ----------------
 bool fetch_verified(const std::string& url, const std::string& sha256, const std::string& dest_utf8, std::string* why) {
   namespace fs = std::filesystem;
@@ -896,7 +954,7 @@ void dlss5_model_download(const std::string& game_dir_utf8) {
   g_model_thread = std::thread([game_dir_utf8] {
     namespace fs = std::filesystem;
     const fs::path dir = fs::u8path(game_dir_utf8);
-    const fs::path work = dir / "dlss5-download";
+    const fs::path work = download_work("dlss5");
     std::error_code ec;
     auto fail = [&](const std::string& why) {
       fs::remove_all(work, ec);
@@ -911,9 +969,9 @@ void dlss5_model_download(const std::string& game_dir_utf8) {
     fs::remove_all(work, ec);
     fs::create_directories(work, ec);
     const fs::path zip = work / "model.zip";
-    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail("DLSS 5: cannot write the download"); }
+    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail("DLSS 5: cannot save the download in " + work.u8string() + ". Check the free space on that drive."); }
     body.clear(); body.shrink_to_fit();
-    if (!unpack_zip(zip, work / "files")) return fail("DLSS 5: the download is damaged");
+    if (!unpack_zip(zip, work / "files")) return fail(unpack_failure("DLSS 5"));
     fs::path found;
     for (const auto& e : fs::recursive_directory_iterator(work / "files", ec))
       if (e.is_regular_file(ec) && e.path().filename() == kModelFile) { found = e.path(); break; }
@@ -922,9 +980,7 @@ void dlss5_model_download(const std::string& game_dir_utf8) {
     { std::ifstream f(found, std::ios::binary); data.assign(std::istreambuf_iterator<char>(f), {}); }
     if (sha256_hex(data) != kModelSha256) return fail("DLSS 5: the model does not match NVIDIA's file; not installed");
     data.clear(); data.shrink_to_fit();
-    fs::rename(found, dir / kModelFile, ec);
-    if (ec) { ec.clear(); fs::copy_file(found, dir / kModelFile, fs::copy_options::overwrite_existing, ec); }
-    if (ec) return fail("DLSS 5: cannot put the model beside the game (" + ec.message() + ")");
+    if (!place_file(found, dir / kModelFile, ec)) return fail(place_error("DLSS 5: the model could not be put", dir, ec));
     fs::remove_all(work, ec);
     model_message("DLSS 5 is installed. It starts with the game's next start.");
     host::log("dlss5 download: NVIDIA's model installed beside the game");
@@ -962,7 +1018,7 @@ void fetch_part(PartFetch& p, const std::string& label, const std::string& size,
   part_message(p, "Downloading " + label + " (" + size + ")...");
   p.thread = std::thread([&p, label, url, zip_sha256, game_dir_utf8, work_name, install] {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::u8path(game_dir_utf8), work = dir / work_name;
+    const fs::path dir = fs::u8path(game_dir_utf8), work = download_work(work_name);
     std::error_code ec;
     auto fail = [&](const std::string& why) {
       fs::remove_all(work, ec);
@@ -978,9 +1034,9 @@ void fetch_part(PartFetch& p, const std::string& label, const std::string& size,
     fs::remove_all(work, ec);
     fs::create_directories(work, ec);
     const fs::path zip = work / "part.zip";
-    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail(label + ": cannot write the download"); }
+    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail(label + ": cannot save the download in " + work.u8string() + ". Check the free space on that drive."); }
     body.clear(); body.shrink_to_fit();
-    if (!unpack_zip(zip, work / "files")) return fail(label + ": the download is damaged");
+    if (!unpack_zip(zip, work / "files")) return fail(unpack_failure(label));
     const std::string why = install(work / "files", dir);
     if (!why.empty()) return fail(why);
     fs::remove_all(work, ec);
@@ -1056,8 +1112,7 @@ void compat_build_download(const std::string& game_dir_utf8) {
                for (const auto& e : fs::directory_iterator(files, ec)) {
                  if (!e.is_regular_file(ec)) continue;
                  const fs::path to = dir / e.path().filename();
-                 fs::copy_file(e.path(), to, fs::copy_options::overwrite_existing, ec);
-                 if (ec) return "Cannot put the build for your processor beside the game (" + ec.message() + ")";
+                 if (!place_file(e.path(), to, ec)) return place_error("The build for your processor could not be put", dir, ec);
                  ++placed;
                }
                if (!placed) return std::string("The build for your processor was empty; not installed");
@@ -1093,9 +1148,7 @@ void xess_download(const std::string& game_dir_utf8) {
                { std::ifstream f(found, std::ios::binary); data.assign(std::istreambuf_iterator<char>(f), {}); }
                if (data.empty()) return std::string("Intel XeSS: the download has no libxess.dll in it");
                if (sha256_hex(data) != kXessSha256) return std::string("Intel XeSS: the file does not match Intel's build; not installed");
-               fs::rename(found, dir / "libxess.dll", ec);
-               if (ec) { ec.clear(); fs::copy_file(found, dir / "libxess.dll", fs::copy_options::overwrite_existing, ec); }
-               if (ec) return "Intel XeSS: cannot put it beside the game (" + ec.message() + ")";
+               if (!place_file(found, dir / "libxess.dll", ec)) return place_error("Intel XeSS could not be put", dir, ec);
                part_message(g_xess, "Intel XeSS is installed. It starts with the game's next start.");
                host::log("xess download: libxess.dll installed beside the game");
                return {};
@@ -1154,9 +1207,7 @@ void rtx_pack_download(const std::string& game_dir_utf8) {
                  const fs::path to = dir / folder, old = dir / (std::string(folder) + ".old");
                  fs::remove_all(old, ec);
                  if (fs::exists(to, ec)) { fs::rename(to, old, ec); if (ec) return "Cannot replace the " + std::string(folder) + " folder (" + ec.message() + "); close the game and try again"; }
-                 fs::rename(files / folder, to, ec);
-                 if (ec) { ec.clear(); fs::copy(files / folder, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec); }
-                 if (ec) return "Cannot put the " + std::string(folder) + " folder beside the game (" + ec.message() + ")";
+                 if (!place_folder(files / folder, to, ec)) return place_error("The RTX Pack's " + std::string(folder) + " folder could not be put", dir, ec);
                  fs::remove_all(old, ec);
                }
                { std::ofstream marker(dir / "rtxpack.installed", std::ios::binary);
@@ -1206,10 +1257,10 @@ void fsr_download(const std::string& game_dir_utf8) {
         return fail(status ? "AMD FSR download failed (HTTP " + std::to_string(status) + ")" : std::string("AMD FSR download failed (no connection)"));
       if (sha256_hex(body) != f.sha256) return fail(std::string("AMD FSR: ") + f.name + " does not match AMD's build; not installed");
       const fs::path part = dir / (std::string(f.name) + ".part"), to = dir / f.name;
-      { std::ofstream o(part, std::ios::binary); o.write(body.data(), (std::streamsize)body.size()); if (!o) return fail("AMD FSR: cannot write beside the game"); }
-      fs::rename(part, to, ec);
-      if (ec) { ec.clear(); fs::copy_file(part, to, fs::copy_options::overwrite_existing, ec); fs::remove(part, ec); }
-      if (!fs::is_regular_file(to, ec)) return fail("AMD FSR: cannot put it beside the game");
+      const fs::path staged = download_work("fsr") / f.name;
+      fs::create_directories(staged.parent_path(), ec);
+      { std::ofstream o(staged, std::ios::binary); o.write(body.data(), (std::streamsize)body.size()); if (!o) return fail("AMD FSR: cannot save the download in " + staged.parent_path().u8string() + ". Check the free space on that drive."); }
+      if (!place_file(staged, to, ec) || !fs::is_regular_file(to, ec)) return fail(place_error("AMD FSR could not be put", dir, ec));
     }
     part_message(g_fsr, "AMD FSR is installed. It starts with the game's next start.");
     host::log("fsr download: AMD's FSR DLLs installed beside the game");

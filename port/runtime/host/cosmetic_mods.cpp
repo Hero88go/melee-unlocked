@@ -7412,7 +7412,10 @@ bool fetch_official(const OfficialFile& f, const fs::path& out, std::string* err
 // against its pin anyway.
 bool unpack_download(const fs::path& archive, const fs::path& dest, std::string* error) {
   if (host::updater::unpack_download(archive.u8string(), dest.u8string())) return true;
-  *error = "The download could not be unpacked."; return false;
+  const std::string file = host::updater::last_unpack_write_error();
+  *error = file.empty() ? "The download is damaged; try again."
+                        : "The unpacked files could not be written (" + file + "). Check the free space on that drive.";
+  return false;
 }
 
 bool install_official(int which, const fs::path& retail, const fs::path& xdelta, const std::string& mods_folder, std::string* message) {
@@ -7444,9 +7447,9 @@ bool install_official(int which, const fs::path& retail, const fs::path& xdelta,
     else if (!run_xdelta(xdelta, retail, patch, part, message)) ok = false;
     else if (!file_matches(part, kAnimeleeDiscs[variant].size, kAnimeleeDiscs[variant].sha)) { fs::remove(part, ec); *message = "The built disc did not come out as expected."; ok = false; }
     else {
-      fs::rename(part, out, ec);
-      ok = !ec;
-      *message = ok ? "Installed. It is turned on in Game mods; restart to play with it." : "The built disc could not be put in the Mods folder.";
+      ok = host::updater::place_file(part, out, ec);
+      *message = ok ? "Installed. It is turned on in Game mods; restart to play with it."
+                    : host::updater::place_error("The built disc could not be put", out.parent_path(), ec);
     }
   }
   fs::remove_all(work, ec);

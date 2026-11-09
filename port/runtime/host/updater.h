@@ -3,7 +3,9 @@
 // game exits and relaunches. Everything network-side runs on a background thread.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace host::updater {
@@ -29,6 +31,12 @@ bool archive_inside(const std::string& zip_path_utf8, const std::string& root);
 bool unpack_archive(const std::string& zip_path_utf8, const std::string& dest_utf8);
 // Unpacks a downloaded .zip or .tar.gz in process, refusing any entry that would land outside `dest`.
 bool unpack_download(const std::string& archive_utf8, const std::string& dest_utf8);
+// After a failed unpack on this thread: the file it could not write (empty: the archive was damaged).
+std::string last_unpack_write_error();
+// A downloaded file into place beside the game (rename, else copy), tried for about 5 s while antivirus
+// holds it; and the plain message for a failed write there (Windows' reason, what to do about it).
+bool place_file(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec);
+std::string place_error(const std::string& what, const std::filesystem::path& dir, const std::error_code& ec);
 // The batch script an update hands over to (exposed for the unit test): `self` and `others` are
 // the processes it waits for, `relaunch` the command line it starts when the files are in place.
 // `show_failure` opens a console window with the reason when the update cannot be put in place.
