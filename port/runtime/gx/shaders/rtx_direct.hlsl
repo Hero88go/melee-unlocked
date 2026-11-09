@@ -77,17 +77,21 @@ cbuffer Frame : register(b0) {
   uint frame_pad;
 };
 static const uint kShadows = 1u, kAmbientOcclusion = 2u, kFighterShadows = 4u, kBounce = 8u, kReflections = 16u, kSkin = 32u,
-                  kStageShade = 64u, kGlossyFloors = 128u, kModdedStage = 256u;
+                  kStageShade = 64u, kGlossyFloors = 128u, kModdedStage = 256u,
+                  kModSheen = 512u, kModMirror = 1024u;   // Shiny floors on stage mods: sheen, or the old mirror
 
 static const float kPi = 3.14159265;
 static const uint kNone = 0xFFFFFFFFu;
 
 // The light of this frame's bright effects (fire, sparks, flashes: the renderer's FxLightCollector) on
-// a surface, unshadowed: each a small sphere whose light falls off over about its own size.
-float3 fx_light(float3 p, float3 n) {
+// a surface, unshadowed: each a small sphere whose light falls off over about its own size. The
+// stage's glowing art (flags 1: "Glowing stage art lights the fighters") lights the fighters only:
+// on the stage beside it, a light that close burned a white streak into Final Destination's panels.
+float3 fx_light(float3 p, float3 n, bool on_fighter) {
   float3 sum = 0;
   for (uint j = fx_light_first; j < fx_light_first + fx_light_count; ++j) {
     const Light l = Lights[j];
+    if ((l.flags & 1u) != 0u && !on_fighter) continue;
     const float3 d = l.position - p;
     const float dist2 = dot(d, d);
     const float reach = max(l.radius * 4.0, 2.0);
@@ -104,6 +108,7 @@ float3 fx_mirror(float3 p, float3 n, float3 v, float roughness) {
   float3 sum = 0;
   for (uint j = fx_light_first; j < fx_light_first + fx_light_count; ++j) {
     const Light l = Lights[j];
+    if ((l.flags & 1u) != 0u) continue;   // glowing stage art is in the traced scene: it reflects itself
     const float3 d = l.position - p;
     const float dist = max(length(d), 1e-3);
     const float half_angle = atan(max(l.radius, 0.5) / dist) + roughness * 0.6;
@@ -243,6 +248,7 @@ SamplerState LinearWrap : register(s0);
 static const uint kNoTextures = 0xFFFFFFFFu;
 static const uint kGeometryNoNormals = 1u << 4;
 static const uint kGeometryTintedReflection = 1u << 5;   // the env map's colour tints its reflection
+static const uint kGeometryMirrorWater = 1u << 6;   // Fountain of Dreams' water: a strong, near-sharp reflection
 
 struct Hit {
   bool found;
@@ -341,6 +347,16 @@ float3 specular_albedo(float3 f0, float nv, float roughness) {
 // Glossy stage floors: a polished floor (F0 0.10, roughness 0.10), the reflection up to half the
 // picture at a glancing view.
 static const float kFloorRoughness = 0.03;
+static const float kModSheenRoughness = 0.25;   // a stage mod's floor with Shiny floors on stage mods at Sheen
+static const float kRimStrength = 0.3;          // fighters' rim light
+static const float kWaterReflection = 0.30;     // Fountain of Dreams' water: share of its picture that is reflection
+// Grass and leaves on a stage mod (green and saturated): never mirrored, even with Shiny floors on
+// stage mods at Mirror (his 11-09 pick: the old guessed mirrors, minus grass turning into a lake).
+float not_grass(float3 albedo) {
+  const float sat = max(albedo.r, max(albedo.g, albedo.b)) - min(albedo.r, min(albedo.g, albedo.b));
+  const bool green = albedo.g > albedo.r * 1.15 && albedo.g > albedo.b * 1.1;
+  return green ? 1.0 - saturate((sat - 0.06) / 0.08) : 1.0;
+}
 float3 floor_fresnel(float3 n, float3 v) {
   return min(2.0 * floor_strength * specular_albedo(0.10, saturate(dot(n, v)), kFloorRoughness), min(0.5 * floor_strength, 0.9));
 }
@@ -354,8 +370,8 @@ float polished_floor(float3 albedo) {
 // What the floor reflects: everything in the scene at any distance (fighters, the stage, effects,
 // far scenery). A ray to empty sky keeps the floor's own colour (`own`): a mirror-strong floor under a
 // night sky or space (Fountain of Dreams, Final Destination) would otherwise turn black.
-float3 floor_reflection(float3 origin, float3 n, float3 v, float3 own, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng) {
-  const float3 dir = glossy_direction(n, v, kFloorRoughness, rng);
+float3 floor_reflection(float3 origin, float3 n, float3 v, float3 own, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng, float rough = kFloorRoughness) {
+  const float3 dir = glossy_direction(n, v, rough, rng);
   const Hit h = trace_surface(origin, dir, 1.0e5);
   return h.found ? hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng) : own;
 }
@@ -376,6 +392,10 @@ void write_guides(uint2 px, float3 diffuse, float3 specular, float3 view_normal,
 
 
 // Out to the presenter, which takes linear light (it encodes for the display).
+// Water (Fountain of Dreams): the game paints its water as a blended layer over the floor, so the
+// traced reflection is laid over that layer (s_top, s_top_mix of the picture) instead of under it.
+static float3 s_top = 0;
+static float s_top_mix = 0;
 void emit(uint2 px, float3 lit, float3 albedo) {
   // Photo mode: a still scene averages every present's light (up to 256 presents), so the picture
   // refines to a clean, converged image while paused. The light is averaged apart from the surface
@@ -391,10 +411,22 @@ void emit(uint2 px, float3 lit, float3 albedo) {
   if (still_frames > 0u && kept_ok) light = lerp(kept, light, 1.0 / (float)(min(still_frames, 255u) + 1u));
   Accum[px] = float4(light, 1);
   // What the raster drew over the surface goes back on top, composed as GX blended it (encoded).
-  const float3 shown = linear_to_srgb(light * base) * Trans[px].rgb + Overlay[px].rgb;
+  float3 shown = linear_to_srgb(light * base) * Trans[px].rgb + Overlay[px].rgb;
+  // Multiply blend: the water keeps its colours and the reflected scene shows as its light and shade
+  // (brightness only, so the water's hues stay), up to kWaterReflection * 2 deep.
+  if (s_top_mix > 0.0) {
+    const float r = dot(saturate(linear_to_srgb(s_top)), float3(0.2126, 0.7152, 0.0722));
+    shown *= lerp(1.0, 0.25 + 0.95 * r, min(s_top_mix * 2.0, kWaterReflection * 2.0));
+  }
   Output[px] = float4(srgb_to_linear(shown), 1);
 }
 
+// Water: what the reflection ray hits (sky misses leave the painted water alone).
+void water_reflection(float3 origin, float3 n, float3 v, float3 ambient_light, float3 sun, float3 sun_dir, float sun_radius, inout uint rng, float mix) {
+  const float3 dir = glossy_direction(n, v, kFloorRoughness, rng);
+  const Hit h = trace_surface(origin, dir, 1.0e5);
+  if (h.found) { s_top = hit_radiance(h, ambient_light, sun, sun_dir, sun_radius, rng); s_top_mix = mix; }
+}
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   if (pass_index == 0u) {   // empty the per-draw colour sums
@@ -460,7 +492,9 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float3 n_gx = normalize(to_world_direction(nd.xyz));
   const float3 n = dot(n_gx, v) < 0.0 ? -n_gx : n_gx;
   const float3 albedo = srgb_to_linear(GAlbedo[px].rgb);
-  const float3 fx = fx_light_count != 0u ? albedo * fx_light(p, n) : 0;   // effects lighting the surface
+  const uint fx_record = draw - 1u < draw_count ? DrawRecords[draw - 1u] : kNone;
+  const bool fx_on_fighter = fx_record != kNone && (Records[fx_record].flags & 2u) != 0u;
+  const float3 fx = fx_light_count != 0u ? albedo * fx_light(p, n, fx_on_fighter) : 0;   // effects lighting the surface
   const bool shadows = (switches & kShadows) != 0u;
   uint rng = hash32(px.x + px.y * 4099u + frame_index * 0x9e3779b9u);
   const float3 origin = p + n * (0.02 + nd.w * 0.0004);   // off the surface, more so far away
@@ -469,7 +503,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float roughness = 0.85;
   float3 f0 = 0.04;
   uint first = 0, count = min(main_light_count, light_count);
-  bool lit_by_gx = true, own_ambient = false, fighter_draw = false;
+  bool lit_by_gx = true, own_ambient = false, fighter_draw = false, water = false;
   uint channel = 0;
   float3 ambient_gx = 0;   // GX's ambient register, as GX uses it (encoded)
   const uint record = draw - 1u < draw_count ? DrawRecords[draw - 1u] : kNone;
@@ -480,6 +514,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     if ((r.flags & kGeometryTintedReflection) != 0u) f0 = albedo * srgb_to_linear(f0);   // its own colour, tinted
     lit_by_gx = (r.channel & 1u) != 0u;
     fighter_draw = (r.flags & 2u) != 0u;   // kRtxGeometryFighter
+    water = (r.flags & kGeometryMirrorWater) != 0u;
     own_ambient = (r.channel & 2u) == 0u;
     channel = r.channel;
     ambient_gx = unpack_rgb8(r.ambient);
@@ -489,7 +524,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   write_guides(px, albedo, specular_albedo(f0, saturate(dot(n, v)), roughness), nd.xyz, roughness);
   if ((switches & (1u << 30)) != 0u) { emit(px, albedo, albedo); return; }   // test view: the albedo
   if ((switches & (1u << 27)) != 0u) {   // test view: the effects' light on a white surface, and where lights are
-    emit(px, fx_light_count != 0u ? fx_light(p, n) * 4.0 : float3(1, 0, 1), 1.0);
+    emit(px, fx_light_count != 0u ? fx_light(p, n, fx_on_fighter) * 4.0 : float3(1, 0, 1), 1.0);
     return;
   }
   if ((switches & (1u << 28)) != 0u && draw - 1u < kMaxDrawColours) {   // test view: each draw's averaged albedo
@@ -557,10 +592,17 @@ void main(uint3 id : SV_DispatchThreadID) {
       // The game made it shiny (an environment map: FoD's water, metal decks): polished at any colour.
       // A stage mod: only floors its own material makes shiny. Its dark, grey ground is not taken for
       // polished stone (a mod's matte floors turned into mirrors).
-      const float guess = (switches & kModdedStage) != 0u ? 0.0 : polished_floor(albedo);
-      const float3 fresnel = floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : guess);
-      if (fresnel.x > 0.0) {
-        baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng);
+      // Shiny floors on stage mods: a sheen (half as strong, blurred), or the old guess in full.
+      const bool modded = (switches & kModdedStage) != 0u;
+      const bool sheen = modded && (switches & kModSheen) != 0u && roughness > 0.3;
+      const float guess = !modded ? polished_floor(albedo) : (switches & kModMirror) != 0u ? polished_floor(albedo) : sheen ? 0.5 * polished_floor(albedo) : 0.0;
+      // Water (Fountain of Dreams): at least kWaterReflection of the picture is the traced reflection.
+      const float3 fresnel = water ? max(floor_fresnel(n, v), kWaterReflection) : floor_fresnel(n, v) * (roughness <= 0.3 ? 1.0 : guess);
+      if (fresnel.x > 0.0 && water) {
+        water_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng, fresnel.x);
+        write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
+      } else if (fresnel.x > 0.0) {
+        baked = baked * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, baked, ambient_light, sun, sun_dir, sun_radius, rng, sheen ? kModSheenRoughness : kFloorRoughness);
         if (fx_light_count != 0u) baked += fresnel * fx_mirror(p, n, v, kFloorRoughness);
         write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
       }
@@ -694,14 +736,32 @@ void main(uint3 id : SV_DispatchThreadID) {
       gx_extra = max(srgb_to_linear(surface_gx) - srgb_to_linear(chan0_gx), 0.0);
     }
   }
-  float3 shaded = lerp(faithful, pbr, look) + reflection + gx_extra;
+  // Rim light (Remastered and up, his 11-08 "characters don't look that different"): the stage's key
+  // light wraps a fighter's silhouette, most when it comes from behind. Test view bit 26 turns it off.
+  float3 rim = 0;
+  if (fighter && look > 0.0 && any(sun > 0.0) && (switches & (1u << 26)) == 0u) {
+    const float edge = pow(1.0 - saturate(dot(n, v)), 3.0);
+    const float behind = saturate(dot(sun_dir, -v) * 0.5 + 0.5);
+    rim = albedo * sun * edge * (0.25 + 0.75 * behind) * kRimStrength * look;
+  }
+  float3 shaded = lerp(faithful, pbr, look) + reflection + gx_extra + rim;
+  // Fighters pop (his 11-09 note: Remastered fighters looked whited out): more colour and deeper
+  // mid-tones on fighters only, highlights kept. Test view bit 25 turns it off.
+  if (fighter && look > 0.0 && (switches & (1u << 25)) == 0u) {
+    const float luma = dot(shaded, float3(0.2126, 0.7152, 0.0722));
+    shaded = max(lerp(luma.xxx, shaded, 1.0 + 0.2 * look), 0.0);
+    shaded = pow(shaded, 1.0 + 0.12 * look);
+  }
   if (fx_light_count != 0u && roughness <= 0.6)
     shaded += specular_albedo(f0, saturate(dot(n, v)), roughness) * fx_mirror(p, n, v, roughness);
   if (shadows && (switches & kFighterShadows) != 0u && !fighter) shaded *= fighter_shadow(origin, n, sun_dir, look, rng);
   if ((switches & kGlossyFloors) != 0u && (switches & kReflections) != 0u && !fighter && n.y > 0.85 && nd.w < 800.0 &&
-      ((switches & kModdedStage) == 0u || roughness <= 0.3)) {
-    const float3 fresnel = floor_fresnel(n, v);
-    shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng);
+      ((switches & kModdedStage) == 0u || roughness <= 0.3 || (switches & (kModSheen | kModMirror)) != 0u)) {
+    const bool sheen = (switches & kModdedStage) != 0u && (switches & kModMirror) == 0u && roughness > 0.3;
+    const float mod_floor = (switches & kModdedStage) != 0u && roughness > 0.3 ? not_grass(albedo) : 1.0;
+    const float3 fresnel = water ? max(floor_fresnel(n, v), kWaterReflection) : floor_fresnel(n, v) * (sheen ? 0.5 : 1.0) * mod_floor;
+    if (water) water_reflection(origin, n, v, ambient_light, sun, sun_dir, sun_radius, rng, fresnel.x);
+    else shaded = shaded * (1.0 - fresnel) + fresnel * floor_reflection(origin, n, v, shaded, ambient_light, sun, sun_dir, sun_radius, rng, sheen ? kModSheenRoughness : kFloorRoughness);
     if (fx_light_count != 0u) shaded += fresnel * fx_mirror(p, n, v, kFloorRoughness);
     write_guides(px, albedo, fresnel, nd.xyz, kFloorRoughness);
   }

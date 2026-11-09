@@ -138,6 +138,25 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error, 
     dir = std::filesystem::path(exe).parent_path() / L"Remix";
   }
   SetDllDirectoryW(dir.c_str());   // the runtime's own DLLs (DLSS, NRD, USD) sit beside it
+  // The picture defaults chosen from the 11-08 comparison: fixed exposure (Remix's automatic
+  // exposure brightened dark stages and dimmed bright ones away from the game's look), and the HUD
+  // quad as UI. A config file the runtime reads at start (these options are not applied later);
+  // MELEE_REMIX_CONF="key = value;..." adds to it, an rtx.conf beside the game still overrides it,
+  // and an existing DXVK_CONFIG_FILE wins outright.
+  if (!_wgetenv(L"DXVK_CONFIG_FILE")) {
+    wchar_t tmp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    const std::filesystem::path conf = std::filesystem::path(tmp) / L"melee-remix.conf";
+    std::string text = "rtx.orthographicIsUI = True\n";   // exposure: Remix's automatic one (he judged fixed worse, 11-09)
+    if (const char* v = std::getenv("MELEE_REMIX_CONF"))
+      for (const char* c = v; *c; ++c) text += *c == ';' ? '\n' : *c;
+    if (FILE* f = _wfopen(conf.c_str(), L"wb")) {
+      std::fwrite(text.data(), 1, text.size(), f);
+      std::fputc('\n', f);
+      std::fclose(f);
+      _wputenv_s(L"DXVK_CONFIG_FILE", conf.c_str());
+    }
+  }
   const std::wstring dll = (std::filesystem::path(dir) / L"d3d9.dll").wstring();
   const remixapi_ErrorCode rc = remixapi_lib_loadRemixDllAndInitialize(dll.c_str(), &m.api, &m.dll);
   if (rc != REMIXAPI_ERROR_CODE_SUCCESS) { if (error) *error = "loading the Remix runtime failed (" + std::to_string((int)rc) + ")"; return false; }
@@ -303,14 +322,17 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       test_type = (int)(second ? comp1 : comp0);
       test_ref = second ? (at >> 8) & 0xFF : at & 0xFF;
     }
-    if (blended && (test_type == 7 || ((test_type == 4 || test_type == 6) && test_ref < 96))) { test_type = 4; test_ref = 96; }
+    // Blended draws (leaves, clouds) as cut-outs at a low reference (MELEE_REMIX_CUTOUT_REF, 24): at 96
+    // the soft edges of Dream Land's and Yoshi's Story's leaves came out as holes.
+    static const uint32_t cut_ref = [] { const char* v = std::getenv("MELEE_REMIX_CUTOUT_REF"); return v ? (uint32_t)std::atoi(v) : 24u; }();
+    if (blended && (test_type == 7 || ((test_type == 4 || test_type == 6) && test_ref < cut_ref))) { test_type = 4; test_ref = cut_ref; }
     const uint32_t test_key = (uint32_t)test_type << 8 | test_ref;
     // GX does not light this draw: its light is painted into its texture and vertex colours (most of a
     // stage). Its texture also emits, so Remix shows it as painted and adds its own light on top
     // (MELEE_REMIX_EMISSIVE scales it; additive glows emit more).
     const uint32_t chan = d.xf_regs[0x0E];
     const bool unlit = (d.xf_regs[0x09] & 3) == 0 || ((chan >> 1) & 1) == 0;
-    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 0.6f; }();
+    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 0.8f; }();   // 0.8: the 11-06 look he liked
     // A fighter glows a little with its own colours (MELEE_REMIX_FIGHTER_GLOW), so it reads on dark
     // stages as it does in the game, with Remix's light and shadow on top.
     static const float fighter_glow = [] { const char* v = std::getenv("MELEE_REMIX_FIGHTER_GLOW"); return v ? (float)std::atof(v) : 0.35f; }();
@@ -330,7 +352,12 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       }
       return false;
     }();
-    const float emissive = additive ? 2.0f * emissive_scale : (unlit || gx_specular) && d.owner_player >= 6 ? emissive_scale : fighter ? fighter_glow : 0.0f;
+    // MELEE_REMIX_GX_SPECULAR_GLOW=1 (off by default since 11-08 evening: it turned FD's panels to noise).
+    // FD's blue panels keep their colour with a low glow (MELEE_REMIX_GX_SPECULAR_GLOW, 0.3): at full
+    // strength they lit like lamps and came out noisy.
+    static const float gx_specular_glow = [] { const char* v = std::getenv("MELEE_REMIX_GX_SPECULAR_GLOW"); return v ? (float)std::atof(v) : 0.3f; }();
+    const float emissive = additive ? 2.0f * emissive_scale : unlit && d.owner_player >= 6 ? emissive_scale
+                           : gx_specular && d.owner_player >= 6 ? gx_specular_glow : fighter ? fighter_glow : 0.0f;
     m.prim.clear();
     if (d.segment_count) {
       for (uint32_t i = 0; i < d.segment_count; ++i) {
@@ -454,7 +481,8 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
             else if (polished > 0.5f) rough = std::min(rough, 0.12f);
             // Stage art GX does not light shows no highlight in the game, whatever its material's
             // specular says: matte (Yoshi's Story's felt trees went pale with the sky's reflection).
-            else if (unlit) rough = std::max(rough, 0.85f);
+            // Only cut-out foliage (MELEE_REMIX_MATTE_ALL=1: every unlit piece, the 11-08 rule that took the platforms' shine).
+            else if (unlit && (cutout || std::getenv("MELEE_REMIX_MATTE_ALL"))) rough = std::max(rough, 0.85f);
           }
         }
         static const float rough_scale = [] { const char* v = std::getenv("MELEE_REMIX_ROUGHNESS"); return v ? (float)std::atof(v) : 1.0f; }();

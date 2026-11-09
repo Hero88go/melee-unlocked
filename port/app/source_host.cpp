@@ -2426,6 +2426,7 @@ bool jukebox_disc_read(uint32_t offset, void* dst, uint32_t size) {
 // Disc offsets where a stage file starts, and whether a mod replaced that file. A read starting there is
 // the game loading that stage (host::g_stage_file_modded).
 std::unordered_map<uint32_t, bool> g_stage_file_starts;
+std::unordered_set<uint32_t> g_water_stage_starts;   // Fountain of Dreams (GrIz.dat): its floor is water
 bool g_stage_file_starts_built = false;
 void note_stage_file_read(uint32_t offset) {
   if (!g_stage_file_starts_built) {
@@ -2437,10 +2438,14 @@ void note_stage_file_read(uint32_t offset) {
       const bool stage = path.rfind("/gr", 0) == 0 && path.find('/', 1) == std::string::npos && path.size() > 7 &&
                          (path.compare(path.size() - 4, 4, ".dat") == 0 || path.compare(path.size() - 4, 4, ".usd") == 0);
       if (stage) g_stage_file_starts[g_fst[(size_t)entry].offset] = modded.count(path) != 0;
+      if (stage && (path == "/griz.dat" || path == "/griz.usd")) g_water_stage_starts.insert(g_fst[(size_t)entry].offset);
     }
   }
   const auto it = g_stage_file_starts.find(offset);
-  if (it != g_stage_file_starts.end()) host::g_stage_file_modded.store(it->second, std::memory_order_relaxed);
+  if (it != g_stage_file_starts.end()) {
+    host::g_stage_file_modded.store(it->second, std::memory_order_relaxed);
+    host::g_stage_water.store(g_water_stage_starts.count(offset) != 0, std::memory_order_relaxed);
+  }
 }
 void h_disc_read(uint32_t offset, void* dst, uint32_t size, MuDiscDone done, void* user) {
   bool ok = false;

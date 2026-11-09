@@ -18,7 +18,7 @@ void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float
 
 // A bright effect as a small sphere light: its world-space centre and size, its colour (linear 0..1,
 // weighted by how it adds to the picture) and a rank for keeping the brightest.
-struct FxLight { float pos[3]; float radius; float rgb[3]; float power; };
+struct FxLight { float pos[3]; float radius; float rgb[3]; float power; bool glow = false; };   // glow: the stage's own glowing art
 
 class FxLightCollector {
  public:

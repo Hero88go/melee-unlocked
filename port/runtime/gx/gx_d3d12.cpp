@@ -921,6 +921,7 @@ class D3D12Backend : public Backend {
   ID3D12Resource* rtx_debug_view();
   bool rtx_capture_ = false;
   int rtx_main_camera_ = -1;          // index into the frame's semantics cameras
+  int remix_camera_ = -1;             // the fighters' camera of the frame Remix draws
   float rtx_view_to_world_[12]{};     // inverse of that camera's view
   uint32_t rtx_heap_generation_ = 0;  // bumped when srv_heap_ is replaced (texture indices go stale)
   bool rtx_logged_ = false, rtx_failure_logged_ = false;
@@ -2789,16 +2790,24 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
     const auto ec = efb_copies_.find(t.addr);
     if (ec != efb_copies_.end() && ec->second.resource) return 1;
   }
-  // Painted backdrops (MELEE_REMIX_BACKDROPS: 1 the layer alone, 2 the layer and Remix's sky): the
-  // stage's draws that write no depth and add no light (skies, far scenery, painted marks), as the
-  // game draws them. Its glows stay Remix's own light.
-  static const int backdrops = [] { const char* v = std::getenv("MELEE_REMIX_BACKDROPS"); return v ? std::atoi(v) : 0; }();
-  if (backdrops && dc.owner_player == 0xFF) {
+  // Painted backdrops (on by default, chosen from the 11-08 comparison; MELEE_REMIX_BACKDROPS: 0 off,
+  // 1 the layer alone, 2 the layer and Remix's sky): the stage's draws that write no depth and add no
+  // light (skies, far scenery, painted marks), as the game draws them. Its glows stay Remix's own light.
+  static const int backdrops = [] { const char* v = std::getenv("MELEE_REMIX_BACKDROPS"); return v ? std::atoi(v) : 0; }();   // off by default since 11-09: "GO!" stuck in the scene with it on
+  if (dc.owner_player == 0xFF) {
     const uint32_t bm = dc.bp.blendmode();
     const bool additive = (bm & 1) && ((bm >> 5) & 7) == 1;
     // Textured: an untextured screen fill (the stage's clear colour, drawn first) is not scenery.
     bool textured = false;
     for (const TextureRef& t : dc.textures) textured = textured || t.used;
+    // Additive scenery that writes no depth (Final Destination's sky streaks) too, unless
+    // MELEE_REMIX_ADDITIVE_BACKDROPS=0: as emissive strips in Remix they read as bright white lines.
+    static const bool additive_backdrops = [] { const char* v = std::getenv("MELEE_REMIX_ADDITIVE_BACKDROPS"); return !v || std::atoi(v) != 0; }();
+    const bool depthless = !((dc.bp.zmode() & 1) && (dc.bp.zmode() & 0x10));   // writes no depth (as rtx_layer reads it)
+    // Only far scenery: a draw of another camera than the fighters' (Final Destination's sky). Glowing
+    // stage parts near the fighters (Battlefield's neon edges) stay Remix's own light.
+    if (additive && additive_backdrops && textured && depthless && dc.rtx.camera != remix_camera_) return backdrops == 2 ? 2 : 1;
+    if (!backdrops) return 0;
     if (!additive && textured && rtx_layer(bm, dc.bp.zmode()) != kRtxLayerSurface) return backdrops == 2 ? 2 : 1;
   }
   return 0;
@@ -3588,6 +3597,7 @@ void D3D12Backend::remix_finish(const Frame& frame) {
   rtx_build_lights(frame.rtx, main_set, lights);
   capture_due(false);
   // What the layer carries instead of Remix (the same test the draws used): the bridge leaves these out.
+  remix_camera_ = camera;
   remix_layer_draws_.assign(frame.draws.size(), 0);
   for (size_t i = 0; i < frame.draws.size(); ++i) remix_layer_draws_[i] = remix_layer_draw(frame.draws[i]);
   remix_->frame(frame, camera, view_to_world, lights, remix_layer_draws_);
@@ -3718,8 +3728,10 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
                                ((d.xf_regs[0x09] & 3) == 0 || ((d.xf_regs[0x0E] >> 1) & 1) == 0);
       if (additive && opts_.rtx_effect_light && remix_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
       else if (opts_.rtx_glow_light && stage_unlit) {
+        const size_t before = rtx_fx_lights_.size();
         if (additive) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_, 4);
         else rtx_fx_collector_.add_glow_strip(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+        for (size_t i = before; i < rtx_fx_lights_.size(); ++i) rtx_fx_lights_[i].glow = true;
       }
     }
     // Only what can light the match: near the fighters (within half again the camera's distance to
@@ -3738,8 +3750,12 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
       r.type = kRtxLightEffect;
       r.cos_cutoff = -1.0f;
       std::memcpy(r.radiance, f.rgb, sizeof r.radiance);
+      // Glowing stage art at its own strength (MELEE_RTX_GLOW_LIGHT, of the effect light's): at full it
+      // read overdone on Stadium (his 11-08 note).
+      static const float glow_scale = [] { const char* v = host::test_env::getenv("MELEE_RTX_GLOW_LIGHT"); return v ? (float)std::atof(v) : 0.6f; }();
+      if (f.glow) for (float& c : r.radiance) c *= glow_scale;
       r.radius = f.radius;
-      r.flags = 0xFF000000u;
+      r.flags = 0xFF000000u | (f.glow ? 1u : 0u);   // 1: the stage's glowing art, which lights the fighters only
       rtx_lights_.push_back(r);
       ++rtx_fx_count_;
     }
@@ -3851,6 +3867,17 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
   for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t)
     if (material->tobjs[t].coord == 1) in.flags |= kRtxGeometryTintedReflection;
   rtx_material_params(material, &in.specular, &in.roughness);
+  // A stage surface textured by a picture the game captured from the screen (an EFB copy: Fountain of
+  // Dreams' water shows its reflection camera's tiny image): real reflections instead (MELEE_RTX_NO_WATER=1 off).
+  {
+    static const bool no_water = host::test_env::getenv("MELEE_RTX_NO_WATER") != nullptr;
+    // Or one the game maps a painted reflection onto (an environment map: Fountain of Dreams' water carries
+    // a fixed 256x128 painting of its trees): the game's own way of saying it reflects.
+    // Or any stage surface on Fountain of Dreams (its flat ones: the shader reflects only floors), whose
+    // water is a fixed painting under Lagless FoD.
+    const bool water_stage = host::g_stage_water.load(std::memory_order_relaxed);
+    if (!no_water && water_stage && dc.owner_player == 0xFF && !additive) in.flags |= kRtxGeometryMirrorWater;
+  }
   // GX's own lighting of the draw (channel 0): its ambient register and whether it is lit at all.
   const uint32_t amb = dc.xf_regs[0x0A], chan = dc.xf_regs[0x0E];
   in.ambient = ((amb >> 24) & 0xFF) | (((amb >> 16) & 0xFF) << 8) | (((amb >> 8) & 0xFF) << 16) | ((amb & 0xFF) << 24);
@@ -4195,6 +4222,7 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.fx_light_strength = opts_.rtx_effect_light || opts_.rtx_glow_light ? fx_strength : 0.0f;
   in.glossy_floors = opts_.rtx_glossy_floors;
   in.modded_stage = host::g_stage_file_modded.load(std::memory_order_relaxed);
+  in.mod_floors = opts_.rtx_mod_floors;
   in.light_scale = opts_.rtx_brightness / 100.0f;
   in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;
   in.floor_strength = opts_.rtx_floor_strength / 100.0f;
