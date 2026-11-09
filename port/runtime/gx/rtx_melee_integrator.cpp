@@ -260,6 +260,8 @@ class MeleeIntegrator final : public RtxIntegrator {
     if (no_highlight) k.switches |= 1u << 29;
     static const bool show_draw_colour = host::test_env::getenv("MELEE_TEST_RTX_DRAW_COLOUR") != nullptr;
     if (show_draw_colour) k.switches |= 1u << 28;
+    static const bool no_pop = host::test_env::getenv("MELEE_TEST_RTX_NO_POP") != nullptr;   // A/B: fighters' pop off
+    if (no_pop) k.switches |= 1u << 25;
     static const bool no_rim = host::test_env::getenv("MELEE_TEST_RTX_NO_RIM") != nullptr;   // A/B: fighters' rim light off
     if (no_rim) k.switches |= 1u << 26;
     std::memcpy(s.constants_cpu, &k, sizeof k);

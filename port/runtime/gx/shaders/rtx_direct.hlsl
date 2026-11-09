@@ -745,6 +745,13 @@ void main(uint3 id : SV_DispatchThreadID) {
     rim = albedo * sun * edge * (0.25 + 0.75 * behind) * kRimStrength * look;
   }
   float3 shaded = lerp(faithful, pbr, look) + reflection + gx_extra + rim;
+  // Fighters pop (his 11-09 note: Remastered fighters looked whited out): more colour and deeper
+  // mid-tones on fighters only, highlights kept. Test view bit 25 turns it off.
+  if (fighter && look > 0.0 && (switches & (1u << 25)) == 0u) {
+    const float luma = dot(shaded, float3(0.2126, 0.7152, 0.0722));
+    shaded = max(lerp(luma.xxx, shaded, 1.0 + 0.2 * look), 0.0);
+    shaded = pow(shaded, 1.0 + 0.12 * look);
+  }
   if (fx_light_count != 0u && roughness <= 0.6)
     shaded += specular_albedo(f0, saturate(dot(n, v)), roughness) * fx_mirror(p, n, v, roughness);
   if (shadows && (switches & kFighterShadows) != 0u && !fighter) shaded *= fighter_shadow(origin, n, sun_dir, look, rng);
