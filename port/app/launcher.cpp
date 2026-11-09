@@ -2079,6 +2079,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_DRAWITEM: if(((DRAWITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) draw_replay((DRAWITEMSTRUCT*)lp); else draw_buffered((DRAWITEMSTRUCT*)lp, draw_button); return TRUE;
     case WM_MEASUREITEM: if(((MEASUREITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) { ((MEASUREITEMSTRUCT*)lp)->itemHeight=S(84); return TRUE; } break;
+    case WM_CONTEXTMENU: if((HWND)wp==g_replays[0]&&g_replays[0]) { replay_context_menu(GET_X_LPARAM(lp),GET_Y_LPARAM(lp)); return 0; } break;
     case WM_MOUSEMOVE: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       int hot = -1;

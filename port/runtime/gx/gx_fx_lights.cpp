@@ -12,7 +12,8 @@ namespace gx {
 
 // The draw's TEV (colour combiner) for one texel on the CPU, the way Melee composes its colours from
 // textures, the rasterized colour and its constant and register colours: what the surface shows under
-// neutral light. Inputs follow GX: only the texmap `own_map` is the given texel (other textures read white),
+// neutral light. An effect light takes its colour from it, so constant-coloured lines and tinted art keep their
+// colours. Inputs follow GX: only the texmap `own_map` is the given texel (other textures read white),
 // the rasterized colour is `ras` (0..255), comparison modes are passed as plain adds.
 void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float ras[4], float out[4]) {
   const BPMemory& bp = d.bp;
@@ -135,7 +136,18 @@ bool FxLightCollector::add(const Frame& f, const DrawCall& d, const float vw[12]
   float o[4];
   tev_texel(d, own_map, texel, ras, o);
   const uint32_t src = (d.bp.blendmode() >> 8) & 7;   // GX source factor: 1 one, 4 source alpha
-  const float weight = src == 4 ? o[3] / 255.0f : src == 1 ? 1.0f : 0.0f;
+  const bool blended = (d.bp.blendmode() & 1) != 0;
+  const float weight = !blended ? 1.0f : src == 4 ? o[3] / 255.0f : src == 1 ? 1.0f : 0.0f;
+  if (strip_test_) {
+    // add_glow_strip: a long, thin piece in a bright colour, or nothing.
+    float e[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    std::sort(e, e + 3);
+    const float peak = std::max({o[0], o[1], o[2]}) / 255.0f, low = std::min({o[0], o[1], o[2]}) / 255.0f;
+    const bool strip = e[2] > 8.0f && e[1] < 0.2f * e[2];
+    const bool bright = (peak >= 0.55f && (peak - low) >= 0.3f * peak) || peak >= 0.85f;
+    if (!strip || !bright) return false;
+    segments = std::clamp((int)(e[2] / 15.0f), 2, 8);
+  }
   FxLight l{};
   float extent = 0.0f;
   int axis = 0;
@@ -150,7 +162,8 @@ bool FxLightCollector::add(const Frame& f, const DrawCall& d, const float vw[12]
   if (peak > 1e-4f) for (float& c : l.rgb) c *= std::min(1.0f, peak * 3.0f) / peak;
   const int n = std::max(1, segments);
   const float piece = extent / (float)n;   // each light covers its share of the long side
-  l.radius = std::clamp((n > 1 ? piece : extent) * 0.2f, 0.3f, 4.0f);
+  // A strip lights like the long lamp it is: each of its lights reaches about its own length.
+  l.radius = n > 1 ? std::clamp(piece * 0.5f, 0.3f, 8.0f) : std::clamp(extent * 0.2f, 0.3f, 4.0f);
   l.power = (0.2126f * l.rgb[0] + 0.7152f * l.rgb[1] + 0.0722f * l.rgb[2]) * l.radius * l.radius;
   for (int i = 0; i < n; ++i) {
     FxLight s = l;
@@ -158,6 +171,13 @@ bool FxLightCollector::add(const Frame& f, const DrawCall& d, const float vw[12]
     out.push_back(s);
   }
   return true;
+}
+
+bool FxLightCollector::add_glow_strip(const Frame& f, const DrawCall& d, const float vw[12], std::vector<FxLight>& out) {
+  strip_test_ = true;
+  const bool added = add(f, d, vw, out, 1);
+  strip_test_ = false;
+  return added;
 }
 
 bool fx_focus(const Frame& f, int camera, const float vw[12], float out[3]) {

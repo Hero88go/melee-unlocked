@@ -362,6 +362,7 @@ extern std::atomic<bool> g_hide_hud_emblems;
 // a stage file). Path tracing's polished-floor look is tuned on the original stages; a mod's floors
 // are kept as drawn.
 extern std::atomic<bool> g_stage_file_modded;
+extern std::atomic<bool> g_stage_water;   // the stage loaded is Fountain of Dreams (GrIz.dat): its floor is water
 // "Community codes" (HUD tab): the native versions of players' favourite Gecko codes, as the
 // MU_DISPLAY_OPTION_* bits in MU_DISPLAY_OPTION_CODES_ALL. Source Port only; picture and sound only.
 extern std::atomic<uint32_t> g_community_codes;

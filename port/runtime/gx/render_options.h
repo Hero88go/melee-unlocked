@@ -391,8 +391,10 @@ struct RenderOptions {
   bool rtx_reflections = true;     // traced reflections on glossy and mirror-like surfaces
   bool rtx_skin = true;            // soft skin: light scattering under fighters' matte surfaces
   bool rtx_stage_shade = true;     // the stage's own sun shadows and contact shade where its light is painted in
+  int rtx_mod_floors = 0;          // Shiny floors on stage mods: 0 off (0.9.107), 1 sheen, 2 mirror (before 0.9.106)
   bool rtx_modded_stages = true;   // path tracing on stages whose files come from a mod (off: the mod as drawn)
   bool rtx_effect_light = true;    // bright effects (fire, sparks, flashes) light the stage and fighters
+  bool rtx_glow_light = false;     // the stage's glowing art (Battlefield's neon edges) lights the fighters (1.0 test, off until approved)
   int rtx_brightness = 115;        // relit picture brightness, percent (50..200)
   bool rtx_glossy_floors = true;   // the stage's floors reflect the scene (fighters, effects, its own lights)
   // Ray tracing preset (0 Custom, 1 Faithful, 2 Balanced, 3 Remastered, 4 Showcase) and the strengths it

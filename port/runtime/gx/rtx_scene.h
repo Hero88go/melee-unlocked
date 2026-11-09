@@ -41,6 +41,8 @@ enum : uint32_t {
   kRtxGeometryNoNormals = 1u << 4,  // shade with the triangle's own normal
   kRtxGeometryTintedReflection = 1u << 5,   // its colour comes from the game's environment map: its
                                             // traced reflection takes that colour, as a metal's does
+  kRtxGeometryMirrorWater = 1u << 6,   // a stage surface the game paints a captured picture on (Fountain of
+                                       // Dreams' water, its reflection camera's 80x60 image): traced as water
 };
 // RtxGeometryRecord::channel: the draw's GX colour channel 0 (XF 0x100E).
 enum : uint32_t {

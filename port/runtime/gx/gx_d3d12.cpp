@@ -3248,16 +3248,26 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
   for (const DrawCall& d : frame.draws)
     if (d.rtx.camera == rtx_main_camera_) add_set(d.rtx.light_set);
   // Bright effects (additive particles, sparks, flashes) as small lights after the sets, the nearest
-  // and brightest few (Video > Ray tracing > Effects light the stage).
+  // and brightest few (Video > Ray tracing > Effects light the stage). The stage's own glowing art
+  // (Battlefield's neon edges) joins them as rows of lights that light the fighters only (Glowing stage
+  // art lights the fighters).
   rtx_fx_first_ = (uint32_t)rtx_lights_.size();
   rtx_fx_count_ = 0;
-  if (opts_.rtx_effect_light) {
+  if (opts_.rtx_effect_light || opts_.rtx_glow_light) {
     rtx_fx_lights_.clear();
     for (const DrawCall& d : frame.draws) {
       if (d.rtx.camera != rtx_main_camera_) continue;
       const uint32_t bm = d.bp.blendmode();
-      if (!((bm & 1) && ((bm >> 5) & 7) == 1)) continue;   // additive: it adds light to the picture
-      if (scene_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+      const bool additive = (bm & 1) && ((bm >> 5) & 7) == 1;   // it adds light to the picture
+      const bool stage_unlit = d.owner_player == 0xFF && d.xf_regs[0x26] == 0 &&
+                               ((d.xf_regs[0x09] & 3) == 0 || ((d.xf_regs[0x0E] >> 1) & 1) == 0);
+      if (additive && opts_.rtx_effect_light && scene_effect_draw(d)) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+      else if (opts_.rtx_glow_light && stage_unlit) {
+        const size_t before = rtx_fx_lights_.size();
+        if (additive) rtx_fx_collector_.add(frame, d, rtx_view_to_world_, rtx_fx_lights_, 4);
+        else rtx_fx_collector_.add_glow_strip(frame, d, rtx_view_to_world_, rtx_fx_lights_);
+        for (size_t i = before; i < rtx_fx_lights_.size(); ++i) rtx_fx_lights_[i].glow = true;
+      }
     }
     // Only what can light the match: near the fighters (within half again the camera's distance to
     // them), the nearest and brightest first.
@@ -3275,8 +3285,11 @@ void D3D12Backend::rtx_begin_present(const Frame& frame) {
       r.type = kRtxLightEffect;
       r.cos_cutoff = -1.0f;
       std::memcpy(r.radiance, f.rgb, sizeof r.radiance);
+      // Glowing stage art at its own strength (MELEE_RTX_GLOW_LIGHT, of the effect light's).
+      static const float glow_scale = [] { const char* v = host::test_env::getenv("MELEE_RTX_GLOW_LIGHT"); return v ? (float)std::atof(v) : 0.6f; }();
+      if (f.glow) for (float& c : r.radiance) c *= glow_scale;
       r.radius = f.radius;
-      r.flags = 0xFF000000u;
+      r.flags = 0xFF000000u | (f.glow ? 1u : 0u);   // 1: the stage's glowing art, which lights the fighters only
       rtx_lights_.push_back(r);
       ++rtx_fx_count_;
     }
@@ -3377,6 +3390,18 @@ void D3D12Backend::rtx_record_draw(const Frame& frame, const DrawCall& dc, D3D12
   for (uint32_t t = 0; material && t < material->tobj_count && t < 8; ++t)
     if (material->tobjs[t].coord == 1) in.flags |= kRtxGeometryTintedReflection;
   rtx_material_params(material, &in.specular, &in.roughness);
+  // Water: a stage surface textured by a picture the game captured from the screen (an EFB copy), one the
+  // game maps a painted reflection onto (an environment map), or any stage surface on Fountain of Dreams,
+  // whose water is a fixed painting under Lagless FoD. The shader reflects only its floors
+  // (MELEE_RTX_NO_WATER=1 off).
+  {
+    static const bool no_water = host::test_env::getenv("MELEE_RTX_NO_WATER") != nullptr;
+    bool captured = false;
+    for (const TextureRef& t : dc.textures) captured = captured || (t.used && efb_copies_.count(t.addr) != 0);
+    const bool painted_reflection = (in.flags & kRtxGeometryTintedReflection) != 0;
+    const bool water_stage = host::g_stage_water.load(std::memory_order_relaxed);
+    if (!no_water && (captured || painted_reflection || water_stage) && dc.owner_player == 0xFF && !additive) in.flags |= kRtxGeometryMirrorWater;
+  }
   // GX's own lighting of the draw (channel 0): its ambient register and whether it is lit at all.
   const uint32_t amb = dc.xf_regs[0x0A], chan = dc.xf_regs[0x0E];
   in.ambient = ((amb >> 24) & 0xFF) | (((amb >> 16) & 0xFF) << 8) | (((amb >> 8) & 0xFF) << 16) | ((amb & 0xFF) << 24);
@@ -3718,9 +3743,10 @@ ID3D12Resource* D3D12Backend::rtx_light_frame() {
   in.fx_light_first = std::min(rtx_fx_first_, (uint32_t)light_count);
   in.fx_light_count = std::min(rtx_fx_count_, (uint32_t)light_count - in.fx_light_first);
   static const float fx_strength = [] { const char* v = host::test_env::getenv("MELEE_RTX_FX_LIGHT"); return v ? (float)std::atof(v) : 1.5f; }();
-  in.fx_light_strength = opts_.rtx_effect_light ? fx_strength : 0.0f;
+  in.fx_light_strength = opts_.rtx_effect_light || opts_.rtx_glow_light ? fx_strength : 0.0f;
   in.glossy_floors = opts_.rtx_glossy_floors;
   in.modded_stage = host::g_stage_file_modded.load(std::memory_order_relaxed);
+  in.mod_floors = opts_.rtx_mod_floors;
   in.light_scale = opts_.rtx_brightness / 100.0f;
   in.reflection_strength = opts_.rtx_reflection_strength / 100.0f;
   in.floor_strength = opts_.rtx_floor_strength / 100.0f;

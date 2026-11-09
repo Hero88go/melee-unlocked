@@ -31,6 +31,7 @@ double now_seconds() { return 0.0; }
 void loading_close() {}
 void log_memory() {}
 std::atomic<bool> g_stage_file_modded{false};
+std::atomic<bool> g_stage_water{false};
 }
 namespace slippi { void request_widescreen(bool) {} void request_fod_reflections(bool) {} }
 // These visual setting hooks are not exercised by the resource-pool test. Keep the production

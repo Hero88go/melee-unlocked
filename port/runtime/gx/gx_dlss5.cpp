@@ -334,11 +334,33 @@ bool fail_tuning(const std::string& why, uint32_t w, uint32_t h, const Tuning& t
   return fail(why + "; choose different DLSS 5 settings to retry", true);
 }
 bool g_driver_failed = false;
+// NVIDIA's DLSS 5 can fault inside the driver (0.9.107 reports: nvcuda64.dll+0x127852 under
+// nvngx_dlssnr.dll on an RTX 5070 Laptop GPU beside Intel Arc graphics). Such a fault is caught here:
+// DLSS 5 goes off for the session and the picture stays on DLAA, instead of the game closing.
+// No C++ object lives in this function, so structured exception handling may guard it.
+int seh_invoke(int (*thunk)(void*), void* context, bool* faulted) {
+  __try {
+    return thunk(context);
+  } __except (GetExceptionCode() == 0xE06D7363u ? EXCEPTION_CONTINUE_SEARCH : EXCEPTION_EXECUTE_HANDLER) {   // C++ throws pass
+    *faulted = true;
+    return (int)NVSDK_NGX_Result_Fail;
+  }
+}
 template<class Call> int driver_call(Call call) {
-  return gx::guarded_driver_call(g_driver_failed, call, (int)NVSDK_NGX_Result_Fail,
-    [](const std::system_error& error) {
-      fail(std::string("driver resource failure: ") + error.what());
-    });
+  if (g_driver_failed) return (int)NVSDK_NGX_Result_Fail;
+  bool faulted = false;
+  auto guarded = [&]() -> int {
+    return gx::guarded_driver_call(g_driver_failed, call, (int)NVSDK_NGX_Result_Fail,
+      [](const std::system_error& error) {
+        fail(std::string("driver resource failure: ") + error.what());
+      });
+  };
+  const int r = seh_invoke([](void* c) -> int { return (*static_cast<decltype(guarded)*>(c))(); }, &guarded, &faulted);
+  if (faulted) {
+    g_driver_failed = true;
+    fail("NVIDIA's DLSS 5 stopped inside the graphics driver");
+  }
+  return r;
 }
 bool can_retry(uint32_t w, uint32_t h, const Tuning& t) {
   return g.tuning_failed && (g.failed_w != w || g.failed_h != h || g.failed_tuning != t);

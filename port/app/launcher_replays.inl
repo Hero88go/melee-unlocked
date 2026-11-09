@@ -105,6 +105,40 @@ int replay_row_of(int index) {
 }
 int replay_selected() { return replay_at_row(g_replays[0]?(int)SendMessageW(g_replays[0],LB_GETCURSEL,0,0):-1); }
 
+void refresh_replays(const std::filesystem::path& selected);
+// Right-click on a replay card (Wiseman's request, 11-08): show the file in Explorer, or move it to the
+// Recycle Bin (never deleted outright, so a slip can be undone).
+void replay_context_menu(int x, int y) {
+  HWND list=g_replays[0];
+  if(!list) return;
+  POINT pt{x,y};
+  if(x==-1&&y==-1) { RECT r{}; GetWindowRect(list,&r); pt={r.left+20,r.top+20}; }   // the keyboard's menu key
+  else { POINT client=pt; ScreenToClient(list,&client);
+    const LRESULT hit=SendMessageW(list,LB_ITEMFROMPOINT,0,MAKELPARAM(client.x,client.y));
+    if(HIWORD(hit)==0) SendMessageW(list,LB_SETCURSEL,LOWORD(hit),0); }
+  const int index=replay_selected();
+  if(index<0||index>=(int)g_replay_files.size()) return;
+  const std::filesystem::path file=g_replay_files[index];
+  HMENU menu=CreatePopupMenu();
+  AppendMenuW(menu,MF_STRING,1,L"Show in folder");
+  AppendMenuW(menu,MF_STRING,2,L"Delete (to the Recycle Bin)");
+  const int pick=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,pt.x,pt.y,0,g_main,nullptr);
+  DestroyMenu(menu);
+  if(pick==1) {
+    const std::wstring args=L"/select,\""+file.wstring()+L"\"";
+    ShellExecuteW(g_main,L"open",L"explorer.exe",args.c_str(),nullptr,SW_SHOWNORMAL);
+  } else if(pick==2) {
+    std::wstring from=file.wstring(); from.push_back(L'\0');   // double-NUL list
+    SHFILEOPSTRUCTW op{}; op.hwnd=g_main; op.wFunc=FO_DELETE; op.pFrom=from.c_str();
+    op.fFlags=FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT;
+    if(SHFileOperationW(&op)==0&&!op.fAnyOperationsAborted) {
+      std::wstring trace=file.wstring(); trace.replace(trace.size()-4,4,L".trace"); trace.push_back(L'\0');
+      std::error_code te; if(std::filesystem::exists(std::filesystem::path(trace.c_str()),te)) { op.pFrom=trace.c_str(); SHFileOperationW(&op); }
+      refresh_replays({});
+    }
+  }
+}
+
 // "Show it as it was played": an online match leaves a session trace beside its replay, the same
 // name with the extension .trace (what the player actually got: waits, rollbacks, long frames). The
 // box (g_replay_as_played, kept in launcher.ini) can be ticked only for a replay that has one.
@@ -341,8 +375,20 @@ void refresh_replays(const std::filesystem::path& selected={}) {
         it.increment(ec);
       }
     }
-    std::sort(found.begin(),found.end(),[](const auto& a,const auto& b){return a.second<b.second;});
-    found.erase(std::unique(found.begin(),found.end(),[](const auto& a,const auto& b){return a.second==b.second;}),found.end());
+    // One file reached through two of the folders (the chosen folder inside Documents\Slippi, or the same
+    // folder written with / and \) was listed twice: compare resolved, lower-case paths.
+    auto same_file=[](const std::filesystem::path& p){
+      std::error_code ce; auto key=std::filesystem::weakly_canonical(p,ce).wstring();
+      if(ce) key=p.lexically_normal().wstring();
+      std::transform(key.begin(),key.end(),key.begin(),::towlower);
+      return key;
+    };
+    std::vector<std::pair<std::wstring,size_t>> keyed;
+    for(size_t i=0;i<found.size();++i) keyed.emplace_back(same_file(found[i].second),i);
+    std::sort(keyed.begin(),keyed.end());
+    std::vector<std::pair<std::filesystem::file_time_type,std::filesystem::path>> unique_found;
+    for(size_t i=0;i<keyed.size();++i) if(i==0||keyed[i].first!=keyed[i-1].first) unique_found.push_back(found[keyed[i].second]);
+    found.swap(unique_found);
     if(!choice.empty()&&std::none_of(found.begin(),found.end(),[&](const auto& f){return f.second==choice;})) {
       std::error_code fe; found.emplace_back(std::filesystem::last_write_time(choice,fe),choice);
     }
