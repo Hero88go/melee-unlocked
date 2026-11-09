@@ -40,6 +40,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -975,7 +976,7 @@ bool read_system_file(uint32_t offset, void* dst, uint32_t size, bool* ok) {
 // frames (another compiler's code), so it is caught at the boundary and the process finishes here.
 int g_exit_code = 0;
 void (*g_shutdown)(int) = nullptr;
-void write_replay_recording();
+void write_replay_recording(bool in_background = false);
 // Online games recorded since the player last searched for an opponent: the game number SendGameInfo
 // takes from Slippi's game prep data (InitOnlinePlay counts every non-ranked game; a search resets it).
 uint32_t g_online_games = 0;
@@ -2964,7 +2965,7 @@ void h_mark_match_start() { host::input_mark_match_start(); }
 // callbacks stay in the host table so the same game interface version is served.
 constexpr bool g_replay = false;
 uint8_t replay_gate(int32_t, uint8_t) { return 0; }
-void write_replay_recording() {}
+void write_replay_recording(bool) {}
 const MuReplayStart* h_replay_start() { return nullptr; }
 void h_replay_frame(int32_t, MuReplayFrame* out) { *out = MuReplayFrame{}; out->result = MU_REPLAY_TERMINATE; }
 int32_t h_replay_stock_steal(int32_t, int32_t) { return 0; }
@@ -3113,9 +3114,16 @@ uint32_t replay_codes(const Slippi::GameSettings& s, uint8_t* ps_frozen_toggle) 
   return codes;
 }
 
-void write_replay_recording() {
+// in_background (the match's end, at GAME!): the file is written on a thread of its own, so the game
+// never waits on the disk there. A 4 to 8 MB replay took players 120 ms to 8.5 s to save (the file
+// checked by antivirus as it closes), and an online opponent's game gave up on the stalled one.
+// Everything else (quitting, a crash, a recording not written yet) writes at once, after any write still
+// going (host::wait_file_writes; end_process waits for it too).
+void write_replay_recording(bool in_background) {
+  // Written already (the menu after GAME!, quitting): nothing to wait for here. end_process waits.
   if (g_replay_written || !g_replay_stream.active() || g_replay_spectator_only) return;
-  const auto file = g_replay_stream.encode();
+  host::wait_file_writes();   // an earlier match's file is on disk before this one is named
+  std::vector<uint8_t> file = g_replay_stream.encode();
   if (file.empty()) {
     host::log("replay: recording failed: %s", g_replay_stream.error().c_str());
     return;
@@ -3141,35 +3149,48 @@ void write_replay_recording() {
     return;
   }
 #endif
-  std::error_code ec;
-  std::filesystem::create_directories(host::options.replay_dir, ec);
   // Named by the game's start, as Dolphin names the file when the game creates it.
   std::time_t now = g_replay_stream.start_time() ? (std::time_t)g_replay_stream.start_time() : std::time(nullptr);
   std::tm tm{};
   localtime_s(&tm, &now);
   char name[64];
   std::strftime(name, sizeof name, "Game_%Y%m%dT%H%M%S.slp", &tm);
-  // Exclusive creation prevents quick successive matches (or two clients) from
-  // overwriting a recording with the same second-resolution timestamp.
-  std::filesystem::path out = std::filesystem::path(host::options.replay_dir) / name;
-  HANDLE handle = INVALID_HANDLE_VALUE;
-  for (unsigned suffix = 0; suffix < 10000; ++suffix) {
-    if (suffix) out = std::filesystem::path(host::options.replay_dir) /
-        (std::string(name, std::strlen(name) - 4) + "_" + std::to_string(suffix) + ".slp");
-    handle = CreateFileW(out.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle != INVALID_HANDLE_VALUE || GetLastError() != ERROR_FILE_EXISTS) break;
-  }
-  if (handle != INVALID_HANDLE_VALUE) {
-    DWORD written = 0;
-    const bool ok = WriteFile(handle, file.data(), (DWORD)file.size(), &written, nullptr) && written == file.size();
-    const bool closed = CloseHandle(handle) != 0;
-    g_replay_written = ok && closed;
-    host::log("replay: %s %s (%zu bytes)", g_replay_written ? "recording written to" : "write failed for",
-              out.string().c_str(), file.size());
-    if (g_replay_written) net_trace::replay_saved(out.string().c_str());
-  } else {
-    host::log("replay: cannot write %s (error %lu)", out.string().c_str(), GetLastError());
-  }
+  // This recording is taken from here: a later call (the menu, quitting) does not write it again.
+  g_replay_written = true;
+  auto write = [file = std::move(file), dir = host::options.replay_dir, name = std::string(name)]() {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    // Exclusive creation prevents quick successive matches (or two clients) from
+    // overwriting a recording with the same second-resolution timestamp.
+    std::filesystem::path out = std::filesystem::path(dir) / name;
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    for (unsigned suffix = 0; suffix < 10000; ++suffix) {
+      if (suffix) out = std::filesystem::path(dir) / (name.substr(0, name.size() - 4) + "_" + std::to_string(suffix) + ".slp");
+      handle = CreateFileW(out.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (handle != INVALID_HANDLE_VALUE || GetLastError() != ERROR_FILE_EXISTS) break;
+    }
+    if (handle != INVALID_HANDLE_VALUE) {
+      const auto began = std::chrono::steady_clock::now();
+      // Tests: MELEE_TEST_REPLAY_WRITE_DELAY_MS=N makes the disk this slow (a match must not wait on it).
+      if (const char* slow = host::test_env::getenv("MELEE_TEST_REPLAY_WRITE_DELAY_MS"))
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(slow)));
+      DWORD written = 0;
+      const bool ok = WriteFile(handle, file.data(), (DWORD)file.size(), &written, nullptr) && written == file.size();
+      const bool closed = CloseHandle(handle) != 0;
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+      host::log("replay: %s %s (%zu bytes, %.0f ms)", ok && closed ? "recording written to" : "write failed for",
+                out.string().c_str(), file.size(), ms);
+      if (ok && closed) net_trace::replay_saved(out.string().c_str());
+    } else {
+      host::log("replay: cannot write %s (error %lu)", out.string().c_str(), GetLastError());
+    }
+  };
+  if (!in_background) { write(); return; }
+  host::file_write_begin();
+  std::thread([write = std::move(write)]() mutable {
+    write();
+    host::file_write_end();
+  }).detach();
 }
 
 const MuReplayStart* h_replay_start() { return g_replay ? &g_replay_start : nullptr; }
@@ -3346,7 +3367,7 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
     host::publish_lobby_result(winner, size ? payload[0] : 0, size >= 2 ? (int)(int8_t)payload[1] : -1,
                                size >= 6 ? payload + 2 : nullptr);
     if (g_online_test_mode == 0) { g_ranked_harness.game_end_ms = GetTickCount64(); g_ranked_harness.reentry_asked = false; }
-    write_replay_recording();
+    write_replay_recording(true);   // at GAME!: the disk is not waited on
   }
 }
 

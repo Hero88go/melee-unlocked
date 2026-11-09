@@ -765,6 +765,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
       // The session trace file sits beside the match's replay, under its name. The Static Recomp's
       // replay is open and named by now; the Source Port names its replay when it writes it and
       // reports it then (net_trace::replay_saved). No replay, no trace.
+      host::wait_file_writes();   // the last match's replay names its trace: it is on disk first
       if (host::game_image) net_trace::file_begin(host::options.replay_dir.c_str(), nullptr);
       else if (slippi::recording()) net_trace::file_begin(slippi::replay_directory().c_str(), slippi::last_replay_path().c_str());
     }

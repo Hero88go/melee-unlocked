@@ -77,6 +77,12 @@ template <class Body> void optional_work(const char* what, Body&& body) noexcept
 // Ends the process now, with everything of ours already saved, without running DLL unload code
 // (see end_process in host.cpp for why).
 [[noreturn]] void end_process(int code);
+// A file being written on a thread of its own (a match's replay, so the game does not wait on the
+// disk at GAME!). end_process waits for these first, up to 20 s, so quitting right after a match
+// still keeps the file. wait_file_writes waits for them without ending anything.
+void file_write_begin();
+void file_write_end();
+void wait_file_writes(unsigned max_ms = 20000);
 // The game is ending on purpose (end_process, or the Source Port's shutdown). From here an exception
 // nobody catches on some other thread (a driver's or an overlay's, tearing down) ends the process
 // quietly instead of reporting a crash.

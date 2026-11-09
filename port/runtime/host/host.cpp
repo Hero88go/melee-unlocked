@@ -226,7 +226,21 @@ static std::atomic<bool> g_process_ending{false};
 void set_process_ending() { g_process_ending.store(true); }
 bool process_ending() { return g_process_ending.load(); }
 
+static std::mutex g_file_writes_mutex;
+static std::condition_variable g_file_writes_done;
+static int g_file_writes = 0;
+void file_write_begin() { std::lock_guard<std::mutex> lock(g_file_writes_mutex); ++g_file_writes; }
+void file_write_end() {
+  { std::lock_guard<std::mutex> lock(g_file_writes_mutex); --g_file_writes; }
+  g_file_writes_done.notify_all();
+}
+void wait_file_writes(unsigned max_ms) {
+  std::unique_lock<std::mutex> lock(g_file_writes_mutex);
+  g_file_writes_done.wait_for(lock, std::chrono::milliseconds(max_ms), [] { return g_file_writes <= 0; });
+}
+
 [[noreturn]] void end_process(int code) {
+  wait_file_writes();
   set_process_ending();
   log_flush();
   std::fflush(nullptr);
