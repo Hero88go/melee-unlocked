@@ -22,7 +22,9 @@
 
 namespace gx {
 
-struct RtxLightRecord;   // rtx_lights.h
+}  // namespace gx
+#include "rtx_lights.h"
+namespace gx {
 
 struct RtxFrameInputs {
   ID3D12Device5* device = nullptr;
@@ -119,10 +121,14 @@ std::unique_ptr<RtxIntegrator> make_melee_integrator();
 //   gx::RtxIntegrator* melee_rtx_create_integrator();   // owned by the caller (deleted through the interface)
 // A DLL built against other headers (an older pack after an update) is refused, never called.
 // Bump kRtxPluginVersion whenever the interface or the light/record layouts change meaning.
-constexpr uint32_t kRtxPluginVersion = 1;
+constexpr uint32_t kRtxPluginVersion = 2;
 constexpr uint32_t rtx_plugin_abi() {
-  return (kRtxPluginVersion << 24) ^ ((uint32_t)sizeof(RtxFrameInputs) << 8) ^ (uint32_t)sizeof(RtxFrameOutputs);
+  return (kRtxPluginVersion << 24) ^ ((uint32_t)sizeof(RtxFrameInputs) << 8) ^ (uint32_t)sizeof(RtxFrameOutputs) ^
+         ((uint32_t)sizeof(RtxLightRecord) << 16);
 }
+// Whether the RTX Pack beside the game (RTX, Remix) is the one this release offers: rtxpack.installed holds
+// the SHA-256 that rtxpack.sha256 names. A folder with no rtxpack.sha256 (a build from source) is current.
+bool rtx_pack_current(const std::wstring& game_dir);
 // Loads <dir>\melee_rtx_nvidia.dll. Null with *error set when it is missing or does not match.
 std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring& dir, std::string* error);
 

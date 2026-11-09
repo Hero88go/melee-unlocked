@@ -137,7 +137,9 @@ bool RemixBridge::start(int width, int height, bool hidden, std::string* error, 
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     dir = std::filesystem::path(exe).parent_path() / L"Remix";
   }
-  SetDllDirectoryW(dir.c_str());   // the runtime's own DLLs (DLSS, NRD, USD) sit beside it
+  // The runtime's own DLLs (DLSS, NRD, USD) sit beside it and load as it starts and later. A Remix run
+  // loads none of the game's own DLSS, XeSS or FSR (Streamline is not started), so nothing else is affected.
+  SetDllDirectoryW(dir.c_str());
   // The picture defaults chosen from the 11-08 comparison: fixed exposure (Remix's automatic
   // exposure brightened dark stages and dimmed bright ones away from the game's look), and the HUD
   // quad as UI. A config file the runtime reads at start (these options are not applied later);

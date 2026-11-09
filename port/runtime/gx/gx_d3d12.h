@@ -19,8 +19,14 @@ bool rtx_path_tracing_ready();
 // never starts the path tracer, so it must not switch off what the player chose.
 bool rtx_path_tracing_known();
 bool rtx_nvidia_integrator_available();
-// RTX Remix can draw the matches (local builds with the bridge and its runtime beside the game).
+// RTX Remix can draw the matches: the RTX Pack's Remix runtime is beside the game (for this version).
 bool rtx_remix_available();
+// RTX Remix is drawing this run. Chosen at start only: Streamline (DLSS, Frame generation, Reflex) is not
+// loaded while it draws, so a switch to or from it during a run applies at the next start.
+bool rtx_remix_running();
+// One line for PC settings about the NVIDIA RTX (1) or RTX Remix (2) renderer: why it is not drawing, or
+// empty when it is drawing or nothing needs saying.
+std::string rtx_renderer_status(int which);
 // Windows HDR is on for the screen the game is on (Direct3D 12 checks it at each present).
 bool hdr_display_available();
 void gpu_pass_cost(float* dlaa_ms, float* neural_ms);

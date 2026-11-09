@@ -3487,6 +3487,10 @@ struct PcSettingsUI::Impl {
 };
 
 void PcSettingsUI::set_hdr_paper_white(float nits) { g_settings_hdr_nits = nits; }
+bool PcSettingsUI::overlay_visible() const {
+  const SettingsState& s = impl_->state;
+  return s.open || s.menu_open || s.practice_open || settings_fills_window();
+}
 
 PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options,
                            int rtv_format)
@@ -6890,7 +6894,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (!path_available && options.path_tracing) { options.path_tracing = false; changed = true; }
     const bool rr_available = path_available && options.path_tracing &&
                               (!rtx_known || streamline::ray_reconstruction_available());
-    if (!rr_available && options.ray_reconstruction) { options.ray_reconstruction = false; changed = true; }
+    if (!rr_available && options.ray_reconstruction && !rtx_remix_running()) { options.ray_reconstruction = false; changed = true; }
     {
       // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=raytracing): bring HDR and Ray tracing into view once.
       static int scroll_frames = 0;
@@ -6924,106 +6928,22 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                     !rtx_ready ? "Needs an RTX (ray-tracing) GPU and the Source Port." :
                     "Turn on DLSS or DLAA above: path tracing uses its motion vectors.");
     if (options.path_tracing) {
-      // Presets set the look, brightness and every strength at once; moving one of them makes it Custom.
-      {
-        const char* presets[] = {"Custom", "Faithful", "Balanced", "Remastered", "Showcase"};
-        if (settings_combo("Preset", &options.rtx_preset, presets, 5)) {
-          apply_rtx_preset(options);
-          changed = true;
-        }
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Faithful: the game's own lighting with ray-traced shadows.\n"
-                            "Balanced: a little shine and bounce light.\n"
-                            "Remastered: physically based light, reflections and glossy floors.\n"
-                            "Showcase: everything pushed: mirror floors, strong reflections, deep shadows.");
-      }
-      if (settings_slider("Look", &options.rtx_look, 0, 100, options.rtx_look >= 100 ? "Remastered" :
-                          options.rtx_look <= 0 ? "Faithful" : "%d%% remastered")) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Faithful: the game's own lighting, with ray-traced shadows on top.\n"
-                          "Remastered: physically based light (deeper shade, real highlights).");
-      // Its own ID: the picture's Brightness slider further down this page has the same label, and two rows
-      // with one ID made controller navigation loop between them (Up never got past this group).
-      ImGui::PushID("rtx");
-      const bool rtx_bright = settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%");
-      ImGui::PopID();
-      if (rtx_bright) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How bright the path-traced picture is. Changes show at once behind this panel.");
-      if (settings_slider("Reflection strength", &options.rtx_reflection_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly shiny materials reflect the real scene.");
-      if (settings_slider("Floor reflection strength", &options.rtx_floor_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How mirror-like polished stage floors are (Glossy stage floors).");
-      if (settings_slider("Shadow strength", &options.rtx_shadow_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How dark ray-traced shadows and contact shade are.");
-      if (settings_slider("Bounce light strength", &options.rtx_bounce_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much colour light picks up bouncing off the stage onto everything.");
-      if (settings_toggle("Ray-traced shadows", &options.rtx_shadows)) { changed = true; options.rtx_preset = 0; }
-      if (settings_toggle("Ambient occlusion", &options.rtx_ao)) { changed = true; options.rtx_preset = 0; }
-      if (settings_toggle("Bounce light", &options.rtx_bounce)) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Light reflected off the stage onto the fighters and lit surfaces: colour from the\n"
-                          "ground and walls, shade that is not flat.");
-      if (settings_toggle("Reflections", &options.rtx_reflections)) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Glossy and mirror-like surfaces reflect the real scene (fighters, stage, effects).");
-      ImGui::BeginDisabled(!options.rtx_reflections);
-      if (settings_toggle("Glossy stage floors", &options.rtx_glossy_floors)) { changed = true; options.rtx_preset = 0; }
-      ImGui::EndDisabled();
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("The stage's floors reflect the fighters, effects and the stage's own lights,\n"
-                          "more at a glancing view, as polished floors do.");
-      if (settings_toggle("Soft skin", &options.rtx_skin)) { changed = true; options.rtx_preset = 0; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Light scatters under the fighters' matte surfaces: softer shading and a warm\n"
-                          "edge where light turns to shadow (Kirby, Jigglypuff, Yoshi, faces).");
-      {
-        // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=rtxlighting): bring the lower rows into view once.
-        static int scroll_frames = 0;
-        if (scroll_frames < 30) {
-          const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
-          if (target && std::strcmp(target, "rtxlighting") == 0) ImGui::SetScrollHereY(0.0f);
-          ++scroll_frames;
-        }
-      }
-      if (settings_toggle("Photo mode", &options.rtx_photo_mode)) changed = true;
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Pause the match and the picture keeps refining for a few seconds, to a clean\n"
-                          "image with every ray averaged in. Moving again resets it at once.");
-      ImGui::BeginDisabled(!options.rtx_shadows);
-      if (settings_toggle("Fighter shadows on the stage", &options.rtx_fighter_shadows)) { changed = true; options.rtx_preset = 0; }
-      ImGui::EndDisabled();
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Most stages have their light painted in. This casts the fighters' real shadows\n"
-                          "onto them from the stage's sun.");
-      ImGui::BeginDisabled(!options.rtx_shadows);
-      if (settings_toggle("Stage shadows and contact shade", &options.rtx_stage_shade)) { changed = true; options.rtx_preset = 0; }
-      ImGui::EndDisabled();
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
-                          "trees cast the sun's shadows, and corners and contacts get soft shade.");
-      if (settings_toggle("Path tracing on stage mods", &options.rtx_modded_stages)) changed = true;
-      {
-        const char* mod_floors[] = {"Off", "Sheen", "Mirror"};
-        if (settings_combo("Shiny floors on stage mods", &options.rtx_mod_floors, mod_floors, 3)) changed = true;
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Floors of a modded stage: as the mod made them (Off), a soft polished sheen with real\n"
-                            "reflections (Sheen), or a full mirror (Mirror, the look before 0.9.106).");
-      }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("On a stage whose files come from a mod: path traced like the game's own stages, or\n"
-                          "off to show the mod exactly as its maker drew it.");
-      if (settings_toggle("Effects light the stage", &options.rtx_effect_light)) changed = true;
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Fire, sparks, shines and flashes cast their own light on the stage and the fighters\n"
-                          "near them, in their own colour.");
-      if (settings_toggle("Glowing stage art lights the fighters", &options.rtx_glow_light)) changed = true;
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("The stage's own glowing lines and lamps (Battlefield's neon edges) light the\n"
-                          "fighters near them: a rim of their colour.");
+      // Lighting: which renderer path traces the match. Always all three names, with one line under it
+      // that says what is drawing; then only the settings the chosen one reads.
       const bool nvidia_ok = rtx_nvidia_integrator_available(), remix_ok = rtx_remix_available();
+      const int lighting = options.rtx_integrator >= 0 && options.rtx_integrator <= 2 ? options.rtx_integrator : 0;
+      {
+        const char* names[3] = {"Melee Unlocked", "NVIDIA RTX", "RTX Remix"};
+        int pick = lighting;
+        if (settings_combo("Lighting", &pick, names, 3)) { options.rtx_integrator = pick; changed = true; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Melee Unlocked: the game's own path tracer, always here.\n"
+                            "NVIDIA RTX: NVIDIA's RTXDI direct light, ReSTIR GI and SHaRC on the same scene (RTX Pack).\n"
+                            "RTX Remix: NVIDIA's own path tracer draws the match; the game's HUD and effects go on top\n"
+                            "(RTX Pack). The RTX Pack is a separate download: NVIDIA's SDKs cannot be in the open-source game.");
+      }
+      bool pack_line = false;   // the pack's own line already says what is missing
 #ifdef _WIN32
-      // The RTX Pack (NVIDIA RTX and RTX Remix), its own download: offered when this release has one.
       {
         std::string game_dir;
         {
@@ -7033,55 +6953,168 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
         using host::updater::ModelState;
         if (!game_dir.empty() && host::updater::rtx_pack_offered(game_dir)) {
+          // Installed during this run: the renderers load at the next start.
+          static const bool present_at_start = host::updater::rtx_pack_present(game_dir);
           const ModelState ps = host::updater::rtx_pack_state(game_dir);
           if (ps == ModelState::Downloading) {
             settings_hint("%s", host::updater::rtx_pack_message().c_str());
-          } else if (ps == ModelState::Present && !(nvidia_ok && remix_ok)) {
+            pack_line = true;
+          } else if (ps == ModelState::Present && !present_at_start) {
             settings_hint("The RTX Pack is installed. Restart the game to use NVIDIA RTX and RTX Remix.");
             restart_now_button("rtxpack");
+            pack_line = true;
           } else if (ps != ModelState::Present) {
+            const bool loaded = nvidia_ok || rtx_remix_running();
             char label[80];
             std::snprintf(label, sizeof label, "Download the RTX Pack (%s)", host::updater::kRtxPackSize);
+            ImGui::BeginDisabled(loaded);
             if (ImGui::Button(label, ImVec2(0, 32))) host::updater::rtx_pack_download(game_dir);
-            if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("Two more renderers for Lighting: NVIDIA RTX (NVIDIA's RTXDI, ReSTIR GI and SHaRC)\n"
-                                "and RTX Remix (NVIDIA's own path tracer). Made with NVIDIA's SDKs, so they are a\n"
-                                "separate download from the open-source game. RTX cards.");
-            if (ps == ModelState::Failed) settings_hint("%s", host::updater::rtx_pack_message().c_str());
-            else settings_hint("NVIDIA RTX and RTX Remix are a separate download (the RTX Pack).");
+            ImGui::EndDisabled();
+            if (loaded) settings_hint("Set Lighting to Melee Unlocked and restart the game first: the old pack is in use.");
+            else if (ps == ModelState::Failed) settings_hint("%s", host::updater::rtx_pack_message().c_str());
+            else if (lighting != 0) settings_hint("NVIDIA RTX and RTX Remix come in the RTX Pack. Until it is installed, Melee Unlocked is drawing.");
+            else settings_hint("NVIDIA RTX and RTX Remix come in the RTX Pack, a separate download.");
+            pack_line = true;
           }
         }
       }
 #endif
-      if (nvidia_ok || remix_ok) {
-        // The renderers this PC has: ours, and the RTX Pack's NVIDIA RTX and RTX Remix where installed.
-        const char* names[3];
-        int values[3], count = 0;
-        names[count] = "Melee Unlocked"; values[count++] = 0;
-        if (nvidia_ok) { names[count] = "NVIDIA RTX"; values[count++] = 1; }
-        if (remix_ok) { names[count] = "RTX Remix"; values[count++] = 2; }
-        int pick = 0;
-        for (int i = 0; i < count; ++i) if (values[i] == options.rtx_integrator) pick = i;
-        if (settings_combo("Lighting", &pick, names, count)) { options.rtx_integrator = values[pick]; changed = true; }
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Melee Unlocked: the game's own path tracer.\n"
-                            "NVIDIA RTX: NVIDIA's RTXDI direct light, ReSTIR GI and SHaRC radiance cache on the same scene.\n"
-                            "RTX Remix: NVIDIA's path tracer draws the match in place of the game's renderer;\n"
-                            "the HUD and effects stay exactly as the game draws them.");
-        if (options.rtx_integrator == 1) {
-          ImGui::BeginDisabled(!options.rtx_bounce);
-          if (settings_toggle("Radiance cache (SHaRC)", &options.rtx_radiance_cache)) changed = true;
-          ImGui::EndDisabled();
-          if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("NVIDIA's world-space radiance cache: bounce light carries every further bounce.\n"
-                              "Neural Radiance Cache needs NVIDIA driver 617.42 or newer.");
-        }
+      // What is drawing, when it is not what Lighting says.
+      if (!pack_line) {
+        const std::string why = rtx_renderer_status(lighting);
+        if (lighting == 2 && rtx_path_tracing_known() && !rtx_remix_running() && remix_ok && why.empty())
+          settings_hint("RTX Remix starts at the next start. DLSS, Frame generation and Reflex are off while it draws.");
+        else if (lighting != 2 && rtx_remix_running())
+          settings_hint("RTX Remix draws until the next start; then %s and DLSS return.", lighting == 1 ? "NVIDIA RTX" : "Melee Unlocked");
+        else if (!why.empty()) settings_hint("%s", why.c_str());
+        else if (lighting == 1 && rtx_path_tracing_known() && !nvidia_ok) settings_hint("NVIDIA RTX is not here. Melee Unlocked is drawing.");
+        else if (lighting == 2 && !remix_ok) settings_hint("RTX Remix is not here. Melee Unlocked is drawing.");
       }
-      ImGui::BeginDisabled(!rr_available);
-      if (settings_toggle("NVIDIA Ray Reconstruction", &options.ray_reconstruction)) changed = true;
-      ImGui::EndDisabled();
-      if (!rr_available)
-        settings_hint("Needs the DLSS Ray Reconstruction runtime (sl.dlss_d.dll and nvngx_dlssd.dll).");
+      if (lighting == 2) {
+        settings_hint("RTX Remix uses its own lighting: the settings below are for Melee Unlocked and NVIDIA RTX.\n"
+                      "Exclusive fullscreen runs as borderless with it. Game capture and the Steam overlay show the\n"
+                      "plain picture.");
+      }
+      if (lighting != 2) {
+        // Presets set the look, brightness and every strength at once; moving one of them makes it Custom.
+        {
+          const char* presets[] = {"Custom", "Faithful", "Balanced", "Remastered", "Showcase"};
+          if (settings_combo("Preset", &options.rtx_preset, presets, 5)) {
+            apply_rtx_preset(options);
+            changed = true;
+          }
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Faithful: the game's own lighting with ray-traced shadows.\n"
+                              "Balanced: a little shine and bounce light.\n"
+                              "Remastered: physically based light, reflections and glossy floors.\n"
+                              "Showcase: everything pushed: mirror floors, strong reflections, deep shadows.");
+        }
+        if (settings_slider("Look", &options.rtx_look, 0, 100, options.rtx_look >= 100 ? "Remastered" :
+                            options.rtx_look <= 0 ? "Faithful" : "%d%% remastered")) { changed = true; options.rtx_preset = 0; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Faithful: the game's own lighting, with ray-traced shadows on top.\n"
+                            "Remastered: physically based light (deeper shade, real highlights).");
+        // Its own ID: the picture's Brightness slider further down this page has the same label, and two rows
+        // with one ID made controller navigation loop between them (Up never got past this group).
+        ImGui::PushID("rtx");
+        const bool rtx_bright = settings_slider("Brightness", &options.rtx_brightness, 50, 200, "%d%%");
+        ImGui::PopID();
+        if (rtx_bright) { changed = true; options.rtx_preset = 0; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("How bright the path-traced picture is. Changes show at once behind this panel.");
+        if (lighting == 0) {
+          if (settings_slider("Reflection strength", &options.rtx_reflection_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly shiny materials reflect the real scene.");
+          if (settings_slider("Floor reflection strength", &options.rtx_floor_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("How mirror-like polished stage floors are (Glossy stage floors).");
+          if (settings_slider("Shadow strength", &options.rtx_shadow_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("How dark ray-traced shadows and contact shade are.");
+          if (settings_slider("Bounce light strength", &options.rtx_bounce_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much colour light picks up bouncing off the stage onto everything.");
+        }
+        if (settings_toggle("Ray-traced shadows", &options.rtx_shadows)) { changed = true; options.rtx_preset = 0; }
+        if (settings_toggle("Ambient occlusion", &options.rtx_ao)) { changed = true; options.rtx_preset = 0; }
+        if (settings_toggle("Bounce light", &options.rtx_bounce)) { changed = true; options.rtx_preset = 0; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Light reflected off the stage onto the fighters and lit surfaces: colour from the\n"
+                            "ground and walls, shade that is not flat.");
+        if (settings_toggle("Reflections", &options.rtx_reflections)) { changed = true; options.rtx_preset = 0; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Glossy and mirror-like surfaces reflect the real scene (fighters, stage, effects).");
+        ImGui::BeginDisabled(!options.rtx_reflections);
+        if (settings_toggle("Glossy stage floors", &options.rtx_glossy_floors)) { changed = true; options.rtx_preset = 0; }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("The stage's floors reflect the fighters, effects and the stage's own lights,\n"
+                            "more at a glancing view, as polished floors do.");
+        if (settings_toggle("Soft skin", &options.rtx_skin)) { changed = true; options.rtx_preset = 0; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Light scatters under the fighters' matte surfaces: softer shading and a warm\n"
+                            "edge where light turns to shadow (Kirby, Jigglypuff, Yoshi, faces).");
+        {
+          // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=rtxlighting): bring the lower rows into view once.
+          static int scroll_frames = 0;
+          if (scroll_frames < 30) {
+            const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+            if (target && std::strcmp(target, "rtxlighting") == 0) ImGui::SetScrollHereY(0.0f);
+            ++scroll_frames;
+          }
+        }
+        if (lighting == 0) {
+          if (settings_toggle("Photo mode", &options.rtx_photo_mode)) changed = true;
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pause the match and the picture keeps refining for a few seconds, to a clean\n"
+                              "image with every ray averaged in. Moving again resets it at once.");
+        }
+        ImGui::BeginDisabled(!options.rtx_shadows);
+        if (settings_toggle("Fighter shadows on the stage", &options.rtx_fighter_shadows)) { changed = true; options.rtx_preset = 0; }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("Most stages have their light painted in. This casts the fighters' real shadows\n"
+                            "onto them from the stage's sun.");
+        ImGui::BeginDisabled(!options.rtx_shadows);
+        if (settings_toggle("Stage shadows and contact shade", &options.rtx_stage_shade)) { changed = true; options.rtx_preset = 0; }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
+                            "trees cast the sun's shadows, and corners and contacts get soft shade.");
+        if (settings_toggle("Path tracing on stage mods", &options.rtx_modded_stages)) changed = true;
+        if (lighting == 0) {
+          {
+            const char* mod_floors[] = {"Off", "Sheen", "Mirror"};
+            if (settings_combo("Shiny floors on stage mods", &options.rtx_mod_floors, mod_floors, 3)) changed = true;
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Floors of a modded stage: as the mod made them (Off), a soft polished sheen with real\n"
+                                "reflections (Sheen), or a full mirror (Mirror, the look before 0.9.106).");
+          }
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("On a stage whose files come from a mod: path traced like the game's own stages, or\n"
+                            "off to show the mod exactly as its maker drew it.");
+        if (settings_toggle("Effects light the stage", &options.rtx_effect_light)) changed = true;
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Fire, sparks, shines and flashes cast their own light on the stage and the fighters\n"
+                            "near them, in their own colour.");
+        if (settings_toggle("Glowing stage art lights the fighters", &options.rtx_glow_light)) changed = true;
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("The stage's own glowing lines and lamps (Battlefield's neon edges) light the\n"
+                            "fighters near them: a rim of their colour.");
+      }
+
+      if (lighting == 1) {
+        ImGui::BeginDisabled(!options.rtx_bounce);
+        if (settings_toggle("Radiance cache (SHaRC)", &options.rtx_radiance_cache)) changed = true;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("NVIDIA's world-space radiance cache: bounce light carries every further bounce.");
+      }
+      if (lighting != 2) {
+        ImGui::BeginDisabled(!rr_available);
+        if (settings_toggle("NVIDIA Ray Reconstruction", &options.ray_reconstruction)) changed = true;
+        ImGui::EndDisabled();
+        if (!rr_available)
+          settings_hint("Needs the DLSS Ray Reconstruction runtime (sl.dlss_d.dll and nvngx_dlssd.dll).");
+      }
     }
 #ifdef GX_DLSS5
     {
@@ -11027,6 +11060,8 @@ bool rtx_path_tracing_ready() { return false; }
 bool rtx_path_tracing_known() { return true; }
 bool rtx_nvidia_integrator_available() { return false; }
 bool rtx_remix_available() { return false; }
+bool rtx_remix_running() { return false; }
+std::string rtx_renderer_status(int) { return {}; }
 bool hdr_display_available() { return false; }
 #endif
 }

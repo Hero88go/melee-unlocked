@@ -53,6 +53,8 @@ public:
   ~PcSettingsUI();
   bool begin(RenderOptions& options); // returns true when render configuration changed
   void draw(ID3D12GraphicsCommandList* list);
+  // The panel, the Esc menu or the Practice menu is up (RTX Remix's window steps aside for them).
+  bool overlay_visible() const;
 };
 // The same panel on the D3D11 backend (its own small ImGui renderer; the panel body is shared).
 class PcSettingsUID3D11 {

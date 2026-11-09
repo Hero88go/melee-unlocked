@@ -6,9 +6,27 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include <cstdio>
 #include <filesystem>
 
 namespace gx {
+
+bool rtx_pack_current(const std::wstring& game_dir) {
+  const auto first_word = [](const std::filesystem::path& p) {
+    FILE* f = _wfopen(p.c_str(), L"rb");
+    if (!f) return std::string();
+    char buf[80] = {};
+    const size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+    std::fclose(f);
+    std::string s(buf, n);
+    const size_t end = s.find_first_of(" \r\n");
+    return end == std::string::npos ? s : s.substr(0, end);
+  };
+  const std::filesystem::path dir(game_dir);
+  const std::string offered = first_word(dir / L"rtxpack.sha256");
+  if (offered.empty()) return true;
+  return first_word(dir / L"rtxpack.installed") == offered;
+}
 
 std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring& dir, std::string* error) {
   const std::filesystem::path dll = std::filesystem::path(dir) / L"melee_rtx_nvidia.dll";
@@ -45,6 +63,7 @@ std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring& dir, std::str
 #else
 
 namespace gx {
+bool rtx_pack_current(const std::wstring&) { return true; }
 std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring&, std::string*) { return nullptr; }
 }  // namespace gx
 

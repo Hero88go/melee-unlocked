@@ -101,17 +101,36 @@ namespace { std::atomic<bool> g_rtx_ready{false}, g_rtx_nvidia{false}, g_rtx_kno
 bool rtx_path_tracing_known() { return g_rtx_known.load(std::memory_order_relaxed); }
 bool rtx_path_tracing_ready() { return g_rtx_ready.load(std::memory_order_relaxed); }
 bool rtx_nvidia_integrator_available() { return g_rtx_nvidia.load(std::memory_order_relaxed); }
-// RTX Remix as the match renderer: local builds with the bridge (MELEE_REMIX_SPIKE) whose Remix
-// runtime is beside the game (Remix\d3d9.dll) or named by MELEE_REMIX_DIR.
+namespace {
+std::mutex g_rtx_status_mutex;
+std::string g_rtx_status[3];   // [1] NVIDIA RTX, [2] RTX Remix
+std::atomic<bool> g_remix_running{false};
+void set_rtx_status(int which, const std::string& text) {
+  std::lock_guard<std::mutex> lock(g_rtx_status_mutex);
+  g_rtx_status[which] = text;
+}
+std::wstring game_dir_w() {
+  wchar_t exe[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  return std::filesystem::path(exe).parent_path().wstring();
+}
+}  // namespace
+bool rtx_remix_running() { return g_remix_running.load(std::memory_order_relaxed); }
+std::string rtx_renderer_status(int which) {
+  if (which < 1 || which > 2) return {};
+  std::lock_guard<std::mutex> lock(g_rtx_status_mutex);
+  return g_rtx_status[which];
+}
+// RTX Remix as the match renderer: the bridge (MELEE_REMIX_SPIKE, every Windows build) with the RTX Pack's
+// Remix runtime beside the game (Remix\d3d9.dll) for this version, or the folder MELEE_REMIX_DIR names.
 bool rtx_remix_available() {
 #ifdef MELEE_REMIX_SPIKE
   static const bool present = [] {
     std::wstring dir;
     if (const wchar_t* v = _wgetenv(L"MELEE_REMIX_DIR")) dir = v;
     else {
-      wchar_t exe[MAX_PATH] = {};
-      GetModuleFileNameW(nullptr, exe, MAX_PATH);
-      dir = (std::filesystem::path(exe).parent_path() / L"Remix").wstring();
+      if (!rtx_pack_current(game_dir_w())) return false;   // a pack from another version: nothing of it loads
+      dir = (std::filesystem::path(game_dir_w()) / L"Remix").wstring();
     }
     std::error_code ec;
     return std::filesystem::exists(std::filesystem::path(dir) / L"d3d9.dll", ec);
@@ -528,7 +547,8 @@ class D3D12Backend : public Backend {
   // The Remix bridge's effects layer: the path tracer's overlay and transmittance bound as targets 3
   // and 4, written by effects (remix_effect_draw) and emptied by surfaces drawn in front of them.
   bool remix_layer_ = false;
-  bool remix_mode_ = false;   // RTX Remix draws the matches (the Lighting setting or MELEE_REMIX=1): DLSS and our path tracer stand down
+  bool remix_mode_ = false;
+  bool remix_boot_ = false;   // RTX Remix was the choice at start (Streamline not loaded): see remix_wanted   // RTX Remix draws the matches (the Lighting setting or MELEE_REMIX=1): DLSS and our path tracer stand down
   uint8_t remix_layer_draw(const DrawCall& dc) const;   // the Remix layer carries this draw: 1 instead of Remix's scene, 2 as well as its sky, 3 over Remix's own
   uint64_t remix_log_seq_ = 0;   // the frame being submitted (test logs)
   size_t hud_first_scene_draw_ = 0;   // this frame's first 3D scene draw (earlier 2D draws are backdrops)
@@ -1115,8 +1135,10 @@ void D3D12Backend::init() {
     // so a slow driver or DLSS start never looks like a hang.
     host::loading_show(L"Starting NVIDIA DLSS and Reflex", 1, 4);
 #ifdef MELEE_REMIX_SPIKE
-    // Remix brings its own Vulkan device and DLSS; Streamline's process-wide hooks crash it.
-    if (remix_requested()) host::log("remix: Streamline not loaded while Remix renders");
+    // Remix brings its own Vulkan device and DLSS; Streamline's process-wide hooks crash it. So RTX Remix
+    // is decided here, at start: the saved Lighting choice (or MELEE_REMIX=1) with the pack's runtime there.
+    remix_boot_ = remix_requested() || (opts_.path_tracing && opts_.rtx_integrator == 2 && rtx_remix_available());
+    if (remix_boot_) host::log("remix: Streamline not loaded while Remix renders");
     else
 #endif
     if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0)
@@ -1209,7 +1231,7 @@ void D3D12Backend::init() {
   // starts exclusive gets the plain swap chain; apply_fullscreen_mode swaps between the two.
   if (opts_.exclusive_fullscreen && waitable_wanted())
     host::log("d3d12: exclusive fullscreen requested; the frame latency waitable object is not allowed there, the frame slots hold the queue instead");
-  create_swapchain(waitable_wanted() && !opts_.exclusive_fullscreen);
+  create_swapchain(waitable_wanted() && !(opts_.exclusive_fullscreen && !remix_boot_));
 
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 17;   // 8: the MSAA EFB; 9-13: the path tracer's G-buffer and overlay; 14: frame generation's UI layer; 15: FSR frame generation's rendered picture; 16: the Remix bridge's layer
@@ -1254,15 +1276,31 @@ void D3D12Backend::init() {
       rtx_nvidia_ = make_nvidia_integrator();
       const std::wstring nvidia_dir = exe_dir_;
 #else
-      // The RTX Pack's NVIDIA renderer (RTX folder beside the game), when the player installed it.
+      // The RTX Pack's NVIDIA renderer (RTX folder beside the game), when the player installed it for
+      // this version of the game. One for another version is never loaded (nothing of it is locked, so
+      // the download can replace it).
       const std::wstring nvidia_dir = exe_dir_ + L"\\RTX";
-      rtx_nvidia_ = load_rtx_plugin(nvidia_dir, &rtx_error);
-      if (!rtx_nvidia_ && !rtx_error.empty()) host::log("rtx: RTX Pack renderer not loaded: %s", rtx_error.c_str());
+      rtx_error.clear();
+      if (!rtx_pack_current(exe_dir_)) {
+        host::log("rtx: the RTX Pack beside the game is for another version; not loaded");
+        set_rtx_status(1, "The RTX Pack is for another version of the game: download it again below. Melee Unlocked is drawing.");
+        set_rtx_status(2, "The RTX Pack is for another version of the game: download it again below.");
+      } else {
+        rtx_nvidia_ = load_rtx_plugin(nvidia_dir, &rtx_error);
+        if (!rtx_nvidia_ && !rtx_error.empty()) {
+          host::log("rtx: RTX Pack renderer not loaded: %s", rtx_error.c_str());
+          set_rtx_status(1, "NVIDIA RTX did not load (" + rtx_error + "). Melee Unlocked is drawing.");
+        }
+      }
 #endif
       if (rtx_nvidia_) {
         if (rtx_nvidia_->initialize(dxr_device_.Get(), nvidia_dir, &rtx_error))
           host::log("rtx: %s integrator initialized", rtx_nvidia_->name());
-        else { host::log("rtx: %s integrator unavailable: %s", rtx_nvidia_->name(), rtx_error.c_str()); rtx_nvidia_.reset(); }
+        else {
+          host::log("rtx: %s integrator unavailable: %s", rtx_nvidia_->name(), rtx_error.c_str());
+          set_rtx_status(1, "NVIDIA RTX did not start on this graphics card (" + rtx_error + "). Melee Unlocked is drawing.");
+          rtx_nvidia_.reset();
+        }
       }
       g_rtx_ready.store(rtx_integrator_ && rtx_scene_.ready(), std::memory_order_relaxed);
       g_rtx_nvidia.store(rtx_nvidia_ != nullptr, std::memory_order_relaxed);
@@ -1510,9 +1548,10 @@ void D3D12Backend::apply_fullscreen_mode() {
     host::log("d3d12: exclusive fullscreen starts with the next launch; borderless fullscreen for the rest of this session");
   }
   if (!opts_.exclusive_fullscreen) exclusive_deferred_ = false;
-  const bool want_exclusive = opts_.exclusive_fullscreen && !exclusive_deferred_;
+  // RTX Remix draws in a window inside the game's: exclusive fullscreen runs as borderless with it.
+  const bool want_exclusive = opts_.exclusive_fullscreen && !exclusive_deferred_ && !remix_boot_;
   if ((was_exclusive != FALSE) == want_exclusive) {
-    if (!want_exclusive) host::window_set_fullscreen(fullscreen_state_.borderless(opts_, exclusive_deferred_));
+    if (!want_exclusive) host::window_set_fullscreen(fullscreen_state_.borderless(opts_, exclusive_deferred_ || remix_boot_));
     return;
   }
   pause_frame_generation_for_resize();
@@ -3473,7 +3512,9 @@ void D3D12Backend::remix_take_hud() {
 }
 
 bool D3D12Backend::remix_wanted() const {
-  return remix_requested() || (opts_.path_tracing && opts_.rtx_integrator == 2 && rtx_remix_available());
+  // Only a run that started with it: switching to RTX Remix later applies at the next start (Streamline is
+  // loaded by then); switching away from it, or path tracing off, stops it now.
+  return remix_boot_ && (remix_requested() || (opts_.path_tracing && opts_.rtx_integrator == 2));
 }
 
 void D3D12Backend::remix_picture_rect(int* x, int* y, int* w, int* h) const {
@@ -3490,6 +3531,7 @@ void D3D12Backend::remix_present(const Frame& frame) {
       remix_hud_ = false; g_hud_solid_coverage = false; hud_max_ = false; remix_layer_ = false; remix_pending_ = false;
       if (remix_) remix_->show(false);
       host::log("remix: off");
+      g_remix_running.store(false, std::memory_order_relaxed);
     }
     return;
   }
@@ -3505,7 +3547,10 @@ void D3D12Backend::remix_present(const Frame& frame) {
     remix_ = std::make_unique<RemixBridge>();
     std::string error;
     if (!remix_->start(pw, ph, true, &error, embed ? (void*)hwnd_ : nullptr)) {
-      host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; remix_mode_ = false; return;
+      host::log("remix: %s", error.c_str()); remix_.reset(); remix_failed_ = true; remix_mode_ = false;
+      set_rtx_status(2, "RTX Remix did not start (" + error + "). Melee Unlocked is drawing; DLSS returns at the next start.");
+      g_remix_running.store(false, std::memory_order_relaxed);
+      return;
     }
   }
   if (!remix_hud_) {
@@ -3513,11 +3558,17 @@ void D3D12Backend::remix_present(const Frame& frame) {
     g_hud_solid_coverage = true;
     hud_max_ = true;
     host::log("remix: on (%s)", embed ? "in the game's window" : "its own window");
+    g_remix_running.store(true, std::memory_order_relaxed);
+    set_rtx_status(2, "");
   }
   // The settings panel is the game's own overlay: Remix's window steps aside while it is open.
   if (embed) {
     remix_->place(px, py, pw, ph);
-    remix_->show(!opts_.settings_open);
+#ifdef GX_PC_SETTINGS
+    remix_->show(!(settings_ui_ && settings_ui_->overlay_visible()));   // F1 panel, Esc menu, Practice menu on top
+#else
+    remix_->show(true);
+#endif
   } else {
     static bool shown = false;
     if (!shown) { remix_->show(remix_visible()); shown = true; }
