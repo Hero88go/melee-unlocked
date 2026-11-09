@@ -1252,10 +1252,18 @@ void D3D12Backend::init() {
       else { host::log("rtx: %s integrator unavailable: %s", rtx_integrator_->name(), rtx_error.c_str()); rtx_integrator_.reset(); }
 #ifdef MELEE_RTX_LOCAL_NVIDIA
       rtx_nvidia_ = make_nvidia_integrator();
-      if (rtx_nvidia_->initialize(dxr_device_.Get(), exe_dir_, &rtx_error))
-        host::log("rtx: %s integrator initialized", rtx_nvidia_->name());
-      else { host::log("rtx: %s integrator unavailable: %s", rtx_nvidia_->name(), rtx_error.c_str()); rtx_nvidia_.reset(); }
+      const std::wstring nvidia_dir = exe_dir_;
+#else
+      // The RTX Pack's NVIDIA renderer (RTX folder beside the game), when the player installed it.
+      const std::wstring nvidia_dir = exe_dir_ + L"\\RTX";
+      rtx_nvidia_ = load_rtx_plugin(nvidia_dir, &rtx_error);
+      if (!rtx_nvidia_ && !rtx_error.empty()) host::log("rtx: RTX Pack renderer not loaded: %s", rtx_error.c_str());
 #endif
+      if (rtx_nvidia_) {
+        if (rtx_nvidia_->initialize(dxr_device_.Get(), nvidia_dir, &rtx_error))
+          host::log("rtx: %s integrator initialized", rtx_nvidia_->name());
+        else { host::log("rtx: %s integrator unavailable: %s", rtx_nvidia_->name(), rtx_error.c_str()); rtx_nvidia_.reset(); }
+      }
       g_rtx_ready.store(rtx_integrator_ && rtx_scene_.ready(), std::memory_order_relaxed);
       g_rtx_nvidia.store(rtx_nvidia_ != nullptr, std::memory_order_relaxed);
     }

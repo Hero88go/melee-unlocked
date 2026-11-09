@@ -6997,19 +6997,52 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("The stage's own glowing lines and lamps (Battlefield's neon edges) light the\n"
                           "fighters near them: a rim of their colour.");
       const bool nvidia_ok = rtx_nvidia_integrator_available(), remix_ok = rtx_remix_available();
+#ifdef _WIN32
+      // The RTX Pack (NVIDIA RTX and RTX Remix), its own download: offered when this release has one.
+      {
+        std::string game_dir;
+        {
+          wchar_t module[MAX_PATH]{};
+          const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+          if (length > 0 && length < MAX_PATH) game_dir = std::filesystem::path(module).parent_path().u8string();
+        }
+        using host::updater::ModelState;
+        if (!game_dir.empty() && host::updater::rtx_pack_offered(game_dir)) {
+          const ModelState ps = host::updater::rtx_pack_state(game_dir);
+          if (ps == ModelState::Downloading) {
+            settings_hint("%s", host::updater::rtx_pack_message().c_str());
+          } else if (ps == ModelState::Present && !(nvidia_ok && remix_ok)) {
+            settings_hint("The RTX Pack is installed. Restart the game to use NVIDIA RTX and RTX Remix.");
+            restart_now_button("rtxpack");
+          } else if (ps != ModelState::Present) {
+            char label[80];
+            std::snprintf(label, sizeof label, "Download the RTX Pack (%s)", host::updater::kRtxPackSize);
+            if (ImGui::Button(label, ImVec2(0, 32))) host::updater::rtx_pack_download(game_dir);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Two more renderers for Lighting: NVIDIA RTX (NVIDIA's RTXDI, ReSTIR GI and SHaRC)\n"
+                                "and RTX Remix (NVIDIA's own path tracer). Made with NVIDIA's SDKs, so they are a\n"
+                                "separate download from the open-source game. RTX cards.");
+            if (ps == ModelState::Failed) settings_hint("%s", host::updater::rtx_pack_message().c_str());
+            else settings_hint("NVIDIA RTX and RTX Remix are a separate download (the RTX Pack).");
+          }
+        }
+      }
+#endif
       if (nvidia_ok || remix_ok) {
-        // The renderers this PC has: ours, and the local NVIDIA and RTX Remix ones where present.
+        // The renderers this PC has: ours, and the RTX Pack's NVIDIA RTX and RTX Remix where installed.
         const char* names[3];
         int values[3], count = 0;
         names[count] = "Melee Unlocked"; values[count++] = 0;
-        if (nvidia_ok) { names[count] = "NVIDIA RTXDI (this PC only)"; values[count++] = 1; }
-        if (remix_ok) { names[count] = "RTX Remix (this PC only)"; values[count++] = 2; }
+        if (nvidia_ok) { names[count] = "NVIDIA RTX"; values[count++] = 1; }
+        if (remix_ok) { names[count] = "RTX Remix"; values[count++] = 2; }
         int pick = 0;
         for (int i = 0; i < count; ++i) if (values[i] == options.rtx_integrator) pick = i;
         if (settings_combo("Lighting", &pick, names, count)) { options.rtx_integrator = values[pick]; changed = true; }
-        if (ImGui::IsItemHovered() && remix_ok)
-          ImGui::SetTooltip("RTX Remix: NVIDIA's path tracer draws the match in place of the game's renderer.\n"
-                            "The HUD and effects stay exactly as the game draws them.");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Melee Unlocked: the game's own path tracer.\n"
+                            "NVIDIA RTX: NVIDIA's RTXDI direct light, ReSTIR GI and SHaRC radiance cache on the same scene.\n"
+                            "RTX Remix: NVIDIA's path tracer draws the match in place of the game's renderer;\n"
+                            "the HUD and effects stay exactly as the game draws them.");
         if (options.rtx_integrator == 1) {
           ImGui::BeginDisabled(!options.rtx_bounce);
           if (settings_toggle("Radiance cache (SHaRC)", &options.rtx_radiance_cache)) changed = true;

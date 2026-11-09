@@ -286,6 +286,9 @@ def main():
     ap.add_argument("--no-ghost-ai", action="store_true",
                     help="ship no pro AI files (Fight a pro not in this release)")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
+    ap.add_argument("--rtx-pack", type=Path, default=None,
+                    help="MeleeUnlocked-<version>-RTX-Pack.zip, built outside this repository: its SHA-256 goes in "
+                         "rtxpack.sha256 so PC settings offers it (host/updater.cpp rtx_pack_download)")
     args = ap.parse_args()
     if not args.compat_exe and not args.skip_compat_exe:
         raise SystemExit("missing --compat-exe (the SSE2 build for pre-Haswell/pre-Ryzen CPUs). "
@@ -632,6 +635,16 @@ def main():
         compat_sha = hashlib.sha256(compat_zip.read_bytes()).hexdigest()
         (folder / "compat.sha256").write_text(f"{compat_sha} {compat_zip.name}\n", encoding="ascii")
         print(f"{compat_zip} ({compat_zip.stat().st_size / 1e6:.1f} MB, {len(compat_files)} files)")
+
+    # The RTX Pack (NVIDIA RTX and RTX Remix) is its own download, built outside this repository from
+    # NVIDIA's SDKs: only its name and SHA-256 ship here (rtxpack.sha256), and only for this version.
+    if args.rtx_pack:
+        expected = f"{name}-RTX-Pack.zip"
+        if args.rtx_pack.name != expected or not args.rtx_pack.is_file():
+            raise SystemExit(f"--rtx-pack must be {expected} (got {args.rtx_pack})")
+        pack_sha = hashlib.sha256(args.rtx_pack.read_bytes()).hexdigest()
+        (folder / "rtxpack.sha256").write_text(f"{pack_sha} {args.rtx_pack.name}\n", encoding="ascii")
+        print(f"rtx pack: {args.rtx_pack.name} ({args.rtx_pack.stat().st_size / 1e6:.1f} MB) offered")
 
     def zip_folder(zip_path):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:

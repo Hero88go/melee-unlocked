@@ -71,6 +71,17 @@ ModelState xess_state(const std::string& game_dir_utf8);
 std::string xess_message();
 constexpr const char* kXessSize = "about 60 MB";
 
+// The RTX Pack (MeleeUnlocked-<version>-RTX-Pack.zip): NVIDIA's renderer (RTX folder, built from
+// NVIDIA's RTX SDKs, which cannot be part of the open-source game) and the RTX Remix runtime (Remix
+// folder). Offered when the release has one (rtxpack.sha256 beside the game); checked against that
+// hash before it is unpacked; the game loads it at its next start. Background thread.
+bool rtx_pack_offered(const std::string& game_dir_utf8);
+bool rtx_pack_present(const std::string& game_dir_utf8);
+void rtx_pack_download(const std::string& game_dir_utf8);
+ModelState rtx_pack_state(const std::string& game_dir_utf8);
+std::string rtx_pack_message();
+constexpr const char* kRtxPackSize = "about 500 MB";
+
 // AMD FSR (amd_fidelityfx_loader_dx12/vk.dll and amd_fidelityfx_upscaler_dx12/vk.dll), its own download:
 // AMD's signed files from their FSR SDK repository at a pinned tag (nothing re-hosted), each checked
 // against its SHA-256 before it goes beside the game; the game loads them at its next start.

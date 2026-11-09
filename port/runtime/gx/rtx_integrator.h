@@ -2,9 +2,11 @@
 //
 //   * the Melee integrator: ReSTIR direct light, ReSTIR GI and a world-space radiance cache, written
 //     for this project from the published papers (GPL, in this repository);
-//   * a local-only module built from NVIDIA's RTXDI and RTXGI (NRC, SHaRC) SDKs. Their licence does
-//     not allow them under an open-source licence, so that module lives outside this repository,
-//     is compiled in only with MELEE_RTX_LOCAL_NVIDIA (local builds), and never ships.
+//   * NVIDIA's renderer, built from NVIDIA's RTXDI, RTXGI (SHaRC, NRC) and NRD SDKs. Their licence does
+//     not allow them under an open-source licence, so it lives outside this repository and reaches
+//     players as a separate program in the optional RTX Pack (RTX\melee_rtx_nvidia.dll beside the
+//     game), loaded through this interface only (load_rtx_plugin). Local builds may still compile it
+//     in with MELEE_RTX_LOCAL_NVIDIA.
 //
 // The renderer (rtx_scene.h, the G-buffer, the light and material tables) prepares one
 // RtxFrameInputs per presented frame; the integrator returns the HDR radiance and the guide buffers
@@ -111,6 +113,19 @@ class RtxIntegrator {
 };
 
 std::unique_ptr<RtxIntegrator> make_melee_integrator();
+
+// The RTX Pack's renderer. The DLL exports, as extern "C":
+//   uint32_t melee_rtx_plugin_abi();                    // rtx_plugin_abi() of the headers it was built with
+//   gx::RtxIntegrator* melee_rtx_create_integrator();   // owned by the caller (deleted through the interface)
+// A DLL built against other headers (an older pack after an update) is refused, never called.
+// Bump kRtxPluginVersion whenever the interface or the light/record layouts change meaning.
+constexpr uint32_t kRtxPluginVersion = 1;
+constexpr uint32_t rtx_plugin_abi() {
+  return (kRtxPluginVersion << 24) ^ ((uint32_t)sizeof(RtxFrameInputs) << 8) ^ (uint32_t)sizeof(RtxFrameOutputs);
+}
+// Loads <dir>\melee_rtx_nvidia.dll. Null with *error set when it is missing or does not match.
+std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring& dir, std::string* error);
+
 #ifdef MELEE_RTX_LOCAL_NVIDIA
 std::unique_ptr<RtxIntegrator> make_nvidia_integrator();   // private module, local builds only
 #endif

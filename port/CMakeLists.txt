@@ -5,10 +5,15 @@ if(WIN32)
   include(tests/yougame_agent_root_win.cmake)
 endif()
 
-# Local builds only (never a release): the RTX Remix bridge (runtime/gx/remix_bridge.cpp) against the
-# Remix C API headers in MELEE_REMIX_SDK; the runtime itself is loaded from the Remix folder at run time.
-option(MELEE_REMIX_SPIKE "Local RTX Remix bridge (never shipped)" OFF)
-set(MELEE_REMIX_SDK "" CACHE PATH "Folder holding include/remix/remix_c.h")
+# The RTX Remix bridge (runtime/gx/remix_bridge.cpp), against NVIDIA's Remix C API headers (MIT,
+# third_party/remix). The runtime itself is not part of the game: it comes with the optional RTX Pack
+# (MeleeUnlocked-RTX-Pack.zip) and is loaded from the Remix folder beside the game when a player picks it.
+if(WIN32)
+  option(MELEE_REMIX_SPIKE "RTX Remix bridge (Windows)" ON)
+else()
+  set(MELEE_REMIX_SPIKE OFF)
+endif()
+set(MELEE_REMIX_SDK "${CMAKE_CURRENT_SOURCE_DIR}/third_party/remix" CACHE PATH "Folder holding include/remix/remix_c.h")
 if(MELEE_REMIX_SPIKE)
   add_compile_definitions(MELEE_REMIX_SPIKE)
   include_directories("${MELEE_REMIX_SDK}/include")

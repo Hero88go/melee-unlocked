@@ -948,7 +948,7 @@ struct PartFetch {
   std::string message;
   std::thread thread;
 };
-PartFetch g_compat, g_xess, g_fsr;
+PartFetch g_compat, g_xess, g_fsr, g_rtx_pack;
 void part_message(PartFetch& p, const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); p.message = m; }
 std::string part_message(PartFetch& p) { std::lock_guard<std::mutex> lk(g_mutex); return p.message; }
 
@@ -1101,6 +1101,80 @@ void xess_download(const std::string& game_dir_utf8) {
                return {};
              });
 }
+
+// rtxpack.sha256: "<sha256> MeleeUnlocked-<version>-RTX-Pack.zip", written by the packager when the
+// release has an RTX Pack. The pack is built for that exact game (its renderer checks the interface).
+bool rtx_pack_record(const std::string& game_dir_utf8, std::string* sha, std::string* file) {
+  const std::string line = read_small(std::filesystem::u8path(game_dir_utf8) / "rtxpack.sha256");
+  const size_t space = line.find(' ');
+  if (space != 64 || line.size() <= 65) return false;
+  *sha = line.substr(0, 64);
+  *file = line.substr(65);
+  const std::string prefix = "MeleeUnlocked-", suffix = "-RTX-Pack.zip";
+  if (sha->find_first_not_of("0123456789abcdef") != std::string::npos ||
+      file->rfind(prefix, 0) != 0 || file->size() <= prefix.size() + suffix.size() ||
+      file->compare(file->size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+  const std::string version = file->substr(prefix.size(), file->size() - prefix.size() - suffix.size());
+  return version.find_first_not_of("0123456789.") == std::string::npos &&
+         std::count(version.begin(), version.end(), '.') == 2 && version.front() != '.' && version.back() != '.';
+}
+
+bool rtx_pack_offered(const std::string& game_dir_utf8) {
+  std::string sha, file;
+  return rtx_pack_record(game_dir_utf8, &sha, &file);
+}
+
+bool rtx_pack_present(const std::string& game_dir_utf8) {
+  std::string sha, file;
+  if (!rtx_pack_record(game_dir_utf8, &sha, &file)) return false;
+  const auto dir = std::filesystem::u8path(game_dir_utf8);
+  if (read_small(dir / "rtxpack.installed") != sha) return false;
+  std::error_code ec;
+  return std::filesystem::is_regular_file(dir / "RTX" / "melee_rtx_nvidia.dll", ec) &&
+         std::filesystem::is_regular_file(dir / "Remix" / "d3d9.dll", ec);
+}
+
+// The RTX Pack: NVIDIA's renderer (RTX folder) and NVIDIA's RTX Remix runtime (Remix folder), each
+// replaced whole. The game loads them at its next start.
+void rtx_pack_download(const std::string& game_dir_utf8) {
+  std::string sha, file;
+  if (!rtx_pack_record(game_dir_utf8, &sha, &file)) return;
+  const std::string version = file.substr(14, file.find("-RTX-Pack") - 14);
+  const std::string url = "https://github.com/hero88go/melee-unlocked/releases/download/v" + version + "/" + file;
+  fetch_part(g_rtx_pack, "the RTX Pack", kRtxPackSize, url, sha, game_dir_utf8, "rtxpack-download",
+             [sha](const std::filesystem::path& files, const std::filesystem::path& dir) -> std::string {
+               namespace fs = std::filesystem;
+               std::error_code ec;
+               for (const char* folder : {"RTX", "Remix"})
+                 if (!fs::is_directory(files / folder, ec)) return std::string("The RTX Pack download has no ") + folder + " folder; not installed";
+               if (!fs::is_regular_file(files / "RTX" / "melee_rtx_nvidia.dll", ec) || !fs::is_regular_file(files / "Remix" / "d3d9.dll", ec))
+                 return std::string("The RTX Pack download is incomplete; not installed");
+               fs::remove(dir / "rtxpack.installed", ec);
+               for (const char* folder : {"RTX", "Remix"}) {
+                 const fs::path to = dir / folder, old = dir / (std::string(folder) + ".old");
+                 fs::remove_all(old, ec);
+                 if (fs::exists(to, ec)) { fs::rename(to, old, ec); if (ec) return "Cannot replace the " + std::string(folder) + " folder (" + ec.message() + "); close the game and try again"; }
+                 fs::rename(files / folder, to, ec);
+                 if (ec) { ec.clear(); fs::copy(files / folder, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec); }
+                 if (ec) return "Cannot put the " + std::string(folder) + " folder beside the game (" + ec.message() + ")";
+                 fs::remove_all(old, ec);
+               }
+               { std::ofstream marker(dir / "rtxpack.installed", std::ios::binary);
+                 marker << sha << "\n";
+                 marker.close();
+                 if (!marker) return std::string("Cannot record the installed RTX Pack"); }
+               part_message(g_rtx_pack, "The RTX Pack is installed. NVIDIA RTX and RTX Remix start with the game's next start.");
+               host::log("rtx pack download: installed");
+               return {};
+             });
+}
+
+ModelState rtx_pack_state(const std::string& game_dir_utf8) {
+  if (g_rtx_pack.busy.load()) return ModelState::Downloading;
+  if (rtx_pack_present(game_dir_utf8)) return ModelState::Present;
+  return g_rtx_pack.failed.load() ? ModelState::Failed : ModelState::Missing;
+}
+std::string rtx_pack_message() { return part_message(g_rtx_pack); }
 
 bool fsr_present(const std::string& game_dir_utf8) {
   std::error_code ec;

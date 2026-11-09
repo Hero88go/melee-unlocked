@@ -30,9 +30,40 @@ bool make_zip(const std::filesystem::path& folder, const std::filesystem::path& 
   CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
   return code == 0;
 }
+// --download <dlss5|xess|fsr|compat|rtxpack> <game folder>: the real download and install of one optional
+// part, as the game's buttons run it (network; not part of ctest). Prints the outcome and its message.
+int run_download(const std::string& part, const std::string& dir) {
+  using namespace host::updater;
+  struct Part { const char* name; void (*start)(const std::string&); ModelState (*state)(const std::string&); std::string (*message)(); };
+  const Part parts[] = {
+      {"dlss5", dlss5_model_download, dlss5_model_state, dlss5_model_message},
+      {"xess", xess_download, xess_state, xess_message},
+      {"fsr", fsr_download, fsr_state, fsr_message},
+      {"compat", compat_build_download, compat_build_state, compat_build_message},
+      {"rtxpack", rtx_pack_download, rtx_pack_state, rtx_pack_message}};
+  for (const Part& p : parts) {
+    if (part != p.name) continue;
+    p.start(dir);
+    Sleep(100);
+    std::string last;
+    while (p.state(dir) == ModelState::Downloading) {
+      const std::string m = p.message();
+      if (m != last) { std::printf("  %s\n", m.c_str()); last = m; }
+      Sleep(250);
+    }
+    const ModelState s = p.state(dir);
+    std::printf("%s: %s | %s\n", p.name, s == ModelState::Present ? "INSTALLED" : s == ModelState::Failed ? "FAILED" : "MISSING",
+                p.message().c_str());
+    shutdown();
+    return s == ModelState::Present ? 0 : 1;
+  }
+  std::printf("unknown part %s\n", part.c_str());
+  return 2;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 4 && std::string(argv[1]) == "--download") return run_download(argv[2], argv[3]);
   // port_updater_test <zip> <dest> <release folder>: check and unpack one real release zip.
   if (argc == 4 && std::string(argv[1]).rfind("--", 0) != 0) {   // not the --hold-updater-test fixture
     const bool inside = host::updater::archive_inside(argv[1], argv[3]);
