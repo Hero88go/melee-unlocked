@@ -1,5 +1,5 @@
-// The GX colour combiner on the CPU, and bright effects as lights: the path tracer's effects and the
-// stage's glowing art that light the scene.
+// The GX colour combiner on the CPU, and bright effects as lights: used by the RTX Remix bridge and
+// by the path tracer (effects that light the stage).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <array>

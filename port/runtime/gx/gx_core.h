@@ -440,6 +440,33 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
   return e.level >= 3 && dc.owner_player == kEffectOwner;
 }
 
+// A fighter draw with its colour overlay on (hit flashes, charge glow, invincibility blink): ftMaterial
+// appends one last TEV stage after the material's own, either the light overlay CPREV + colour * RASA
+// (ftMaterial_800BF534) or the colour overlay lerp(CPREV, colour, ratio) (ftMaterial_800BF6BC), its
+// inputs a colour register or a constant. False when that stage adds nothing (ratio or colour 0).
+inline bool fighter_overlay_draw(const DrawCall& dc) {
+  if (dc.owner_player >= 6) return false;
+  const int n = (int)dc.bp.numtevstages();
+  const uint32_t cc = dc.bp.tev_color(n);
+  const uint32_t a = (cc >> 12) & 15, b = (cc >> 8) & 15, c = (cc >> 4) & 15, d = cc & 15;
+  auto reg = [](uint32_t sel) { return sel == 2 || sel == 4 || sel == 6 || sel == 14; };   // C0, C1, C2, konst
+  // The value an input of that stage reads (RGB summed, 0..765).
+  auto value = [&](uint32_t sel) -> int {
+    if (sel == 14) {
+      const int k = dc.bp.ksel_kc(n);
+      if (k < 8) return 765 - 96 * k;   // the fixed constants 1, 7/8, ... 1/8
+      if (k >= 12 && k < 16) return dc.tev_kcolors[k - 12][0] + dc.tev_kcolors[k - 12][1] + dc.tev_kcolors[k - 12][2];
+      if (k >= 16 && k < 32) return 3 * dc.tev_kcolors[(k - 16) & 3][(k - 16) >> 2];
+      return 0;
+    }
+    const int r = (int)sel / 2;   // C0 1, C1 2, C2 3
+    return dc.tev_colors[r][0] + dc.tev_colors[r][1] + dc.tev_colors[r][2];
+  };
+  if (a == 15 && reg(b) && c == 11 && d == 0) return value(b) > 6;          // light overlay
+  if (a == 0 && reg(b) && reg(c) && d == 15) return value(c) > 6;           // colour overlay
+  return false;
+}
+
 // One of the scene's effects: a particle, one of the game's effect objects, or an item or model effect
 // (a projectile's glow, the shield bubble) that blends or does not write depth. The path tracer makes
 // the bright ones light the scene (gx_fx_lights.h).
@@ -453,6 +480,9 @@ inline bool scene_effect_draw(const DrawCall& dc) {
   const bool writes_depth = (zm & 1) && ((zm >> 4) & 1);
   return (dc.bp.blendmode() & 1) || !writes_depth;
 }
+// The RTX Remix bridge leaves these out of Remix's scene; the renderer composes them, exactly as the
+// game drew them, into the layer laid over Remix's picture (fireballs, sparks, flashes, shields).
+inline bool remix_effect_draw(const DrawCall& dc) { return scene_effect_draw(dc); }
 
 // "Lightweight" (RenderOptions::lightweight, 0 to 5): one ladder of display-only savings for weak
 // PCs, each level including the ones below it. 1 low poly fighters, 2 no stage backgrounds, 3 flat

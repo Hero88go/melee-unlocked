@@ -12,7 +12,7 @@ namespace gx {
 
 // The draw's TEV (colour combiner) for one texel on the CPU, the way Melee composes its colours from
 // textures, the rasterized colour and its constant and register colours: what the surface shows under
-// neutral light. An effect light takes its colour from it, so constant-coloured lines and tinted art keep their
+// neutral light. Remix gets that as its texture, so constant-coloured lines and tinted stages keep their
 // colours. Inputs follow GX: only the texmap `own_map` is the given texel (other textures read white),
 // the rasterized colour is `ras` (0..255), comparison modes are passed as plain adds.
 void tev_texel(const DrawCall& d, int own_map, const float texel[4], const float ras[4], float out[4]) {

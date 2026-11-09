@@ -5,6 +5,14 @@ if(WIN32)
   include(tests/yougame_agent_root_win.cmake)
 endif()
 
+# Local builds only (never a release): the RTX Remix bridge (runtime/gx/remix_bridge.cpp) against the
+# Remix C API headers in MELEE_REMIX_SDK; the runtime itself is loaded from the Remix folder at run time.
+option(MELEE_REMIX_SPIKE "Local RTX Remix bridge (never shipped)" OFF)
+set(MELEE_REMIX_SDK "" CACHE PATH "Folder holding include/remix/remix_c.h")
+if(MELEE_REMIX_SPIKE)
+  add_compile_definitions(MELEE_REMIX_SPIKE)
+  include_directories("${MELEE_REMIX_SDK}/include")
+endif()
 # Local builds only: a second path-tracing integrator (runtime/gx/rtx_integrator.h) built from
 # NVIDIA's RTXDI SDK, kept in a folder outside this repository because that SDK's licence does not
 # allow it here. -DMELEE_RTX_NVIDIA_DIR=<folder> includes <folder>/melee_integrator.cmake; empty (the

@@ -2181,8 +2181,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rtxstageshade") options.rtx_stage_shade = value == "1";
       else if (key == "rtxmoddedstages") options.rtx_modded_stages = value == "1";
       else if (key == "rtxmodfloors") { int n = std::stoi(value); if (n >= 0 && n <= 2) options.rtx_mod_floors = n; }
-      else if (key == "rtxglowlight") options.rtx_glow_light = value == "1";
       else if (key == "rtxeffectlight") options.rtx_effect_light = value == "1";
+      else if (key == "rtxglowlight") options.rtx_glow_light = value == "1";
       else if (key == "rtxglossyfloors") options.rtx_glossy_floors = value == "1";
       else if (key == "rtxbrightness") { int n = std::stoi(value); if (n >= 50 && n <= 200) options.rtx_brightness = n; }
       else if (key == "rtxphotomode") options.rtx_photo_mode = value == "1";
@@ -2195,7 +2195,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "hdroutput") options.hdr_output = value == "1";
       else if (key == "hdrpaperwhite") { int n = std::stoi(value); if (n >= 80 && n <= 500) options.hdr_paper_white = n; }
       else if (key == "hdrpeak") { int n = std::stoi(value); if (n >= 0 && n <= 10000) options.hdr_peak = n; }
-      else if (key == "rtxintegrator") { int n = std::stoi(value); if (n >= 0 && n <= 1) options.rtx_integrator = n; }
+      else if (key == "rtxintegrator") { int n = std::stoi(value); if (n >= 0 && n <= 2) options.rtx_integrator = n; }
       else return false;
     } catch (...) {}
     return true;
@@ -4306,7 +4306,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nrtxao " << (options.rtx_ao ? 1 : 0) << "\nrtxfightershadows " << (options.rtx_fighter_shadows ? 1 : 0)
        << "\nrtxintegrator " << options.rtx_integrator
        << "\nrtxbounce " << (options.rtx_bounce ? 1 : 0) << "\nrtxreflections " << (options.rtx_reflections ? 1 : 0)
-       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0) << "\nrtxmoddedstages " << (options.rtx_modded_stages ? 1 : 0) << "\nrtxmodfloors " << options.rtx_mod_floors << "\nrtxglowlight " << (options.rtx_glow_light ? 1 : 0) << "\nrtxeffectlight " << (options.rtx_effect_light ? 1 : 0)
+       << "\nrtxskin " << (options.rtx_skin ? 1 : 0) << "\nrtxstageshade " << (options.rtx_stage_shade ? 1 : 0) << "\nrtxmoddedstages " << (options.rtx_modded_stages ? 1 : 0) << "\nrtxmodfloors " << options.rtx_mod_floors << "\nrtxeffectlight " << (options.rtx_effect_light ? 1 : 0) << "\nrtxglowlight " << (options.rtx_glow_light ? 1 : 0)
        << "\nrtxglossyfloors " << (options.rtx_glossy_floors ? 1 : 0) << "\nrtxbrightness " << options.rtx_brightness
        << "\nrtxphotomode " << (options.rtx_photo_mode ? 1 : 0)
        << "\nrtxpreset " << options.rtx_preset << "\nrtxreflstrength " << options.rtx_reflection_strength
@@ -6996,9 +6996,20 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The stage's own glowing lines and lamps (Battlefield's neon edges) light the\n"
                           "fighters near them: a rim of their colour.");
-      if (rtx_nvidia_integrator_available()) {
-        const char* integrators[] = {"Melee Unlocked", "NVIDIA RTXDI (this PC only)"};
-        if (settings_combo("Lighting", &options.rtx_integrator, integrators, 2)) changed = true;
+      const bool nvidia_ok = rtx_nvidia_integrator_available(), remix_ok = rtx_remix_available();
+      if (nvidia_ok || remix_ok) {
+        // The renderers this PC has: ours, and the local NVIDIA and RTX Remix ones where present.
+        const char* names[3];
+        int values[3], count = 0;
+        names[count] = "Melee Unlocked"; values[count++] = 0;
+        if (nvidia_ok) { names[count] = "NVIDIA RTXDI (this PC only)"; values[count++] = 1; }
+        if (remix_ok) { names[count] = "RTX Remix (this PC only)"; values[count++] = 2; }
+        int pick = 0;
+        for (int i = 0; i < count; ++i) if (values[i] == options.rtx_integrator) pick = i;
+        if (settings_combo("Lighting", &pick, names, count)) { options.rtx_integrator = values[pick]; changed = true; }
+        if (ImGui::IsItemHovered() && remix_ok)
+          ImGui::SetTooltip("RTX Remix: NVIDIA's path tracer draws the match in place of the game's renderer.\n"
+                            "The HUD and effects stay exactly as the game draws them.");
         if (options.rtx_integrator == 1) {
           ImGui::BeginDisabled(!options.rtx_bounce);
           if (settings_toggle("Radiance cache (SHaRC)", &options.rtx_radiance_cache)) changed = true;
@@ -10957,6 +10968,7 @@ void PcSettingsUI::draw(ID3D12GraphicsCommandList* list) {
 bool rtx_path_tracing_ready() { return false; }
 bool rtx_path_tracing_known() { return true; }
 bool rtx_nvidia_integrator_available() { return false; }
+bool rtx_remix_available() { return false; }
 bool hdr_display_available() { return false; }
 #endif
 }
