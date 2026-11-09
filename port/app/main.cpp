@@ -1479,7 +1479,11 @@ static int guarded_main(int argc, char** argv) {
   // there (terminate, then abort) without passing through the crash report. The terminate handler
   // is per thread, the abort signal is not, so the report is written from both.
   std::set_terminate([] { report_unhandled(); });
+#ifdef _WIN32
   std::signal(SIGABRT, [](int) { report_unhandled(); });
+#else
+  std::signal(SIGABRT, [](int) { linux_abort_note(); report_unhandled(); });
+#endif
   try {
 #ifdef _WIN32
     return melee_main(argc, argv);

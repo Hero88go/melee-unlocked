@@ -172,7 +172,7 @@ int main() {
   const char* check_string = "123456789";
   CHECK(launcher::crash::crc32((const uint8_t*)check_string, 9) == 0xCBF43926u);
   CHECK(reference_crc32((const uint8_t*)check_string, 9) == 0xCBF43926u);
-  CHECK(std::size(launcher::crash::kParts) == 4);   // crash text, the last session, the one before it, the lobby
+  CHECK(std::size(launcher::crash::kParts) == 5);   // crash text, the last session, the one before it, Linux error output, the lobby
   CHECK(launcher::crash::kMaxZipBytes == 8 * MB);
 
   const fs::path root = fs::temp_directory_path() /

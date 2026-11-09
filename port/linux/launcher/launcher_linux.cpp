@@ -16,6 +16,7 @@
 #include "updater.h"
 #include "launcher_yougame.h"
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -210,6 +211,10 @@ bool start_process(const std::vector<std::string>& argv) {
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
   posix_spawn_file_actions_addchdir_np(&actions, g_dir.c_str());
+  // The game's error output goes to melee_port.stderr.log beside it (sent with a crash report): the C
+  // library and the graphics driver say there why they stopped the game, and the game's log cannot.
+  const std::string stderr_log = g_dir + "/melee_port.stderr.log";
+  posix_spawn_file_actions_addopen(&actions, 2, stderr_log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   pid_t pid = 0;
   // The game's YouGame rows ask this launcher (launcher_yougame.h): its address and a launch token.
   std::vector<std::string> env_store;

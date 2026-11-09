@@ -81,12 +81,12 @@ inline std::string make_markdown(const std::vector<File>& files, const std::stri
   out += report_block("Version: " + report_version(version) + "\nEngine: " + report_engine(engine));
   out += "## Collected files\n\n";
   for (const auto& f : files)
-    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log")
+    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.stderr.log" || f.first == "melee_port.log" || f.first == "lobby.log")
       out += "- " + f.first + " (" + std::to_string(f.second.size()) + " bytes)\n";
   out += '\n';
   // Only the same three text files collected for the ZIP. Never include settings, accounts,
   // saves or minidump bytes. Keep the game failure and stack in the newest 512 KiB of its log.
-  for (const char* name : {"melee_port_crash.txt", "melee_port.log", "lobby.log"}) {
+  for (const char* name : {"melee_port_crash.txt", "melee_port.stderr.log", "melee_port.log", "lobby.log"}) {
     for (const auto& f : files) if (f.first == name) {
       const size_t cap = f.first == "melee_port.log" ? 512u * 1024 :
                          f.first == "lobby.log" ? 128u * 1024 : 256u * 1024;

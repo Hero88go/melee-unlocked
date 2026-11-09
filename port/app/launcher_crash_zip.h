@@ -37,6 +37,9 @@ inline constexpr Part kParts[] = {
   // the game closed and started again, and only then reported: the last log is then a few seconds
   // of menus and the session that mattered is this one.
   {"melee_port.prev.log", false, 1u * 1024 * 1024},
+  // Linux: what the game printed to its error output (the Linux launcher sends it here). The C
+  // library says why it stopped a program there ("malloc(): corrupted top size") and nowhere else.
+  {"melee_port.stderr.log", false, 256 * 1024},
   {"lobby.log", true, 512 * 1024},
 };
 
