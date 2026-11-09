@@ -7022,7 +7022,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (rtx_bright) { changed = true; options.rtx_preset = 0; }
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("How bright the path-traced picture is. Changes show at once behind this panel.");
-        if (lighting == 0) {
+        if (lighting != 2) {   // both path tracers read the strengths
           if (settings_slider("Reflection strength", &options.rtx_reflection_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly shiny materials reflect the real scene.");
           if (settings_slider("Floor reflection strength", &options.rtx_floor_strength, 0, 200, "%d%%")) { changed = true; options.rtx_preset = 0; }
@@ -7079,7 +7079,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
                             "trees cast the sun's shadows, and corners and contacts get soft shade.");
         if (settings_toggle("Path tracing on stage mods", &options.rtx_modded_stages)) changed = true;
-        if (lighting == 0) {
+        if (lighting != 2) {   // both path tracers read the stage-mod floor rule
           {
             const char* mod_floors[] = {"Off", "Sheen", "Mirror"};
             if (settings_combo("Shiny floors on stage mods", &options.rtx_mod_floors, mod_floors, 3)) changed = true;
