@@ -2866,6 +2866,9 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
     // solid white. MELEE_REMIX_GLAZE_CUTOUT=1: the old way.
     static const bool glaze_cutout = std::getenv("MELEE_REMIX_GLAZE_CUTOUT") != nullptr;
     if (!glaze_cutout && (bm & 1) && !additive && !textured && depthless) return 1;
+    // Textured glazes tested against the stage's depth but writing none (Final Destination's faint grid on
+    // the platform's face, alpha 2 to 30 percent): the same, painted as the game blends them.
+    if (!glaze_cutout && (bm & 1) && !additive && textured && depthless && (dc.bp.zmode() & 1)) return 1;
     if (!backdrops) return 0;
     if (!additive && textured && rtx_layer(bm, dc.bp.zmode()) != kRtxLayerSurface) return backdrops == 2 ? 2 : 1;
   }

@@ -57,8 +57,8 @@ static bool texgen_uv(const DrawCall& d, const Vertex& v, int k, float out[2]) {
   float c[4] = {0, 0, 1, 1};
   if (row == 0) { c[0] = v.pos[0]; c[1] = v.pos[1]; c[2] = v.pos[2]; }
   else if (row == 1) { c[0] = v.nrm[0]; c[1] = v.nrm[1]; c[2] = v.nrm[2]; }
-  else if (row >= 5 && row <= 12) { c[0] = v.uv[row - 5][0]; c[1] = v.uv[row - 5][1]; }
-  else return false;
+  else if (row >= 5 && row <= 12) { if (d.components & (VB_HAS_UV0 << (row - 5))) { c[0] = v.uv[row - 5][0]; c[1] = v.uv[row - 5][1]; } }
+  else if (row > 12) return false;
   if (inputform == 0) c[2] = 1.0f;
   if (type != 0) { out[0] = c[0]; out[1] = c[1]; return true; }
   const uint32_t idx = (d.components & (VB_HAS_TEXMTXIDX0 << k)) ? v.texmtx[k]
@@ -433,7 +433,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // (MELEE_REMIX_EMISSIVE scales it; additive glows emit more).
     const uint32_t chan = d.xf_regs[0x0E];
     const bool unlit = (d.xf_regs[0x09] & 3) == 0 || ((chan >> 1) & 1) == 0;
-    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 1.0f; }();   // 1.0 under fixed exposure (11-09: 0.8 left Yoshi's Story at 0.83 of the game's brightness)
+    static const float emissive_scale = [] { const char* v = std::getenv("MELEE_REMIX_EMISSIVE"); return v ? (float)std::atof(v) : 1.3f; }();   // 1.3 under fixed exposure (11-09: 0.8 left Yoshi's Story at 0.83 of the game's brightness, 1.4 at 0.96)
     // A fighter glows a little with its own colours (MELEE_REMIX_FIGHTER_GLOW), so it reads on dark
     // stages as it does in the game, with Remix's light and shadow on top.
     static const float fighter_glow = [] { const char* v = std::getenv("MELEE_REMIX_FIGHTER_GLOW"); return v ? (float)std::atof(v) : 0.9f; }();   // 0.9 under fixed exposure (0.35 was for automatic exposure)
@@ -490,6 +490,12 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       // Yoshi's Story's and Dream Land's leaves into vertical lines. MELEE_REMIX_RAW_UV=1: the raw one.
       static const bool raw_uv = std::getenv("MELEE_REMIX_RAW_UV") != nullptr;
       if (raw_uv || !texgen_uv(d, v, uv_gen, o.texcoord)) { o.texcoord[0] = v.uv[0][0]; o.texcoord[1] = v.uv[0][1]; }
+      // Then the texture coordinate scale the game sets for that coordinate (BP SU_SSIZE/SU_TSIZE), relative
+      // to the texture's size, as the raster's pixel shader applies it (Dream Land's logs: 1/16).
+      if (!raw_uv && d.textures[0].used && d.textures[0].width && d.textures[0].height && uv_gen >= 0 && uv_gen < 8) {
+        o.texcoord[0] *= (float)((d.bp.texcoord_s(uv_gen) & 0xFFFF) + 1) / (float)d.textures[0].width;
+        o.texcoord[1] *= (float)((d.bp.texcoord_t(uv_gen) & 0xFFFF) + 1) / (float)d.textures[0].height;
+      }
       // The game's vertex colour (Melee tints backdrops and baked shading with it), D3D9 order 0xAARRGGBB.
       static const bool no_vc = std::getenv("MELEE_REMIX_NO_VERTEX_COLOR") != nullptr;
       o.color = no_vc || !(d.components & VB_HAS_COL0) ? 0xFFFFFFFFu
@@ -521,6 +527,13 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       static const bool no_tint = std::getenv("MELEE_REMIX_NO_TINT") != nullptr;
       if (no_tint) tint[0] = tint[1] = tint[2] = 1.0f;
     }
+    // A stage pass the game colours pure black through its vertex colours, with no light (Dream Land's
+    // and Yoshi's Story's under-passes beneath their logs and trees): in the game the real surface covers
+    // it; in Remix it showed through as black tops. Left out (MELEE_REMIX_KEEP_BLACK=1 keeps it).
+    static const bool keep_black = std::getenv("MELEE_REMIX_KEEP_BLACK") != nullptr;
+    if (!keep_black && unlit && d.owner_player >= 6 && !blended && (chan & 1) && (d.components & VB_HAS_COL0) &&
+        tint[0] == 0.0f && tint[1] == 0.0f && tint[2] == 0.0f && d.textures[0].used)
+      continue;
     const uint32_t tint_q = ((uint32_t)(tint[0] * 63.0f + 0.5f) << 12) | ((uint32_t)(tint[1] * 63.0f + 0.5f) << 6) | (uint32_t)(tint[2] * 63.0f + 0.5f);
     // Its material: the first texture times that colour, written once as a DDS Remix reads.
     uint64_t mat_key = 0;
@@ -572,8 +585,36 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         m.materials[mat_key] = m.api.CreateMaterial(&mi, &h) == REMIXAPI_ERROR_CODE_SUCCESS ? h : nullptr;
       }
     }
+    // GX clamps a texture read past its edge to the edge texel; Remix's clamp reads black there
+    // (Dream Land's logs: their texture runs 16 times past its edge, all of it the brown edge column
+    // in the game). A clamped axis this draw reads past its edge gets a texture widened with copies
+    // of its edge texels, `pad` copies each side, and coordinates moved into it: the same picture as
+    // GX's clamp. MELEE_REMIX_NO_CLAMP_PAD=1: the plain texture.
+    uint32_t pad_u = 0, pad_v = 0;
+    {
+      static const bool no_pad = std::getenv("MELEE_REMIX_NO_CLAMP_PAD") != nullptr;
+      const uint32_t ws = t.mode0 & 3, wt = (t.mode0 >> 2) & 3;
+      if (!no_pad && t.used && t.width && t.height && (ws == 0 || wt == 0) && !m.verts.empty()) {
+        float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
+        for (const auto& o : m.verts) for (int k = 0; k < 2; ++k) { lo[k] = std::min(lo[k], o.texcoord[k]); hi[k] = std::max(hi[k], o.texcoord[k]); }
+        auto need = [](float l, float h, uint32_t size) -> uint32_t {
+          const float over = std::max({0.0f, -l, h - 1.0f});
+          if (over < 0.01f) return 0;
+          const uint32_t limit = size >= 1024 ? 0 : (2048u / size - 1) / 2;   // widened texture at most 2048 texels
+          return std::min<uint32_t>((uint32_t)std::ceil(over), limit);
+        };
+        if (ws == 0) pad_u = need(lo[0], hi[0], t.width);
+        if (wt == 0) pad_v = need(lo[1], hi[1], t.height);
+        if (pad_u || pad_v)
+          for (auto& o : m.verts) {
+            o.texcoord[0] = (o.texcoord[0] + (float)pad_u) / (float)(2 * pad_u + 1);
+            o.texcoord[1] = (o.texcoord[1] + (float)pad_v) / (float)(2 * pad_v + 1);
+          }
+      }
+    }
     if (!mat_key && !no_textures && t.used && t.data && t.width && t.height && t.width <= 1024 && t.height <= 1024) {
-      mat_key = fnv(&t.data->hash, 8, fnv(&t.format, 4, fnv(&t.mode0, 4, fnv(&emissive, 4, fnv(&tint_q, 4, fnv(&test_key, 4, cutout ? 0x9E3779B97F4A7C15ull : 1469598103934665603ull))))));
+      const uint32_t pad_key = pad_u << 16 | pad_v;
+      mat_key = fnv(&pad_key, 4, fnv(&t.data->hash, 8, fnv(&t.format, 4, fnv(&t.mode0, 4, fnv(&emissive, 4, fnv(&tint_q, 4, fnv(&test_key, 4, cutout ? 0x9E3779B97F4A7C15ull : 1469598103934665603ull)))))));
       if (!m.materials.count(mat_key)) {
         decode_texture(t.data->image.data(), t.width, t.height, t.format, t.data->palette.empty() ? nullptr : t.data->palette.data(),
                        t.tlut_format, m.rgba);
@@ -646,8 +687,23 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         std::snprintf(name, sizeof name, dds ? "%016llx_h.dds" : "%016llx.png", (unsigned long long)mat_key);
         const std::filesystem::path path = m.tex_dir / name;
         if (!std::filesystem::exists(path)) {
-          if (dds) write_dds(path, t.width, t.height, m.rgba, t.mip_levels > 1);
-          else stbi_write_png(path.u8string().c_str(), (int)t.width, (int)t.height, 4, m.rgba.data(), (int)t.width * 4);
+          uint32_t tw = t.width, th = t.height;
+          const std::vector<uint8_t>* pixels = &m.rgba;
+          std::vector<uint8_t> padded;
+          if (pad_u || pad_v) {
+            tw = t.width * (2 * pad_u + 1); th = t.height * (2 * pad_v + 1);
+            padded.resize((size_t)tw * th * 4);
+            for (uint32_t y = 0; y < th; ++y) {
+              const uint32_t sy = (uint32_t)std::clamp<int64_t>((int64_t)y - (int64_t)(pad_v * t.height), 0, (int64_t)t.height - 1);
+              for (uint32_t x = 0; x < tw; ++x) {
+                const uint32_t sx = (uint32_t)std::clamp<int64_t>((int64_t)x - (int64_t)(pad_u * t.width), 0, (int64_t)t.width - 1);
+                std::memcpy(&padded[((size_t)y * tw + x) * 4], &m.rgba[((size_t)sy * t.width + sx) * 4], 4);
+              }
+            }
+            pixels = &padded;
+          }
+          if (dds) write_dds(path, tw, th, *pixels, t.mip_levels > 1);
+          else stbi_write_png(path.u8string().c_str(), (int)tw, (int)th, 4, pixels->data(), (int)tw * 4);
         }
         const std::wstring wpath = path.wstring();
         remixapi_MaterialInfoOpaqueEXT op{};
@@ -670,8 +726,9 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
         const uint32_t wrap_s = t.mode0 & 3, wrap_t = (t.mode0 >> 2) & 3;
         // Remix numbers address modes as D3D9 does (remix.h: 1 repeat, 2 mirror, 3 clamp). GX: 0 clamp,
         // 1 repeat, 2 mirror. (Vulkan's numbering mirrored every clamped texture: Dream Land's logs striped.)
-        mi.wrapModeU = (uint8_t)(wrap_s == 0 ? 3 : wrap_s == 2 ? 2 : 1);
-        mi.wrapModeV = (uint8_t)(wrap_t == 0 ? 3 : wrap_t == 2 ? 2 : 1);
+        static const uint8_t clamp_id = [] { const char* v = std::getenv("MELEE_REMIX_CLAMP_ID"); return (uint8_t)(v ? std::atoi(v) : 3); }();
+        mi.wrapModeU = (uint8_t)(wrap_s == 0 ? clamp_id : wrap_s == 2 ? 2 : 1);
+        mi.wrapModeV = (uint8_t)(wrap_t == 0 ? clamp_id : wrap_t == 2 ? 2 : 1);
         remixapi_MaterialHandle h = nullptr;
         {
           double sum[4] = {0, 0, 0, 0};
@@ -754,6 +811,16 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
                   d.tev_colors[1][0], d.tev_colors[1][1], d.tev_colors[1][2], d.tev_kcolors[0][0], d.tev_kcolors[0][1], d.tev_kcolors[0][2], tev.c_str());
       }
     }
+    // The game's face culling (GX: 1 front, 2 back, 3 all): Dream Land's platforms carry a black inner
+    // pass the game never shows. Remix culls back faces of a one-sided instance by winding; a draw that
+    // culls its front faces is sent with its winding reversed. MELEE_REMIX_CULL: 0 off (all double-sided),
+    // 1 GX winding as is (Dream Land's scenery vanished), 2 reversed (default, 11-09).
+    static const int cull_mode = [] { const char* v = std::getenv("MELEE_REMIX_CULL"); return v ? std::atoi(v) : 2; }();
+    const uint32_t gx_cull = d.bp.cullmode();
+    if (gx_cull == 3) continue;
+    const bool one_sided = cull_mode != 0 && gx_cull != 0 && !(cull_mode == 3 && gx_cull == 1);   // 3: only front-culling draws one-sided
+    if (one_sided && ((gx_cull == 1) != (cull_mode == 2)))
+      for (size_t i = 0; i + 2 < m.prim.size(); i += 3) std::swap(m.prim[i + 1], m.prim[i + 2]);
     uint64_t key = fnv(m.verts.data(), m.verts.size() * sizeof(remixapi_HardcodedVertex));
     key = fnv(m.prim.data(), m.prim.size() * 4, key);
     key = fnv(&mat_key, 8, key);
@@ -775,7 +842,7 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
     inst.mesh = e.handle;
     inst.transform = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
-    inst.doubleSided = 1;
+    inst.doubleSided = one_sided ? 0 : 1;
     // A blended stage piece that does not write depth lies on another surface (Whispy's face, signs,
     // painted marks): a decal, so Remix draws it over that surface instead of fighting it.
     {
