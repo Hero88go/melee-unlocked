@@ -95,7 +95,8 @@ class ThreadedBackend final : public Backend {
     // that (a laptop on a 120 Hz screen: the game fell to 54 Hz and below while 120 frames a second were
     // shown, which looks far worse than its frame rate), the extra frames go until the game keeps up.
     bool held_to_60 = false;
-    int behind_seconds = 0, caught_up_seconds = 0, holds = 0;   // a second hold stays for the session (no back and forth)
+    int behind_seconds = 0, caught_up_seconds = 0, held_seconds = 0;
+    double hold_cooldown_until = 0.0;   // a hold that did not help waits until then before it may start again
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;
     // Frame pacing for "it feels choppy" reports: the time between two frames handed to the display,
@@ -677,20 +678,31 @@ class ThreadedBackend final : public Backend {
         {
           const double sim_hz = stats_sim / (now - stats_time), shown_hz = stats_presented / (now - stats_time);
           host::set_game_rate(sim_hz);
-          const bool playing = sim_hz > 20.0;   // paused, menus and loading screens step no game frames
+          // Only in a match (menus and loading screens step unevenly on every PC), and never for the rest of
+          // a session: 0.9.111 kept a second hold until the game was restarted, so one stall left the
+          // frame rate stuck at 60 (a report, 11-10). A hold that does not bring the game back to 60 Hz is
+          // not helping, so it lets go and waits two minutes before it may come back.
+          uint32_t scene_major = 0, scene_minor = 0, match_frame = 0;
+          host::current_scene(&scene_major, &scene_minor, &match_frame);
+          const bool playing = sim_hz > 20.0 && match_frame > 0;
           if (playing && sim_hz < 57.0 && shown_hz > 75.0) { ++behind_seconds; caught_up_seconds = 0; }
-          else if (sim_hz >= 59.5) { ++caught_up_seconds; behind_seconds = 0; }
+          else if (sim_hz >= 59.5 || !playing) { ++caught_up_seconds; behind_seconds = 0; }
           else behind_seconds = 0;
-          if (!held_to_60 && behind_seconds >= 3) {
+          if (held_to_60) ++held_seconds;
+          if (!held_to_60 && behind_seconds >= 3 && now >= hold_cooldown_until) {
             held_to_60 = true;
-            caught_up_seconds = 0;
-            ++holds;
-            host::log("pacing: the game ran at %.0f Hz while %.0f frames a second were drawn: drawing 60 a second %s",
-                      sim_hz, shown_hz, holds >= 2 ? "for the rest of this session" : "until it keeps 60 Hz");
-          } else if (held_to_60 && holds < 2 && caught_up_seconds >= 10) {
+            caught_up_seconds = 0; held_seconds = 0;
+            host::log("pacing: the game ran at %.0f Hz while %.0f frames a second were drawn: drawing 60 a second until it keeps 60 Hz",
+                      sim_hz, shown_hz);
+          } else if (held_to_60 && caught_up_seconds >= 5) {
             held_to_60 = false;
             behind_seconds = 0;
             host::log("pacing: the game keeps 60 Hz again: back to the chosen frame rate");
+          } else if (held_to_60 && held_seconds >= 15 && caught_up_seconds == 0) {
+            held_to_60 = false;
+            behind_seconds = 0;
+            hold_cooldown_until = now + 120.0;
+            host::log("pacing: drawing 60 a second did not bring the game back to 60 Hz: back to the chosen frame rate");
           }
         }
         stats_time = now; stats_presented = 0; stats_sim = 0;
