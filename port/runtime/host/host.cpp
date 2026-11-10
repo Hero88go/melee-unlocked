@@ -139,7 +139,70 @@ static void open_log_file() {
     if (GlobalMemoryStatusEx(&memory))
       std::fprintf(g_log_file, "memory: %.1f GB installed, %.1f GB free, %.1f GB more Windows can hand out\n",
                    memory.ullTotalPhys / 1073741824.0, memory.ullAvailPhys / 1073741824.0, memory.ullAvailPageFile / 1073741824.0);
+    std::fprintf(g_log_file, "%s\n", cpu_power_line("at start").c_str());
   }
+}
+
+// "cpu: Intel(R) Core(TM) i5-9300H, rated 2400 MHz, now 1190 MHz, limit 2400 MHz, on battery (64%), power plan
+// Balanced": a laptop on battery or a power saving plan runs the game step at a fraction of its speed, which
+// a report could not tell from a slow processor (a GTX 1650 laptop, 11-10: three times this PC's step time).
+std::string cpu_power_line(const char* when) {
+  char name[128] = "?";
+  DWORD rated = 0;
+  HKEY key = nullptr;
+  if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &key) == ERROR_SUCCESS) {
+    DWORD size = sizeof name - 1, type = 0;
+    if (RegQueryValueExA(key, "ProcessorNameString", nullptr, &type, (LPBYTE)name, &size) != ERROR_SUCCESS || type != REG_SZ) std::strcpy(name, "?");
+    name[sizeof name - 1] = 0;
+    size = sizeof rated;
+    RegQueryValueExA(key, "~MHz", nullptr, &type, (LPBYTE)&rated, &size);
+    RegCloseKey(key);
+  }
+  const char* trimmed = name;
+  while (*trimmed == ' ') ++trimmed;
+  std::string out = std::string("cpu (") + when + "): " + trimmed;
+  if (rated) out += ", rated " + std::to_string(rated) + " MHz";
+  // powrprof.dll at run time: the game links nothing more for one log line.
+  struct ProcessorPower { ULONG number, max_mhz, current_mhz, mhz_limit, max_idle, current_idle; };
+  using CallNtPower = LONG(WINAPI*)(int, void*, ULONG, void*, ULONG);
+  using ActiveScheme = DWORD(WINAPI*)(HKEY, GUID**);
+  using FriendlyName = DWORD(WINAPI*)(HKEY, const GUID*, const GUID*, const GUID*, UCHAR*, DWORD*);
+  if (HMODULE power = LoadLibraryW(L"powrprof.dll")) {
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    std::vector<ProcessorPower> cores(si.dwNumberOfProcessors ? si.dwNumberOfProcessors : 1);
+    auto call = (CallNtPower)GetProcAddress(power, "CallNtPowerInformation");
+    if (call && call(11 /* ProcessorInformation */, nullptr, 0, cores.data(), (ULONG)(cores.size() * sizeof(ProcessorPower))) == 0) {
+      ULONG now = 0, limit = 0;
+      for (const ProcessorPower& c : cores) { now = std::max(now, c.current_mhz); limit = std::max(limit, c.mhz_limit); }
+      out += ", now " + std::to_string(now) + " MHz, limit " + std::to_string(limit) + " MHz";
+    }
+    auto active = (ActiveScheme)GetProcAddress(power, "PowerGetActiveScheme");
+    auto friendly = (FriendlyName)GetProcAddress(power, "PowerReadFriendlyName");
+    GUID* scheme = nullptr;
+    if (active && friendly && active(nullptr, &scheme) == ERROR_SUCCESS && scheme) {
+      wchar_t plan[128] = {};
+      DWORD bytes = sizeof plan - sizeof(wchar_t);
+      if (friendly(nullptr, scheme, nullptr, nullptr, (UCHAR*)plan, &bytes) == ERROR_SUCCESS) {
+        char narrow[256] = {};
+        WideCharToMultiByte(CP_UTF8, 0, plan, -1, narrow, sizeof narrow - 1, nullptr, nullptr);
+        out += std::string(", power plan ") + narrow;
+      }
+      LocalFree(scheme);
+    }
+    FreeLibrary(power);
+  }
+  SYSTEM_POWER_STATUS status{};
+  if (GetSystemPowerStatus(&status)) {
+    if (status.ACLineStatus == 0) {
+      out += ", on battery";
+      if (status.BatteryLifePercent <= 100) out += " (" + std::to_string(status.BatteryLifePercent) + "%)";
+    } else if (status.ACLineStatus == 1) {
+      out += status.BatteryFlag == 128 ? ", mains power (no battery)" : ", plugged in";
+    }
+    if (status.SystemStatusFlag & 1) out += ", Windows battery saver on";
+  }
+  return out;
 }
 
 // Reports that end in "bad allocation" or 8007000E said nothing about memory: the size of this
@@ -2892,6 +2955,7 @@ void report_sim_work() {
       t.work.mean(), t.work.p99(), t.work.maximum, (unsigned long long)t.work.count,
       t.step.mean(), t.step.p99(), t.mean(perf::Stage::Decode), t.mean(perf::Stage::Submit),
       t.mean(perf::Stage::Input), t.mean(perf::Stage::Wait), (unsigned long long)t.resim_frames);
+  log("%s", cpu_power_line("at the end").c_str());
 }
 double last_sim_frame_work_ms() { return g_last_sim_work_ms; }
 bool last_sim_frame_late() { return g_last_sim_late; }

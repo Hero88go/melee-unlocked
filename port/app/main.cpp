@@ -973,6 +973,18 @@ struct SimProfiler {
       char buf[sizeof(SYMBOL_INFO) + 256]{}; SYMBOL_INFO* sym = (SYMBOL_INFO*)buf; sym->SizeOfStruct = sizeof(SYMBOL_INFO); sym->MaxNameLen = 255;
       DWORD64 disp = 0;
       std::string name = SymFromAddr(process, addr, &disp, sym) ? std::string(sym->Name) : "?";
+      if (name == "?") {
+        // No symbols (release builds carry a .map, not a .pdb): the module and offset, which the map names.
+        HMODULE module = nullptr;
+        char path[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)(uintptr_t)addr, &module) && module && GetModuleFileNameA(module, path, MAX_PATH)) {
+          const char* leaf = std::strrchr(path, '\\') ? std::strrchr(path, '\\') + 1 : path;
+          char buf[MAX_PATH + 32];
+          std::snprintf(buf, sizeof buf, "%s+0x%llX", leaf, (unsigned long long)(addr - (uintptr_t)module));
+          name = buf;
+        }
+      }
       return host_names.emplace(addr, name).first->second;
     };
     uint64_t guest_hits = 0, slow_guest_hits = 0, slow_total = 0;
@@ -1003,7 +1015,9 @@ struct SimProfiler {
     const double total = (double)std::max<size_t>(1, samples.size());
     host::log("profile: %zu samples of the %s thread, game code %.1f%%, runtime %.1f%%", samples.size(), render_thread ? "busiest non-simulation" : "simulation",
               100.0 * guest_hits / total, 100.0 * (samples.size() - guest_hits) / total);
-    for (size_t i = 0; i < top.size() && i < 40; ++i) host::log("profile: %5.1f%%  %s", 100.0 * top[i].first / total, top[i].second.c_str());
+    // MELEE_TEST_PROFILE_ALL=1 (tests): every label, so offsets without symbols can be summed per function from the map.
+    static const bool all = [] { const char* v = host::test_env::getenv("MELEE_TEST_PROFILE_ALL"); return v && *v == '1'; }();
+    for (size_t i = 0; i < top.size() && (all || i < 40); ++i) host::log("profile: %5.1f%%  %s", 100.0 * top[i].first / total, top[i].second.c_str());
     if (!render_thread && !slow_frames.empty()) {
       std::vector<std::pair<uint64_t, std::string>> slow_top;
       for (auto& kv : slow_hits) slow_top.push_back({kv.second, kv.first});

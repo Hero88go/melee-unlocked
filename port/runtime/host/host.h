@@ -55,6 +55,8 @@ extern ppc::Context* cpu;
 
 // ---- logging ----
 void log(const char* fmt, ...);
+// One log line on the processor and power: name, rated and current clock, AC or battery, power plan.
+std::string cpu_power_line(const char* when);
 void log_guest_text(const char* data, size_t len);  // OSReport output
 void log_flush();   // writes every queued log line now (log() hands lines to a writer thread)
 void log_memory();  // one line: this process's size and the memory Windows has left
