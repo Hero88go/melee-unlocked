@@ -522,7 +522,26 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       if (!unlit && !fighter) {
         const uint32_t amb = d.xf_regs[0x0A];
         const float a[3] = {((amb >> 24) & 0xFF) / 255.0f, ((amb >> 16) & 0xFF) / 255.0f, ((amb >> 8) & 0xFF) / 255.0f};
-        for (int k = 0; k < 3; ++k) tint[k] = std::min(1.0f, a[k] + 0.7f * tint[k]);
+        // The light: the colours of the GX lights the channel uses (its light mask), at 0.7 of full
+        // strength across the surface, instead of a white light. Stadium's black arms are lit by a dark
+        // light: with white they came out light grey. MELEE_REMIX_WHITE_LIGHT=1: the old white light.
+        static const bool white_light = std::getenv("MELEE_REMIX_WHITE_LIGHT") != nullptr;
+        float light[3] = {0.7f, 0.7f, 0.7f};
+        if (!white_light) {
+          const uint32_t mask = ((chan >> 2) & 0xFu) | (((chan >> 11) & 0xFu) << 4);
+          if (mask) {
+            light[0] = light[1] = light[2] = 0.0f;
+            for (int i = 0; i < 8; ++i) {
+              if (!(mask & (1u << i))) continue;
+              uint32_t word;
+              std::memcpy(&word, d.lights[i] + 12, 4);
+              light[0] += 0.7f * ((word >> 24) & 0xFF) / 255.0f;
+              light[1] += 0.7f * ((word >> 16) & 0xFF) / 255.0f;
+              light[2] += 0.7f * ((word >> 8) & 0xFF) / 255.0f;
+            }
+          }
+        }
+        for (int k = 0; k < 3; ++k) tint[k] = std::min(1.0f, a[k] + light[k] * tint[k]);
       }
       static const bool no_tint = std::getenv("MELEE_REMIX_NO_TINT") != nullptr;
       if (no_tint) tint[0] = tint[1] = tint[2] = 1.0f;

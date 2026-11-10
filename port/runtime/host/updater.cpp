@@ -852,10 +852,17 @@ void download_and_install() {
 // Windows protects (Ransomware protection), and antivirus can hold a file it is still scanning. Only the
 // finished files go beside the game, and that move is tried for a few seconds before it gives up.
 std::filesystem::path download_work(const char* name) {
+#ifdef _WIN32
   wchar_t buf[MAX_PATH] = {};
   const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
   std::filesystem::path base = n && n < MAX_PATH ? std::filesystem::path(buf) : std::filesystem::temp_directory_path();
-  return base / L"MeleeUnlocked" / L"downloads" / name;
+#else
+  const char* data = std::getenv("XDG_DATA_HOME");
+  const char* home = std::getenv("HOME");
+  std::filesystem::path base = data && *data ? std::filesystem::path(data)
+                             : home && *home ? std::filesystem::path(home) / ".local" / "share" : std::filesystem::temp_directory_path();
+#endif
+  return base / "MeleeUnlocked" / "downloads" / name;
 }
 // The plain reason for a failed write beside the game, with what to do about the usual one.
 std::string place_error(const std::string& what, const std::filesystem::path& dir, const std::error_code& ec) {

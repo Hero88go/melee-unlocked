@@ -1,9 +1,9 @@
 // The RTX Pack's NVIDIA renderer, loaded as a separate program (rtx_integrator.h). It is built from
 // NVIDIA's SDKs outside this repository and reaches the game only through RtxIntegrator.
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "rtx_integrator.h"
-
+// Windows only: the D3D12 renderers are its only users (Linux compiles nothing here).
 #ifdef _WIN32
+#include "rtx_integrator.h"
 #include <windows.h>
 
 #include <cstdio>
@@ -58,13 +58,6 @@ std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring& dir, std::str
   return std::unique_ptr<RtxIntegrator>(integrator);
 }
 
-}  // namespace gx
-
-#else
-
-namespace gx {
-bool rtx_pack_current(const std::wstring&) { return true; }
-std::unique_ptr<RtxIntegrator> load_rtx_plugin(const std::wstring&, std::string*) { return nullptr; }
 }  // namespace gx
 
 #endif
