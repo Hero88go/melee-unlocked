@@ -26,6 +26,13 @@ RTX SDKs License, the License Agreement for NVIDIA Software Development Kits, th
 Simplified Software License or the AMD FSR SDK license, the licensors of this Program grant you additional permission to
 convey the resulting work.
 
+The same permission covers the RTX Pack: a renderer library loaded at run time from the game's
+RTX folder (melee_rtx_nvidia.dll) through the gx::RtxIntegrator interface
+(port/runtime/gx/rtx_integrator.h), built with the NVIDIA RTXDI, NRD, NRI and SHaRC SDKs, and the
+NVIDIA RTX Remix runtime loaded from the game's Remix folder through its C API. Such a library and
+runtime may be conveyed with the Program, or separately, under their own terms; their source need
+not be released under this License.
+
 This permission is granted by the copyright holders of Melee Unlocked's own code and applies to
 every file of the Program whose copyright they hold. Code that this project takes from other
 projects is covered by its own license only.

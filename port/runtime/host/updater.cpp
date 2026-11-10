@@ -109,9 +109,42 @@ void download_progress(const char* what, size_t got, size_t total) {
   else set_message(std::string(what) + " " + mb(got) + " MB");
 }
 
+// SHA-256 over data that arrives in pieces (a download written straight to disk).
+struct Sha256Stream {
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  bool ok = false;
+  Sha256Stream() {
+    ok = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0 &&
+         BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+  }
+  ~Sha256Stream() {
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+  }
+  void add(const char* data, size_t size) { if (ok && size) ok = BCryptHashData(hash, (PUCHAR)data, (ULONG)size, 0) >= 0; }
+  std::string hex() {
+    unsigned char digest[32]{};
+    if (!ok || BCryptFinishHash(hash, digest, sizeof digest, 0) < 0) return {};
+    ok = false;
+    static const char* digits = "0123456789abcdef";
+    std::string out;
+    for (unsigned char b : digest) { out += digits[b >> 4]; out += digits[b & 15]; }
+    return out;
+  }
+};
+
+// Where a download's bytes go when they are not kept in memory: `sink` takes each piece (false stops the
+// download), `on_progress` hears (bytes so far, total or 0) about four times a second.
+struct HttpSink {
+  std::function<bool(const char*, size_t)> sink;
+  std::function<void(size_t, size_t)> on_progress;
+};
+
 // GET with redirects (GitHub release assets redirect to a CDN). Returns the body. `progress` names
 // the download in the status line ("Downloading update..."); null for the small API requests.
-bool http_get(const std::string& url, std::string* out, int* status, const char* progress = nullptr) {
+bool http_get(const std::string& url, std::string* out, int* status, const char* progress = nullptr,
+              const HttpSink* stream = nullptr) {
   std::wstring wurl = widen(url);
   URL_COMPONENTS uc{}; uc.dwStructSize = sizeof uc;
   wchar_t host[256]{}, path[4096]{}, extra[1024]{};
@@ -139,19 +172,27 @@ bool http_get(const std::string& url, std::string* out, int* status, const char*
         bool have_length = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
             WINHTTP_HEADER_NAME_BY_INDEX, &expected, &expected_size, WINHTTP_NO_HEADER_INDEX) != FALSE;
         bool complete = false;
-        if (have_length) body.reserve(expected);
+        if (have_length && !stream) body.reserve(expected);
         // One 1 MiB buffer, read until the response ends: asking for what is available first
         // handed back a few KB per call, and each call allocated a fresh chunk.
         std::vector<char> chunk(1u << 20);
         ULONGLONG shown = 0;
+        size_t total = 0;
+        const bool good_status = code == 200;   // an error page is never handed to a sink
         for (;;) {
           DWORD got = 0;
           if (!WinHttpReadData(req, chunk.data(), (DWORD)chunk.size(), &got)) break;
           if (!got) { complete = true; break; }
-          body.append(chunk.data(), got);
-          if (progress && GetTickCount64() - shown >= 250) { shown = GetTickCount64(); download_progress(progress, body.size(), have_length ? expected : 0); }
+          total += got;
+          if (stream && good_status) { if (!stream->sink(chunk.data(), got)) break; }
+          else body.append(chunk.data(), got);
+          if (GetTickCount64() - shown >= 250) {
+            shown = GetTickCount64();
+            if (progress) download_progress(progress, total, have_length ? expected : 0);
+            if (stream && stream->on_progress) stream->on_progress(total, have_length ? expected : 0);
+          }
         }
-        ok = complete && (!have_length || body.size() == expected);
+        ok = complete && (!have_length || total == expected);
         if (out && ok) *out = std::move(body);
       }
       WinHttpCloseHandle(req);
@@ -1034,15 +1075,47 @@ void fetch_part(PartFetch& p, const std::string& label, const std::string& size,
       p.failed = true;
       p.busy = false;
     };
-    std::string body; int status = 0;
-    if (!http_get(url, &body, &status) || status != 200)
-      return fail(status ? label + " download failed (HTTP " + std::to_string(status) + ")" : label + " download failed (no connection)");
-    if (!zip_sha256.empty() && sha256_hex(body) != zip_sha256) return fail(label + ": the download does not match the release; not installed");
+    // Written to disk as it arrives, hashed on the way, with its progress in the status line: the RTX
+    // Pack is about 470 MB, which held that much memory and showed one unmoving line for minutes.
     fs::remove_all(work, ec);
     fs::create_directories(work, ec);
     const fs::path zip = work / "part.zip";
-    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail(label + ": cannot save the download in " + work.u8string() + ". Check the free space on that drive."); }
-    body.clear(); body.shrink_to_fit();
+    int status = 0;
+    std::string stop_reason;
+    {
+      std::ofstream f(zip, std::ios::binary);
+      if (!f) return fail(label + ": cannot save the download in " + work.u8string() + ". Check the free space on that drive.");
+      Sha256Stream sha;
+      bool space_checked = false;
+      HttpSink sink;
+      sink.sink = [&](const char* data, size_t size) {
+        f.write(data, (std::streamsize)size);
+        if (!f) { stop_reason = label + ": cannot save the download in " + work.u8string() + ". Check the free space on that drive."; return false; }
+        sha.add(data, size);
+        return stop_reason.empty();
+      };
+      sink.on_progress = [&](size_t got, size_t total) {
+        if (total && !space_checked) {
+          space_checked = true;
+          // The zip, its unpacked files and the copy in the game folder: about three times its size.
+          const auto room = fs::space(work, ec);
+          if (!ec && room.available < (uintmax_t)total * 3)
+            stop_reason = label + " needs about " + std::to_string(((uintmax_t)total * 3) >> 20) + " MB free on " +
+                          work.root_path().u8string() + " (" + std::to_string(room.available >> 20) + " MB free now)";
+        }
+        const auto mb = [](size_t bytes) { return std::to_string((bytes + (1u << 19)) >> 20); };
+        part_message(p, total ? "Downloading " + label + ": " + std::to_string(got * 100 / total) + "% (" + mb(got) + " of " + mb(total) + " MB)"
+                              : "Downloading " + label + ": " + mb(got) + " MB");
+      };
+      const bool got_it = http_get(url, nullptr, &status, nullptr, &sink);
+      f.close();
+      if (!stop_reason.empty()) return fail(stop_reason);
+      if (!got_it || status != 200)
+        return fail(status && status != 200 ? label + " download failed (HTTP " + std::to_string(status) + ")" : label + " download failed (no connection or cut off); try again");
+      if (!f) return fail(label + ": cannot save the download in " + work.u8string() + ". Check the free space on that drive.");
+      if (!zip_sha256.empty() && sha.hex() != zip_sha256) return fail(label + ": the download does not match the release; not installed");
+    }
+    part_message(p, "Unpacking " + label + "...");
     if (!unpack_zip(zip, work / "files")) return fail(unpack_failure(label));
     const std::string why = install(work / "files", dir);
     if (!why.empty()) return fail(why);

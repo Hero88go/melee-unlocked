@@ -119,16 +119,41 @@ static void linux_crash_signal(int sig, siginfo_t* si, void* uc_void) {
   char head[512];
   std::snprintf(head, sizeof head, "CRASH: signal %d (%s) at %p (%s+0x%llX), address %p, version %s", sig, strsignal(sig),
                 (void*)rip, module, (unsigned long long)offset, si ? si->si_addr : nullptr, MELEE_PORT_VERSION);
-  host::log("%s", head);
-  if (FILE* f = std::fopen("melee_port_crash.txt", "w")) {
-    std::fprintf(f, "%s\n", head);
-    void* frames[48];
-    const int count = backtrace(frames, 48);
-    linux_stack_lines(frames, count, f, 0);
-    host::log_flush();
-    linux_guest_trace(f);
-    std::fclose(f);
+  // A fault inside the C library's memory code (a 0.9.110 report: libc.so.6, mid start) leaves its memory
+  // lock held or its lists damaged, and fopen needs both: the handler died there and the report came with
+  // no crash file and no stack. So the file is written with system calls first, as linux_abort_note does,
+  // and the process ends within 10 s whatever the rest does.
+  alarm(10);
+  {
+    const int fd = open("melee_port_crash.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+      abort_put(fd, head); abort_put(fd, "\n");
+      void* frames[48];
+      const int count = backtrace(frames, 48);   // loaded at start (linux_install_crash_handlers)
+      for (int i = 0; i < count; ++i) {
+        Dl_info fi{};
+        const char* leaf = "?";
+        uintptr_t at = (uintptr_t)frames[i];
+        if (dladdr(frames[i], &fi) && fi.dli_fname) {
+          leaf = std::strrchr(fi.dli_fname, '/') ? std::strrchr(fi.dli_fname, '/') + 1 : fi.dli_fname;
+          at = (uintptr_t)frames[i] - (uintptr_t)fi.dli_fbase;
+        }
+        abort_put(fd, "stack "); abort_put_number(fd, (unsigned long long)i, 10, 2); abort_put(fd, ": ");
+        abort_put(fd, leaf); abort_put(fd, "+0x"); abort_put_number(fd, at, 16, 0); abort_put(fd, "\n");
+      }
+      if (host::cpu) {
+        abort_put(fd, "last guest function "); abort_put_number(fd, host::cpu->last_pc, 16, 0);
+        abort_put(fd, ", lr "); abort_put_number(fd, host::cpu->lr, 16, 0);
+        abort_put(fd, "\nrecent guest functions (oldest first):\n");
+        for (uint32_t i = 0; i < 64; ++i) {
+          const uint32_t pc = host::cpu->trace[(host::cpu->trace_pos + i) & 63];
+          if (pc) { abort_put(fd, "  "); abort_put_number(fd, pc, 16, 0); abort_put(fd, "\n"); }
+        }
+      }
+      close(fd);
+    }
   }
+  host::log("%s", head);
   host::log_flush();
   linux_crash_dialog(head, false);
   if (yougame::active()) {   // the app's "stopped" notice reads this line (yougame_mode_policy.h crash_line)

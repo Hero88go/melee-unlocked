@@ -7079,18 +7079,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::SetTooltip("On stages whose light is painted in: the stage's own platforms, buildings and\n"
                             "trees cast the sun's shadows, and corners and contacts get soft shade.");
         if (settings_toggle("Path tracing on stage mods", &options.rtx_modded_stages)) changed = true;
-        if (lighting != 2) {   // both path tracers read the stage-mod floor rule
-          {
-            const char* mod_floors[] = {"Off", "Sheen", "Mirror"};
-            if (settings_combo("Shiny floors on stage mods", &options.rtx_mod_floors, mod_floors, 3)) changed = true;
-            if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("Floors of a modded stage: as the mod made them (Off), a soft polished sheen with real\n"
-                                "reflections (Sheen), or a full mirror (Mirror, the look before 0.9.106).");
-          }
-        }
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("On a stage whose files come from a mod: path traced like the game's own stages, or\n"
                             "off to show the mod exactly as its maker drew it.");
+        {   // both path tracers read the stage-mod floor rule
+          const char* mod_floors[] = {"Off", "Sheen", "Mirror"};
+          if (settings_combo("Shiny floors on stage mods", &options.rtx_mod_floors, mod_floors, 3)) changed = true;
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Floors of a modded stage: as the mod made them (Off), a soft polished sheen with real\n"
+                              "reflections (Sheen), or a full mirror (Mirror, the look before 0.9.106).");
+        }
         if (settings_toggle("Effects light the stage", &options.rtx_effect_light)) changed = true;
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Fire, sparks, shines and flashes cast their own light on the stage and the fighters\n"
