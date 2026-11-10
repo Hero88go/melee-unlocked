@@ -126855,7 +126855,7 @@ index 7a5af635b..c99b3a78a 100644
  /* 21ED74 */ void grHomeRun_8021ED74(void);
  /* 21EDD4 */ void grHomeRun_8021EDD4(void);
 diff --git a/src/melee/gr/gricemt.c b/src/melee/gr/gricemt.c
-index efc73d37a..5b2262940 100644
+index efc73d37a..3dc527fae 100644
 --- a/src/melee/gr/gricemt.c
 +++ b/src/melee/gr/gricemt.c
 @@ -112,9 +112,9 @@ struct grIceMt_YakumonoParam {
@@ -127628,6 +127628,20 @@ index efc73d37a..5b2262940 100644
 +                state->idx]);
          }
          break;
+     }
+@@ -2037,7 +1986,12 @@ void onJointCollision(void* user_data, int joint_id, CollData* coll,
+         if (gobj != NULL) {
+             gp2 = gobj->user_data;
+             if (gp2 != NULL) {
+-                ((UnkFlagStruct*) &gp2->u.icemt.x14)->b4 = 1;
++                /* The climb's own flag word (stageGObj10_GObjProc reads x14_b4). Set through the
++                 * big-endian UnkFlagStruct it landed on x14_b3 on the PC (its bitfields run from the
++                 * top bit, this native struct's from the bottom), which marked the Ice Climbers as
++                 * already called the first time the player touched the mountain: in Adventure the
++                 * mountain scrolled until time ran out (GitHub #73). */
++                gp2->u.icemt10.x14_b4 = 1;
+             }
+         }
      }
 diff --git a/src/melee/gr/grinishie1.c b/src/melee/gr/grinishie1.c
 index 3a6ba6541..930de58ce 100644
