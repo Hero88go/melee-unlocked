@@ -1,3 +1,5 @@
+#include <chrono>
+#include <string>
 #include "test_env.h"
 #include "render_observer.h"
 // GX command processor: FIFO -> register state -> captured frames.
@@ -64,6 +66,7 @@ int latency_test_fill() {
 
 BPMemory g_bp;
 CPMemory g_cp;
+uint64_t g_cp_generation = 1;   // bumped whenever a CP register changes: cached vertex formats stay valid until then
 XFMemory g_xf;
 uint8_t g_tmem[1024 * 1024];
 uint64_t g_tmem_generation = 1;
@@ -456,7 +459,7 @@ void decode_run(const DecodeState& s, const uint8_t* src, uint32_t count, Vertex
 // (frustum_backdrop). MELEE_TEST_DECODE_VERIFY=1 (tests) also decodes each job in place and
 // compares the worker's result byte for byte at the join.
 class VertexDecodeWorker {
-  struct Job { DecodeState state; size_t bytes_at; uint32_t count; Vertex* out; size_t verify_at; };
+  struct Job { DecodeState state; size_t bytes_at; uint32_t count; Vertex* out; size_t verify_at; uint64_t key; };
   std::thread thread_;
   std::mutex mutex_;
   std::condition_variable wake_, done_;
@@ -500,8 +503,23 @@ class VertexDecodeWorker {
   bool pending() const { return !jobs_.empty(); }
   // Room for `count` more vertices in `frame` without moving its storage (else join first).
   static bool fits(const Frame& frame, size_t count) { return frame.vertices.size() + count <= frame.vertices.capacity(); }
-  void submit(const DecodeState& state, const uint8_t* src, uint32_t count, Vertex* out) {
+  void submit(const DecodeState& state, uint64_t key, const uint8_t* src, uint32_t count, Vertex* out) {
     const size_t n = (size_t)count * state.d.size;
+    // The same format right after the previous job, still unpublished, its vertices and bytes
+    // contiguous: one longer job (Animelee CE sends thousands of four-vertex quads a frame).
+    if (key && started_ && jobs_.size() > published_ && jobs_.back().key == key &&
+        jobs_.back().out + jobs_.back().count == out && bytes_.size() + n <= bytes_.capacity()) {
+      if (verify_on_) {
+        const size_t at = verify_.size();
+        verify_.resize(at + count);
+        decode_run(state, src, count, verify_.data() + at);
+      }
+      bytes_.insert(bytes_.end(), src, src + n);
+      jobs_.back().count += count;
+      unpublished_vertices_ += count;
+      if (unpublished_vertices_ >= 4096) { std::lock_guard<std::mutex> lock(mutex_); publish_locked(); }
+      return;
+    }
     if (jobs_.size() == jobs_.capacity() || bytes_.size() + n > bytes_.capacity()) {
       join();   // the worker reads both vectors: grow them only while it is idle
       jobs_.reserve(std::max<size_t>(4096, jobs_.capacity() * 2));
@@ -513,7 +531,7 @@ class VertexDecodeWorker {
       verify_on_ = verify;
       thread_ = std::thread([this] { run(); });
     }
-    Job job{state, bytes_.size(), count, out, verify_.size()};
+    Job job{state, bytes_.size(), count, out, verify_.size(), key};
     bytes_.insert(bytes_.end(), src, src + n);
     if (verify_on_) {
       verify_.resize(verify_.size() + count);
@@ -559,16 +577,29 @@ class VertexDecodeWorker {
 VertexDecodeWorker g_vertex_decoder;
 
 // Decodes `count` vertices of format `fmt` from `src` into the frame. Returns components mask.
-uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count, uint32_t fmt, bool in_place) {
-  (void)fmt;
-  const DecodeState state = capture_decode(d);
+// The vertex format of each of the eight formats, worked out once per CP register change instead of
+// for every primitive (Animelee CE: 13,000 primitives a frame).
+struct FormatCache { uint64_t generation = 0; VertexDesc desc; DecodeState state; uint32_t components = 0; };
+FormatCache g_format_cache[8];
+const FormatCache& format_for(uint32_t fmt) {
+  FormatCache& c = g_format_cache[fmt & 7];
+  if (c.generation != g_cp_generation) {
+    c.desc = build_desc(fmt);
+    c.state = capture_decode(c.desc);
+    c.components = vertex_components(c.desc);
+    c.generation = g_cp_generation;
+  }
+  return c;
+}
+
+uint32_t decode_vertices(const FormatCache& f, uint32_t fmt, const uint8_t* src, uint32_t count, bool in_place) {
   if (g_vertex_decoder.pending() && !VertexDecodeWorker::fits(g_frame, count)) g_vertex_decoder.join();
   const size_t base = g_frame.vertices.size();
   g_frame.vertices.resize(base + count);
   Vertex* const outv = g_frame.vertices.data() + base;
-  if (!in_place && VertexDecodeWorker::wanted()) g_vertex_decoder.submit(state, src, count, outv);
-  else decode_run(state, src, count, outv);
-  return vertex_components(d);
+  if (!in_place && VertexDecodeWorker::wanted()) g_vertex_decoder.submit(f.state, (f.generation << 3) | (fmt & 7), src, count, outv);
+  else decode_run(f.state, src, count, outv);
+  return f.components;
 }
 
 // ---------------- draw snapshot ----------------
@@ -703,7 +734,6 @@ static void note_rtx_semantics_frame(const Frame& frame) {
 }
 
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
-  host::SimCostScope record_cost(host::SIM_RECORD);
   const bool line = primitive == 0xA8 || primitive == 0xB0;
   if (g_merge_next_primitive && !g_frame.commands.empty() &&
       g_frame.commands.back().kind == FrameCommand::Draw) {
@@ -722,6 +752,9 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
       return;
     }
   }
+  // Timed from here: a primitive merged above costs less than reading the clock twice (Animelee CE
+  // sends 13,000 a frame).
+  host::SimCostScope record_cost(host::SIM_RECORD);
   // Built on the stack (hot in cache), then moved in: filling the vector element directly measured
   // worse, because each field write lands in cold memory instead of one sequential copy.
   DrawCall dc{DrawCall::SkipInit{}};
@@ -958,10 +991,62 @@ void run_display_list(uint32_t addr, uint32_t size) {
   g_dl_addr = saved_addr; g_dl_draw_ordinal = saved_draw; g_dl_call_ordinal = saved_call;
 }
 
+// The state half of frustum_backdrop, before the draw is recorded: a perspective camera, no depth
+// write, no per-vertex matrix and an identity model-view at the current matrix index.
+static bool quad_may_be_backdrop(const VertexDesc& desc) {
+  if (desc.posmtx || g_xf.raw[0x1026] != 0 || (g_bp.zmode() & 0x10)) return false;
+  const uint32_t row = g_cp.matrix_index_a() & 63;
+  if (row + 3 > 64) return false;
+  static const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+  for (int i = 0; i < 12; ++i) if (std::fabs(g_xf.posMatrices[row * 4 + i] - identity[i]) > 1e-5f) return false;
+  return true;
+}
+
+static size_t parse_command_inner(const uint8_t* d, size_t len);
+// Tests (MELEE_TEST_GX_OPSTATS=1): time and count per opcode, logged every 600 frames' worth of commands.
 size_t parse_command(const uint8_t* d, size_t len) {
+  static const bool stats = [] { const char* v = host::test_env::getenv("MELEE_TEST_GX_OPSTATS"); return v && *v == '1'; }();
+  if (!stats) return parse_command_inner(d, len);
+  static double ns[256] = {};
+  static uint64_t n[256] = {}, total = 0;
+  static int depth = 0;
+  const uint8_t op = d[0] >= 0x80 && d[0] < 0xC0 ? 0x80 : d[0];
+  const auto t0 = std::chrono::steady_clock::now();
+  ++depth;
+  const size_t r = parse_command_inner(d, len);
+  --depth;
+  const double dt = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count();
+  ns[op] += op == 0x40 ? 0.0 : dt;   // display lists: their commands are counted themselves
+  ++n[op];
+  static double bp_ns[256] = {};
+  static uint64_t bp_n[256] = {};
+  if (op == 0x61 && len >= 2) { bp_ns[d[1]] += dt; ++bp_n[d[1]]; }
+  static uint64_t next_log = 2000000;
+  ++total;
+  if (depth == 0 && total >= next_log) {
+    next_log = total + 2000000;
+    std::string line;
+    char buf[64];
+    for (int i = 0; i < 256; ++i)
+      if (n[i]) { std::snprintf(buf, sizeof buf, " %02X:%llu/%.0fms", i, (unsigned long long)n[i], ns[i] / 1e6); line += buf; }
+    host::log("gx opstats:%s", line.c_str());
+    line.clear();
+    for (int i = 0; i < 256; ++i)
+      if (bp_ns[i] > 50e6) { std::snprintf(buf, sizeof buf, " %02X:%llu/%.0fms", i, (unsigned long long)bp_n[i], bp_ns[i] / 1e6); line += buf; }
+    host::log("gx opstats bp:%s", line.c_str());
+  }
+  return r;
+}
+
+static size_t parse_command_inner(const uint8_t* d, size_t len) {
   uint8_t op = d[0];
   if (op == 0x00) return 1;
-  if (op == 0x08) { if (len < 6) return incomplete(6); g_cp.reg[d[1]] = be32(d + 2); return 6; }
+  if (op == 0x08) {
+    if (len < 6) return incomplete(6);
+    const uint32_t value = be32(d + 2);
+    if (g_cp.reg[d[1]] != value) { g_cp.reg[d[1]] = value; ++g_cp_generation; }
+    return 6;
+  }
   if (op == 0x10) {
     if (len < 5) return incomplete(5);
     uint32_t count = (be16(d + 1) & 0xF) + 1, address = be16(d + 3);
@@ -1036,7 +1121,8 @@ size_t parse_command(const uint8_t* d, size_t len) {
   if (op >= 0x80 && op < 0xC0) {
     if (len < 3) return incomplete(3);
     uint32_t fmt = op & 7, count = be16(d + 1);
-    VertexDesc desc = build_desc(fmt);
+    const FormatCache& format = format_for(fmt);
+    const VertexDesc& desc = format.desc;
     size_t need = 3 + (size_t)count * desc.size;
     if (len < need) return incomplete(need);
     // Nothing will draw this frame: no renderer (--headless), or a replay jump's unseen frame (the
@@ -1053,9 +1139,12 @@ size_t parse_command(const uint8_t* d, size_t len) {
       // never allocates) and the game goes on; the next frame tries again.
       const size_t draws = g_frame.draws.size(), segments = g_frame.segments.size(), commands = g_frame.commands.size();
       try {
-        // A four-vertex quad decodes in place: record_draw reads it (frustum_backdrop).
-        const bool in_place = (op & 0xF8) == 0x80 && count == 4;
-        uint32_t components = decode_vertices(desc, d + 3, count, fmt, in_place);
+        // A four-vertex quad that could be a frustum backdrop decodes in place: record_draw reads it
+        // (frustum_backdrop). Only quads that pass the draw-state half of that test do: Animelee CE's
+        // stages and fighters send thousands of small quads a frame, and decoding all of them on the
+        // simulation thread held a GTX 1650 laptop under 60 Hz (11-09 report). Same result either way.
+        const bool in_place = (op & 0xF8) == 0x80 && count == 4 && quad_may_be_backdrop(desc);
+        uint32_t components = decode_vertices(format, fmt, d + 3, count, in_place);
         record_draw(op & 0xF8, first, count, components);
       } catch (const std::bad_alloc&) {
         g_vertex_decoder.join();   // its jobs write into the vertices about to be trimmed
@@ -1264,6 +1353,7 @@ void init(Backend* backend) {
   g_backend = backend;
   std::memset(&g_bp, 0, sizeof g_bp);
   std::memset(&g_cp, 0, sizeof g_cp);
+  ++g_cp_generation;
   std::memset(&g_xf, 0, sizeof g_xf);
   std::memset(g_tmem, 0, sizeof g_tmem);
   g_frame.clear();
