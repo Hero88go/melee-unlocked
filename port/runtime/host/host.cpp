@@ -3102,7 +3102,7 @@ void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   // Tests: MELEE_TEST_GAME_LOAD_MS=<ms> adds that much work to every game frame, offline too: a PC whose
   // CPU cannot step the game at 60 Hz (the pacing hold in threaded_backend.cpp).
-  static const double test_load_ms = [] { const char* v = test_env::getenv("MELEE_TEST_GAME_LOAD_MS"); return v ? std::atof(v) : 0.0; }();
+  static const double test_load_ms = [] { const char* v = host::test_env::getenv("MELEE_TEST_GAME_LOAD_MS"); return v ? std::atof(v) : 0.0; }();
   if (test_load_ms > 0.0)
     for (const double until = now_seconds() + test_load_ms / 1000.0; now_seconds() < until;) {}
   g_frame_submitted = false;
