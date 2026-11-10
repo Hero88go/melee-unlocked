@@ -127,11 +127,30 @@ if(MELEE_NO_SLIPPI)
     --card-self-test "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip")
 
   # The D3D12 ray-tracing library, beside the executable (the normal build copies it with melee_port).
+  # The newest Windows SDK's dxc.exe: the shaders use HLSL 2021 (-HV 2021), which an older SDK's DXC
+  # does not know ("Unknown HLSL version: 2021"). Its own SDK version first, then every installed one, newest first.
   set(MELEE_DXC_HINT "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
-  find_program(MELEE_DXC_EXECUTABLE NAMES dxc.exe HINTS "${MELEE_DXC_HINT}")
+  file(GLOB melee_sdk_bins LIST_DIRECTORIES true "C:/Program Files (x86)/Windows Kits/10/bin/10.*")
+  list(SORT melee_sdk_bins COMPARE NATURAL ORDER DESCENDING)
+  set(melee_dxc_hints)
+  foreach(melee_bin IN LISTS melee_sdk_bins)
+    list(APPEND melee_dxc_hints "${melee_bin}/x64")
+  endforeach()
+  find_program(MELEE_DXC_EXECUTABLE NAMES dxc.exe HINTS ${melee_dxc_hints} "${MELEE_DXC_HINT}" NO_DEFAULT_PATH)
+  find_program(MELEE_DXC_EXECUTABLE NAMES dxc.exe)
   if(NOT MELEE_DXC_EXECUTABLE)
-    message(FATAL_ERROR "The Windows SDK DXC compiler (dxc.exe) is required to build the DXR path shader")
+    message(FATAL_ERROR "The Windows SDK DXC compiler (dxc.exe) is required to build the ray-tracing shaders: "
+                        "install the Windows 11 SDK (10.0.22621 or newer) with Visual Studio Installer.")
   endif()
+  execute_process(COMMAND "${MELEE_DXC_EXECUTABLE}" -T cs_6_0 -HV 2021 -E main -nologo -Vd -Fo NUL
+                  "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/hv2021_check.hlsl"
+                  RESULT_VARIABLE melee_dxc_hv OUTPUT_QUIET ERROR_VARIABLE melee_dxc_err)
+  if(NOT melee_dxc_hv EQUAL 0)
+    message(FATAL_ERROR "${MELEE_DXC_EXECUTABLE} is too old for these shaders (HLSL 2021): install the Windows 11 SDK "
+                        "(10.0.22621 or newer) with Visual Studio Installer, delete this build folder, and build again.
+${melee_dxc_err}")
+  endif()
+  message(STATUS "melee: DXC ${MELEE_DXC_EXECUTABLE}")
   set(MELEE_DXR_DXIL "${CMAKE_CURRENT_BINARY_DIR}/dxr_pathtrace.dxil")
   add_custom_command(OUTPUT "${MELEE_DXR_DXIL}"
     COMMAND "${MELEE_DXC_EXECUTABLE}" -T lib_6_3 -HV 2021 -O3

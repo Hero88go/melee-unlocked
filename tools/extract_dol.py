@@ -10,6 +10,11 @@ from pathlib import Path
 def extract(iso_path, out_path):
     with open(iso_path, "rb") as f:
         header = f.read(0x440)
+        # Compressed images (what Dolphin can write): the game reads plain ISOs only, as the launcher says.
+        if header[:4] in (b"CISO", b"RVZ\x01", b"WIA\x01") or header[:4] == bytes([0x01, 0xC0, 0x0B, 0xB1]):
+            raise SystemExit(f"{iso_path}: this disc image is compressed ({header[:4].decode('latin-1').strip()!r}: CISO, GCZ, "
+                             "WIA or RVZ). In Dolphin, right-click the game, choose Convert File, pick ISO, and use that "
+                             ".iso file here (Melee NTSC 1.02, game id GALE01).")
         if header[:6] != b"GALE01":
             raise SystemExit(f"{iso_path}: not Melee NTSC (game id {header[:6]!r}); this port needs GALE01 v1.02")
         if header[7] != 2:
