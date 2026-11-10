@@ -5564,7 +5564,11 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ResolveQueryData(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 4, 2, timer_rb_[slot_].Get(), 4 * sizeof(uint64_t));
     timer_mask_[slot_] |= 4; timer_pending_[slot_] = true;
   }
-  check(list_->Close(), "list close");
+  {
+    const HRESULT closed = list_->Close();
+    if (FAILED(closed)) poll_validation();   // MELEE_D3D12_VALIDATION=1: what the debug layer saw, before the stop
+    check(closed, "list close");
+  }
   ID3D12CommandList* lists[] = {list_.Get()};
   queue_->ExecuteCommandLists(1, lists);
   diag("command execution");

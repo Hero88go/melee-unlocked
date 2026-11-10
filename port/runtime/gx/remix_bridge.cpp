@@ -354,10 +354,9 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
       }
       return false;
     }();
-    // MELEE_REMIX_GX_SPECULAR_GLOW=1 (off by default since 11-08 evening: it turned FD's panels to noise).
-    // FD's blue panels keep their colour with a low glow (MELEE_REMIX_GX_SPECULAR_GLOW, 0.3): at full
-    // strength they lit like lamps and came out noisy.
-    static const float gx_specular_glow = [] { const char* v = std::getenv("MELEE_REMIX_GX_SPECULAR_GLOW"); return v ? (float)std::atof(v) : 0.3f; }();
+    // MELEE_REMIX_GX_SPECULAR_GLOW (0 since 11-09: his review said Final Destination's underside must not go
+    // blue; at 0.3 the panels glowed blue, at full strength they lit like lamps and came out noisy).
+    static const float gx_specular_glow = [] { const char* v = std::getenv("MELEE_REMIX_GX_SPECULAR_GLOW"); return v ? (float)std::atof(v) : 0.0f; }();
     const float emissive = additive ? 2.0f * emissive_scale : unlit && d.owner_player >= 6 ? emissive_scale
                            : gx_specular && d.owner_player >= 6 ? gx_specular_glow : fighter ? fighter_glow : 0.0f;
     m.prim.clear();
