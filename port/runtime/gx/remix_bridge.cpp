@@ -456,7 +456,10 @@ void RemixBridge::frame(const Frame& f, int camera, const float vw[12], const st
     // MELEE_REMIX_GX_SPECULAR_GLOW (0 since 11-09: his review said Final Destination's underside must not go
     // blue; at 0.3 the panels glowed blue, at full strength they lit like lamps and came out noisy).
     static const float gx_specular_glow = [] { const char* v = std::getenv("MELEE_REMIX_GX_SPECULAR_GLOW"); return v ? (float)std::atof(v) : 0.0f; }();
-    const float emissive = additive ? 2.0f * emissive_scale : unlit && d.owner_player >= 6 ? emissive_scale
+    // MELEE_REMIX_PAINTED: the share of unlit stage art's brightness that it emits; the rest comes from
+    // Remix's own lights on its texture, so it takes shadows and highlights. 1 = the 0.9.111 look.
+    static const float painted = [] { const char* v = std::getenv("MELEE_REMIX_PAINTED"); return v ? (float)std::atof(v) : 1.0f; }();
+    const float emissive = additive ? 2.0f * emissive_scale : unlit && d.owner_player >= 6 ? emissive_scale * painted
                            : gx_specular && d.owner_player >= 6 ? gx_specular_glow : fighter ? fighter_glow : 0.0f;
     m.prim.clear();
     if (d.segment_count) {
