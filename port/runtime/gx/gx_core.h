@@ -697,10 +697,6 @@ inline int lightweight_effects_level(int effects_level, int lightweight) { retur
 // rollback: an online rollback, a few frames back on the same match, so fighters may still be
 // smoothed through it. Anything else is a hard cut.
 void mark_discontinuity(bool rollback = false);
-// Optional online frame protection temporarily pauses sub-frames while the game thread is over
-// budget and restores them after sustained headroom. The presentation loop honours suspension.
-void set_subframe_suspended(bool suspended);
-bool subframe_suspended();
 void set_subframes_active(bool active);
 bool subframes_active();
 

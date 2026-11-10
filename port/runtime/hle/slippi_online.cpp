@@ -29,7 +29,6 @@
 #include "net_trace.h"
 #include "netplay_state.h"
 #include "early_input.h"
-#include "online_frame_budget.h"
 #include "render_options.h"
 #include <algorithm>
 #include <cmath>
@@ -223,56 +222,9 @@ static net_trace::Record g_trace_record;
 static bool g_trace_desync_pending = false;   // a checksum disagreed: marked on the next traced tick
 static bool g_trace_open = false;
 static int32_t g_trace_offset_us = 0;   // the time sync offset as last measured (every 30 frames)
-// Match speed protection (online_frame_budget.h): when this computer cannot keep a 60 Hz match with
-// sub-frames on, they are paused for the rest of the match so neither player's game is held back.
-// It judges the frame pacer's own deadlines, so rollbacks and one-off hitches never trigger it, and
-// it gives sub-frames back if pausing them did not help. Video > "Online: protect match speed" (on
-// by default) turns it off. MELEE_TEST_SIM_LOAD_MS=<ms> adds that much work to every online frame,
-// MELEE_TEST_SUBFRAME_COST_MS=<ms> only while sub-frames are on: a slow computer, for a test.
-static FrameBudget g_frame_budget;
-// Only from "online game starts" to the game report: the frames after the report still count as an
-// online match, and a slow results screen turned sub-frames off for the next match.
-static bool g_budget_armed = false;
-static uint32_t g_budget_retrace = 0;   // one sample per game frame, however many ticks it held
-static void budget_reset() {
-  g_frame_budget.reset();
-  if (gx::subframe_suspended()) {
-    gx::set_subframe_suspended(false);
-    host::log("online: sub-frames are back on after the match");
-  }
-}
-static void budget_test_load() {
-  static const double always = [] { const char* v = host::test_env::getenv("MELEE_TEST_SIM_LOAD_MS"); return v ? std::atof(v) : 0.0; }();
-  static const double subframe = [] { const char* v = host::test_env::getenv("MELEE_TEST_SUBFRAME_COST_MS"); return v ? std::atof(v) : 0.0; }();
-  const double ms = always + (gx::subframes_active() ? subframe : 0.0);
-  if (ms <= 0.0 || !g_budget_armed) return;
-  const double until = host::now_seconds() + ms / 1000.0;
-  while (host::now_seconds() < until) {}
-}
-static void budget_watch() {
-  budget_test_load();
-  const uint32_t retrace = host::retrace_count();
-  if (retrace == g_budget_retrace) return;
-  g_budget_retrace = retrace;
-  const auto change = g_frame_budget.update(gx::RenderOptions::live_online_frame_protection().load(std::memory_order_relaxed),
-      g_budget_armed && is_online_match(), gx::subframes_active(), host::last_sim_frame_late());
-  if (change == FrameBudget::Change::Suspend) {
-    gx::set_subframe_suspended(true);
-    host::log("online: %u of the last %u frames missed 60 Hz with sub-frames on; sub-frames are paused for this match "
-              "so it keeps full speed (Video > Online: protect match speed)", FrameBudget::kSuspendBehind, FrameBudget::kWindow);
-  } else if (change == FrameBudget::Change::Resume) {
-    gx::set_subframe_suspended(false);
-    host::log(g_frame_budget.state() == FrameBudget::State::Done
-                  ? "online: still missing 60 Hz with sub-frames paused (%u of %u frames), so they were not the cause; sub-frames are back on"
-                  : "online: sub-frames are back on (%u of %u frames late)",
-              g_frame_budget.behind_in_window(), FrameBudget::kWindow);
-  }
-}
-
 void trace_close_tick() {
   if (!g_trace_open) return;
   g_trace_open = false;
-  budget_watch();
   g_trace_record.sim_ms = (float)host::last_sim_frame_ms();
   g_trace_record.presents = (uint16_t)std::min<uint32_t>(net_trace::take_presents(), 0xFFFFu);
   net_trace::push(g_trace_record);
@@ -281,8 +233,6 @@ void trace_close_tick() {
 // session trace file is closed. The file work is the trace's own thread's.
 void trace_end_match() {
   trace_close_tick();
-  g_budget_armed = false;
-  budget_reset();
   net_trace::file_end();
 }
 // A savestate load in the open tick. `to_frame` is the frame loaded, or kRollbackFrameUnknown. The
@@ -775,8 +725,6 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_latched_delay = (int)delay;   // the delay the game took: every later answer this match agrees with it
     g_in_online_match = true;
     if (g_user) g_user->ResetOnlineCompatibility();  // the next game needs its own fresh check
-    budget_reset();
-    g_budget_armed = true;
     host::input_mark_match_start();
     // Early inputs: watch the controller for the match. Sent only to peers whose build takes them.
     host::early_input::reset_stats();

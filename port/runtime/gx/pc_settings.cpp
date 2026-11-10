@@ -2143,7 +2143,6 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // black and white on X and A. That old key is read as off.
   options.lossless_lag_test = false;
   options.early_inputs = true;   // a file without the key: on
-  options.online_frame_protection = true;   // a file without the key: on
 #ifndef MELEE_NO_SLIPPI   // the spectator server is part of the Slippi layer
   options.slippi_spectator = true;   // a file without the key: on, as in Slippi Dolphin
   options.slippi_spectator_port = 51441;
@@ -2256,7 +2255,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "ssaa") { int a = std::stoi(value); if (a >= 1 && a <= 4) options.ssaa = a; }
       else if (key == "msaa") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8) options.msaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
-      else if (key == "onlineframeprotection") options.online_frame_protection = value == "1";
+      else if (key == "onlineframeprotection") {}   // removed setting (online drop to 60): older files still carry it
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "musicpacks") slippi::jukebox::set_music_packs_enabled(value == "1");
       else if (key == "audio_mode") options.audio_mode = std::clamp(std::stoi(value), 0, 3);
@@ -2607,7 +2606,6 @@ void load_pc_settings(RenderOptions& options, int& volume) {
     options.true_aspect = TrueAspect::Wide16_9;
   }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
-  RenderOptions::live_online_frame_protection().store(options.online_frame_protection, std::memory_order_relaxed);
   RenderOptions::live_clean_replays().store(options.clean_replays, std::memory_order_relaxed);
   RenderOptions::live_stadium_frozen() = options.stadium_frozen;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
@@ -4360,7 +4358,6 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa << "\nmsaa " << options.msaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
-       << "\nonlineframeprotection " << (options.online_frame_protection ? 1 : 0)
        << "\nmusicpacks " << (slippi::jukebox::music_packs_enabled() ? 1 : 0)
        << "\nonlinedelay " << slippi::online::config().delay
        << "\nonlinedelayauto " << (slippi::online::config().auto_delay ? 1 : 0)
@@ -7544,15 +7541,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
     int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
     if (settings_combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
-    if (settings_toggle("Online: protect match speed", &options.online_frame_protection)) {
-      RenderOptions::live_online_frame_protection().store(options.online_frame_protection, std::memory_order_relaxed);
-      changed = true;
-    }
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("If your PC can't keep up with an online match at your frame rate, the game turns off\n"
-                        "in-between frames for that match, so the match runs at full speed for you and your\n"
-                        "opponent. A PC that keeps up is never affected.\n"
-                        "Off keeps your frame rate even if the match slows down.");
     if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
     // Say it rather than quietly ignoring the setting: a player who picked a mode and sees no
