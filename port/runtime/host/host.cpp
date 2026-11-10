@@ -146,6 +146,45 @@ static void open_log_file() {
 // "cpu: Intel(R) Core(TM) i5-9300H, rated 2400 MHz, now 1190 MHz, limit 2400 MHz, on battery (64%), power plan
 // Balanced": a laptop on battery or a power saving plan runs the game step at a fraction of its speed, which
 // a report could not tell from a slow processor (a GTX 1650 laptop, 11-10: three times this PC's step time).
+#ifndef _WIN32
+// Linux: /proc/cpuinfo, cpufreq and the power supply class.
+static std::string read_first_line(const std::string& path) {
+  std::ifstream f(path);
+  std::string line;
+  std::getline(f, line);
+  return line;
+}
+std::string cpu_power_line(const char* when) {
+  std::string name = "?";
+  {
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line))
+      if (line.rfind("model name", 0) == 0) { const size_t c = line.find(':'); if (c != std::string::npos) name = line.substr(c + 2); break; }
+  }
+  std::string out = std::string("cpu (") + when + "): " + name;
+  const std::string cpufreq = "/sys/devices/system/cpu/cpu0/cpufreq/";
+  const std::string max = read_first_line(cpufreq + "cpuinfo_max_freq"), now = read_first_line(cpufreq + "scaling_cur_freq"),
+                    limit = read_first_line(cpufreq + "scaling_max_freq"), governor = read_first_line(cpufreq + "scaling_governor");
+  const auto mhz = [](const std::string& khz) { return std::to_string(std::atol(khz.c_str()) / 1000); };
+  if (!max.empty()) out += ", rated " + mhz(max) + " MHz";
+  if (!now.empty()) out += ", now " + mhz(now) + " MHz";
+  if (!limit.empty()) out += ", limit " + mhz(limit) + " MHz";
+  if (!governor.empty()) out += ", governor " + governor;
+  std::error_code ec;
+  bool battery = false, on_ac = false, any_ac = false;
+  std::string capacity;
+  for (const auto& e : std::filesystem::directory_iterator("/sys/class/power_supply", ec)) {
+    const std::string type = read_first_line((e.path() / "type").string());
+    if (type == "Mains") { any_ac = true; on_ac = on_ac || read_first_line((e.path() / "online").string()) == "1"; }
+    if (type == "Battery") { battery = true; capacity = read_first_line((e.path() / "capacity").string()); }
+  }
+  if (battery && any_ac && !on_ac) out += ", on battery" + (capacity.empty() ? std::string() : " (" + capacity + "%)");
+  else if (battery) out += ", plugged in";
+  else out += ", mains power (no battery)";
+  return out;
+}
+#else
 std::string cpu_power_line(const char* when) {
   char name[128] = "?";
   DWORD rated = 0;
@@ -204,6 +243,7 @@ std::string cpu_power_line(const char* when) {
   }
   return out;
 }
+#endif
 
 // Reports that end in "bad allocation" or 8007000E said nothing about memory: the size of this
 // process and what Windows still had, logged now and then, tell a leak from a full machine.
