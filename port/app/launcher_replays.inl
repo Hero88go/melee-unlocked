@@ -106,6 +106,21 @@ int replay_row_of(int index) {
 int replay_selected() { return replay_at_row(g_replays[0]?(int)SendMessageW(g_replays[0],LB_GETCURSEL,0,0):-1); }
 
 void refresh_replays(const std::filesystem::path& selected);
+// A replay (and its session trace) to the Recycle Bin, never deleted outright, so a slip can be undone.
+void replay_delete(int index) {
+  if(index<0||index>=(int)g_replay_files.size()) return;
+  const std::filesystem::path file=g_replay_files[index];
+  std::wstring from=file.wstring(); from.push_back(L'\0');   // double-NUL list
+  SHFILEOPSTRUCTW op{}; op.hwnd=g_main; op.wFunc=FO_DELETE; op.pFrom=from.c_str();
+  op.fFlags=FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT;
+  if(SHFileOperationW(&op)==0&&!op.fAnyOperationsAborted) {
+    std::wstring trace=file.wstring(); trace.replace(trace.size()-4,4,L".trace"); trace.push_back(L'\0');
+    std::error_code te; if(std::filesystem::exists(std::filesystem::path(trace.c_str()),te)) { op.pFrom=trace.c_str(); SHFileOperationW(&op); }
+    refresh_replays({});
+  }
+}
+// The delete pill on a card asks once: the first click arms it on that row ("Sure?"), the second deletes.
+int g_replay_delete_armed=-1;   // the row whose delete pill is armed, -1 none
 // Right-click on a replay card (Wiseman's request, 11-08): show the file in Explorer, or move it to the
 // Recycle Bin (never deleted outright, so a slip can be undone).
 void replay_context_menu(int x, int y) {
@@ -128,14 +143,7 @@ void replay_context_menu(int x, int y) {
     const std::wstring args=L"/select,\""+file.wstring()+L"\"";
     ShellExecuteW(g_main,L"open",L"explorer.exe",args.c_str(),nullptr,SW_SHOWNORMAL);
   } else if(pick==2) {
-    std::wstring from=file.wstring(); from.push_back(L'\0');   // double-NUL list
-    SHFILEOPSTRUCTW op{}; op.hwnd=g_main; op.wFunc=FO_DELETE; op.pFrom=from.c_str();
-    op.fFlags=FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT;
-    if(SHFileOperationW(&op)==0&&!op.fAnyOperationsAborted) {
-      std::wstring trace=file.wstring(); trace.replace(trace.size()-4,4,L".trace"); trace.push_back(L'\0');
-      std::error_code te; if(std::filesystem::exists(std::filesystem::path(trace.c_str()),te)) { op.pFrom=trace.c_str(); SHFileOperationW(&op); }
-      refresh_replays({});
-    }
+    replay_delete(index);
   }
 }
 
@@ -236,7 +244,7 @@ void replay_view_build(int select,bool keep_scroll=false) {
   if(row>=0) SendMessageW(list,LB_SETCURSEL,row,0);
   if(keep_scroll) SendMessageW(list,LB_SETTOPINDEX,top,0);
   SendMessageW(list,WM_SETREDRAW,TRUE,0); InvalidateRect(list,nullptr,TRUE);
-  g_replay_hot=-1; g_replay_hot_zone=0;
+  g_replay_hot=-1; g_replay_hot_zone=0; g_replay_delete_armed=-1;
   // With nothing to list the box is hidden: the page says why in its place (paint_replays).
   ShowWindow(list,g_tab==3&&g_replay_view<0&&!g_replay_visible.empty()?SW_SHOW:SW_HIDE);
   replay_buttons(); replay_trace_changed();
@@ -699,10 +707,11 @@ int draw_player_chip(HDC dc,const launcher::replay::Player& p,bool winner,int x,
   if(winner) { RECT crown{pill.right-S(9),pill.top-S(12),pill.right+S(9),pill.top+S(4)}; draw_text(dc,L"\x265B",crown,replay_symbols(13),C_GOLD,DT_CENTER|DT_VCENTER|DT_SINGLELINE); }
   return pill.right;
 }
-void card_zones(RECT card,RECT* stats,RECT* watch,RECT* queue) {
+void card_zones(RECT card,RECT* stats,RECT* watch,RECT* queue,RECT* del) {
   *watch={card.right-S(46),card.top+S(12),card.right-S(16),card.top+S(42)};
   *stats={card.right-S(118),card.top+S(14),card.right-S(56),card.top+S(40)};
   *queue={card.right-S(156),card.top+S(13),card.right-S(128),card.top+S(41)};
+  *del={card.right-S(222),card.top+S(14),card.right-S(166),card.top+S(40)};
 }
 void draw_replay_card(DRAWITEMSTRUCT* item,HDC dc);
 void draw_replay(DRAWITEMSTRUCT* item) {
@@ -725,11 +734,11 @@ void draw_replay_card(DRAWITEMSTRUCT* item,HDC dc) {
   hgrad(dc,card,hot?RGB(0x18,0x21,0x35):C_CARD,lerp(C_CARD,stage_tint(replay.stage_id),hot?75:60,100));
   RestoreDC(dc,inner); DeleteObject(rgn);
   round_rect(dc,card,8,NO_FILL,NO_FILL,selected?C_ACC_HI:(hot?C_BTN_BORDER:RGB(0x24,0x2E,0x46)));
-  RECT stats,watch,queue; card_zones(card,&stats,&watch,&queue);
+  RECT stats,watch,queue,del; card_zones(card,&stats,&watch,&queue,&del);
   // Players. Four of them with long names would run under the buttons on the right: cut off before those.
   int x=card.left+S(16); const int cy=card.top+S(28);
-  const int players=SaveDC(dc); IntersectClipRect(dc,card.left,card.top,queue.left-S(8),card.bottom);
-  if(replay.players.empty()) draw_text(dc,widen(replay.path.stem().u8string()),RECT{x,cy-S(12),queue.left-S(8),cy+S(12)},replay_font(13,FW_SEMIBOLD),C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+  const int players=SaveDC(dc); IntersectClipRect(dc,card.left,card.top,del.left-S(8),card.bottom);
+  if(replay.players.empty()) draw_text(dc,widen(replay.path.stem().u8string()),RECT{x,cy-S(12),del.left-S(8),cy+S(12)},replay_font(13,FW_SEMIBOLD),C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
   for(size_t i=0;i<replay.players.size();++i) {
     if(i) { const bool vs=replay.players.size()==2; draw_text(dc,vs?L"vs":L"\x00B7",RECT{x+S(4),cy-S(10),x+S(30),cy+S(10)},replay_font(12,FW_SEMIBOLD),C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE); x+=S(34); }
     x=draw_player_chip(dc,replay.players[i],replay.winner==(int)i,x,cy,C_CARD);
@@ -751,6 +760,11 @@ void draw_replay_card(DRAWITEMSTRUCT* item,HDC dc) {
     round_rect(dc,queue,radius,RGB(0x1B,0x24,0x38),RGB(0x1B,0x24,0x38),hq?C_ACC_HI:C_BTN_BORDER);
     draw_text(dc,L"+",queue,replay_font(14,FW_SEMIBOLD),hq?C_TEXT:C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
   }
+  // Delete: armed by a first click on this row (red, "Sure?"), a second click sends it to the Recycle Bin.
+  const bool hd=hot&&g_replay_hot_zone==4, armed=(int)item->itemID==g_replay_delete_armed;
+  const COLORREF red=RGB(0xD9,0x4A,0x4A);
+  round_rect(dc,del,13,armed?red:(hd?RGB(0x3A,0x1E,0x24):RGB(0x1B,0x24,0x38)),armed?red:(hd?RGB(0x3A,0x1E,0x24):RGB(0x1B,0x24,0x38)),hd||armed?red:C_BTN_BORDER);
+  draw_text(dc,armed?L"Sure?":L"Delete",del,replay_font(11,FW_SEMIBOLD),armed?C_TEXT:(hd?red:C_DIM),DT_CENTER|DT_VCENTER|DT_SINGLELINE);
   // Stats and Watch
   const bool hs=hot&&g_replay_hot_zone==1, hw=hot&&g_replay_hot_zone==2;
   round_rect(dc,stats,13,hs?C_BTN:RGB(0x1B,0x24,0x38),hs?C_BTN:RGB(0x1B,0x24,0x38),hs?C_ACC_HI:C_BTN_BORDER);
@@ -768,8 +782,8 @@ LRESULT CALLBACK replay_list_proc(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD
     if(*row<0||*row>=(int)g_replay_visible.size()) { *row=-1; return 0; }
     RECT r{}; SendMessageW(h,LB_GETITEMRECT,*row,(LPARAM)&r);
     RECT card=r; InflateRect(&card,-S(4),-S(4)); card.right-=S(4);
-    RECT stats,watch,queue; card_zones(card,&stats,&watch,&queue);
-    return PtInRect(&watch,p)?2:(PtInRect(&stats,p)?1:(PtInRect(&queue,p)?3:0));
+    RECT stats,watch,queue,del; card_zones(card,&stats,&watch,&queue,&del);
+    return PtInRect(&watch,p)?2:(PtInRect(&stats,p)?1:(PtInRect(&queue,p)?3:(PtInRect(&del,p)?4:0)));
   };
   switch(m) {
     case WM_MOUSEMOVE: {
@@ -786,6 +800,7 @@ LRESULT CALLBACK replay_list_proc(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD
     case WM_MOUSELEAVE:
       if(g_replay_hot>=0) { RECT r{}; if(SendMessageW(h,LB_GETITEMRECT,g_replay_hot,(LPARAM)&r)!=LB_ERR) InvalidateRect(h,&r,FALSE); }
       g_replay_hot=-1; g_replay_hot_zone=0;
+      if(g_replay_delete_armed>=0) { g_replay_delete_armed=-1; InvalidateRect(h,nullptr,FALSE); }
       break;
     case WM_SETCURSOR: { POINT p; GetCursorPos(&p); ScreenToClient(h,&p); int row; zone_at(p,&row); if(row>=0) { SetCursor(LoadCursorW(nullptr,IDC_HAND)); return TRUE; } break; }
     case WM_LBUTTONUP: {
@@ -794,7 +809,14 @@ LRESULT CALLBACK replay_list_proc(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD
       if(row>=0) {
         SendMessageW(h,LB_SETCURSEL,row,0);
         // Watch plays the selection just made. The badge only queues: the card does not open.
-        if(zone==2) watch_replay(); else if(zone==3) replay_queue_toggle(replay_at_row(row)); else replay_open_stats(replay_at_row(row));
+        // Delete asks first: the first click arms it on this row, the second deletes.
+        const int was_armed=g_replay_delete_armed;
+        g_replay_delete_armed=-1;
+        if(was_armed>=0&&was_armed!=row) InvalidateRect(h,nullptr,FALSE);
+        if(zone==4) {
+          if(was_armed==row) replay_delete(replay_at_row(row));
+          else { g_replay_delete_armed=row; RECT rr{}; if(SendMessageW(h,LB_GETITEMRECT,row,(LPARAM)&rr)!=LB_ERR) InvalidateRect(h,&rr,FALSE); }
+        } else if(zone==2) watch_replay(); else if(zone==3) replay_queue_toggle(replay_at_row(row)); else replay_open_stats(replay_at_row(row));
       }
       return r;
     }
