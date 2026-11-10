@@ -1857,7 +1857,9 @@ GOBJ *Message_Display(int msg_kind, int queue_num, int msg_color, char *format, 
         // print line
         int y_base = (line_num - 1) * (-MSGTEXT_YOFFSET / 2);
         int y_delta = i * MSGTEXT_YOFFSET;
-        Text_AddSubtext(msg_text, 0, y_base + y_delta, msg_line);
+        // The line is already formatted: passed as the format again, a "%" in it (the L-cancel rate
+        // "L-Cancel 85%") was read as a conversion and dropped by the PC's formatter.
+        Text_AddSubtext(msg_text, 0, y_base + y_delta, "%s", msg_line);
     }
 
     // Add to queue
@@ -2353,7 +2355,7 @@ int Tip_Display(int lifetime, char *fmt, ...)
 
         // print line
         int y_delta = i * MSGTEXT_YOFFSET;
-        Text_AddSubtext(tip_text, 0, y_delta, msg_line);
+        Text_AddSubtext(tip_text, 0, y_delta, "%s", msg_line);   // already formatted (a "%" in a tip was dropped)
     }
 
     return 1; // tip created
