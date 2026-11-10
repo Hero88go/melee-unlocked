@@ -555,6 +555,7 @@ class VulkanBackend final : public Backend {
     release_exclusive();
     destroy_swapchain();
     if (capture_buffer_.buffer) { vkDestroyBuffer(device_, capture_buffer_.buffer, nullptr); vkFreeMemory(device_, capture_buffer_.memory, nullptr); }
+    for (Geometry& g : geometry_) destroy_geometry(g);
     for (auto& f : frames_) {
       vkDestroyFence(device_, f.fence, nullptr);
       vkDestroySemaphore(device_, f.acquired, nullptr);
@@ -645,19 +646,26 @@ class VulkanBackend final : public Backend {
     exact_frame_ = !frame_in_match(frame) &&
                    std::any_of(frame.copies.begin(), frame.copies.end(), [](const EfbCopy& c) { return !c.to_xfb; });
     const size_t original = frame.vertices.size();
-    vertex_offsets_.assign(frame.draws.size(), 0);
-    size_t total = original;
+    vertex_offsets_.assign(frame.draws.size(), kNoOverride);
+    size_t extra = 0;
     if (overrides) for (size_t i = 0; i < frame.draws.size(); ++i)
-      if (overrides[i].vertices) { vertex_offsets_[i] = total; total += frame.draws[i].vertex_count; }
-    // Every vertex of the frame in one piece of the ring, the override poses after them.
-    vertex_base_ = 0;
-    if (total) {
-      const VkDeviceSize at = ring_alloc(total * sizeof(Vertex), 16);
-      vertex_base_ = at;
-      Frame_& f = frames_[slot_];
-      if (original) std::memcpy(f.ring.mapped + at, frame.vertices.data(), original * sizeof(Vertex));
-      if (overrides) for (size_t i = 0; i < frame.draws.size(); ++i)
-        if (overrides[i].vertices) std::memcpy(f.ring.mapped + at + vertex_offsets_[i] * sizeof(Vertex), overrides[i].vertices, frame.draws[i].vertex_count * sizeof(Vertex));
+      if (overrides[i].vertices) { vertex_offsets_[i] = extra; extra += frame.draws[i].vertex_count; }
+    Frame_& f = frames_[slot_];
+    // The frame's own vertices: kept for all of its presents in a geometry buffer (uploaded by the
+    // first), as the Direct3D renderers do; the re-posed vertices of this present go in the ring.
+    statics_buffer_ = f.ring.buffer; statics_offset_ = 0;
+    if (original && !select_geometry(frame)) {
+      const VkDeviceSize at = ring_alloc(original * sizeof(Vertex), 16);
+      std::memcpy(f.ring.mapped + at, frame.vertices.data(), original * sizeof(Vertex));
+      statics_offset_ = at;
+    }
+    override_base_ = 0;
+    if (extra) {
+      const VkDeviceSize at = ring_alloc(extra * sizeof(Vertex), 16);
+      override_base_ = at;
+      for (size_t i = 0; i < frame.draws.size(); ++i)
+        if (vertex_offsets_[i] != kNoOverride)
+          std::memcpy(f.ring.mapped + at + vertex_offsets_[i] * sizeof(Vertex), overrides[i].vertices, frame.draws[i].vertex_count * sizeof(Vertex));
     }
     set_main_projection(frame_scene_draw(frame));
     // Menu video backgrounds and the character select's True widescreen bands, decided as the
@@ -1445,6 +1453,7 @@ class VulkanBackend final : public Backend {
     unsigned queued = 0;
     for (const auto& other : frames_) if (vkGetFenceStatus && vkGetFenceStatus(device_, other.fence) == VK_NOT_READY) ++queued;
     vkWaitForFences(device_, 1, &f.fence, VK_TRUE, UINT64_MAX);
+    slot_submission_[slot_] = ++submissions_;   // this slot's earlier submission has finished
     read_gpu_timers(slot_);
     if (++frame_counter_ % 300 == 0) {
       // As Direct3D 12's line: what a "gets laggier the longer I play" report needs.
@@ -2135,10 +2144,10 @@ class VulkanBackend final : public Backend {
     if (dc.segment_count) {
       for (uint32_t i = 0; i < dc.segment_count; ++i) {
         const auto& seg = frame.segments.at(dc.first_segment + i);
-        const uint32_t base = vertex_override ? uint32_t(vertex_override + seg.first_vertex - dc.first_vertex) : seg.first_vertex;
+        const uint32_t base = vertex_override != kNoOverride ? uint32_t(vertex_override + seg.first_vertex - dc.first_vertex) : seg.first_vertex;
         topology = append_segment_indices(index_scratch_, seg.primitive, seg.vertex_count, base);
       }
-    } else topology = append_segment_indices(index_scratch_, dc.primitive, dc.vertex_count, vertex_override ? uint32_t(vertex_override) : dc.first_vertex);
+    } else topology = append_segment_indices(index_scratch_, dc.primitive, dc.vertex_count, vertex_override != kNoOverride ? uint32_t(vertex_override) : dc.first_vertex);
     if (index_scratch_.empty()) return;
     const bool wire = look_wire(lightweight_filter_, dc);
     VkPipeline p;
@@ -2213,8 +2222,10 @@ class VulkanBackend final : public Backend {
     vkCmdSetViewport(f.cmd, 0, 1, &viewport);
     VkRect2D scissor{{l * scale_, t * scale_}, {uint32_t((r - l) * scale_), uint32_t((b - t) * scale_)}};
     vkCmdSetScissor(f.cmd, 0, 1, &scissor);
-    const VkDeviceSize vb = vertex_base_;
-    vkCmdBindVertexBuffers(f.cmd, 0, 1, &f.ring.buffer, &vb);
+    const bool reposed = vertex_override != kNoOverride;
+    const VkBuffer vbuf = reposed ? f.ring.buffer : statics_buffer_;
+    const VkDeviceSize vb = reposed ? override_base_ : statics_offset_;
+    vkCmdBindVertexBuffers(f.cmd, 0, 1, &vbuf, &vb);
     vkCmdBindIndexBuffer(f.cmd, f.ring.buffer, index_at, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(f.cmd, (uint32_t)index_scratch_.size(), 1, 0, 0, 0);
   }
@@ -3098,8 +3109,53 @@ class VulkanBackend final : public Backend {
   std::unordered_map<uint64_t, VkSampler> samplers_;
   std::vector<uint8_t> decoded_;
   std::vector<uint32_t> index_scratch_;
-  std::vector<size_t> vertex_offsets_;
-  VkDeviceSize vertex_base_ = 0;
+  static constexpr size_t kNoOverride = ~size_t(0);
+  std::vector<size_t> vertex_offsets_;   // per draw: its re-posed vertices' place after override_base_, or kNoOverride
+  VkBuffer statics_buffer_ = VK_NULL_HANDLE;
+  VkDeviceSize statics_offset_ = 0, override_base_ = 0;
+  // A game frame's vertices, uploaded once and drawn by each of its presents. Reused least recently
+  // used first, after the GPU has finished the last submission that read it.
+  struct Geometry { Buffer buf; uint64_t sequence = 0; size_t count = 0; uint64_t last_use = 0; int slot = -1; uint64_t submission = 0; };
+  Geometry geometry_[3];
+  uint64_t geometry_uses_ = 0, submissions_ = 0;
+  uint64_t slot_submission_[kFrames] = {};
+  bool select_geometry(const Frame& frame) {
+    static const bool every_present = std::getenv("MELEE_UPLOAD_EVERY_PRESENT") != nullptr;   // comparison switch
+    if (every_present || !frame.sequence || geometry_failed_) return false;
+    const size_t count = frame.vertices.size(), bytes = count * sizeof(Vertex);
+    ++geometry_uses_;
+    Geometry* pick = nullptr;
+    for (Geometry& g : geometry_)
+      if (g.sequence == frame.sequence && g.count == count && g.buf.buffer) { pick = &g; break; }
+    if (!pick) {
+      pick = &geometry_[0];
+      for (Geometry& g : geometry_) if (g.last_use < pick->last_use) pick = &g;
+      // The last submission that read it (an earlier one finished before it on the one queue).
+      if (pick->slot >= 0 && pick->slot != slot_ && slot_submission_[pick->slot] == pick->submission)
+        vkWaitForFences(device_, 1, &frames_[pick->slot].fence, VK_TRUE, UINT64_MAX);
+      if (pick->buf.size < bytes) {
+        destroy_geometry(*pick);
+        try {
+          pick->buf = mapped_buffer(std::max<VkDeviceSize>(bytes + bytes / 4, 8ull << 20), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, false);
+        } catch (const std::exception&) {
+          geometry_failed_ = true;   // the ring path, as before, for the rest of the session
+          host::log("vulkan: no memory for frame geometry buffers; vertices are uploaded every present");
+          return false;
+        }
+      }
+      std::memcpy(pick->buf.mapped, frame.vertices.data(), bytes);
+      pick->sequence = frame.sequence; pick->count = count;
+    }
+    pick->last_use = geometry_uses_;
+    pick->slot = slot_; pick->submission = slot_submission_[slot_];
+    statics_buffer_ = pick->buf.buffer; statics_offset_ = 0;
+    return true;
+  }
+  void destroy_geometry(Geometry& g) {
+    if (g.buf.buffer) { vkDestroyBuffer(device_, g.buf.buffer, nullptr); vkFreeMemory(device_, g.buf.memory, nullptr); }
+    g = Geometry{};
+  }
+  bool geometry_failed_ = false;
   uint64_t sequence_ = 0, replacement_bytes_ = 0, replacement_budget_ = 512ull << 20;
   std::unordered_map<uint64_t, std::string> pending_hd_;   // textures drawn as the original while their replacement decodes
   uint32_t presented_ = 0, capture_frame_ = 0;

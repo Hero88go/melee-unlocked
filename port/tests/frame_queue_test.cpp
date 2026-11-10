@@ -19,7 +19,7 @@ int main() {
   // allocation must preserve already-recorded geometry and allow later growth.
   {
     gx::Frame f = frame(99);
-    f.vertices.resize(1);
+    f.vertices.resize(1, gx::Vertex{});
     const auto* storage = f.vertices.data();
     fail_next_allocation.store(true);
     f.reserve_gameplay_capacity();
@@ -125,7 +125,7 @@ int main() {
   {
     gx::FrameQueue queue;
     gx::Frame producer = frame(1);
-    producer.vertices.resize(66000);
+    producer.vertices.resize(66000, gx::Vertex{});
     producer.draws.resize(1030);
     check(queue.push_and_recycle(producer));
     check(producer.vertices.capacity() >= 82501);

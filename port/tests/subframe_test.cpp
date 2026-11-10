@@ -80,7 +80,7 @@ int main() {
   gx::SubFrameSolver::fractional(prev, scaled, 0.5, true, 40, 3.0f, out, nullptr, nullptr, nullptr, &st);
   check(st.cuts == 1 && near(out[0], 3.0f), "non-rigid delta retains current pose");
   // Draw pairing by identity through the solver.
-  gx::Frame a, b; a.sequence = 1; b.sequence = 2; a.vertices.resize(3); b.vertices.resize(3);
+  gx::Frame a, b; a.sequence = 1; b.sequence = 2; a.vertices.resize(3, gx::Vertex{}); b.vertices.resize(3, gx::Vertex{});
   gx::DrawCall d{}; d.identity = 7; d.object_generation = 1; d.vertex_count = 3; d.primitive = 0x90; d.components = 0; d.matrix_index_a = 0;
   d.xf_regs[0x3F] = 0;
   rot_z(0, 0, d.posMatrices); std::memcpy(d.normalMatrices, ident_n, sizeof ident_n);
@@ -165,7 +165,7 @@ int main() {
   // Matrix selectors are discrete even when the vertex stream is unchanged.
   gx::Frame texture_previous, texture_current;
   texture_previous.sequence = 1; texture_current.sequence = 2;
-  texture_previous.vertices.resize(3); texture_current.vertices.resize(3);
+  texture_previous.vertices.resize(3, gx::Vertex{}); texture_current.vertices.resize(3, gx::Vertex{});
   gx::DrawCall texture_draw{}; texture_draw.identity = 15; texture_draw.vertex_count = 3;
   texture_draw.primitive = 0x90; texture_draw.xf_regs[0x3F] = 1;
   texture_draw.matrix_index_a = 6u << 6;
@@ -330,7 +330,7 @@ int main() {
   // An unpaired piece of stage art should follow the camera pan alone.
   {
     gx::Frame before, after; before.sequence = 1; after.sequence = 2;
-    before.vertices.resize(3); after.vertices.resize(3);
+    before.vertices.resize(3, gx::Vertex{}); after.vertices.resize(3, gx::Vertex{});
     auto old_view = std::make_shared<gx::AuthoredPose>(), new_view = std::make_shared<gx::AuthoredPose>();
     old_view->has_view = new_view->has_view = true;
     old_view->view = new_view->view = NativeMelee::Identity(); new_view->view[3] = 2;

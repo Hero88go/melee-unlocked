@@ -202,8 +202,22 @@ struct HudPlayerSnapshot {
   int nana_damage = -1, team = -1;
 };
 
+// The frame's vertex storage leaves new elements uninitialised on resize (Vertex is plain data):
+// decode_run writes every byte of each vertex it decodes, on the decode worker, so the simulation
+// thread no longer zeroes about 4 MB a frame with Animelee CE only for the worker to overwrite it.
+// resize(n, Vertex{}) still zeroes where a caller wants that.
+template <class T>
+struct UninitAllocator : std::allocator<T> {
+  template <class U> struct rebind { using other = UninitAllocator<U>; };
+  UninitAllocator() noexcept = default;
+  template <class U> UninitAllocator(const UninitAllocator<U>&) noexcept {}
+  template <class U> void construct(U* p) noexcept { ::new ((void*)p) U; }
+  template <class U, class... A> void construct(U* p, A&&... a) { ::new ((void*)p) U(std::forward<A>(a)...); }
+};
+using VertexVector = std::vector<Vertex, UninitAllocator<Vertex>>;
+
 struct Frame {
-  std::vector<Vertex> vertices;
+  VertexVector vertices;
   std::vector<DrawSegment> segments;
   std::vector<DrawCall> draws;
   std::vector<EfbCopy> copies;

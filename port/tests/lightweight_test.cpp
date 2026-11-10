@@ -39,7 +39,7 @@ int main() {
   constexpr float kCamera = -300.0f;   // the fighters stand 300 units in front of the camera
   gx::Frame f;
   f.scene_major = 0x02; f.scene_minor = 0x02;   // a VS match
-  f.vertices.resize(12);
+  f.vertices.resize(12, gx::Vertex{});
   for (auto& v : f.vertices) { v.pos[0] = v.pos[1] = v.pos[2] = 0; v.posmtx = 0; }
   // Two vertices of the platform reach 10 units back; the backdrop is wholly 500 units back.
   f.vertices[1].pos[2] = -10.0f;

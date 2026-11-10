@@ -649,11 +649,14 @@ namespace {
 // contiguous so chains rarely repeat across chunks).
 class SolverPool {
  public:
-  explicit SolverPool(int workers) {
-    // Same priority as the render thread that waits on them (threaded_backend.cpp).
-    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i] {
+  explicit SolverPool(int workers, bool raised) {
+    // Same priority as the render thread that waits on them (threaded_backend.cpp), on PCs with
+    // cores to spare; on smaller ones at normal priority so they never take the simulation's core.
+    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i, raised] {
 #ifdef _WIN32
-      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+      if (raised) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#else
+      (void)raised;
 #endif
       loop(i + 1);
     });
@@ -699,7 +702,32 @@ class SolverPool {
   uint64_t generation_ = 0;
   bool quit_ = false;
 };
-SolverPool& solver_pool() { static SolverPool pool(3); return pool; }
+// Logical CPUs this process may run on (its affinity, so a game limited to fewer cores counts those).
+int usable_cpus() {
+#ifdef _WIN32
+  DWORD_PTR process = 0, system = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process) {
+    int n = 0;
+    for (DWORD_PTR m = process; m; m &= m - 1) ++n;
+    return n;
+  }
+#endif
+  const unsigned n = std::thread::hardware_concurrency();
+  return n ? (int)n : 8;
+}
+// The simulation thread, the render thread, the decode worker and the driver's threads come first:
+// a 4-thread laptop running three solver workers as well had the game itself waiting for a core
+// (sim under 60 Hz while 90+ frames a second were drawn). Same results with any worker count.
+// MELEE_SOLVER_WORKERS=N overrides (comparisons only).
+SolverPool& solver_pool() {
+  static SolverPool pool = [] {
+    const int cpus = usable_cpus();
+    int workers = cpus <= 4 ? 0 : cpus <= 6 ? 1 : cpus < 8 ? 2 : 3;
+    if (const char* v = std::getenv("MELEE_SOLVER_WORKERS"); v && *v >= '0' && *v <= '9') workers = std::min(atoi(v), 7);
+    return SolverPool(workers, cpus >= 8);
+  }();
+  return pool;
+}
 void run_pairing_chunks(size_t n, const std::function<void(size_t, size_t)>& fn) {
   static const bool serial = [] { const char* v = std::getenv("MELEE_PAIR_PARALLEL"); return v && *v == '0'; }();
   SolverPool& pool = solver_pool();

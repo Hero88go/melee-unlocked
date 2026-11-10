@@ -183,6 +183,14 @@ class DynamicBuffer {
     mapped_ = true;
     return (uint8_t*)m.pData;
   }
+  // Maps without discarding, for writing only bytes no draw already recorded reads (past the end
+  // of what was written since the last begin): the rest of the buffer keeps its contents.
+  uint8_t* begin_append() {
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (FAILED(ctx_->Map(buffer_.Get(), 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &m))) return nullptr;
+    mapped_ = true;
+    return (uint8_t*)m.pData;
+  }
   void end() { if (mapped_) { ctx_->Unmap(buffer_.Get(), 0); mapped_ = false; } }
   ID3D11Buffer* get() const { return buffer_.Get(); }
   size_t size() const { return size_; }
@@ -530,6 +538,11 @@ class D3D11Backend : public Backend {
   size_t plan_cache_draws_ = 0;
   int plan_cache_scale_ = 0, plan_cache_effects_ = 0;
   bool plan_cache_lab_ = false, plan_cache_valid_ = false;
+  // What the vertex and index buffers hold: a game frame's vertices are uploaded by its first
+  // present and stay; its in-between presents append only their re-posed vertices after them
+  // (vb_cursor_, in vertices). Same for its indices, which do not change between those presents.
+  const void* vb_frame_ = nullptr; uint64_t vb_sequence_ = 0; size_t vb_statics_ = 0; uint32_t vb_cursor_ = 0; bool vb_valid_ = false;
+  const void* ib_frame_ = nullptr; uint64_t ib_sequence_ = 0; bool ib_valid_ = false;
   std::vector<uint8_t> decode_scratch_;
   void execute_draw(const DrawCall& dc, const DrawPlan& plan);
 
@@ -2157,6 +2170,12 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   const bool reuse_plan = plan_matches && !plan_check;
   std::vector<DrawPlan> check_plans; std::vector<uint32_t> check_index; std::vector<PSConstants> check_ps;
   if (plan_matches && plan_check) { check_plans = plans_; check_index = index_scratch_; check_ps = ps_cache_; }
+  // This frame's vertices already in the vertex buffer (an in-between present): re-posed vertices
+  // go after the ones the earlier presents appended, nothing else is uploaded again.
+  static const bool upload_every_present = std::getenv("MELEE_UPLOAD_EVERY_PRESENT") != nullptr;   // comparison switch
+  const bool statics_resident = reuse_plan && !upload_every_present && vb_valid_ && vb_frame_ == &frame &&
+                                vb_sequence_ == frame.sequence && vb_statics_ == frame.vertices.size();
+  const uint32_t extras_base = statics_resident ? vb_cursor_ : (uint32_t)frame.vertices.size();
   if (reuse_plan) {
     for (const FrameCommand& cmd : frame.commands) {
       if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
@@ -2164,7 +2183,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       if (!plan.valid) continue;
       const DrawCall& dc = frame.draws[cmd.index];
       const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
-      if (over && over->vertices) { plan.base_vertex = (uint32_t)frame.vertices.size() + extra_vertices; extra_vertices += dc.vertex_count; }
+      if (over && over->vertices) { plan.base_vertex = extras_base + extra_vertices; extra_vertices += dc.vertex_count; }
       else plan.base_vertex = dc.first_vertex;
       if (uint8_t* dst = vs_constants_.slot(plan.vs_slot)) {
         VSConstants vs_constants;
@@ -2249,10 +2268,8 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   ps_constants_.end();
   g_prof[0] += sw.lap();   // index generation, planning and constants
 
-  const size_t vertex_bytes = (frame.vertices.size() + extra_vertices) * sizeof(Vertex);
-  if (uint8_t* dst = vertex_buffer_.begin(vertex_bytes)) {
-    if (!frame.vertices.empty()) std::memcpy(dst, frame.vertices.data(), frame.vertices.size() * sizeof(Vertex));
-    size_t at = frame.vertices.size();
+  // The re-posed vertices, written from `at` (in vertices) on.
+  auto copy_overrides = [&](uint8_t* dst, size_t at) {
     for (const FrameCommand& cmd : frame.commands) {
       if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size() || !plans_[cmd.index].valid) continue;
       const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
@@ -2260,17 +2277,52 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       std::memcpy(dst + at * sizeof(Vertex), over->vertices, (size_t)frame.draws[cmd.index].vertex_count * sizeof(Vertex));
       at += frame.draws[cmd.index].vertex_count;
     }
-    vertex_buffer_.end();
-  } else if (vertex_bytes) {
-    host::log("d3d11: vertex buffer allocation failed (%zu bytes)", vertex_bytes);
-    return;
+  };
+  bool appended = false;
+  if (statics_resident && (size_t)(extras_base + extra_vertices) * sizeof(Vertex) <= vertex_buffer_.size()) {
+    if (!extra_vertices) appended = true;
+    else if (uint8_t* dst = vertex_buffer_.begin_append()) {
+      copy_overrides(dst, extras_base);
+      vertex_buffer_.end();
+      appended = true;
+    }
+    if (appended) vb_cursor_ = extras_base + extra_vertices;
   }
-  if (uint8_t* dst = index_buffer_.begin(index_scratch_.size() * 4)) {
-    std::memcpy(dst, index_scratch_.data(), index_scratch_.size() * 4);
-    index_buffer_.end();
-  } else if (!index_scratch_.empty()) {
-    host::log("d3d11: index buffer allocation failed");
-    return;
+  if (!appended) {
+    // A full upload puts the re-posed vertices right after the frame's own: move the draws planned
+    // against the appending position there.
+    if (extras_base != (uint32_t)frame.vertices.size()) {
+      const uint32_t shift = extras_base - (uint32_t)frame.vertices.size();
+      for (const FrameCommand& cmd : frame.commands) {
+        if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size() || !plans_[cmd.index].valid) continue;
+        const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
+        if (over && over->vertices) plans_[cmd.index].base_vertex -= shift;
+      }
+    }
+    vb_valid_ = false;
+    const size_t vertex_bytes = (frame.vertices.size() + extra_vertices) * sizeof(Vertex);
+    if (uint8_t* dst = vertex_buffer_.begin(vertex_bytes)) {
+      if (!frame.vertices.empty()) std::memcpy(dst, frame.vertices.data(), frame.vertices.size() * sizeof(Vertex));
+      copy_overrides(dst, frame.vertices.size());
+      vertex_buffer_.end();
+      vb_valid_ = true; vb_frame_ = &frame; vb_sequence_ = frame.sequence; vb_statics_ = frame.vertices.size();
+      vb_cursor_ = (uint32_t)(frame.vertices.size() + extra_vertices);
+    } else if (vertex_bytes) {
+      host::log("d3d11: vertex buffer allocation failed (%zu bytes)", vertex_bytes);
+      return;
+    }
+  }
+  // Indices change only with the plan.
+  if (!(reuse_plan && !upload_every_present && ib_valid_ && ib_frame_ == &frame && ib_sequence_ == frame.sequence)) {
+    ib_valid_ = false;
+    if (uint8_t* dst = index_buffer_.begin(index_scratch_.size() * 4)) {
+      std::memcpy(dst, index_scratch_.data(), index_scratch_.size() * 4);
+      index_buffer_.end();
+      ib_valid_ = true; ib_frame_ = &frame; ib_sequence_ = frame.sequence;
+    } else if (!index_scratch_.empty()) {
+      host::log("d3d11: index buffer allocation failed");
+      return;
+    }
   }
   g_prof[1] += sw.lap();   // vertex/index upload
 

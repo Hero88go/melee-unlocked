@@ -400,6 +400,9 @@ void decode_run(const DecodeState& s, const uint8_t* src, uint32_t count, Vertex
   const uint32_t nrm_frac = d.nrm.format == 1 ? 6 : d.nrm.format == 3 ? 14 : d.nrm.format == 0 ? 7 : d.nrm.format == 2 ? 15 : 0;
   const uint32_t nrm_direct = nrm_cb * 3 * (d.nrm.count ? 3 : 1);
   const uint32_t nrm_skip8 = (d.nrm.count && d.nrm_index3) ? 3 : 1, nrm_skip16 = (d.nrm.count && d.nrm_index3) ? 6 : 2;
+  // The frame's storage is not zeroed on resize (VertexVector): every field a format leaves out
+  // stays zero, as before, from here.
+  std::memset((void*)outv, 0, (size_t)count * sizeof(Vertex));
   for (uint32_t v = 0; v < count; ++v) {
     Vertex& out = outv[v];
     const uint8_t* p = src + (size_t)v * d.size;
