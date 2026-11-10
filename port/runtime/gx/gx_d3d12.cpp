@@ -2627,7 +2627,8 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   // an effect composes into them with its own blend (describe_pipeline).
   const bool remix_layer = remix_layer_ && !gbuffer && mvec_out();
   if (remix_layer) psu.motion_vectors |= 4u;
-  const uint32_t remix_bits = remix_layer ? 16u | (remix_layer_draw(dc) ? 32u : 0u) : 0u;
+  const uint8_t remix_ld = remix_layer ? remix_layer_draw(dc) : 0;
+  const uint32_t remix_bits = remix_layer ? 16u | (remix_ld && remix_ld != 4 ? 32u : 0u) : 0u;
   {
     static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
     if (fx_log && remix_effect_draw(dc) && remix_log_seq_ == fx_log)
@@ -2832,10 +2833,14 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
   // the fighter for its shadow and reflection.
   static const bool no_overlays = std::getenv("MELEE_REMIX_NO_FIGHTER_OVERLAY") != nullptr;
   if (!no_overlays && fighter_overlay_draw(dc)) return 3;
+  // Fountain of Dreams' water (a stage surface textured by an EFB copy on a water stage): Remix's own,
+  // as real water that reflects the scene (4: not in the layer; MELEE_REMIX_WATER=0 paints the game's).
+  static const bool remix_water = [] { const char* v = std::getenv("MELEE_REMIX_WATER"); return !v || std::atoi(v) != 0; }();
   for (const TextureRef& t : dc.textures) {
     if (!t.used) continue;
     const auto ec = efb_copies_.find(t.addr);
-    if (ec != efb_copies_.end() && ec->second.resource) return 1;
+    if (ec != efb_copies_.end() && ec->second.resource)
+      return remix_water && dc.owner_player == 0xFF && host::g_stage_water.load(std::memory_order_relaxed) ? 4 : 1;
   }
   // Painted backdrops (on by default, chosen from the 11-08 comparison; MELEE_REMIX_BACKDROPS: 0 off,
   // 1 the layer alone, 2 the layer and Remix's sky): the stage's draws that write no depth and add no
@@ -2851,9 +2856,16 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
     // MELEE_REMIX_ADDITIVE_BACKDROPS=0: as emissive strips in Remix they read as bright white lines.
     static const bool additive_backdrops = [] { const char* v = std::getenv("MELEE_REMIX_ADDITIVE_BACKDROPS"); return !v || std::atoi(v) != 0; }();
     const bool depthless = !((dc.bp.zmode() & 1) && (dc.bp.zmode() & 0x10));   // writes no depth (as rtx_layer reads it)
-    // Only far scenery: a draw of another camera than the fighters' (Final Destination's sky). Glowing
-    // stage parts near the fighters (Battlefield's neon edges) stay Remix's own light.
-    if (additive && additive_backdrops && textured && depthless && dc.rtx.camera != remix_camera_) return backdrops == 2 ? 2 : 1;
+    // Glowing scenery that writes no depth (Final Destination's sky streaks, drawn on the fighters' own
+    // camera) is painted as the game draws it; MELEE_REMIX_ADDITIVE_FAR_ONLY=1 keeps the old rule (another
+    // camera than the fighters' only). Glowing stage parts that write depth stay Remix's own light.
+    static const bool far_only = std::getenv("MELEE_REMIX_ADDITIVE_FAR_ONLY") != nullptr;
+    if (additive && additive_backdrops && textured && depthless && (!far_only || dc.rtx.camera != remix_camera_)) return backdrops == 2 ? 2 : 1;
+    // See-through stage glazes with no texture that write no depth (Final Destination's faint bands on the
+    // platform's face: vertex alpha a few percent): as the game blends them. In Remix they were cut-outs,
+    // solid white. MELEE_REMIX_GLAZE_CUTOUT=1: the old way.
+    static const bool glaze_cutout = std::getenv("MELEE_REMIX_GLAZE_CUTOUT") != nullptr;
+    if (!glaze_cutout && (bm & 1) && !additive && !textured && depthless) return 1;
     if (!backdrops) return 0;
     if (!additive && textured && rtx_layer(bm, dc.bp.zmode()) != kRtxLayerSurface) return backdrops == 2 ? 2 : 1;
   }
@@ -3300,7 +3312,8 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     std::memcpy(ccpu + offsetof(PSConstants, flags), lanes, sizeof lanes);
   } else if (remix_layer_) {
     // The Remix layer's lane (flags.z, gx_shader.cpp): an effect blends into it (1) or replaces it (2).
-    const int32_t lane = remix_layer_draw(dc) ? ((dc.bp.blendmode() & 1) ? 1 : 2) : 0;
+    const uint8_t ld = remix_layer_draw(dc);
+    const int32_t lane = ld && ld != 4 ? ((dc.bp.blendmode() & 1) ? 1 : 2) : 0;
     std::memcpy(ccpu + offsetof(PSConstants, flags) + 2 * sizeof(int32_t), &lane, sizeof lane);
     static const uint64_t fx_log = [] { const char* v = std::getenv("MELEE_REMIX_FXLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
     if (fx_log && frame.sequence == fx_log && remix_layer_draw(dc))
