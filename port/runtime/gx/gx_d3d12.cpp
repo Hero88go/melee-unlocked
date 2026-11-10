@@ -1282,9 +1282,15 @@ void D3D12Backend::init() {
       const std::wstring nvidia_dir = exe_dir_ + L"\\RTX";
       rtx_error.clear();
       if (!rtx_pack_current(exe_dir_)) {
-        host::log("rtx: the RTX Pack beside the game is for another version; not loaded");
-        set_rtx_status(1, "The RTX Pack is for another version of the game: download it again below. Melee Unlocked is drawing.");
-        set_rtx_status(2, "The RTX Pack is for another version of the game: download it again below.");
+        std::error_code pack_ec;
+        const bool any_pack = std::filesystem::exists(std::filesystem::path(exe_dir_) / L"rtxpack.installed", pack_ec) ||
+                              std::filesystem::exists(std::filesystem::path(nvidia_dir) / L"melee_rtx_nvidia.dll", pack_ec);
+        host::log(any_pack ? "rtx: the RTX Pack beside the game is for another version; not loaded"
+                           : "rtx: the RTX Pack is not installed (NVIDIA RTX and RTX Remix come in it)");
+        set_rtx_status(1, any_pack ? "The RTX Pack is for another version of the game: download it again below. Melee Unlocked is drawing."
+                                   : "NVIDIA RTX comes in the RTX Pack. Melee Unlocked is drawing.");
+        set_rtx_status(2, any_pack ? "The RTX Pack is for another version of the game: download it again below."
+                                   : "RTX Remix comes in the RTX Pack.");
       } else {
         rtx_nvidia_ = load_rtx_plugin(nvidia_dir, &rtx_error);
         if (!rtx_nvidia_ && !rtx_error.empty()) {
