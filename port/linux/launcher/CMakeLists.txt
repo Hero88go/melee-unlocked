@@ -2,6 +2,7 @@
 # Windows launcher's logic files. Built beside the Source Port by port/linux/full.
 set(PORT "${PROJECT_SOURCE_DIR}/port")
 set(COMPAT "${CMAKE_CURRENT_SOURCE_DIR}/../compat")
+include("${PORT}/app/disc_rvz.cmake")
 add_executable(melee_launcher launcher_linux.cpp
   "${PORT}/app/launcher_replay_data.cpp" "${PORT}/app/launcher_lobby_p2p.cpp"
   "${PORT}/runtime/host/updater.cpp" "${COMPAT}/compat.cpp" "${COMPAT}/winhttp_ws.cpp"
@@ -17,6 +18,6 @@ target_compile_definitions(melee_launcher PRIVATE MELEE_LINUX MELEE_PORT_VERSION
 set_source_files_properties(launcher_linux.cpp "${PORT}/app/launcher_replay_data.cpp" "${PORT}/app/launcher_lobby_p2p.cpp" "${PORT}/app/launcher_yougame.cpp"
   "${PORT}/runtime/host/updater.cpp" "${COMPAT}/compat.cpp" "${COMPAT}/winhttp_ws.cpp"
   PROPERTIES COMPILE_OPTIONS "-include;${COMPAT}/windows.h;-Wno-unknown-pragmas")
-target_link_libraries(melee_launcher PRIVATE full_imgui full_monocypher SDL2::SDL2 OpenGL::GL GLEW::GLEW CURL::libcurl
+target_link_libraries(melee_launcher PRIVATE port_disc_rvz full_imgui full_monocypher SDL2::SDL2 OpenGL::GL GLEW::GLEW CURL::libcurl
   OpenSSL::Crypto Threads::Threads ${CMAKE_DL_LIBS})
 target_link_options(melee_launcher PRIVATE "-Wl,-rpath,\$ORIGIN/lib" -Wl,--enable-new-dtags)

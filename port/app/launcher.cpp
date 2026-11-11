@@ -55,6 +55,7 @@
 #include "launcher_replay_data.h"
 #include "launcher_trace_view.h"
 #include "launcher_lang.h"
+#include "disc_rvz.h"
 #include "launcher_crash_text.h"   // with launcher_crash_zip.h; launcher_crash.inl sits inside the namespace below
 #ifndef MELEE_NO_SLIPPI
 #include "slippi_account.h"
@@ -90,7 +91,8 @@ const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append 
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
 const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
-const UINT WM_APP_YOUGAME = WM_APP + 52;   // the YouGame session changed: save launcher.ini, repaint
+const UINT WM_APP_YOUGAME = WM_APP + 52;
+const UINT WM_APP_GAME_DISC = WM_APP + 61;   // lParam: heap std::string*, the 1.02 disc unpacked from an RVZ/WIA   // the YouGame session changed: save launcher.ini, repaint
 
 // Client area in layout units; S() turns these into pixels for the current DPI.
 const int WIN_W = 720, WIN_H = 480;
@@ -1724,9 +1726,14 @@ void explain_nkit() {
 
 void browse() {
   wchar_t file[MAX_PATH]{};
-  OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof ofn; ofn.hwndOwner = g_main; ofn.lpstrFilter = L"GameCube disc image (*.iso;*.gcm)\0*.iso;*.gcm\0All files\0*.*\0"; ofn.lpstrFile = file; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST;
+  OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof ofn; ofn.hwndOwner = g_main; ofn.lpstrFilter = L"GameCube disc image (*.iso;*.gcm;*.rvz;*.wia)\0*.iso;*.gcm;*.rvz;*.wia\0All files\0*.*\0"; ofn.lpstrFile = file; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST;
   if (GetOpenFileNameW(&ofn)) {
     if (nkit_image(file)) { explain_nkit(); return; }
+    // Dolphin's compressed images are unpacked to a full ISO first (the Mods page shows progress);
+    // the 1.02 disc then becomes the game disc and a modded one goes into Mods.
+    if (disc_rvz::detect(std::filesystem::path(file)) != disc_rvz::Format::NotCompressed) {
+      mod_manager::open(); std::thread(mod_manager::install_file, std::wstring(file), std::string(), g_iso).detach(); return;
+    }
     if (mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) != mod_manager::kVanillaMd5) {
       mod_manager::open(); std::thread(mod_manager::install_file, std::wstring(file), std::string(), g_iso).detach();
     } else { set_iso(narrow(file)); save_ini(); }
@@ -2228,7 +2235,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           SetCursor(old);
         }
         if (nkit_image(file)) { explain_nkit(); continue; }
-        if (mod_manager::is_mod_file(file) || (disc && !vanilla)) {
+        const bool compressed_disc = disc_rvz::detect(std::filesystem::path(file)) != disc_rvz::Format::NotCompressed;
+        if (compressed_disc || mod_manager::is_mod_file(file) || (disc && !vanilla)) {
           mod_manager::open();
           std::thread(mod_manager::install_file, file, std::string(), base_iso).detach();
         } else if (game_disc.empty()) game_disc = file;
@@ -2254,6 +2262,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       set_iso(g_iso);
       if (wp == 0) { select_tab(0); refresh_updater(); } else InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
+    case WM_APP_GAME_DISC: {   // an RVZ/WIA image held the 1.02 disc; it is unpacked beside the game
+      std::unique_ptr<std::string> path((std::string*)lp);
+      set_iso(*path); save_ini(); select_tab(1); refresh_updater(); start_build();
+      return 0;
+    }
     case WM_APP_YOUGAME:
       save_ini();
       if (g_tab == 0) InvalidateRect(hwnd, nullptr, FALSE);

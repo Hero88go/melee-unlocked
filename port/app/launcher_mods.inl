@@ -556,6 +556,40 @@ void install_file_job(std::wstring file, std::string id, const std::string& iso,
   const fs::path mods = fs::u8path(mods_dir());
   std::string error; std::error_code ec;
   const std::string previous = [&] { const auto f = installed(); const auto it = f.find(id); return it == f.end() ? std::string() : it->second.path; }();
+  // Dolphin's RVZ or WIA image: unpacked once to the full ISO it was made from. The 1.02 disc becomes
+  // the game disc (Disc folder beside the game); a modded disc goes into Mods as a finished .iso.
+  if (disc_rvz::detect(fs::path(file)) != disc_rvz::Format::NotCompressed) {
+    disc_rvz::Info info;
+    if (!disc_rvz::probe(fs::path(file), &info, &error)) { set_status(key, error); return; }
+    if (!enough_space(info.iso_size + 256 * kMiB, &error)) { set_status(key, error); return; }
+    const fs::path staged = mods / ".downloads" / ("rvz-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + ".iso");
+    set_status(key, std::string("Unpacking the ") + (info.format == disc_rvz::Format::Rvz ? "RVZ" : "WIA") + " disc image to a full ISO...");
+    int shown = -1;
+    const bool converted = disc_rvz::convert(fs::path(file), staged, [&](uint64_t done, uint64_t total) {
+      const int percent = total ? (int)(done * 100 / total) : 0;
+      if (percent != shown) { shown = percent; set_percent(key, percent); }
+      return !cancelled(cancel);
+    }, &error);
+    set_percent(key, -1);
+    if (!converted) { set_status(key, cancelled(cancel) ? "Cancelled. Nothing was installed." : error); return; }
+    struct Drop { fs::path p; ~Drop() { std::error_code e; fs::remove(p, e); } } drop{staged};   // nothing once placed
+    const fs::path name = fs::path(file).stem().concat(L".iso");
+    if (hash_file(staged.wstring(), BCRYPT_MD5_ALGORITHM) == kVanillaMd5) {
+      const fs::path target = fs::u8path(work_dir()) / "Disc" / name;
+      if (!place(staged, target, &error)) { set_status(key, error); return; }
+      PostMessageW(g_main, WM_APP_GAME_DISC, 0, (LPARAM) new std::string(target.u8string()));
+      set_status(key, "Melee 1.02 unpacked from the image. It is now your game disc.");
+      return;
+    }
+    fs::path out = mods / "Discs" / name;
+    for (unsigned suffix = 2; fs::exists(out, ec); ++suffix)
+      out = mods / "Discs" / fs::u8path(name.stem().u8string() + " (" + std::to_string(suffix) + ").iso");
+    if (!place(staged, out, &error)) { set_status(key, error); return; }
+    scan_installed();
+    if (!id.empty()) enable_installed(id);
+    set_status(key, "Unpacked and added to Mods. Online compatibility is unverified; different builds can desync.");
+    return;
+  }
   if (ends(L".gci") || ends(L".iso") || ends(L".gcm")) {
     set_status(key, "Copying into Mods...");
     if (cancelled(cancel)) { set_status(key, "Cancelled. Nothing was installed."); return; }

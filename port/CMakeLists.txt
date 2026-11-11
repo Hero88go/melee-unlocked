@@ -36,6 +36,8 @@ endfunction()
 # need that layer or the generated translation, are simply not part of that build directory.
 # Everything after this block is the normal build; the option being OFF changes nothing in it.
 # When a setting of the runtime or of melee_source changes below, change it here as well.
+# The launchers read Dolphin RVZ/WIA disc images through this (port/app/disc_rvz.cpp).
+include("${CMAKE_CURRENT_SOURCE_DIR}/app/disc_rvz.cmake")
 option(MELEE_NO_SLIPPI "Build only melee_source, without the Slippi layer" OFF)
 if(MELEE_NO_SLIPPI)
   message(STATUS "melee: CPU baseline ${MELEE_CPU_BASELINE}, Source Port without the Slippi layer")
@@ -290,7 +292,7 @@ ${melee_dxc_err}")
   target_compile_options(melee_unlocked PRIVATE /EHsc)
   target_compile_definitions(melee_unlocked PRIVATE MELEE_NO_SLIPPI NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
     MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
-  target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp ws2_32 bcrypt user32 gdi32 shell32 comdlg32 msimg32 uxtheme winmm)
+  target_link_libraries(melee_unlocked PRIVATE port_disc_rvz comctl32 winhttp ws2_32 bcrypt user32 gdi32 shell32 comdlg32 msimg32 uxtheme winmm)
 
   # The lobby's peer-to-peer match flow, as two (and three) peer lobbies in one process over
   # loopback: the match setup both launchers agree on, automatic pairing, the block list, and the
@@ -392,6 +394,12 @@ target_compile_options(port_mod_scan_test PRIVATE /EHsc /utf-8)
 target_compile_definitions(port_mod_scan_test PRIVATE MU_REPO_ROOT="${CMAKE_SOURCE_DIR}" NOMINMAX)
 target_link_libraries(port_mod_scan_test PRIVATE bcrypt shell32)
 add_test(NAME port_mod_scan COMMAND port_mod_scan_test)
+add_executable(port_disc_rvz_test tests/disc_rvz_test.cpp)
+target_compile_features(port_disc_rvz_test PRIVATE cxx_std_17)
+target_compile_options(port_disc_rvz_test PRIVATE /EHsc)
+target_compile_definitions(port_disc_rvz_test PRIVATE MU_RVZ_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rvz")
+target_link_libraries(port_disc_rvz_test PRIVATE port_disc_rvz)
+add_test(NAME port_disc_rvz COMMAND port_disc_rvz_test)
 add_executable(port_lcancel_policy_test tests/lcancel_policy_test.cpp)
 target_include_directories(port_lcancel_policy_test PRIVATE runtime/host)
 target_compile_features(port_lcancel_policy_test PRIVATE cxx_std_17)
@@ -1094,7 +1102,7 @@ target_compile_features(melee_unlocked PRIVATE cxx_std_17)
 target_compile_options(melee_unlocked PRIVATE /EHsc)
 target_compile_definitions(melee_unlocked PRIVATE NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
   MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
-target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp ws2_32 bcrypt user32 gdi32 shell32 comdlg32 msimg32 uxtheme winmm)
+target_link_libraries(melee_unlocked PRIVATE port_disc_rvz comctl32 winhttp ws2_32 bcrypt user32 gdi32 shell32 comdlg32 msimg32 uxtheme winmm)
 
 # Run via lobby/test_client.py, which owns a temporary HTTP/UDP service and database.
 add_executable(port_launcher_lobby_client_test tests/launcher_lobby_client_test.cpp app/launcher_lobby_p2p.cpp

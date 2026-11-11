@@ -15,6 +15,7 @@
 #include "slippi_account.h"
 #include "updater.h"
 #include "launcher_yougame.h"
+#include "disc_rvz.h"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <spawn.h>
@@ -519,6 +520,39 @@ void refresh_mods() {
     }
   }
 }
+// Dolphin's RVZ/WIA images: unpacked once, on a thread, to the full ISO they were made from.
+struct Unpack {
+  std::thread worker;
+  std::atomic<int> percent{0};
+  std::atomic<bool> done{false};
+  bool ok = false, game = false;
+  std::string error;
+  fs::path out;
+};
+std::unique_ptr<Unpack> g_unpack;
+bool g_iso_changed = false;   // the Play page copies g_iso into its text box again
+bool compressed_disc(const std::string& path) { return disc_rvz::detect(fs::path(path)) != disc_rvz::Format::NotCompressed; }
+void start_unpack(const fs::path& src, const fs::path& out, bool game) {
+  if (g_unpack) { status("Already unpacking a disc image."); return; }
+  g_unpack = std::make_unique<Unpack>();
+  g_unpack->out = out; g_unpack->game = game;
+  status("Unpacking " + src.filename().string() + " to a full ISO...");
+  Unpack* u = g_unpack.get();
+  u->worker = std::thread([u, src] {
+    u->ok = disc_rvz::convert(src, u->out, [u](uint64_t done, uint64_t total) {
+      u->percent = total ? (int)(done * 100 / total) : 0; return true; }, &u->error);
+    u->done = true;
+  });
+}
+void refresh_mods();
+void poll_unpack() {
+  if (!g_unpack || !g_unpack->done) return;
+  g_unpack->worker.join();
+  if (!g_unpack->ok) status(g_unpack->error);
+  else if (g_unpack->game) { g_iso = g_unpack->out.string(); g_iso_changed = true; save_ini(); status("Unpacked to " + g_iso); }
+  else { refresh_mods(); status("Unpacked and added " + g_unpack->out.filename().string()); }
+  g_unpack.reset();
+}
 void play_mod(const ModDisc& mod) {
   play({mod.kind == "te" ? "--mod-gci" : "--mod-iso", mod.path.string(), "--card-dir", g_dir + "/User/GC/Mods/" + mod.path.stem().string()});
 }
@@ -600,13 +634,17 @@ void page_play() {
   ImGui::Text("Melee NTSC 1.02 disc image");
   static char iso[1024] = "";
   static bool init = false;
-  if (!init) { std::snprintf(iso, sizeof iso, "%s", g_iso.c_str()); init = true; }
+  if (!init || g_iso_changed) { std::snprintf(iso, sizeof iso, "%s", g_iso.c_str()); init = true; g_iso_changed = false; }
+  poll_unpack();
+  if (g_unpack) ImGui::Text("Unpacking the disc image: %d%%", g_unpack->percent.load());
   ImGui::SetNextItemWidth(-130);
   if (ImGui::InputText("##iso", iso, sizeof iso)) { g_iso = iso; save_ini(); }
   ImGui::SameLine();
   if (ImGui::Button("Browse...", ImVec2(-1, 0))) {
-    const auto picked = choose_file("Choose your Melee NTSC 1.02 disc image", "Disc images", "*.iso *.gcm *.ISO *.GCM");
-    if (!picked.empty()) { g_iso = picked; std::snprintf(iso, sizeof iso, "%s", g_iso.c_str()); save_ini(); }
+    const auto picked = choose_file("Choose your Melee NTSC 1.02 disc image", "Disc images", "*.iso *.gcm *.rvz *.wia *.ISO *.GCM *.RVZ *.WIA");
+    if (!picked.empty() && compressed_disc(picked))
+      start_unpack(picked, fs::path(g_dir) / "Disc" / fs::path(picked).stem().concat(".iso"), true);
+    else if (!picked.empty()) { g_iso = picked; std::snprintf(iso, sizeof iso, "%s", g_iso.c_str()); save_ini(); }
   }
   std::string why;
   if (!g_iso.empty()) {
@@ -761,12 +799,16 @@ void page_replays() {
 }
 
 void page_mods() {
+  poll_unpack();
+  if (g_unpack) ImGui::Text("Unpacking the disc image: %d%%", g_unpack->percent.load());
   ImGui::TextWrapped("Mod discs (.iso) go in Mods/Discs and training mode saves (.gci) in Mods/Saves. Skins, stages and music are chosen in Settings.");
   if (ImGui::Button("Open the Mods folder")) open_path(g_dir + "/Mods");
   ImGui::SameLine();
   if (ImGui::Button("Add a mod...")) {
-    const auto picked = choose_file("Add a mod disc or save", "Mods", "*.iso *.gcm *.gci *.ISO *.GCI");
-    if (!picked.empty()) {
+    const auto picked = choose_file("Add a mod disc or save", "Mods", "*.iso *.gcm *.rvz *.wia *.gci *.ISO *.GCI *.RVZ *.WIA");
+    if (!picked.empty() && compressed_disc(picked)) {
+      start_unpack(picked, fs::path(g_dir) / "Mods" / "Discs" / fs::path(picked).stem().concat(".iso"), false);
+    } else if (!picked.empty()) {
       const fs::path src(picked);
       std::string ext = src.extension().string();
       for (char& c : ext) c = (char)std::tolower((unsigned char)c);

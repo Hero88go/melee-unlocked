@@ -52,6 +52,9 @@ Built into the program:
 - JSON for Modern C++ (MIT): notice at the top of port/third_party/nlohmann/json.hpp
 - dht (MIT): port/third_party/dht/LICENCE
 - Monocypher (BSD-2-Clause or CC0-1.0): port/third_party/monocypher/LICENCE.md
+- Zstandard 1.5.7 decoder (BSD-3-Clause): port/third_party/zstd/LICENSE
+- bzip2 1.0.8 (BSD-style): port/third_party/bzip2/LICENSE
+- LZMA SDK 25.01 LZMA and LZMA2 decoders (public domain): port/third_party/lzma/lzma-sdk.txt
 - SlippiLib (GPL-2.0-or-later, from Slippi Ishiiruka): port/third_party/slippilib
 - NVIDIA Streamline headers and import library (MIT): port/third_party/streamline/license.txt
 - NVIDIA NGX library, builds with DLSS 5 only (NVIDIA RTX SDKs License):
@@ -67,7 +70,7 @@ Built into the program:
   Exception)
 
 Code ported or adapted from other projects:
-- Dolphin (GPL-2.0-or-later): GX shader generation, AX audio emulation, the fres and frsqrte
+- Dolphin (GPL-2.0-or-later): the RVZ and WIA disc image reader, GX shader generation, AX audio emulation, the fres and frsqrte
   tables, the GameCube adapter protocol
 - Slippi Ishiiruka (GPL-2.0-or-later): the Slippi EXI device, online play, replay playback,
   custom texture naming
