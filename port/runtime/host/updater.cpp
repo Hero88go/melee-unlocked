@@ -1052,7 +1052,12 @@ struct PartFetch {
   std::string message;
   std::thread thread;
 };
-PartFetch g_compat, g_xess, g_fsr, g_rtx_pack;
+// Never destroyed: a download still running at exit is detached (shutdown) and may touch its
+// PartFetch until the process ends.
+PartFetch& g_compat = *new PartFetch;
+PartFetch& g_xess = *new PartFetch;
+PartFetch& g_fsr = *new PartFetch;
+PartFetch& g_rtx_pack = *new PartFetch;
 void part_message(PartFetch& p, const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); p.message = m; }
 std::string part_message(PartFetch& p) { std::lock_guard<std::mutex> lk(g_mutex); return p.message; }
 
@@ -1366,8 +1371,14 @@ void shutdown() {
   join();
   if (g_rollback_thread.joinable()) g_rollback_thread.join();
   if (g_model_thread.joinable()) g_model_thread.join();
-  if (g_compat.thread.joinable()) g_compat.thread.join();
-  if (g_xess.thread.joinable()) g_xess.thread.join();
-  if (g_fsr.thread.joinable()) g_fsr.thread.join();
+  // Every part download, the RTX Pack included: a std::thread still joinable when its static is
+  // destroyed at exit calls std::terminate (B-905: quitting after the RTX Pack downloaded aborted).
+  // A finished download is joined; one still running is left to end with the process, so quitting
+  // never waits minutes for a 467 MB download.
+  for (PartFetch* p : {&g_compat, &g_xess, &g_fsr, &g_rtx_pack}) {
+    if (!p->thread.joinable()) continue;
+    if (p->busy.load()) p->thread.detach();
+    else p->thread.join();
+  }
 }
 }  // namespace host::updater

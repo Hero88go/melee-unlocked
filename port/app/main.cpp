@@ -2167,6 +2167,15 @@ static int melee_main(int argc, char** argv) {
     return ok ? 0 : 1;
   }
 
+#ifdef _WIN32
+  // MELEE_TEST_RTX_PACK_FETCH=1 (hidden runs only): start the RTX Pack download at boot, as the
+  // Lighting panel's button does, so a test can quit with a download thread behind it (B-905).
+  if (const char* v = host::test_env::getenv("MELEE_TEST_RTX_PACK_FETCH"); v && *v == '1') {
+    wchar_t module[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) host::updater::rtx_pack_download(std::filesystem::path(module).parent_path().u8string());
+  }
+#endif
   // The settings panel with no game behind it: the launcher opens this instead of booting the
   // whole game to change a setting. Before the disc check, because it needs no disc.
   if (settings_window_only) {
