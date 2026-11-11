@@ -1085,7 +1085,21 @@ template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key, box
 box::State g_box_keyboard[2];
 box::State g_box_hid[2][4];
 
-void apply_family_options(PadFamily family, PadState& pad) {
+// The snapback filter (input_bindings.h snapback_axis) on an Xbox, PlayStation or Switch controller's
+// control stick, before deadzone and radius (GitHub #72). [0] the game's read, [1] the Controls tab's
+// preview, each with its own state.
+SnapbackAxis g_snapback[2][(size_t)PadFamily::Count][4][2];
+void apply_snapback(PadFamily family, int slot, int lane, PadState& pad) {
+  if (family == PadFamily::GameCube || family == PadFamily::Box || slot < 0 || slot >= 4) return;
+  const Deadzone& dz = g_deadzones[(size_t)family];
+  SnapbackAxis* axes = g_snapback[lane & 1][(size_t)family][slot];
+  const double now = now_seconds();
+  pad.stick_x = snapback_axis(axes[0], pad.stick_x, now, dz.snapback_x);
+  pad.stick_y = snapback_axis(axes[1], pad.stick_y, now, dz.snapback_y);
+}
+
+void apply_family_options(PadFamily family, PadState& pad, int slot = -1, int lane = 0) {
+  apply_snapback(family, slot, lane, pad);
   const Deadzone& dz = g_deadzones[(size_t)family];
   apply_deadzone(dz, pad.stick_x, pad.stick_y, false);
   apply_deadzone(dz, pad.sub_x, pad.sub_y, true);
@@ -1471,9 +1485,9 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
   // see what the game gets.
   for (int idx = 0; idx < 4; ++idx) {
     if (gc_mask & (1u << idx)) apply_family_options(PadFamily::GameCube, gc[idx]);
-    if (xin_connected[idx]) apply_family_options(PadFamily::Xbox, xin[idx]);
-    if (ds4_connected[idx]) apply_family_options(PadFamily::PlayStation, ds4[idx]);
-    if (swpro_connected[idx]) apply_family_options(PadFamily::Switch, swpro[idx]);
+    if (xin_connected[idx]) apply_family_options(PadFamily::Xbox, xin[idx], idx, 0);
+    if (ds4_connected[idx]) apply_family_options(PadFamily::PlayStation, ds4[idx], idx, 0);
+    if (swpro_connected[idx]) apply_family_options(PadFamily::Switch, swpro[idx], idx, 0);
     if (hid_connected[idx]) apply_family_options(PadFamily::Box, hid[idx]);
   }
 
@@ -1888,9 +1902,9 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   }
   for (int idx = 0; idx < 4; ++idx) {
     if (facts.gc[idx]) apply_family_options(PadFamily::GameCube, gc[idx]);
-    if (facts.xinput[idx]) apply_family_options(PadFamily::Xbox, xin[idx]);
-    if (facts.ds4[idx]) apply_family_options(PadFamily::PlayStation, ds4[idx]);
-    if (facts.switch_pro[idx]) apply_family_options(PadFamily::Switch, swpro[idx]);
+    if (facts.xinput[idx]) apply_family_options(PadFamily::Xbox, xin[idx], idx, 1);
+    if (facts.ds4[idx]) apply_family_options(PadFamily::PlayStation, ds4[idx], idx, 1);
+    if (facts.switch_pro[idx]) apply_family_options(PadFamily::Switch, swpro[idx], idx, 1);
     if (facts.hid[idx]) apply_family_options(PadFamily::Box, hid[idx]);
   }
   snapshot.keyboard_pad = kb;

@@ -296,7 +296,32 @@ struct Deadzone {
   int main = 0, c = 0, trig_l = 255, trig_r = 255;
   int radius_main = 100, radius_c = 100;
   int click_l = kDefaultTriggerClick, click_r = kDefaultTriggerClick;
+  // Snapback filter on the control stick of an Xbox, PlayStation or Switch controller, 0 (off) to 10
+  // (GitHub #72): see snapback_axis.
+  int snapback_x = 0, snapback_y = 0;
 };
+// One stick axis of the snapback filter. After a hard release (the stick leaves the edge), a reading on
+// the other side smaller than the threshold within the window is the stick bouncing past centre, not
+// the player: it reads as centre. A full reversal (dash dance, dashback) is far past the threshold and
+// passes at once; after the window every input passes. Strength 1..10: window 10 + 4 s ms (14..50),
+// threshold 10 + 4 s units of the stick's 127 (14..50).
+struct SnapbackAxis {
+  int armed = 0;             // the side the stick was held at the edge (-1, 1), 0 none
+  double left_edge = -1.0;   // when it left that edge, -1 still there
+};
+inline int8_t snapback_axis(SnapbackAxis& a, int8_t value, double now, int strength) {
+  if (strength <= 0) { a = SnapbackAxis{}; return value; }
+  constexpr int kEdge = 60;
+  const int v = value, sign = v > 0 ? 1 : v < 0 ? -1 : 0;
+  const double window = (10.0 + 4.0 * strength) / 1000.0;
+  const int threshold = 10 + 4 * strength;
+  if (v >= kEdge || v <= -kEdge) { a.armed = sign; a.left_edge = -1.0; return value; }
+  if (!a.armed) return value;
+  if (a.left_edge < 0.0) a.left_edge = now;
+  if (now - a.left_edge > window) { a.armed = 0; return value; }
+  if (sign == -a.armed && (v < 0 ? -v : v) < threshold) return 0;
+  return value;
+}
 inline void apply_trigger_click(int threshold, uint8_t value, uint16_t& button, uint16_t click) {
   if (value > threshold) button |= click;
 }

@@ -553,6 +553,37 @@ int main() {
   host::PadState pad{}; uint16_t buttons = 0;
   const uint8_t tiny[4] = {0x01, 0x80, 0x80, 0x80};
   CHECK(!host::playstation_parse(tiny, sizeof tiny, false, pad, buttons));
+  // The snapback filter (GitHub #72), as an Xbox controller polled every 8 ms reports a release.
+  {
+    using host::SnapbackAxis;
+    // Held full right, released: one report bounces to -30, then centre. Strength 4: window 26 ms, threshold 26.
+    SnapbackAxis a;
+    double t = 0.0;
+    CHECK(host::snapback_axis(a, 120, t, 4) == 120);
+    t += 0.008; CHECK(host::snapback_axis(a, -20, t, 4) == 0);    // the bounce past centre reads as centre
+    t += 0.008; CHECK(host::snapback_axis(a, -10, t, 4) == 0);
+    t += 0.008; CHECK(host::snapback_axis(a, 0, t, 4) == 0);
+    // Off: the bounce passes as it came.
+    SnapbackAxis off;
+    host::snapback_axis(off, 120, 0.0, 0);
+    CHECK(host::snapback_axis(off, -20, 0.008, 0) == -20);
+    // A dash dance: full right straight to full left passes at once.
+    SnapbackAxis dd;
+    host::snapback_axis(dd, 120, 0.0, 4);
+    CHECK(host::snapback_axis(dd, -110, 0.008, 4) == -110);
+    // A light input on the other side after the window passes.
+    SnapbackAxis late;
+    host::snapback_axis(late, 120, 0.0, 4);
+    host::snapback_axis(late, 0, 0.008, 4);
+    CHECK(host::snapback_axis(late, -20, 0.050, 4) == -20);
+    // A light input on the same side as the release is never touched.
+    SnapbackAxis same;
+    host::snapback_axis(same, 120, 0.0, 4);
+    CHECK(host::snapback_axis(same, 20, 0.008, 4) == 20);
+    // Never armed (no hard push): a light input passes.
+    SnapbackAxis calm;
+    CHECK(host::snapback_axis(calm, -20, 0.0, 4) == -20);
+  }
   std::printf("%s (%d failure%s)\n", g_failures ? "FAILED" : "all pad report checks passed", g_failures, g_failures == 1 ? "" : "s");
   return g_failures ? 1 : 0;
 }

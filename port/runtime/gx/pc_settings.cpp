@@ -575,6 +575,8 @@ static bool load_family_option(const std::string& key, const std::string& value)
     if (key == "deadzone_" + k + "_c") { host::g_deadzones[f].c = std::clamp(std::atoi(value.c_str()), 0, 100); return true; }
     if (key == "radius_" + k + "_main") { host::g_deadzones[f].radius_main = std::clamp(std::atoi(value.c_str()), 50, 100); return true; }
     if (key == "radius_" + k + "_c") { host::g_deadzones[f].radius_c = std::clamp(std::atoi(value.c_str()), 50, 100); return true; }
+    if (key == "snapback_" + k + "_x") { host::g_deadzones[f].snapback_x = std::clamp(std::atoi(value.c_str()), 0, 10); return true; }
+    if (key == "snapback_" + k + "_y") { host::g_deadzones[f].snapback_y = std::clamp(std::atoi(value.c_str()), 0, 10); return true; }
     if (key == "trigger_" + k + "_l") { host::g_deadzones[f].trig_l = std::clamp(std::atoi(value.c_str()), 0, 255); return true; }
     if (key == "trigger_" + k + "_r") { host::g_deadzones[f].trig_r = std::clamp(std::atoi(value.c_str()), 0, 255); return true; }
     if (key == "trigger_" + k + "_l_threshold" || key == "trigger_" + k + "_r_threshold") {
@@ -601,6 +603,8 @@ static std::string family_options_text() {
     // written only when changed, so a file that never used them stays as it was
     if (host::g_deadzones[f].radius_main < 100) out += "\nradius_" + k + "_main " + std::to_string(host::g_deadzones[f].radius_main);
     if (host::g_deadzones[f].radius_c < 100) out += "\nradius_" + k + "_c " + std::to_string(host::g_deadzones[f].radius_c);
+    if (host::g_deadzones[f].snapback_x) out += "\nsnapback_" + k + "_x " + std::to_string(host::g_deadzones[f].snapback_x);
+    if (host::g_deadzones[f].snapback_y) out += "\nsnapback_" + k + "_y " + std::to_string(host::g_deadzones[f].snapback_y);
     if (host::g_deadzones[f].trig_l < 255) out += "\ntrigger_" + k + "_l " + std::to_string(host::g_deadzones[f].trig_l);
     if (host::g_deadzones[f].trig_r < 255) out += "\ntrigger_" + k + "_r " + std::to_string(host::g_deadzones[f].trig_r);
     if (host::g_deadzones[f].click_l != host::kDefaultTriggerClick)
@@ -10170,6 +10174,19 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::SetNextItemWidth(200.0f);
           changed |= settings_slider("C-stick radius", &dz.radius_c, 50, 100, dz.radius_c >= 100 ? "Full" : "%d%%");
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kRadiusTip);
+          if (cur_family.fam != (int)host::PadFamily::GameCube && cur_family.fam != (int)host::PadFamily::Box) {
+            // The snapback filter for these sticks (a GameCube controller has PhobGCC's in the Phob section).
+            static const char* kSnapTip =
+                "Stops the stick reading on the other side for a frame or two after you let go of it\n"
+                "(snapback). Right after a hard release, a small reading on the other side reads as\n"
+                "centre; a full reversal (dash dance) passes at once. Higher is stronger; 0 is off. Try 4.";
+            ImGui::SetNextItemWidth(200.0f);
+            changed |= settings_slider("Snapback filter X", &dz.snapback_x, 0, 10, dz.snapback_x ? "%d" : "Off");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSnapTip);
+            ImGui::SetNextItemWidth(200.0f);
+            changed |= settings_slider("Snapback filter Y", &dz.snapback_y, 0, 10, dz.snapback_y ? "%d" : "Off");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSnapTip);
+          }
           ImGui::SeparatorText("Triggers");
           static const char* kTrigTip =
               "Full: the trigger works as on a GameCube controller (a full press clicks and gives\n"
