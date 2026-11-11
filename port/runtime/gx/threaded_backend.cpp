@@ -64,12 +64,11 @@ class ThreadedBackend final : public Backend {
     bool stats_were_readable = false;
     bool reflex_slept = false;    // Reflex has already waited for the frame about to be drawn
     double render_budget = 0.004;
-    // "Uncapped" used to present as fast as this thread could go. Against a GPU that cannot keep
-    // up that keeps the GPU's queue full, and a full queue is input latency; it also ran this
-    // thread and the solver workers flat out against the simulation and input threads. Uncapped
-    // is now held at twice the display's refresh rate, which still shows every sub-frame a monitor
-    // can use. MELEE_PRESENT_UNCAPPED=1 restores the old behaviour for comparison runs.
-    static const bool present_uncapped = [] { const char* v = std::getenv("MELEE_PRESENT_UNCAPPED"); return v && *v == '1'; }();
+    // "Frame cap off" presents as fast as this thread can go: the game never lowers the frame rate the
+    // player chose on its own (owner, 11-10). It was held at twice the display's refresh since an earlier
+    // release, so "unlocked" showed 120 on a 60 Hz screen (a report, 11-10). MELEE_UNCAPPED_HOLD=1
+    // (tests): the old hold at twice the refresh.
+    static const bool present_uncapped = [] { const char* v = std::getenv("MELEE_UNCAPPED_HOLD"); return !(v && *v == '1'); }();
     struct Trace {
       FILE* file = nullptr;
       explicit Trace(const std::string& path) {
