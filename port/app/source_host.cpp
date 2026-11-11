@@ -753,6 +753,13 @@ constexpr uint32_t kCosmeticBase = 0xF0000000u;
 std::vector<uint8_t> g_cosmetic_fst;
 uint64_t g_cosmetic_next = kCosmeticBase;
 std::vector<std::string> g_raw_paths;
+// A stage file the mod disc replaced still takes the player's stage skins (the random installed stage skin
+// each match, or a chosen one): they are checked against the game's own stage, and online play uses the
+// standard stage anyway. Animelee CE's Battlefield refused every pick, so the same stage came every match
+// (an 11-10 report). Costumes keep the stricter rule above.
+bool pack_stage_takes_skins(uint32_t entry) {
+  return entry < g_raw_paths.size() && !g_raw_paths[entry].empty() && skins::is_stage_file(g_raw_paths[entry]);
+}
 std::map<std::pair<uint32_t, std::string>, int32_t> g_cosmetic_live;
 
 // A new entry for disc entry i's skin, in its own range past kCosmeticBase, and for a skin not
@@ -794,7 +801,7 @@ void load_cosmetics(bool always_vanilla_unsafe) {
       // Hack Pack's L / R costumes); they get an entry of their own and entry i stays the pack's
       // file, which is the standard costume of this session.
       const std::string applied = host::cosmetics::applied_asset(vanilla_start);
-      if ((!host::cosmetics::session_pack_skin(applied) && !pack_costume_takes_skins(i)) || i >= g_raw_paths.size() ||
+      if ((!host::cosmetics::session_pack_skin(applied) && !pack_costume_takes_skins(i) && !pack_stage_takes_skins(i)) || i >= g_raw_paths.size() ||
           g_raw_paths[i].empty()) {
         host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
         continue;
@@ -1610,7 +1617,7 @@ bool publish_cosmetic_files(const std::string& slot, const host::cosmetics::Repu
     // A file the loaded pack replaced: entry i is the pack's file, the standard costume of this
     // session, and only the pack's own sets may serve it instead (load_cosmetics).
     const bool pack_replaced = g_fst[i].offset != file.vanilla_start && g_fst[i].offset < kCosmeticBase;
-    if (pack_replaced && (!file.overridden || (!host::cosmetics::session_pack_skin(file.asset_id) && !pack_costume_takes_skins(i)))) {
+    if (pack_replaced && (!file.overridden || (!host::cosmetics::session_pack_skin(file.asset_id) && !pack_costume_takes_skins(i) && !pack_stage_takes_skins(i)))) {
       if (file.overridden) host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
       g_paths[g_raw_paths[i]] = (int32_t)i;
       continue;
