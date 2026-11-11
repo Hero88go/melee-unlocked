@@ -135,7 +135,8 @@ std::vector<Installed> detected(const std::string& text) {
 }
 bool playable(const Installed& m) {
   if (m.status != "supported" && m.status != "untested") return false;
-  // A code mod is playable only once the scan knows it (Melee 3D); an unknown one is not_supported_yet.
+  // A code mod is playable once the scan marks it supported or untested: Melee 3D, and any other code
+  // mod (either engine: the Static Recomp runs its code, the Source Port loads its files).
   return m.kind == "te" || m.kind == "tmce" || m.kind == "mex" || m.kind == "hack_pack" || m.kind == "asset_mod" ||
          m.kind == "code_mod";
 }

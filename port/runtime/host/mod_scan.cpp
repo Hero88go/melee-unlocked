@@ -965,17 +965,19 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     if (known) { d.name = known->name; d.version = known->version; d.catalog_id = known->id; }
     if (known && d.hash == known->hash && used_base) *used_base = false;   // a known build by its own bytes
     // Akaneia 1.0.1 and ACE 2.0.0 have their fighters and stages in the Source Port's own C
-    // (sourceport/game/akaneia, ace, mexstages), checked against those builds' files; any other m-ex
-    // build runs its code on the Static Recomp.
+    // (sourceport/game/akaneia, ace, mexstages), checked against those builds' files. Any other m-ex
+    // build plays on both engines too: the Static Recomp runs its code, the Source Port loads its
+    // files (costumes, stages, sounds, menus) over the native game and runs none of its code.
     const bool native = known && (std::string(known->id) == "akaneia" || std::string(known->id) == "ace");
-    set_support(d, native ? Engine::Either : Engine::Recomp, native ? Support::Supported : Support::Untested, true);
-#ifdef MELEE_NO_SLIPPI   // as for the Hack Pack above
+    set_support(d, Engine::Either, native ? Support::Supported : Support::Untested, true);
+#ifdef MELEE_NO_SLIPPI   // one engine in this build: the Source Port
     d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +
-                (native ? ". Plays on the Source Port: launcher > Mods > Play." : ". This build cannot play it.");
+                (native ? ". Plays on the Source Port: launcher > Mods > Play."
+                        : ". Plays with its files (costumes, stages, sounds, menus); its code does not run.");
 #else
     d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +
                 (native ? ". Plays on either engine: launcher > Mods > Play."
-                        : ". Plays on the Static Recomp: launcher > Mods > Play.");
+                        : ". Plays on either engine: the Static Recomp runs its code, the Source Port loads its files.");
 #endif
     return d;
   }
@@ -1000,9 +1002,16 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     }
   }
   if (!dol_retail || has_codes) {
+    // Its code runs on the Static Recomp as the disc wrote it, the way Slippi Dolphin runs it; the
+    // Source Port loads its files and runs none of its code (as for m-ex above). Like m-ex it loads
+    // only when played from the launcher's Mods page (source_port_layers takes no code mod).
     d.kind = Kind::CodeMod; d.name = title;
-    set_support(d, Engine::Recomp, Support::NotSupportedYet, false);
-    d.message = "Code mod found, not supported yet.";
+    set_support(d, Engine::Either, Support::Untested, true);
+#ifdef MELEE_NO_SLIPPI
+    d.message = "Detected: " + title + ". Plays with its files; its code does not run.";
+#else
+    d.message = "Detected: " + title + ". Plays on either engine: the Static Recomp runs its code, the Source Port loads its files.";
+#endif
     return d;
   }
   // The retail game's code: a data-only mod, or the retail game in another layout.
@@ -1050,7 +1059,9 @@ Detected identify_file(const fs::path& file, const ScanOptions& options, std::st
   if (size >= 0x440 && be32(head + 0x1C) == kDiscMagic) return identify_disc(file, d, options, log, used_base);
   if (compressed_disc(head, (size_t)std::min<uint64_t>(sizeof head, size))) {
     d.kind = Kind::Unsupported; d.name = file.filename().u8string();
-    d.message = "Compressed disc image: convert it to .iso in Dolphin (right-click, Convert File) to use it.";
+    d.message = head[0] == 'R' || head[0] == 'W'
+                    ? "Dolphin RVZ or WIA image: add it on the launcher's Mods page, which unpacks it to an .iso."
+                    : "Compressed disc image: convert it to .iso in Dolphin (right-click, Convert File) to use it.";
     return d;
   }
   return d;
@@ -1065,7 +1076,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 15";   // 15: Training Mode CE v1.4 d2 and v1.4.1 discs play natively; 14: retail content identity independent of disc padding
+constexpr const char kCacheHeader[] = "mu-scan 16";   // 16: unknown m-ex builds and code mods play on either engine; 15: Training Mode CE v1.4 d2 and v1.4.1 discs play natively; 14: retail content identity independent of disc padding
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {
@@ -1683,7 +1694,9 @@ void import_async(const fs::path& picked) {
       message = "Could not read " + picked.filename().u8string() + ".";
     } else if (!gci && !disc) {
       message = compressed_disc(head, sizeof head)
-                    ? "That is a compressed disc image. Convert it to .iso in Dolphin (right-click, Convert File), then add it."
+                    ? (head[0] == 'R' || head[0] == 'W'
+                           ? "That is a Dolphin RVZ or WIA image. Add it on the launcher's Mods page, which unpacks it to an .iso."
+                           : "That is a compressed disc image. Convert it to .iso in Dolphin (right-click, Convert File), then add it.")
                     : "That is not a disc image (.iso) or a memory card save (.gci). Nothing was copied.";
     } else {
       const fs::path mods = fs::absolute(options.mods_dir, ec);

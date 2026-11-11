@@ -1020,8 +1020,10 @@ void paint_page(HDC dc) {
         line = tx(m.note.empty() ? "Plays on the Static Recomp, offline (no online play or replays)." : m.note);
         line_color = C_DIM;
       } else {
-        line = tx(f.needs_engine == "recomp" ? "Direct and Teams. Same mod required for every player; different builds can desync. Launch vanilla for Unranked."
-                                           : "Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked and Teams.");
+        // Unranked and Party play the standard game with the mod's looks on both engines (the Source
+        // Port switches its files, the Static Recomp restarts into that form); Direct keeps the mod
+        // against the same build.
+        line = tx("Unranked and Party: the standard game with this mod's looks. Direct: the same mod on both sides.");
         line_color = C_WARN;
       }
 #endif

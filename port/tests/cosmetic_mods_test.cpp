@@ -1819,6 +1819,83 @@ int main(int argc, char** argv) {
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 
+  // A dynamic alternate stages disc (m-ex): GrNBa.dat is a stub with the stage code (grFunction) and no
+  // collision data, and the real stages are in a GrNBa folder named for a button: GrNBa-neon(L).dat,
+  // GrNBa-dark(R).dat. The stub is never a stage skin; the alternates are. With the disc as the
+  // session's stage pack, every match picks among them with random stage skins off: the held button
+  // names one, as the disc's own stage code does.
+  {
+    fs::path stage_folder = folder / L"dynamic-alts";
+    fs::create_directories(stage_folder, ec);
+    host::cosmetics::configure((stage_folder / L"port-settings.ini").string());
+    const auto retail_stage = visual_dat();
+    auto neon = visual_dat(); neon[0x20 + 0x20] = 3;
+    auto dark = visual_dat(); dark[0x20 + 0x20] = 4;
+    const auto stub = rooted_dat({"map_head", "grGroundParam", "grFunction"});
+    constexpr uint32_t retail_at = 0x100, fst_at = 0x600, stub_at = 0x800, neon_at = 0x1000, dark_at = 0x1800;
+    g_disc_bytes.assign(0x1000, 0);
+    std::copy(retail_stage.begin(), retail_stage.end(), g_disc_bytes.begin() + retail_at);
+    g_disc_table = {{"GrNBa.dat", {retail_at, (uint32_t)retail_stage.size()}}};
+    // Root, the stub, the GrNBa folder (entries 2 to 4), its two alternates.
+    const std::string names = std::string("GrNBa.dat\0GrNBa\0GrNBa-neon(L).dat\0GrNBa-dark(R).dat\0", 52);
+    std::vector<uint8_t> fst(5 * 12, 0);
+    be32(fst, 0, 0x01000000); be32(fst, 8, 5);
+    be32(fst, 12, 0); be32(fst, 16, stub_at); be32(fst, 20, (uint32_t)stub.size());
+    be32(fst, 24, 0x01000000 | 10); be32(fst, 28, 0); be32(fst, 32, 5);
+    be32(fst, 36, 16); be32(fst, 40, neon_at); be32(fst, 44, (uint32_t)neon.size());
+    be32(fst, 48, 34); be32(fst, 52, dark_at); be32(fst, 56, (uint32_t)dark.size());
+    fst.insert(fst.end(), names.begin(), names.end());
+    std::vector<uint8_t> image(0x2000, 0);
+    be32(image, 0x424, fst_at); be32(image, 0x428, (uint32_t)fst.size());
+    std::copy(fst.begin(), fst.end(), image.begin() + fst_at);
+    std::copy(stub.begin(), stub.end(), image.begin() + stub_at);
+    std::copy(neon.begin(), neon.end(), image.begin() + neon_at);
+    std::copy(dark.begin(), dark.end(), image.begin() + dark_at);
+    const fs::path iso_path = stage_folder / L"alts.iso";
+    write_file(iso_path, image);
+
+    const auto scan = host::cosmetics::scan_disc_skins(iso_path.string(), "Alts Disc", &error);
+    std::string neon_id, dark_id;
+    bool stub_listed = false;
+    for (const auto& asset : host::cosmetics::assets()) {
+      if (asset.kind != "stage_visual") continue;
+      if (asset.variant == "neon(L)") neon_id = asset.id;
+      else if (asset.variant == "dark(R)") dark_id = asset.id;
+      else stub_listed = true;
+    }
+    check(scan.ok && !neon_id.empty() && !dark_id.empty() && !stub_listed,
+          "a dynamic alternates disc lists its two alternates as stage skins and not its stub");
+    check(host::cosmetics::disc_pack_name(iso_path.string()) == "Alts Disc", "the disc's pack name is found by its path");
+
+    static uint32_t held = 0;
+    host::cosmetics::set_stage_button_probe([]() -> uint32_t { return held; });
+    host::cosmetics::set_session_stage_pack(iso_path.string());
+    auto game_fst = one_file_fst(retail_at, (uint32_t)retail_stage.size(), "GrNBa.dat");
+    host::cosmetics::apply_to_fst(game_fst.data(), (uint32_t)game_fst.size());
+    check(!host::cosmetics::random_stage_skins(), "random stage skins stay off for this case");
+    check(!host::cosmetics::cycle_stage_live("GrNBa.dat", 1).changed,
+          "the stage select does not step a stage whose alternates the held button picks");
+    held = 0x20;   // R
+    auto pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 21);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at) == dark_id, "holding R picks the alternate named (R)");
+    held = 0x40;   // L
+    pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 22);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at) == neon_id, "holding L picks the alternate named (L)");
+    held = 0x20 | 0x40;
+    pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 23);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at) == neon_id, "L comes before R when both are held, as on the disc");
+    held = 0;
+    pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 24);
+    const std::string any = host::cosmetics::applied_asset(retail_at);
+    check(pick.ok && (any == neon_id || any == dark_id), "with nothing held one of the alternates plays, never the stub");
+    host::cosmetics::set_session_stage_pack("");
+    pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 25);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at).empty(),
+          "without the disc as the session's stage pack the standard stage plays");
+    host::cosmetics::set_stage_button_probe(nullptr);
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
   // A well-formed DAT container can still have an invalid stage model table. It remains an explicit
   // choice, but must never be selected at random when the retail stage is understood by the reader.
   {
@@ -1972,9 +2049,9 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 9");
+      const size_t at = text.find("\"rules\": 10");
       check(at != std::string::npos, "the scan records the rules it used");
-      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 5");
+      if (at != std::string::npos) text.replace(at, 11, "\"rules\": 5");
       std::ofstream out(state, std::ios::binary); out << text;
     }
     host::cosmetics::configure((alt_folder / L"port-settings.ini").string());
@@ -2570,9 +2647,9 @@ int main(int argc, char** argv) {
     const fs::path state = iso_settings.parent_path() / L"CosmeticMods" / L"state.json";
     auto state_bytes = read_file(state);
     std::string state_text(state_bytes.begin(), state_bytes.end());
-    const auto rule = state_text.find("\"rules\": 9");
+    const auto rule = state_text.find("\"rules\": 10");
     check(rule != std::string::npos, "m-ex scan writes its new rule version");
-    if (rule != std::string::npos) state_text.replace(rule, 10, "\"rules\": 8");
+    if (rule != std::string::npos) state_text.replace(rule, 11, "\"rules\": 9");
     write_file(state, std::vector<uint8_t>(state_text.begin(), state_text.end()));
     host::cosmetics::configure(iso_settings.string());
     const auto upgraded = host::cosmetics::scan_disc_skins(mex_iso.string(), "Eight Marths ISO", &error);

@@ -102,8 +102,10 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
 // the game stops when it draws one. 6: stage skins. 7: fighter move sound archives. A disc scanned
 // under an older number is scanned again at the next boot. 9: m-ex costume filenames and the
-// portrait animation's own stride, dimensions and palette keys, including added costumes.
-constexpr uint32_t kScanRules = 9;
+// portrait animation's own stride, dimensions and palette keys, including added costumes. 10: an m-ex
+// stage stub (stage code, no collision data) is not a stage skin, and the alternates of a
+// dynamic alternate stages disc ("GrSt/GrSt-name(L).dat") are stage skins of their stage.
+constexpr uint32_t kScanRules = 10;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -192,6 +194,10 @@ std::string g_session_pack;
 // The exact look in force ("Diet Classic", "Diet 64", "Crystal") or empty: every file of the pack scanned
 // under that name is served while it is set (publish_locked), on top of the player's own picks.
 std::string g_look_pack;
+// The disc whose alternate stages are this session's stages (set_session_stage_pack), as a scan's key.
+std::string g_session_stage_pack;
+// Buttons held on any controller, asked when a match's stage is planned (set_stage_button_probe).
+uint32_t (*g_stage_buttons)() = nullptr;
 // Newly built packs have been hash-verified, but are scanned for assets at the next start.
 bool g_look_prepared_this_run = false;
 
@@ -3629,6 +3635,19 @@ bool disc_fighter_sound_member(const std::string& raw) {
 // name; *variant names the set as for a costume. The content is checked by the caller.
 bool disc_stage_member(const std::string& raw, std::string* target, std::string* label, std::string* variant) {
   const std::string name = lower(raw);
+  // A dynamic alternate stages disc keeps a folder per stage: "GrSt/GrSt-surfshop(L).dat". The text
+  // after the dash names the alternate, and a button in brackets is the one that picks it there.
+  const size_t dash = name.find('-'), last_dot = name.rfind('.');
+  if (dash != std::string::npos && last_dot != std::string::npos && last_dot > dash + 1 && name.size() == last_dot + 4 &&
+      (name.compare(last_dot, 4, ".dat") == 0 || name.compare(last_dot, 4, ".usd") == 0)) {
+    for (const auto& resource : kStageResources) {
+      if (name.compare(0, dash, resource.token) != 0) continue;
+      *target = resource.path; *label = resource.label;
+      *variant = raw.substr(dash + 1, last_dot - dash - 1);
+      return true;
+    }
+    return false;
+  }
   const size_t dot = name.find('.');
   if (dot == std::string::npos || name.size() != dot + 4) return false;
   for (const auto& resource : kStageResources) {
@@ -3637,6 +3656,16 @@ bool disc_stage_member(const std::string& raw, std::string* target, std::string*
     return disc_skin_set(name.substr(dot + 1), variant);
   }
   return false;
+}
+
+// The button a dynamic alternate's name carries ("surfshop(L)"), as the game's pad bit, or 0. The
+// stage code of such a disc looks for these six, in this order.
+uint32_t stage_alternate_button(const std::string& variant) {
+  static constexpr struct { const char* tag; uint32_t bit; } kButtons[] = {
+      {"(l)", 0x40}, {"(r)", 0x20}, {"(z)", 0x10}, {"(b)", 0x200}, {"(x)", 0x400}, {"(y)", 0x800}};
+  const std::string name = lower(variant);
+  for (const auto& button : kButtons) if (name.find(button.tag) != std::string::npos) return button.bit;
+  return 0;
 }
 
 // m-ex's exported portrait symbol file when present, otherwise the English character select file
@@ -4172,6 +4201,11 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       std::string detail;
       if (!parse_visual_layout(bytes, &layout, &detail) ||
           std::find(layout.roots.begin(), layout.roots.end(), "map_head") == layout.roots.end()) { ++skipped; continue; }
+      // An m-ex stage stub is not a stage: it keeps its code (grFunction) and tables in the stage's file,
+      // has no collision data, and loads the real stage from a folder of alternates. Served as it is,
+      // nothing stands on it.
+      if (std::find(layout.roots.begin(), layout.roots.end(), "grFunction") != layout.roots.end() &&
+          std::find(layout.roots.begin(), layout.roots.end(), "coll_data") == layout.roots.end()) { ++skipped; continue; }
       const std::string digest = sha256(bytes);
       if (digest.empty()) { ++skipped; continue; }
       const std::string fresh_key = stage_path + "\n" + variant;
@@ -5469,6 +5503,14 @@ static void publish_voices_locked(uint8_t* fst, const std::vector<FstFile>& file
     host::log("cosmetics: %zu sound bank files can be served by a skin's voice", next->voice_files.size());
 }
 
+// An alternate stage of the disc whose alternates are this session's stages (set_session_stage_pack):
+// one of its named sets ("surfshop(L)"). The disc's plain stage files are not alternates: a mod
+// session already serves them, and a look serves them as its own files.
+static bool session_stage_record(const AssetRecord& asset) {
+  return !g_session_stage_pack.empty() && asset.source_kind == kDiscSource && asset.source_id == g_session_stage_pack &&
+         asset.info.kind == "stage_visual" && asset.info.available && !asset.info.variant.empty();
+}
+
 // The length every form of a stage is served at while random stage skins are on (g_stage_extent):
 // the longest of the disc's own file(s) and every installed skin of that stage, offline and in its
 // online form. `files` carries the disc's own lengths. 0 when the stage is not on this disc.
@@ -5806,11 +5848,12 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
   // The whole set at once (startup, a changed profile) with random stage skins on: every stage with
   // installed skins gets its shared length now, before the game can read any of them ahead of a
   // match, and before the skins below are padded to it.
-  if (!only_slot && g_profile.enabled && g_profile.random_stage_skins) {
+  if (!only_slot && g_profile.enabled && (g_profile.random_stage_skins || !g_session_stage_pack.empty())) {
     std::map<std::string, bool> stages;
     for (const auto& asset : g_assets)
       if (asset.info.available && asset.info.kind == "stage_visual" &&
-          !(asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)))
+          (g_profile.random_stage_skins ? !(asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id))
+                                        : session_stage_record(asset)))
         stages[selection_key(asset)] = true;
     for (const auto& stage : stages) {
       const size_t extent = stage_extent_locked(stage.first, files);
@@ -6050,7 +6093,7 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
   // a skin be cut short (its symbols are at the end: "Cannot find symbol map_head"), and a skin's
   // length kept for the standard file made the read run past its buffer into the fighter file loaded
   // after it ("Cannot find symbol ftDataNess", lbarchive.c:112).
-  if (g_profile.enabled && g_profile.random_stage_skins) {
+  if (g_profile.enabled && (g_profile.random_stage_skins || !g_session_stage_pack.empty())) {
     for (const auto& shared : g_stage_extent) {
       if (only_slot && lower(shared.first) != lower(*only_slot)) continue;
       const std::string wanted = lower(shared.first);
@@ -6389,6 +6432,25 @@ void set_session_pack(const std::string& iso_path) {
   g_session_pack = key;
 }
 
+void set_session_stage_pack(const std::string& iso_path) {
+  std::error_code ec;
+  const std::string key = iso_path.empty() ? std::string() : fs::absolute(fs::u8path(iso_path), ec).u8string();
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_session_stage_pack = key;
+}
+void set_stage_button_probe(StageButtonProbe probe) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_stage_buttons = probe;
+}
+std::string disc_pack_name(const std::string& iso_path) {
+  std::error_code ec;
+  const std::string key = fs::absolute(fs::u8path(iso_path), ec).u8string();
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (const auto& asset : g_assets)
+    if (asset.source_kind == kDiscSource && asset.source_id == key) return asset.source_name;
+  return {};
+}
+
 bool session_pack_skin(const std::string& asset_id) {
   if (asset_id.empty()) return false;
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -6522,6 +6584,14 @@ LiveCycle cycle_stage_live(const std::string& stage_file, int direction) {
   }
   const std::string target = stage_target_locked(stage_file);
   if (target.empty()) { result.message = "No skin is installed for this stage."; return result; }
+  // A stage whose alternates the session disc picks by the button held as it loads (L, R, Z, B, X, Y):
+  // those buttons pick the alternate here, as on that disc, and do not step this stage's skin. A step
+  // now would also load its pick before the match's own, and the game would keep that one.
+  if (std::any_of(g_assets.begin(), g_assets.end(), [&](const AssetRecord& asset) {
+        return session_stage_record(asset) && selection_key(asset) == target;
+      })) {
+    result.message = "This stage's alternates are picked by the button held as it loads."; return result;
+  }
   std::vector<std::string> ids{std::string()}, names{"Standard"};
   for (const auto& asset : g_assets) {
     if (asset.info.kind != "stage_visual" || !asset.info.available || selection_key(asset) != target) continue;
@@ -6685,12 +6755,19 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
   if (!current->initialized || !fst || target.empty() || !g_profile.enabled) return result;
   const auto previous = current->stage_matches.find(target);
   if (previous != current->stage_matches.end() && previous->second.first == match_token) return result;
-  if (!g_profile.random_stage_skins && previous == current->stage_matches.end()) return result;
+  // The session disc's own alternates of this stage: picked for every match, as the disc's stage code
+  // does (a held button names one, otherwise any of them), whatever the random setting says.
+  const bool session = std::any_of(g_assets.begin(), g_assets.end(), [&](const AssetRecord& asset) {
+    return session_stage_record(asset) && selection_key(asset) == target;
+  });
+  const bool pick_any = g_profile.random_stage_skins || session;
+  if (!pick_any && previous == current->stage_matches.end()) return result;
 
   std::vector<std::string> eligible;
+  std::vector<uint32_t> eligible_buttons;
   size_t extent = 0;
   const auto started = std::chrono::steady_clock::now();
-  if (g_profile.random_stage_skins) {
+  if (pick_any) {
     std::vector<FstFile> files;
     if (!parse_fst(fst, fst_size, &files, &result.message)) return result;
     const std::string wanted = lower(target);
@@ -6715,7 +6792,8 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
     }
     for (const auto& asset : g_assets) {
       if (!asset.info.available || asset.info.kind != "stage_visual" || selection_key(asset) != target) continue;
-      if (asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)) continue;
+      if (session ? !session_stage_record(asset)
+                  : asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id) != 0) continue;
       std::string error;
       const auto bytes = load_runtime_asset_locked(asset, &error);
       if (bytes.empty()) continue;
@@ -6741,11 +6819,27 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
         if (!stage_online_form(original, bytes, &form, &error, target)) { if (online_active()) { allowed = false; break; } continue; }
         longest = std::max(longest, form.size());
       }
-      if (allowed) { eligible.push_back(asset.info.id); extent = std::max(extent, longest); }
+      if (allowed) {
+        eligible.push_back(asset.info.id);
+        eligible_buttons.push_back(session ? stage_alternate_button(asset.info.variant) : 0);
+        extent = std::max(extent, longest);
+      }
     }
   }
   std::string chosen;
-  if (!g_profile.random_stage_skins) {
+  bool by_button = false;
+  if (session && g_stage_buttons && !eligible.empty()) {
+    // The disc's rule: L, R, Z, B, X, Y in that order, the first one held that an alternate is named for.
+    const uint32_t held = g_stage_buttons();
+    for (const uint32_t bit : {0x40u, 0x20u, 0x10u, 0x200u, 0x400u, 0x800u}) {
+      if (!(held & bit)) continue;
+      for (size_t i = 0; i < eligible.size() && !by_button; ++i)
+        if (eligible_buttons[i] == bit) { chosen = eligible[i]; by_button = true; }
+      if (by_button) break;
+    }
+  }
+  if (by_button) {
+  } else if (!pick_any) {
     const auto fixed = g_profile.selections.find(target);
     if (fixed != g_profile.selections.end() && fixed->second != kVanillaSelection) chosen = fixed->second;
   } else if (!eligible.empty()) {
@@ -6760,14 +6854,14 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
     } while (random < threshold);
     chosen = eligible[random % count];
   }
-  if (g_profile.random_stage_skins && extent) g_stage_extent[target] = std::max(g_stage_extent[target], extent);
+  if (pick_any && extent) g_stage_extent[target] = std::max(g_stage_extent[target], extent);
   publish_locked(fst, fst_size, &target, &result, &chosen);
   if (!result.ok) return result;
   auto next = std::make_shared<RuntimeState>(*std::atomic_load(&g_runtime));
   next->stage_matches[target] = {match_token, chosen};
   std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
   host::log("cosmetics: match %llu %s skin for %s: %s (%zu eligible, %lld ms)",
-            (unsigned long long)match_token, g_profile.random_stage_skins ? "random" : "fixed",
+            (unsigned long long)match_token, by_button ? "held button" : pick_any ? "random" : "fixed",
             target.c_str(), chosen.empty() ? "Standard" : chosen.c_str(), eligible.size(),
             (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
   return result;
