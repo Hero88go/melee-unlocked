@@ -738,6 +738,9 @@ class D3D12Backend : public Backend {
   // the scale and the look alone, so an uncapped display, which presents one game frame many times, fills
   // them once. Keyed by the frame object and its sequence; a draw's slot is filled on its first present.
   const Frame* ps_cache_frame_ = nullptr;
+  // This frame's reflective stage floors' own textures (remix_layer_draw): every stage draw with one of
+  // them goes to the layer, so a floor is all the game's or all Remix's, never strips of both.
+  std::unordered_set<uint32_t> remix_floor_tex_;
   uint64_t ps_cache_sequence_ = ~0ull;
   int ps_cache_scale_ = 0;
   std::vector<PSConstants> ps_cache_;
@@ -2866,6 +2869,13 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
     }
     return water ? 4 : 1;
   }
+  // The rest of a reflective floor (the strips without the reflection) goes to the layer with it: with
+  // half of Pokemon Stadium's field from the game and half from Remix, the field showed bands with its
+  // Poke Ball and markings cut at their edges. MELEE_REMIX_FLOOR_SPLIT=1: the old way.
+  static const bool floor_split = std::getenv("MELEE_REMIX_FLOOR_SPLIT") != nullptr;
+  if (!floor_split && !no_efb_layer && dc.owner_player == 0xFF && dc.textures[0].used && remix_floor_tex_.count(dc.textures[0].addr) &&
+      !(remix_water && host::g_stage_water.load(std::memory_order_relaxed)))
+    return 1;
   // Painted backdrops (on by default, chosen from the 11-08 comparison; MELEE_REMIX_BACKDROPS: 0 off,
   // 1 the layer alone, 2 the layer and Remix's sky): the stage's draws that write no depth and add no
   // light (skies, far scenery, painted marks), as the game draws them. Its glows stay Remix's own light.
@@ -5259,6 +5269,16 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   set_presented_test_fill(frame.test_fill);
+  remix_floor_tex_.clear();
+  if (remix_layer_) {
+    // A reflective stage floor (Pokemon Stadium's field, Dream Land's water) reads the game's copy of
+    // the scene through a texture past its first; its first texture is the floor's own art.
+    for (const DrawCall& d : frame.draws) {
+      if (d.owner_player != 0xFF || !d.textures[0].used || efb_copies_.count(d.textures[0].addr)) continue;
+      for (int map = 1; map < 8; ++map)
+        if (d.textures[map].used && efb_copies_.count(d.textures[map].addr)) { remix_floor_tex_.insert(d.textures[0].addr); break; }
+    }
+  }
   Stopwatch frame_sw;
   static const bool startup_diag = std::getenv("MELEE_GPU_STARTUP_DIAG") != nullptr;
   double diag_time = startup_diag ? Stopwatch::now() : 0.0;
