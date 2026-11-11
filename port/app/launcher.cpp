@@ -921,7 +921,13 @@ void paint_play(HDC dc) {
   if (!vanilla_active()) paint_yougame_line(dc);
   RECT sep = LR(CX, 306, CW, 1);
   fill(dc, sep, C_SEP);
-  draw_text(dc, HINT_TEXT, LR(CX, 314, CW, 32), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+  // No game disc yet: Play stays grey, and a Melee ISO put in the Mods folder reads as an active mod
+  // (a report, 11-11: the player had only done that). Say what is missing where the hint goes.
+  if (g_iso.empty())
+    draw_text(dc, launcher::lang::txw(L"No Melee disc chosen yet: press Browse and pick your Melee NTSC 1.02 ISO. A disc in the Mods folder only loads as a mod."),
+              LR(CX, 314, CW, 32), g_font_small, C_WARN, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+  else
+    draw_text(dc, HINT_TEXT, LR(CX, 314, CW, 32), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
   std::string version_status = g_active_version.empty() ? "" : launcher::lang::fill(launcher::lang::tx("Playing {version}"), launcher::lang::Args{{"version", g_active_version}});
   if (!version_status.empty() && !vanilla_supported()) version_status += ". " + launcher::lang::tx("Vanilla needs 0.9.17 or newer");
   bool status_bad = host::updater::rollback_state() == host::updater::RollbackState::Failed;
