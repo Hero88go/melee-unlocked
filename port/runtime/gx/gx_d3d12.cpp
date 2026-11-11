@@ -2842,11 +2842,29 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
   // Fountain of Dreams' water (a stage surface textured by an EFB copy on a water stage): Remix's own,
   // as real water that reflects the scene (4: not in the layer; MELEE_REMIX_WATER=0 paints the game's).
   static const bool remix_water = [] { const char* v = std::getenv("MELEE_REMIX_WATER"); return !v || std::atoi(v) != 0; }();
-  for (const TextureRef& t : dc.textures) {
-    if (!t.used) continue;
+  static const bool no_efb_layer = std::getenv("MELEE_REMIX_NO_EFB_LAYER") != nullptr;   // tests: live screens to Remix
+  // A reflective stage surface (Pokemon Stadium's floor, Dream Land's water): its own art is its first
+  // texture and the game's EFB copy of the scene comes in through another, read with coordinates made
+  // from its positions. Remix draws it as a surface with that art and makes its own reflection (0). In
+  // the layer it pasted the game's whole floor over Remix's in bands, cutting the floor art at their
+  // edges. Tests only for now (MELEE_REMIX_REFLECTIVE_SCENE=1): the bridge bakes the first texture, and
+  // Stadium's Poke Ball and markings near the camera are in another, so they went missing.
+  static const bool reflective_layer = std::getenv("MELEE_REMIX_REFLECTIVE_SCENE") == nullptr;
+  for (int map = 0; map < 8; ++map) {
+    const TextureRef& t = dc.textures[map];
+    if (!t.used || no_efb_layer) continue;
     const auto ec = efb_copies_.find(t.addr);
-    if (ec != efb_copies_.end() && ec->second.resource)
-      return remix_water && dc.owner_player == 0xFF && host::g_stage_water.load(std::memory_order_relaxed) ? 4 : 1;
+    if (ec == efb_copies_.end() || !ec->second.resource) continue;
+    const bool water = remix_water && dc.owner_player == 0xFF && host::g_stage_water.load(std::memory_order_relaxed);
+    if (!reflective_layer && !water && dc.owner_player == 0xFF && map != 0 && dc.textures[0].used &&
+        efb_copies_.find(dc.textures[0].addr) == efb_copies_.end()) {
+      for (uint32_t n = 0; n <= dc.bp.numtevstages() && n < 16; ++n) {
+        if (!dc.bp.order_enable((int)n) || dc.bp.order_texmap((int)n) != map) continue;
+        const int gen = dc.bp.order_texcoord((int)n);
+        if (gen >= 0 && gen < 8 && ((dc.xf_regs[0x40 + gen] >> 7) & 31) == 0) return 0;   // from position
+      }
+    }
+    return water ? 4 : 1;
   }
   // Painted backdrops (on by default, chosen from the 11-08 comparison; MELEE_REMIX_BACKDROPS: 0 off,
   // 1 the layer alone, 2 the layer and Remix's sky): the stage's draws that write no depth and add no
@@ -3681,6 +3699,23 @@ void D3D12Backend::remix_finish(const Frame& frame) {
   remix_camera_ = camera;
   remix_layer_draws_.assign(frame.draws.size(), 0);
   for (size_t i = 0; i < frame.draws.size(); ++i) remix_layer_draws_[i] = remix_layer_draw(frame.draws[i]);
+  {
+    // Test runs (MELEE_REMIX_LAYERLOG=<sim frame>): every draw the layer carries on that frame.
+    static const uint64_t layer_log = [] { const char* v = std::getenv("MELEE_REMIX_LAYERLOG"); return v ? std::strtoull(v, nullptr, 10) : 0ull; }();
+    if (layer_log && frame.sequence == layer_log)
+      for (size_t i = 0; i < frame.draws.size(); ++i) {
+        if (!remix_layer_draws_[i]) continue;
+        const DrawCall& d = frame.draws[i];
+        bool textured = false;
+        for (const TextureRef& t : d.textures) textured = textured || t.used;
+        double va = 0;
+        for (uint32_t v = 0; v < d.vertex_count && d.first_vertex + v < frame.vertices.size(); ++v) va += frame.vertices[d.first_vertex + v].col0[3];
+        host::log("remix layer: #%zu value %u owner %02X bm %04X zm %02X textured %d verts %u prim %02X cam %d effect %d vc %d valpha %.0f mat %08X chan %08X",
+                  i, (unsigned)remix_layer_draws_[i], (unsigned)d.owner_player, d.bp.blendmode() & 0xFFFF, d.bp.zmode() & 0x1F,
+                  textured ? 1 : 0, d.vertex_count, d.primitive, (int)d.rtx.camera, remix_effect_draw(d) ? 1 : 0,
+                  (d.components & VB_HAS_COL0) ? 1 : 0, d.vertex_count ? va / d.vertex_count : 0.0, d.xf_regs[0x0C], d.xf_regs[0x10]);
+      }
+  }
   remix_->frame(frame, camera, view_to_world, lights, remix_layer_draws_);
   static uint64_t remix_frames = 0;
   if (++remix_frames % 300 == 1) {
