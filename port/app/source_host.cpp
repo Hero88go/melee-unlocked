@@ -27,6 +27,7 @@
 #include <csignal>
 #endif
 #include <algorithm>
+#include <atomic>
 #include <deque>
 #include <cctype>
 #include <chrono>
@@ -269,6 +270,31 @@ std::unordered_set<int32_t> g_pack_skin_served;
 // the player's own Mods-tab skin: that skin was checked against the standard costume, which this file
 // matches. A pack that changes the skeleton keeps its costume, as before.
 bool pack_costume_takes_skins(uint32_t entry) { return g_pack_skin_served.count((int32_t)entry) != 0; }
+// Buttons held on any controller at the last pad read, for the stage pick of a disc with alternate
+// stages (host::cosmetics::set_stage_button_probe).
+std::atomic<uint32_t> g_held_buttons{0};
+uint32_t held_buttons() { return g_held_buttons.load(std::memory_order_relaxed); }
+// True for a stage file that is no stage on its own: it has a stage map and no collision data. An
+// m-ex stage stub is one (its code, in the file, loads the real stage from a folder of alternates).
+// The Source Port runs no code from a file, so serving it gave a stage nothing stands on.
+bool stage_file_is_stub(const std::vector<uint8_t>& b) {
+  auto word = [&](size_t at) { return (uint32_t)b[at] << 24 | (uint32_t)b[at + 1] << 16 | (uint32_t)b[at + 2] << 8 | b[at + 3]; };
+  if (b.size() < 0x20 || word(0) != b.size()) return false;
+  const uint64_t data = word(4), relocations = word(8), roots = word(12), references = word(16);
+  const uint64_t table = 0x20 + data + relocations * 4, strings = table + (roots + references) * 8;
+  if (!roots || roots > 1024 || references > 1024 || strings > b.size()) return false;
+  bool map = false, collision = false;
+  for (uint64_t i = 0; i < roots; ++i) {
+    const uint64_t name = strings + word((size_t)(table + i * 8 + 4));
+    if (name >= b.size()) return false;
+    const char* text = (const char*)b.data() + name;
+    const size_t length = strnlen(text, b.size() - (size_t)name);
+    const std::string symbol(text, length);
+    map |= symbol == "map_head";
+    collision |= symbol == "coll_data";
+  }
+  return map && !collision;
+}
 slippi::online::NativeGameplayProfile g_mod_gameplay_profile = slippi::online::NativeGameplayProfile::Vanilla;
 std::string g_mod_display_name;
 
@@ -677,8 +703,31 @@ void load_mod_overlay() {
             g_mod_profile_name.empty() ? "(command line)" : g_mod_profile_name.c_str(),
             g_mod_fingerprint.substr(0, 16).c_str(), g_mod_layers.size(), summary.c_str());
 
+  // A stage stub of a dynamic alternate stages disc is not served: the game's own stage file stays,
+  // and the disc's alternates of that stage ("GrSt/GrSt-surfshop(L).dat") are picked each match the
+  // way the stub's code picks them (held L, R, Z, B, X or Y names one, otherwise any of them).
+  std::unordered_set<std::string> stage_stubs;
+  std::filesystem::path stub_disc;
+  for (const auto& file : g_mod_overlay.files()) {
+    if (!skins::is_stage_file(file.path) || !file.length || file.length > 1024u * 1024u) continue;
+    std::vector<uint8_t> bytes(file.length);
+    if (g_mod_overlay.read(file.start, bytes.data(), file.length) != ModOverlay::Read::Success ||
+        !stage_file_is_stub(bytes)) continue;
+    stage_stubs.insert(file.path);
+    if (!file.iso.empty()) stub_disc = file.iso;
+    host::log("mods: %s is a stage stub (its stage code is not run here); the game's stage stays, with the disc's alternates",
+              skins::display_name(file.path).c_str());
+  }
+  if (!stub_disc.empty()) {
+    std::string name = host::cosmetics::disc_pack_name(stub_disc.u8string());
+    if (name.empty()) name = stub_disc.stem().u8string() + " disc";
+    const auto scan = host::cosmetics::scan_disc_skins(stub_disc.u8string(), name);
+    if (!scan.ok) host::log("mods: alternate stages of %s not listed: %s", stub_disc.filename().u8string().c_str(), scan.message.c_str());
+    host::cosmetics::set_session_stage_pack(stub_disc.u8string());
+  }
   uint32_t replaced = 0, added = 0, pack_kept = 0;
   for (const auto& file : g_mod_overlay.files()) {
+    if (stage_stubs.count(file.path)) continue;
     if (pack_keeps(file)) { ++pack_kept; continue; }   // retail menus, and no file that carries code
     auto found = g_paths.find(file.path);
     int32_t entry;
@@ -697,7 +746,7 @@ void load_mod_overlay() {
   // The retail view of every file the layers changed.
   g_view_alias.clear();
   for (const auto& file : g_mod_overlay.files()) {
-    if (pack_keeps(file)) continue;   // not served: the disc's own entry, the same in both views
+    if (pack_keeps(file) || stage_stubs.count(file.path)) continue;   // not served: the disc's own entry, the same in both views
     const auto now = g_paths.find(file.path);
     if (now == g_paths.end()) continue;
     const auto base = base_paths.find(file.path);
@@ -825,6 +874,7 @@ void load_cosmetics(bool always_vanilla_unsafe) {
     }
   }
   host::cosmetics::set_online_probe(native_online_mode);
+  host::cosmetics::set_stage_button_probe(held_buttons);
   const auto profile = host::cosmetics::session_profile();
   host::log("cosmetics: %zu disc files overridden (profile %s%s)", g_cosmetic_files.size(),
             profile.fingerprint.empty() ? "vanilla" : profile.fingerprint.c_str(),
@@ -2291,6 +2341,7 @@ void h_pad_read(MuPadStatus out[4]) {
     if (active && !was_active) host::audio_trace_event("input");
     was_active = active;
   }
+  g_held_buttons.store((uint32_t)(pads[0].button | pads[1].button | pads[2].button | pads[3].button), std::memory_order_relaxed);
   for (int i = 0; i < 4; ++i) {
     out[i].button = pads[i].button;
     out[i].stick_x = pads[i].stick_x; out[i].stick_y = pads[i].stick_y;

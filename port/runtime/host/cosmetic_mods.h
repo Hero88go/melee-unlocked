@@ -228,6 +228,17 @@ uint32_t disc_skin_count(const std::string& iso_path);
 // sets ("alt L", "alt R") step after the standard costume like any skin. Empty: no such disc
 // (the default, and always on the Static Recomp, where a pack disc runs its own L / R).
 void set_session_pack(const std::string& iso_path);
+// The disc whose alternate stages are this session's stages: a dynamic alternate stages disc keeps a
+// folder of alternates per stage ("GrSt/GrSt-surfshop(L).dat") and its stage code picks one each
+// match. With this set, every match picks among that disc's alternates of the stage the same way: a
+// held button names one (the probe below), otherwise any of them, whatever the random stage skin
+// setting says. Online only alternates that play like the game's stage are in the pick.
+void set_session_stage_pack(const std::string& iso_path);
+// Buttons held on any controller, in the game's pad bits (L 0x40, R 0x20, Z 0x10, B 0x200, X 0x400, Y 0x800).
+using StageButtonProbe = uint32_t (*)();
+void set_stage_button_probe(StageButtonProbe probe);
+// The pack name a scanned disc's skins are listed under, or empty when it has none.
+std::string disc_pack_name(const std::string& iso_path);
 // True for a costume skin scanned from that disc. The Source Port lets these serve a costume file
 // the pack itself replaced; a skin from anywhere else leaves the pack's own file in place.
 bool session_pack_skin(const std::string& asset_id);

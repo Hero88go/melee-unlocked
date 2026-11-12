@@ -45,6 +45,9 @@ struct Options {
   // Static Recomp mod runs: the boot disc (iso) is a mod, and this is the player's vanilla 1.02 disc.
   // The mod's changed game code then runs from RAM, compared against the vanilla code.
   std::string mod_base_iso;
+  // The standard game with this mod disc's looks (--look-iso): its costumes, stages, HUD and effects
+  // that pass the online look check are served over the game's own files, and none of its code runs.
+  std::string look_iso;
 };
 
 extern Options options;
@@ -196,6 +199,10 @@ void publish_lobby_result(int winner_index, int end_method, int lras = -1, const
 // Used for settings a running device cannot adopt, the graphics backend being the one that
 // matters today.
 void request_restart();
+// A Static Recomp mod disc session (--iso <mod> --mod-base-iso <game>) starts again as the standard
+// game with that disc's looks (--iso <game> --look-iso <mod>): the form Unranked and Party play.
+// False when this is not such a session or the new process could not be started.
+bool restart_with_mod_looks();
 int exit_code();
 uint32_t retrace_count();
 // Frame id read by the optional sampling profiler. It is atomic because the

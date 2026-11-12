@@ -1742,6 +1742,7 @@ static int melee_main(int argc, char** argv) {
     bool known = true;
     if (a == "--iso") o.iso = next();
     else if (a == "--mod-base-iso") o.mod_base_iso = next();   // Static Recomp: --iso is a mod disc, this is the vanilla one
+    else if (a == "--look-iso") o.look_iso = next();           // the standard game with this mod disc's looks
     else if (a == "--ram-translator") ram_translator = true;
     else if (a == "--no-ram-translator") ram_translator = false;
     else if (a == "--state-trace") o.state_trace = next();
@@ -2238,10 +2239,31 @@ static int melee_main(int argc, char** argv) {
     if (!look.empty())
       for (const auto& pack : host::cosmetics::look_packs())
         if (pack.name == look && pack.built) active = look;
+    // --look-iso: a mod disc's looks over the standard game, for this start only, in place of an exact
+    // look. Its costumes, stages, HUD and effects are served by the rules of an exact look (online, only
+    // what passes the look check), and its alternate stages are this session's stages. Nothing is
+    // saved; none of its code runs.
+    std::string mod_look;
+    if (!o.look_iso.empty() && o.mod_base_iso.empty()) {
+      std::string name = host::cosmetics::disc_pack_name(o.look_iso);
+      if (name.empty()) name = std::filesystem::u8path(o.look_iso).stem().u8string() + " disc";
+      std::string error;
+      const auto scan = host::cosmetics::scan_disc_skins(o.look_iso, name, &error);
+      mod_look = host::cosmetics::disc_pack_name(o.look_iso);
+      if (mod_look.empty())
+        host::log("looks: %s has no looks this game can use (%s); the standard game plays", o.look_iso.c_str(),
+                  (error.empty() ? scan.message : error).c_str());
+      else {
+        host::cosmetics::set_session_stage_pack(o.look_iso);
+        host::log("looks: the standard game with the looks of %s", mod_look.c_str());
+      }
+    }
+    const bool exact = !active.empty() && mod_look.empty();
+    if (!mod_look.empty()) active = mod_look;
     host::cosmetics::set_active_look_pack(active);
-    gx::look_live().exact.store(!active.empty(), std::memory_order_relaxed);
-    gx::look_live().exact_low_poly.store(active != "Crystal", std::memory_order_relaxed);   // Crystal's fighters are the full models
-    if (!active.empty()) host::log("looks: %s from the player's pack", active.c_str());
+    gx::look_live().exact.store(exact, std::memory_order_relaxed);
+    gx::look_live().exact_low_poly.store(!exact || active != "Crystal", std::memory_order_relaxed);   // Crystal's fighters are the full models
+    if (exact) host::log("looks: %s from the player's pack", active.c_str());
   }
   if (host::gameplay::vanilla_only()) {
     source_port::mods::ScanOptions check;

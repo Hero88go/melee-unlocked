@@ -69,6 +69,12 @@ const char* local_matchmaking_error(int mode) {
     return "AGENT TEST net delay requires Direct";
   }
 #endif
+  // A Static Recomp mod session runs the disc's code, which Unranked and Party cannot play against
+  // the standard game. Instead of refusing, the game starts again as the standard game with the
+  // disc's looks (what the Source Port switches to on the spot); the player picks the mode again.
+  if (g_local_build.static_engine && g_local_build.mod_view && !yougame::session() && (mode == 1 || mode == 4) &&
+      native_profile_mode_error(effective_profile(), mode, false) && host::restart_with_mod_looks())
+    return "Starting the standard game with this mod's looks for Unranked and Party...";
   if (const char* reason = native_profile_mode_error(effective_profile(), mode, yougame::session())) return reason;
   if (yougame::session() && mode == 0 && !g_config.ranked_rules_path.empty() && !g_ranked_rules_valid)
     return yougame::ranked_rules::kInvalid;

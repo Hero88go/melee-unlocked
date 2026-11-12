@@ -1189,6 +1189,13 @@ void boot_setup() {
   // then served by file identity, so a larger mod never aliases the next physical ISO file.
   cosmetics::apply_to_fst(ptr(fst_addr, g_fst_size), g_fst_size);
   cosmetics::set_online_probe([] { return ram != nullptr && rd8(0x80479D30) == 8; });
+  // The buttons held on the four controllers (the game's pad copy, 0x44 bytes a port): a disc with
+  // alternate stages picks by them as a match starts, as its own stage code does.
+  cosmetics::set_stage_button_probe([]() -> uint32_t {
+    uint32_t held = 0;
+    if (ram) for (uint32_t port = 0; port < 4; ++port) held |= rd32(0x804C20BCu + port * 0x44u);
+    return held;
+  });
   wr32(0x80000038, fst_addr);
   g_fst_addr = fst_addr;
   wr32(0x8000003C, g_fst_max);
@@ -1285,6 +1292,67 @@ void request_restart() {
   CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
   log("restart: relaunched, shutting down this instance");
   request_exit(0);
+}
+// Splits a Windows command line the way the C runtime does: spaces outside quotes separate, 2n
+// backslashes before a quote are n backslashes and a quote that toggles, 2n+1 are n and a literal quote.
+static std::vector<std::wstring> split_command_line(const std::wstring& line) {
+  std::vector<std::wstring> out;
+  size_t i = 0;
+  while (i < line.size()) {
+    while (i < line.size() && (line[i] == L' ' || line[i] == L'\t')) ++i;
+    if (i >= line.size()) break;
+    std::wstring arg;
+    bool quoted = false;
+    while (i < line.size() && (quoted || (line[i] != L' ' && line[i] != L'\t'))) {
+      size_t slashes = 0;
+      while (i < line.size() && line[i] == L'\\') { ++slashes; ++i; }
+      if (i < line.size() && line[i] == L'"') {
+        arg.append(slashes / 2, L'\\');
+        if (slashes % 2) arg += L'"'; else quoted = !quoted;
+        ++i;
+      } else {
+        arg.append(slashes, L'\\');
+        if (i < line.size() && (quoted || (line[i] != L' ' && line[i] != L'\t'))) arg += line[i++];
+      }
+    }
+    out.push_back(arg);
+  }
+  return out;
+}
+static std::wstring quote_argument(const std::wstring& arg) {
+  std::wstring out = L"\"";
+  size_t slashes = 0;
+  for (const wchar_t ch : arg) {
+    if (ch == L'\\') { ++slashes; continue; }
+    if (ch == L'"') { out.append(slashes * 2 + 1, L'\\'); out += L'"'; }
+    else { out.append(slashes, L'\\'); out += ch; }
+    slashes = 0;
+  }
+  out.append(slashes * 2, L'\\');
+  return out + L"\"";
+}
+bool restart_with_mod_looks() {
+  if (!g_mod_disc || g_mod_clean || options.mod_base_iso.empty()) return false;
+  wchar_t exe[MAX_PATH];
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) { log("restart: cannot find this executable"); return false; }
+  const std::vector<std::wstring> args = split_command_line(GetCommandLineW());
+  if (args.empty()) return false;
+  std::wstring cmd = quote_argument(args[0]);
+  for (size_t i = 1; i < args.size(); ++i) {
+    if ((args[i] == L"--iso" || args[i] == L"--mod-base-iso" || args[i] == L"--look-iso") && i + 1 < args.size()) { ++i; continue; }
+    cmd += L" " + quote_argument(args[i]);
+  }
+  cmd += L" --iso " + quote_argument(std::filesystem::u8path(options.mod_base_iso).wstring()) +
+         L" --look-iso " + quote_argument(std::filesystem::u8path(options.iso).wstring());
+  STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+  if (!CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    log("restart: CreateProcess failed, error %lu", (unsigned long)GetLastError());
+    return false;
+  }
+  CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+  log("restart: starting the standard game with this mod's looks for Unranked and Party; shutting down this instance");
+  request_exit(0);
+  return true;
 }
 int exit_code() { return g_exit_code.load(); }
 uint32_t retrace_count() { return g_retraces; }
