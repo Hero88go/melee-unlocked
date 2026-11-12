@@ -161,7 +161,9 @@ set_target_properties(melee_source PROPERTIES OUTPUT_NAME ${MELEE_SOURCE_NAME})
 # The shared Win32 compatibility preinclude is C++; never force it into the C99 helper.
 target_compile_options(melee_source PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${MELEE_LINUX_COMMON_FLAGS}>")
 target_compile_features(melee_source PRIVATE c_std_99)
-target_link_libraries(melee_source PRIVATE full_runtime full_mu_net)
+# .slpz replays given to --replay (app/main.cpp playable_replay).
+include("${PORT}/app/disc_rvz.cmake")
+target_link_libraries(melee_source PRIVATE full_runtime full_mu_net port_disc_rvz)
 option(YOUGAME_AGENT_TEST_HOOK "Staging test builds: read agent-test.json in app-launched YouGame mode" OFF)
 if(YOUGAME_AGENT_TEST_HOOK)
   # Windows defines this privately on runtime and both game hosts. Linux has one full host;

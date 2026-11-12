@@ -1,4 +1,5 @@
 #include "launcher_replay_data.h"
+#include "replay_slpz.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
@@ -95,8 +96,22 @@ const char* move_name(int id) {
 }
 Info inspect(const std::filesystem::path& path,bool with_stats) {
   Info info;info.path=path;
-  std::ifstream file(path,std::ios::binary|std::ios::ate);
-  if(!file) return info;
+  // A .slpz (replay_slpz.h) is read as the .slp it holds, from memory.
+  std::ifstream disk(path,std::ios::binary|std::ios::ate);
+  if(!disk) return info;
+  std::istringstream unpacked;
+  {
+    std::array<uint8_t,24> head{};disk.seekg(0);disk.read((char*)head.data(),head.size());
+    if(disk && slpz::is_slpz(head.data(),head.size())){
+      std::vector<uint8_t> slp;
+      if(!slpz::read_replay(path.u8string(),slp)) return info;
+      unpacked.str(std::string(slp.begin(),slp.end()));
+    }
+    disk.clear();disk.seekg(0,std::ios::end);
+  }
+  const bool packed=!unpacked.str().empty();
+  std::istream& file=packed?static_cast<std::istream&>(unpacked):static_cast<std::istream&>(disk);
+  if(packed) file.seekg(0,std::ios::end);
   const auto total=file.tellg();
   if(total<15 || total>std::streamoff(512u*1024u*1024u)) return info;
   file.seekg(0); std::array<uint8_t,15> header{};file.read((char*)header.data(),header.size());

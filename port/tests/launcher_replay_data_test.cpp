@@ -1,4 +1,5 @@
 #include "launcher_replay_data.h"
+#include "replay_slpz.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -145,6 +146,16 @@ int main(int argc,char** argv) {
   const auto path=std::filesystem::current_path()/"launcher_replay_data_test.slp";
   {std::ofstream out(path,std::ios::binary);out.write((const char*)file.data(),file.size());}
   auto info=launcher::replay::inspect(path,true);
+  // The same replay as .slpz (replay_slpz.h): the library card and its stats read alike.
+  {
+    const std::string packed=slpz::compress_file(path.u8string());
+    if(packed.empty()) return 20;
+    auto from_slpz=launcher::replay::inspect(std::filesystem::u8path(packed),true);
+    std::filesystem::remove(std::filesystem::u8path(packed));
+    if(!from_slpz.valid || from_slpz.stage!=info.stage || from_slpz.players.size()!=info.players.size() ||
+       from_slpz.players[0].name!=info.players[0].name || from_slpz.players[0].l_success!=info.players[0].l_success ||
+       from_slpz.start_at!=info.start_at) return 21;
+  }
   std::filesystem::remove(path);
   if(!info.valid || info.players.size()!=2 || info.stage!="Battlefield") return 1;
   if(info.players[0].name!="Fox player" || info.players[1].name!="Marth player") return 2;

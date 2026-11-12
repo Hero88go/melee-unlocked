@@ -62,6 +62,7 @@ namespace {
 std::string g_dir;                 // the folder the launcher and the game are in
 std::string g_iso;
 bool g_save_replays = true;
+bool g_compress_replays = false;  // launcher.ini compressreplays=1: the game keeps earlier replays as .slpz
 std::string g_replay_folder;      // launcher.ini replaydir=: where replays are saved; empty = <g_dir>/Replays
 bool g_replay_as_played = false;
 int g_replay_sort = 0;
@@ -93,6 +94,7 @@ void load_ini() {
     if (launcher::yougame::load_line(line)) continue;
     if (line.rfind("iso=", 0) == 0) g_iso = line.substr(4);
     else if (line == "savereplays=0") g_save_replays = false;
+    else if (line == "compressreplays=1") g_compress_replays = true;
     else if (line.rfind("replaydir=", 0) == 0) g_replay_folder = line.substr(10);
     else if (line == "replayasplayed=1") g_replay_as_played = true;
     else if (line == "replayhideshort=1") g_replay_hide_short = true;
@@ -105,6 +107,7 @@ void save_ini() {
   std::ofstream f(ini_path(), std::ios::trunc);
   f << "iso=" << g_iso << "\n";
   if (!g_save_replays) f << "savereplays=0\n";
+  if (g_compress_replays) f << "compressreplays=1\n";
   if (!g_replay_folder.empty()) f << "replaydir=" << g_replay_folder << "\n";
   if (g_replay_as_played) f << "replayasplayed=1\n";
   if (g_replay_hide_short) f << "replayhideshort=1\n";
@@ -376,7 +379,7 @@ void refresh_replays() {
       if (!fs::is_directory(root, ec)) continue;
       for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
         if (it.depth() > 3) { it.disable_recursion_pending(); continue; }
-        if (!it->is_regular_file(ec) || it->path().extension() != ".slp") continue;
+        if (!it->is_regular_file(ec) || (it->path().extension() != ".slp" && it->path().extension() != ".slpz")) continue;
         const auto canon = fs::weakly_canonical(it->path(), ec).string();
         if (seen.insert(canon).second) files.push_back(it->path());
       }
@@ -420,7 +423,7 @@ ReplayStart replay_start(const fs::path& file) {
   std::string sys = g_dir + "/SysPlayback";
   if (!file_exists(sys + "/codehandler.bin")) sys = g_dir + "/Sys";
   a.insert(a.end(), {"--sys-dir", sys, "--replay", file.string()});
-  if (g_replay_as_played && file_exists(file.string() + ".trace")) a.push_back("--as-experienced");
+  if (g_replay_as_played && file_exists(fs::path(file).replace_extension(".trace").string())) a.push_back("--as-experienced");   // Game_X.trace, as the game writes it
   if (!start_process(a)) return ReplayStart::Failed;
   g_replay_active = true;
   status("Watching " + file.filename().string());
@@ -666,6 +669,9 @@ void page_play() {
   ImGui::EndGroup();
   ImGui::Spacing();
   if (ImGui::Checkbox("Save my replays", &g_save_replays)) save_ini();
+  ImGui::SameLine();
+  // .slpz: the same replay 8 to 12 times smaller; the game compresses earlier sessions' replays as it starts.
+  if (ImGui::Checkbox("Keep replays compressed (.slpz)", &g_compress_replays)) save_ini();
   {
     static char folder[1024] = "";
     static bool filled = false;
@@ -728,7 +734,7 @@ void page_replays() {
   if (ImGui::Button("Refresh")) refresh_replays();
   ImGui::SameLine();
   if (ImGui::Button("Open replay...")) {
-    const auto picked = choose_file("Open a replay", "Slippi replays", "*.slp");
+    const auto picked = choose_file("Open a replay", "Slippi replays", "*.slp *.slpz");
     if (!picked.empty()) replay_start(picked);
   }
   ImGui::SameLine();

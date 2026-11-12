@@ -1,3 +1,4 @@
 zstd 1.5.7 (https://github.com/facebook/zstd, release tarball sha256 eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3).
 Only the decoder: lib/common and lib/decompress files it needs, zstd.h, zstd_errors.h. Unchanged.
 Used by port/app/disc_rvz.cpp to read RVZ disc images. License: LICENSE (BSD-3-Clause).
+zstd 1.5.7 compress/ and common/pool.*, common/threading.* added 2026-11-11 from the same release tarball (sha256 above) for .slpz replays (port/app/replay_slpz.cpp). Unchanged.

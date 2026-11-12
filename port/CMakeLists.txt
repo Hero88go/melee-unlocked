@@ -112,7 +112,7 @@ if(MELEE_NO_SLIPPI)
   target_compile_features(runtime_ns PUBLIC cxx_std_17)
   target_compile_options(runtime_ns PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
   target_compile_definitions(runtime_ns PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
-  target_link_libraries(runtime_ns PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
+  target_link_libraries(runtime_ns PUBLIC port_disc_rvz native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
 
   add_executable(melee_source WIN32 app/main.cpp app/settings_window.cpp app/source_host.cpp app/source_guest_boundary.cpp
     app/source_p2p.cpp   # the --p2p-* command line: one mu_net session on the game's command channel
@@ -400,6 +400,11 @@ target_compile_options(port_disc_rvz_test PRIVATE /EHsc)
 target_compile_definitions(port_disc_rvz_test PRIVATE MU_RVZ_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rvz")
 target_link_libraries(port_disc_rvz_test PRIVATE port_disc_rvz)
 add_test(NAME port_disc_rvz COMMAND port_disc_rvz_test)
+add_executable(port_replay_slpz_test tests/replay_slpz_test.cpp)
+target_compile_features(port_replay_slpz_test PRIVATE cxx_std_17)
+target_compile_options(port_replay_slpz_test PRIVATE /EHsc /utf-8)
+target_link_libraries(port_replay_slpz_test PRIVATE port_disc_rvz)
+add_test(NAME port_replay_slpz COMMAND port_replay_slpz_test)
 add_executable(port_lcancel_policy_test tests/lcancel_policy_test.cpp)
 target_include_directories(port_lcancel_policy_test PRIVATE runtime/host)
 target_compile_features(port_lcancel_policy_test PRIVATE cxx_std_17)
@@ -866,7 +871,7 @@ target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 include(runtime/ppc/ram_translator.cmake)
-target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
+target_link_libraries(runtime PUBLIC port_disc_rvz native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
 
 # mu_net: the project's own peer-to-peer session (no Slippi code). Keys, signatures and packet
 # sealing come from Monocypher, the transport is ENet. Built where its sources are present.
@@ -1051,6 +1056,7 @@ add_executable(port_launcher_replay_data_test tests/launcher_replay_data_test.cp
 target_include_directories(port_launcher_replay_data_test PRIVATE app third_party)
 target_compile_features(port_launcher_replay_data_test PRIVATE cxx_std_17)
 target_compile_options(port_launcher_replay_data_test PRIVATE /EHsc)
+target_link_libraries(port_launcher_replay_data_test PRIVATE port_disc_rvz)   # .slpz
 add_test(NAME port_launcher_replay_data COMMAND port_launcher_replay_data_test)
 add_executable(port_launcher_trace_view_test tests/launcher_trace_view_test.cpp
   app/launcher_trace_view.cpp runtime/host/net_trace_read.cpp)

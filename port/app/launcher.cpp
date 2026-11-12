@@ -56,6 +56,7 @@
 #include "launcher_trace_view.h"
 #include "launcher_lang.h"
 #include "disc_rvz.h"
+#include "replay_slpz.h"
 #include "launcher_crash_text.h"   // with launcher_crash_zip.h; launcher_crash.inl sits inside the namespace below
 #ifndef MELEE_NO_SLIPPI
 #include "slippi_account.h"
@@ -179,6 +180,7 @@ int g_replay_after_compat_place = 0, g_replay_after_compat_count = 0;
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
 bool g_save_replays = true;   // launcher.ini savereplays=0 turns it off
+bool g_compress_replays = false;   // launcher.ini compressreplays=1: the game keeps earlier replays as .slpz
 std::string g_replay_folder;  // launcher.ini replaydir=: where replays are saved; empty = <g_dir>\Replays
 // Replay Viewer list: the sort order (launcher.ini replaysort=1..3; none or 0 is most recent first,
 // an index into kReplaySorts) and "Hide short games" (replayhideshort=1).
@@ -276,6 +278,7 @@ void load_ini() {
       else if (line == "dlss5asked=1") g_dlss5_asked = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
       else if (line == "savereplays=0") g_save_replays = false;
+      else if (line == "compressreplays=1") g_compress_replays = true;
       else if (line.rfind("replaydir=", 0) == 0) g_replay_folder = line.substr(10);
       else if (line == "replayhideshort=1") g_replay_hide_short = true;
       else if (line.rfind("replaysort=", 0) == 0) g_replay_sort = std::clamp(std::atoi(line.c_str() + 11), 0, 3);
@@ -312,6 +315,7 @@ void save_ini() {
     if (g_dlss5_asked) f << "dlss5asked=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
     if (!g_save_replays) f << "savereplays=0\n";
+    if (g_compress_replays) f << "compressreplays=1\n";
     if (!g_replay_folder.empty()) f << "replaydir=" << g_replay_folder << "\n";
     if (g_replay_sort != 0) f << "replaysort=" << g_replay_sort << "\n";
     if (g_replay_hide_short) f << "replayhideshort=1\n";

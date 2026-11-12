@@ -12,6 +12,8 @@ HWND g_replays[16]{};            // list, browse, watch, refresh, back, prev, ne
                                  // search, sort, "hide short games", watch queue, clear queue, "save replays",
                                  // "watch live", "replay folder"
 HWND g_replay_stats=nullptr;     // the scrolling stats page
+std::atomic<bool> g_replay_compressing{false};   // "Compress all replays now" is running
+void compress_replay_folder();
 // Everything the scan found, newest first. A replay's place in these two is its index everywhere on
 // this page (the stats page, the loader's late results, playback). Only the list box counts in rows.
 std::vector<std::filesystem::path> g_replay_files;
@@ -114,7 +116,8 @@ void replay_delete(int index) {
   SHFILEOPSTRUCTW op{}; op.hwnd=g_main; op.wFunc=FO_DELETE; op.pFrom=from.c_str();
   op.fFlags=FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT;
   if(SHFileOperationW(&op)==0&&!op.fAnyOperationsAborted) {
-    std::wstring trace=file.wstring(); trace.replace(trace.size()-4,4,L".trace"); trace.push_back(L'\0');
+    std::filesystem::path trace_path=file; trace_path.replace_extension(L".trace");   // .slp or .slpz
+    std::wstring trace=trace_path.wstring(); trace.push_back(L'\0');
     std::error_code te; if(std::filesystem::exists(std::filesystem::path(trace.c_str()),te)) { op.pFrom=trace.c_str(); SHFileOperationW(&op); }
     refresh_replays({});
   }
@@ -137,6 +140,10 @@ void replay_context_menu(int x, int y) {
   HMENU menu=CreatePopupMenu();
   AppendMenuW(menu,MF_STRING,1,L"Show in folder");
   AppendMenuW(menu,MF_STRING,2,L"Delete (to the Recycle Bin)");
+  // .slpz (replay_slpz.h): the same replay 8 to 12 times smaller; this library and the game play both.
+  AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+  AppendMenuW(menu,MF_STRING|(g_compress_replays?MF_CHECKED:MF_UNCHECKED),3,L"Keep replays compressed (.slpz)");
+  AppendMenuW(menu,MF_STRING|(g_replay_compressing.load()?MF_GRAYED:0),4,L"Compress all replays now (.slpz)");
   const int pick=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,pt.x,pt.y,0,g_main,nullptr);
   DestroyMenu(menu);
   if(pick==1) {
@@ -144,7 +151,33 @@ void replay_context_menu(int x, int y) {
     ShellExecuteW(g_main,L"open",L"explorer.exe",args.c_str(),nullptr,SW_SHOWNORMAL);
   } else if(pick==2) {
     replay_delete(index);
+  } else if(pick==3) {
+    g_compress_replays=!g_compress_replays;   // the game compresses earlier sessions' replays as it starts
+    save_ini();
+  } else if(pick==4) {
+    compress_replay_folder();
   }
+}
+
+// "Compress all replays now": every finished .slp in the replay folder becomes a .slpz on one idle
+// thread, each checked to read back as the same replay before its .slp is removed. Unfinished
+// recordings and any written in the last minute (a game may still have it open) stay .slp.
+void compress_replay_folder() {
+  if(g_replay_compressing.exchange(true)) return;
+  std::thread([folder=replay_folder()]{
+    SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_IDLE);
+    namespace fs=std::filesystem;
+    const auto cutoff=fs::file_time_type::clock::now()-std::chrono::minutes(1);
+    std::error_code ec;
+    for(fs::recursive_directory_iterator it(fs::u8path(folder),fs::directory_options::skip_permission_denied,ec),end;!ec&&it!=end;it.increment(ec)) {
+      if(it.depth()>3) { it.disable_recursion_pending(); continue; }
+      std::error_code fe;
+      if(!it->is_regular_file(fe)||fe||it->path().extension()!=L".slp"||it->last_write_time(fe)>=cutoff) continue;
+      slpz::compress_file(it->path().u8string());
+    }
+    g_replay_compressing=false;
+    PostMessageW(g_main,WM_COMMAND,MAKEWPARAM(ID_REPLAY_REFRESH,0),0);
+  }).detach();
 }
 
 // "Show it as it was played": an online match leaves a session trace beside its replay, the same
@@ -378,7 +411,7 @@ void refresh_replays(const std::filesystem::path& selected={}) {
         std::transform(extension.begin(),extension.end(),extension.begin(),::towlower);
 #ifndef MELEE_NO_SLIPPI   // nothing is a replay there
         std::error_code fe;
-        if(extension==L".slp"&&it->is_regular_file(fe)) found.emplace_back(it->last_write_time(fe),it->path());
+        if((extension==L".slp"||extension==L".slpz")&&it->is_regular_file(fe)) found.emplace_back(it->last_write_time(fe),it->path());
 #endif
         it.increment(ec);
       }
@@ -489,7 +522,7 @@ void browse_replay() {
   OPENFILENAMEW dialog{sizeof dialog}; dialog.hwndOwner=g_main;
   const std::wstring dialog_title=launcher::lang::txw(L"Open replay");
 #ifndef MELEE_NO_SLIPPI
-  dialog.lpstrFilter=L"Slippi replays (*.slp)\0*.slp\0";
+  dialog.lpstrFilter=L"Slippi replays (*.slp, *.slpz)\0*.slp;*.slpz\0";
 #endif
   dialog.lpstrTitle=dialog_title.c_str();
   dialog.lpstrFile=file; dialog.nMaxFile=32768; dialog.lpstrInitialDir=folder.c_str();

@@ -50,6 +50,7 @@
 #include "hackpack_ai.h"
 #include "practice_cpu.h"
 #include "mod_scan.h"
+#include "replay_slpz.h"
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
@@ -1428,6 +1429,38 @@ static void attach_parent_console() {
 
 static int melee_main(int argc, char** argv);
 
+// --replay with a .slpz (the slpz tool's compressed replays, port/app/replay_slpz.h): every reader
+// here takes a .slp, so it is decompressed once into a scratch file and that is played. The online
+// trace beside the original ("<replay>.trace", for "as experienced") is kept by naming it.
+static std::string playable_replay(const std::string& path) {
+  namespace fs = std::filesystem;
+  std::vector<uint8_t> head(24);
+  {
+    std::ifstream f(fs::u8path(path), std::ios::binary);
+    if (!f.read((char*)head.data(), (std::streamsize)head.size())) return path;
+  }
+  if (!slpz::is_slpz(head.data(), head.size())) return path;
+  std::vector<uint8_t> slp;
+  if (!slpz::read_replay(path, slp)) {
+    std::fprintf(stderr, "replay: %s is a damaged .slpz\n", path.c_str());
+    return path;
+  }
+  std::error_code ec;
+  const fs::path dir = fs::temp_directory_path(ec) / "MeleeUnlocked" / "slpz";
+  fs::create_directories(dir, ec);
+  fs::path out = dir / fs::u8path(path).filename();
+  out.replace_extension(".slp");
+  {
+    std::ofstream f(out, std::ios::binary | std::ios::trunc);
+    f.write((const char*)slp.data(), (std::streamsize)slp.size());
+    if (!f) return path;
+  }
+  fs::path trace = fs::u8path(path);
+  trace.replace_extension(".trace");
+  if (fs::exists(trace, ec)) replay_control::set_trace_file(trace.u8string());
+  return out.u8string();
+}
+
 // Both entry points exist so the executable links whichever subsystem it is built for: WinMain for the
 // windowed build (no terminal alongside the game), main if it is ever built as a console program.
 // A C++ exception that nothing handles (a file name the system cannot convert, a damaged file a
@@ -1449,6 +1482,66 @@ static int melee_main(int argc, char** argv);
     host::die("the game stopped on an internal error of an unknown kind");
   }
   host::die("the game stopped itself (abort)");
+}
+
+// "Save replays compressed" (launcher.ini compressreplays=1; --compress-replays for tests): replays of
+// earlier sessions are turned into .slpz (port/app/replay_slpz.h), 8 to 12 times smaller, once the game has
+// started, on one idle thread. Each is checked to read back as the same bytes before its .slp goes;
+// unfinished recordings stay .slp. Never this session's: the match report, the launcher and Slippi's tools
+// read a new .slp right after the game.
+static bool g_compress_replays = false;
+static bool launcher_compresses_replays() {
+#ifdef _WIN32
+  wchar_t module[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, module, MAX_PATH)) return false;
+  const std::filesystem::path exe_dir = std::filesystem::path(module).parent_path();
+#else
+  std::error_code ec;
+  const std::filesystem::path exe_dir = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
+#endif
+  // Beside the game, or two folders up from Versions\<id> (as apply_launcher_replay_choice below).
+  for (const auto& dir : {exe_dir, exe_dir.parent_path().parent_path()}) {
+    std::ifstream ini(dir / "launcher.ini");
+    if (!ini) continue;
+    std::string line;
+    while (std::getline(ini, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line == "compressreplays=1") return true;
+    }
+    return false;
+  }
+  return false;
+}
+static void compress_earlier_replays(const std::string& replay_dir) {
+  if (!g_compress_replays && !launcher_compresses_replays()) return;
+  if (replay_dir.empty()) return;
+  const auto started = std::filesystem::file_time_type::clock::now();
+  std::thread([replay_dir, started] {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+#endif
+    namespace fs = std::filesystem;
+    std::vector<fs::path> found;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(fs::u8path(replay_dir), fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+      if (it.depth() > 3) { it.disable_recursion_pending(); continue; }
+      std::error_code fe;
+      if (!it->is_regular_file(fe) || fe || it->path().extension() != ".slp") continue;
+      if (it->last_write_time(fe) >= started - std::chrono::minutes(1)) continue;   // not one still being written
+      found.push_back(it->path());
+    }
+    size_t done = 0;
+    uintmax_t before = 0, after = 0;
+    for (const auto& p : found) {
+      std::error_code fe;
+      const uintmax_t size = fs::file_size(p, fe);
+      const std::string out = slpz::compress_file(p.u8string());
+      if (out.empty()) continue;
+      ++done; before += size; after += fs::file_size(fs::u8path(out), fe);
+    }
+    if (done) host::log("replays: %zu earlier replays compressed to .slpz (%.1f MB to %.1f MB)", done, before / 1048576.0, after / 1048576.0);
+  }).detach();
 }
 
 // A start without --replay-dir (a shortcut, Steam or Playnite launch options, the exe itself) follows
@@ -1852,6 +1945,7 @@ static int melee_main(int argc, char** argv) {
     if (a == "--sys-dir") o.sys_dir = next();
     else if (a == "--sysgen-data-dir") sysgen_data_dir = next();
     else if (a == "--replay-dir") o.replay_dir = next();
+    else if (a == "--compress-replays") g_compress_replays = true;   // tests; players: launcher.ini compressreplays=1
     else if (a == "--lab-dir") o.lab_dir = next();
     else if (a == "--lab-view") gfx.lab_view = true;
     else if (a == "--card-dir") o.card_dir = next();
@@ -1859,9 +1953,9 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--scan-mods") source_port::mods::set_auto_detect(true);
     else if (a == "--log-file") o.log_file = next();
 #ifdef MELEE_SOURCE_PORT
-    else if (a == "--replay") replay_arg = next();   // the native game plays this .slp (loaded after the flags)
+    else if (a == "--replay") replay_arg = playable_replay(next());   // the native game plays this .slp (loaded after the flags)
 #else
-    else if (a == "--replay") slippi::playback::set_replay(next());   // playback build: play this .slp
+    else if (a == "--replay") slippi::playback::set_replay(playable_replay(next()));   // playback build: play this .slp
 #endif
     // Replay viewing, both engines: show the session as the player had it, from the trace file an
     // online match leaves beside its replay. --trace names the file; --as-experienced looks for
@@ -2417,6 +2511,9 @@ static int melee_main(int argc, char** argv) {
   }
   // Both engines: the Source Port starts its game in the branch just below.
   if (!explicit_replay_dir) apply_launcher_replay_choice(o.replay_dir);
+  // Not while watching a replay (a short session of its own) or on a run that records nothing.
+  if (std::none_of(argv + 1, argv + argc, [](const char* v) { return std::strcmp(v, "--replay") == 0; }))
+    compress_earlier_replays(o.replay_dir);
 #ifdef _WIN32
   g_crash_settings_path = gfx.settings_path;
   g_test_streamline_throw = automated && host::test_env::getenv("MELEE_TEST_STREAMLINE_THROW") != nullptr;

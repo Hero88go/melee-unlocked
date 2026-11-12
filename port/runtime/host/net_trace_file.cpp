@@ -31,6 +31,9 @@ std::string trace_path(const std::string& slp_path) {
   const size_t n = base.size();
   if (n >= 4 && base[n - 4] == '.' && (base[n - 3] | 0x20) == 's' && (base[n - 2] | 0x20) == 'l' && (base[n - 1] | 0x20) == 'p')
     base.resize(n - 4);
+  else if (n >= 5 && base[n - 5] == '.' && (base[n - 4] | 0x20) == 's' && (base[n - 3] | 0x20) == 'l' &&
+           (base[n - 2] | 0x20) == 'p' && (base[n - 1] | 0x20) == 'z')   // a compressed replay (.slpz)
+    base.resize(n - 5);
   return base + ".trace";
 }
 
