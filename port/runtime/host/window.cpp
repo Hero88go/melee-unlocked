@@ -1094,8 +1094,8 @@ void apply_snapback(PadFamily family, int slot, int lane, PadState& pad) {
   const Deadzone& dz = g_deadzones[(size_t)family];
   SnapbackAxis* axes = g_snapback[lane & 1][(size_t)family][slot];
   const double now = now_seconds();
-  pad.stick_x = snapback_axis(axes[0], pad.stick_x, now, dz.snapback_x);
-  pad.stick_y = snapback_axis(axes[1], pad.stick_y, now, dz.snapback_y);
+  pad.stick_x = snapback_axis(axes[0], pad.stick_x, now, dz.snapback_x, dz.snapback_ms_x);
+  pad.stick_y = snapback_axis(axes[1], pad.stick_y, now, dz.snapback_y, dz.snapback_ms_y);
 }
 
 void apply_family_options(PadFamily family, PadState& pad, int slot = -1, int lane = 0) {

@@ -296,31 +296,42 @@ struct Deadzone {
   int main = 0, c = 0, trig_l = 255, trig_r = 255;
   int radius_main = 100, radius_c = 100;
   int click_l = kDefaultTriggerClick, click_r = kDefaultTriggerClick;
-  // Snapback filter on the control stick of an Xbox, PlayStation or Switch controller, 0 (off) to 10
-  // (GitHub #72): see snapback_axis.
+  // Snapback filter on the control stick of an Xbox, PlayStation or Switch controller (GitHub #72): see
+  // snapback_axis. Per axis, the largest bounce it removes (0 off, up to 60 of the stick's 127, the edge)
+  // and how long after a hard release (4 to 50 ms). 0.9.113 to 0.9.115 had one strength, 1 to 10, for
+  // both (10 + 4 x strength); snapback_from_strength reads it.
   int snapback_x = 0, snapback_y = 0;
+  int snapback_ms_x = 20, snapback_ms_y = 20;
 };
 // One stick axis of the snapback filter. After a hard release (the stick leaves the edge), a reading on
 // the other side smaller than the threshold within the window is the stick bouncing past centre, not
 // the player: it reads as centre. A full reversal (dash dance, dashback) is far past the threshold and
-// passes at once; after the window every input passes. Strength 1..10: window 10 + 4 s ms (14..50),
-// threshold 10 + 4 s units of the stick's 127 (14..50).
+// passes at once; after the window every input passes. `size` (1..60) is the largest bounce removed, in
+// units of the stick's 127; `window_ms` (4..50) how long after the release. Measured on an 8BitDo Pro 3
+// (11-12): bounces up to 59 that all end within 14 ms, while a dashback reads about 102.
 struct SnapbackAxis {
   int armed = 0;             // the side the stick was held at the edge (-1, 1), 0 none
   double left_edge = -1.0;   // when it left that edge, -1 still there
 };
-inline int8_t snapback_axis(SnapbackAxis& a, int8_t value, double now, int strength) {
-  if (strength <= 0) { a = SnapbackAxis{}; return value; }
-  constexpr int kEdge = 60;
+constexpr int kSnapbackEdge = 60, kSnapbackMinMs = 4, kSnapbackMaxMs = 50;
+inline int8_t snapback_axis(SnapbackAxis& a, int8_t value, double now, int size, int window_ms) {
+  if (size <= 0) { a = SnapbackAxis{}; return value; }
+  constexpr int kEdge = kSnapbackEdge;
   const int v = value, sign = v > 0 ? 1 : v < 0 ? -1 : 0;
-  const double window = (10.0 + 4.0 * strength) / 1000.0;
-  const int threshold = 10 + 4 * strength;
+  const double window = (window_ms < kSnapbackMinMs ? kSnapbackMinMs : window_ms > kSnapbackMaxMs ? kSnapbackMaxMs : window_ms) / 1000.0;
+  const int threshold = size > kEdge ? kEdge : size;
   if (v >= kEdge || v <= -kEdge) { a.armed = sign; a.left_edge = -1.0; return value; }
   if (!a.armed) return value;
   if (a.left_edge < 0.0) a.left_edge = now;
   if (now - a.left_edge > window) { a.armed = 0; return value; }
   if (sign == -a.armed && (v < 0 ? -v : v) < threshold) return 0;
   return value;
+}
+// A strength from 0.9.113 to 0.9.115 (1..10) as the same size and window.
+inline void snapback_from_strength(int strength, int& size, int& window_ms) {
+  if (strength <= 0) { size = 0; return; }
+  if (strength > 10) strength = 10;
+  size = 10 + 4 * strength; window_ms = 10 + 4 * strength;
 }
 inline void apply_trigger_click(int threshold, uint8_t value, uint16_t& button, uint16_t click) {
   if (value > threshold) button |= click;

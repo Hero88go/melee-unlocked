@@ -575,8 +575,13 @@ static bool load_family_option(const std::string& key, const std::string& value)
     if (key == "deadzone_" + k + "_c") { host::g_deadzones[f].c = std::clamp(std::atoi(value.c_str()), 0, 100); return true; }
     if (key == "radius_" + k + "_main") { host::g_deadzones[f].radius_main = std::clamp(std::atoi(value.c_str()), 50, 100); return true; }
     if (key == "radius_" + k + "_c") { host::g_deadzones[f].radius_c = std::clamp(std::atoi(value.c_str()), 50, 100); return true; }
-    if (key == "snapback_" + k + "_x") { host::g_deadzones[f].snapback_x = std::clamp(std::atoi(value.c_str()), 0, 10); return true; }
-    if (key == "snapback_" + k + "_y") { host::g_deadzones[f].snapback_y = std::clamp(std::atoi(value.c_str()), 0, 10); return true; }
+    // The 0.9.113 strength (1..10), then the size and window that replace it (written after it).
+    if (key == "snapback_" + k + "_x") { host::snapback_from_strength(std::atoi(value.c_str()), host::g_deadzones[f].snapback_x, host::g_deadzones[f].snapback_ms_x); return true; }
+    if (key == "snapback_" + k + "_y") { host::snapback_from_strength(std::atoi(value.c_str()), host::g_deadzones[f].snapback_y, host::g_deadzones[f].snapback_ms_y); return true; }
+    if (key == "snapback_size_" + k + "_x") { host::g_deadzones[f].snapback_x = std::clamp(std::atoi(value.c_str()), 0, host::kSnapbackEdge); return true; }
+    if (key == "snapback_size_" + k + "_y") { host::g_deadzones[f].snapback_y = std::clamp(std::atoi(value.c_str()), 0, host::kSnapbackEdge); return true; }
+    if (key == "snapback_ms_" + k + "_x") { host::g_deadzones[f].snapback_ms_x = std::clamp(std::atoi(value.c_str()), host::kSnapbackMinMs, host::kSnapbackMaxMs); return true; }
+    if (key == "snapback_ms_" + k + "_y") { host::g_deadzones[f].snapback_ms_y = std::clamp(std::atoi(value.c_str()), host::kSnapbackMinMs, host::kSnapbackMaxMs); return true; }
     if (key == "trigger_" + k + "_l") { host::g_deadzones[f].trig_l = std::clamp(std::atoi(value.c_str()), 0, 255); return true; }
     if (key == "trigger_" + k + "_r") { host::g_deadzones[f].trig_r = std::clamp(std::atoi(value.c_str()), 0, 255); return true; }
     if (key == "trigger_" + k + "_l_threshold" || key == "trigger_" + k + "_r_threshold") {
@@ -603,8 +608,15 @@ static std::string family_options_text() {
     // written only when changed, so a file that never used them stays as it was
     if (host::g_deadzones[f].radius_main < 100) out += "\nradius_" + k + "_main " + std::to_string(host::g_deadzones[f].radius_main);
     if (host::g_deadzones[f].radius_c < 100) out += "\nradius_" + k + "_c " + std::to_string(host::g_deadzones[f].radius_c);
-    if (host::g_deadzones[f].snapback_x) out += "\nsnapback_" + k + "_x " + std::to_string(host::g_deadzones[f].snapback_x);
-    if (host::g_deadzones[f].snapback_y) out += "\nsnapback_" + k + "_y " + std::to_string(host::g_deadzones[f].snapback_y);
+    // The nearest 0.9.113 strength first (an older version reads that), then the exact size and window.
+    for (int axis = 0; axis < 2; ++axis) {
+      const int size = axis ? host::g_deadzones[f].snapback_y : host::g_deadzones[f].snapback_x;
+      const int ms = axis ? host::g_deadzones[f].snapback_ms_y : host::g_deadzones[f].snapback_ms_x;
+      if (!size) continue;
+      const std::string a = axis ? "_y " : "_x ";
+      out += "\nsnapback_" + k + a + std::to_string(std::clamp((size - 10 + 2) / 4, 1, 10));
+      out += "\nsnapback_size_" + k + a + std::to_string(size) + "\nsnapback_ms_" + k + a + std::to_string(ms);
+    }
     if (host::g_deadzones[f].trig_l < 255) out += "\ntrigger_" + k + "_l " + std::to_string(host::g_deadzones[f].trig_l);
     if (host::g_deadzones[f].trig_r < 255) out += "\ntrigger_" + k + "_r " + std::to_string(host::g_deadzones[f].trig_r);
     if (host::g_deadzones[f].click_l != host::kDefaultTriggerClick)
@@ -10178,14 +10190,24 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             // The snapback filter for these sticks (a GameCube controller has PhobGCC's in the Phob section).
             static const char* kSnapTip =
                 "Stops the stick reading on the other side for a frame or two after you let go of it\n"
-                "(snapback). Right after a hard release, a small reading on the other side reads as\n"
-                "centre; a full reversal (dash dance) passes at once. Higher is stronger; 0 is off. Try 4.";
-            ImGui::SetNextItemWidth(200.0f);
-            changed |= settings_slider("Snapback filter X", &dz.snapback_x, 0, 10, dz.snapback_x ? "%d" : "Off");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSnapTip);
-            ImGui::SetNextItemWidth(200.0f);
-            changed |= settings_slider("Snapback filter Y", &dz.snapback_y, 0, 10, dz.snapback_y ? "%d" : "Off");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSnapTip);
+                "(snapback). Right after a hard release, a reading on the other side up to this size\n"
+                "reads as centre, for this long; a full reversal (dash dance) passes at once.\n"
+                "Size is out of the stick's 127 (60 is the edge); 0 is off. Try 40 and 20 ms.";
+            for (int axis = 0; axis < 2; ++axis) {
+              int& size = axis ? dz.snapback_y : dz.snapback_x;
+              int& ms = axis ? dz.snapback_ms_y : dz.snapback_ms_x;
+              ImGui::PushID(axis);
+              ImGui::SetNextItemWidth(200.0f);
+              changed |= settings_slider(axis ? "Snapback filter Y" : "Snapback filter X", &size, 0, host::kSnapbackEdge, size ? "%d" : "Off");
+              if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSnapTip);
+              ImGui::SameLine();
+              ImGui::BeginDisabled(size == 0);
+              ImGui::SetNextItemWidth(160.0f);
+              changed |= settings_slider(axis ? "for##y" : "for##x", &ms, host::kSnapbackMinMs, host::kSnapbackMaxMs, "%d ms");
+              ImGui::EndDisabled();
+              if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", kSnapTip);
+              ImGui::PopID();
+            }
           }
           ImGui::SeparatorText("Triggers");
           static const char* kTrigTip =

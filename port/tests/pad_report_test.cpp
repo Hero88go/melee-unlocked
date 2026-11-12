@@ -556,33 +556,48 @@ int main() {
   // The snapback filter (GitHub #72), as an Xbox controller polled every 8 ms reports a release.
   {
     using host::SnapbackAxis;
-    // Held full right, released: one report bounces to -30, then centre. Strength 4: window 26 ms, threshold 26.
+    // Held full right, released: one report bounces to -30, then centre. Size 26, window 26 ms (the old strength 4).
     SnapbackAxis a;
     double t = 0.0;
-    CHECK(host::snapback_axis(a, 120, t, 4) == 120);
-    t += 0.008; CHECK(host::snapback_axis(a, -20, t, 4) == 0);    // the bounce past centre reads as centre
-    t += 0.008; CHECK(host::snapback_axis(a, -10, t, 4) == 0);
-    t += 0.008; CHECK(host::snapback_axis(a, 0, t, 4) == 0);
+    CHECK(host::snapback_axis(a, 120, t, 26, 26) == 120);
+    t += 0.008; CHECK(host::snapback_axis(a, -20, t, 26, 26) == 0);    // the bounce past centre reads as centre
+    t += 0.008; CHECK(host::snapback_axis(a, -10, t, 26, 26) == 0);
+    t += 0.008; CHECK(host::snapback_axis(a, 0, t, 26, 26) == 0);
     // Off: the bounce passes as it came.
     SnapbackAxis off;
-    host::snapback_axis(off, 120, 0.0, 0);
-    CHECK(host::snapback_axis(off, -20, 0.008, 0) == -20);
+    host::snapback_axis(off, 120, 0.0, 0, 20);
+    CHECK(host::snapback_axis(off, -20, 0.008, 0, 20) == -20);
     // A dash dance: full right straight to full left passes at once.
     SnapbackAxis dd;
-    host::snapback_axis(dd, 120, 0.0, 4);
-    CHECK(host::snapback_axis(dd, -110, 0.008, 4) == -110);
+    host::snapback_axis(dd, 120, 0.0, 26, 26);
+    CHECK(host::snapback_axis(dd, -110, 0.008, 26, 26) == -110);
     // A light input on the other side after the window passes.
     SnapbackAxis late;
-    host::snapback_axis(late, 120, 0.0, 4);
-    host::snapback_axis(late, 0, 0.008, 4);
-    CHECK(host::snapback_axis(late, -20, 0.050, 4) == -20);
+    host::snapback_axis(late, 120, 0.0, 26, 26);
+    host::snapback_axis(late, 0, 0.008, 26, 26);
+    CHECK(host::snapback_axis(late, -20, 0.050, 26, 26) == -20);
     // A light input on the same side as the release is never touched.
     SnapbackAxis same;
-    host::snapback_axis(same, 120, 0.0, 4);
-    CHECK(host::snapback_axis(same, 20, 0.008, 4) == 20);
+    host::snapback_axis(same, 120, 0.0, 26, 26);
+    CHECK(host::snapback_axis(same, 20, 0.008, 26, 26) == 20);
     // Never armed (no hard push): a light input passes.
     SnapbackAxis calm;
-    CHECK(host::snapback_axis(calm, -20, 0.0, 4) == -20);
+    CHECK(host::snapback_axis(calm, -20, 0.0, 26, 26) == -20);
+    // An 8BitDo Pro 3 (a player's measurements, 11-12): bounces up to 59 that end within 14 ms. Size 60 and
+    // 16 ms remove the largest; a dashback (about 102) still passes; a strength of 0.9.113 reads the same.
+    SnapbackAxis pro3;
+    host::snapback_axis(pro3, 120, 0.0, 60, 16);
+    CHECK(host::snapback_axis(pro3, -59, 0.001, 60, 16) == 0);
+    CHECK(host::snapback_axis(pro3, -40, 0.013, 60, 16) == 0);
+    CHECK(host::snapback_axis(pro3, -40, 0.030, 60, 16) == -40);   // past the window
+    SnapbackAxis dash;
+    host::snapback_axis(dash, 120, 0.0, 60, 16);
+    CHECK(host::snapback_axis(dash, -102, 0.004, 60, 16) == -102);
+    int size = 0, ms = 20;
+    host::snapback_from_strength(4, size, ms);
+    CHECK(size == 26 && ms == 26);
+    host::snapback_from_strength(0, size, ms);
+    CHECK(size == 0);
   }
   std::printf("%s (%d failure%s)\n", g_failures ? "FAILED" : "all pad report checks passed", g_failures, g_failures == 1 ? "" : "s");
   return g_failures ? 1 : 0;
