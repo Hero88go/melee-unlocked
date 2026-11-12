@@ -66,7 +66,27 @@ def notes_for_version(version):
         release = json.loads(Path(event_path).read_text(encoding="utf-8")).get("release", {})
         if release.get("tag_name") == "v" + version:
             return release.get("body") or None
+    # A manual repost of a published version (workflow_dispatch with a version): its GitHub release
+    # body, as edited since it was published.
+    if os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_ACTIONS"):
+        release = release_by_tag("Hero88go/melee-unlocked", "v" + version)
+        if release and not release.get("draft"):
+            return release.get("body") or None
     return None
+
+
+def release_by_tag(repo, tag):
+    """One published GitHub release by its tag, or None."""
+    url = "https://api.github.com/repos/%s/releases/tags/%s" % (repo, tag)
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "melee-unlocked-release-notes"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return None
 
 
 def to_discord(text, version, repo="Hero88go/melee-unlocked", release_url=None):
