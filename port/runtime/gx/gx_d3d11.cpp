@@ -17,6 +17,7 @@
 #include "yougame_agent_paths.h"
 #endif
 #include <windows.h>
+#include "gx_cache_prune.h"
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
 #include "dxgi_paced_mode.h"
@@ -693,6 +694,8 @@ void D3D11Backend::init() {
   shader_cache_root_ = opts_.shader_cache;
   opts_.shader_cache += "/" GX_SHADER_CACHE_VERSION;
   CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
+  if (const unsigned long long freed = gx::prune_old_shader_caches(shader_cache_root_, GX_SHADER_CACHE_VERSION))
+    host::log("shaders: removed the shader caches of earlier builds (%.0f MB)", freed / 1048576.0);
 
   if (!vertex_buffer_.init(device_.Get(), context_.Get(), 8 << 20, D3D11_BIND_VERTEX_BUFFER)) host::die("D3D11: vertex buffer");
   if (!index_buffer_.init(device_.Get(), context_.Get(), 4 << 20, D3D11_BIND_INDEX_BUFFER)) host::die("D3D11: index buffer");

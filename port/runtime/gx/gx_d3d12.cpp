@@ -1,6 +1,7 @@
 // D3D12 backend: replays captured GX frames into an EFB render target and presents XFB copies.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
+#include "gx_cache_prune.h"
 #include "test_env.h"
 #ifdef YOUGAME_AGENT_TEST_HOOK
 #include "yougame_agent_paths.h"
@@ -2883,6 +2884,31 @@ uint8_t D3D12Backend::remix_layer_draw(const DrawCall& dc) const {
   if (dc.owner_player == 0xFF) {
     const uint32_t bm = dc.bp.blendmode();
     const bool additive = (bm & 1) && ((bm >> 5) & 7) == 1;
+    // A stage piece whose combiner mixes two textures read with different coordinates (Battlefield's
+    // trim: a dot mask over a rainbow that slides along it): the bridge bakes one texture into its
+    // material, so the other's colour was lost (white dots). Painted as the game draws it.
+    // MELEE_REMIX_MULTIMAP_LAYER=0: the bridge's one-texture bake, as before.
+    static const bool multimap_layer = [] { const char* v = std::getenv("MELEE_REMIX_MULTIMAP_LAYER"); return !v || std::atoi(v) != 0; }();
+    // Untextured, flat-coloured stage pieces that write depth (Final Destination's magenta edges and
+    // orange circuitry): in Remix they took its shading and came out as thin dark-purple strips with
+    // black slivers beside them, where the game shows solid bright colour. Painted as the game draws
+    // them. MELEE_REMIX_FLAT_SCENE=1: to Remix as before.
+    static const bool flat_scene = std::getenv("MELEE_REMIX_FLAT_SCENE") != nullptr;
+    if (!flat_scene && !additive && (dc.bp.zmode() & 1) && (dc.bp.zmode() & 0x10)) {
+      bool any_texture = false;
+      for (const TextureRef& t : dc.textures) any_texture = any_texture || t.used;
+      if (!any_texture) return 1;
+    }
+    if (multimap_layer && !additive) {
+      int first_map = -1, first_gen = -1;
+      for (uint32_t n = 0; n <= dc.bp.numtevstages() && n < 16; ++n) {
+        if (!dc.bp.order_enable((int)n)) continue;
+        const int map = dc.bp.order_texmap((int)n), gen = dc.bp.order_texcoord((int)n);
+        if (map < 0 || map >= 8 || !dc.textures[map].used) continue;
+        if (first_map < 0) { first_map = map; first_gen = gen; continue; }
+        if (map != first_map && gen != first_gen) return 1;
+      }
+    }
     // Textured: an untextured screen fill (the stage's clear colour, drawn first) is not scenery.
     bool textured = false;
     for (const TextureRef& t : dc.textures) textured = textured || t.used;
@@ -6008,6 +6034,8 @@ void D3D12Backend::open_pipeline_library() {
   shader_cache_root_ = opts_.shader_cache;
   opts_.shader_cache += "/" GX_SHADER_CACHE_VERSION;
   CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
+  if (const unsigned long long freed = gx::prune_old_shader_caches(shader_cache_root_, GX_SHADER_CACHE_VERSION))
+    host::log("shaders: removed the shader caches of earlier builds (%.0f MB)", freed / 1048576.0);
   ComPtr<ID3D12Device1> device1;
   if (FAILED(device_.As(&device1))) { host::log("d3d12: pipeline library unsupported"); return; }
   std::string path = opts_.shader_cache + "/pipelines.bin";
