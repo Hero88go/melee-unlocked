@@ -211,6 +211,48 @@ std::vector<CatalogMod> default_catalog() {
       "output_md5": "c9de1ad05dc28502a44fa8dcdb46f982",
       "output_sha256": "518d02bc9a3c38551427a48af4d7e2ac4626b2cf5db4838e5b190b0877a82ed9",
       "note": "Runs on the Source Port, offline. Download the .xdelta from its page, then drop it here."
+    },
+    {
+      "id": "animelee",
+      "name": "Animelee: Complete Edition",
+      "credits": "By the Animelee team",
+      "license": "Not stated",
+      "page": "https://www.animelee.xyz",
+      "repo": "animelee/complete-edition",
+      "tag": "1.0",
+      "asset_pattern": "ANIMELEE - COMPLETE EDITION - PATCH 1.0.zip",
+      "kind": "xdelta_zip",
+      "one_click": false,
+      "version": "1.0",
+      "url": "https://www.mediafire.com/file/2ztqob93nrug8yg/ANIMELEE_-_COMPLETE_EDITION_-_PATCH_1.0.zip/file",
+      "sha256": "8ed24c56cbcb46a7030fd56560563b85836cd7f44fc547de23fa5aa7a1621a3c",
+      "policy": "link_only",
+      "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
+      "patch_sha256": "4a3fde4a2119ce57e7894de99fce640063052f051c2395168c492fcc606d5b76",
+      "output_md5": "1f91a05c09d65d2f20ff17551e532e76",
+      "output_sha256": "77607e4624f6576f2da35584e71116809db44863ecd768c9d94c0e742da1a94d",
+      "note": "Runs on either engine. Download the patch zip from its page, then drop it here: the launcher builds the disc (no .bat needed)."
+    },
+    {
+      "id": "animelee-dbz",
+      "name": "Animelee: Dragon Ball Z",
+      "credits": "By the Animelee team",
+      "license": "Not stated",
+      "page": "https://www.animelee.xyz",
+      "repo": "animelee/dragon-ball-z",
+      "tag": "1.0",
+      "asset_pattern": "ANIMELEE - CE - DRAGON BALL Z v1.0.zip",
+      "kind": "xdelta_zip",
+      "one_click": false,
+      "version": "1.0",
+      "url": "https://www.mediafire.com/file/pr8in3kum9kkvg4/ANIMELEE_-_CE_-_DRAGON_BALL_Z_v1.0.zip/file",
+      "sha256": "8c5d7c091b3ba261dbd6cc9ebc46f8a6ce3d9ed4add25c3f5b35d9f26765b41c",
+      "policy": "link_only",
+      "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
+      "patch_sha256": "18a63bd7d46eb516ffd7415b26e46abc31df6ad0e8dbf2c07d6c979a76a54d78",
+      "output_md5": "",
+      "output_sha256": "ecc4750c121c948bb7bff7818dcc037e12b20f39e42ffc76496d72ea8b648bc3",
+      "note": "Runs on either engine. Download the patch zip from its page, then drop it here: the launcher builds the disc (no .bat needed)."
     }
   ]
 })catalog", &mods, &error);
@@ -642,8 +684,13 @@ void install_file_job(std::wstring file, std::string id, const std::string& iso,
       if (seven.empty()) { set_status(key, "The 7-Zip tool is missing from the launcher's tools folder (tools\\7zr.exe). Reinstall Melee Unlocked to get it."); return; }
       code = run_hidden(seven.wstring(), L"x -y -bd \"-o" + work.wstring() + L"\" \"" + file + L"\"", work.wstring(), cancel);
     } else {
-      wchar_t sys[MAX_PATH]; GetSystemDirectoryW(sys, MAX_PATH);
-      code = run_hidden(std::wstring(sys) + L"\\tar.exe", L"-xf \"" + file + L"\" -C \"" + work.wstring() + L"\"", work.wstring(), cancel);
+      // In process first (entries outside the folder refused): Windows before 10 1803 has no tar.exe,
+      // and some installs cannot start it (a player's Animelee build, 11-12). tar only if that fails.
+      if (host::updater::unpack_download(fs::path(file).u8string(), work.u8string())) code = 0;
+      else {
+        wchar_t sys[MAX_PATH]; GetSystemDirectoryW(sys, MAX_PATH);
+        code = run_hidden(std::wstring(sys) + L"\\tar.exe", L"-xf \"" + file + L"\" -C \"" + work.wstring() + L"\"", work.wstring(), cancel);
+      }
     }
     if (cancelled(cancel)) { set_status(key, "Cancelled. Nothing was installed."); return; }
     if (code != 0) { set_status(key, "The archive could not be unpacked. Nothing was installed."); return; }
