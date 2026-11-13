@@ -908,10 +908,14 @@ bool g_slippi_menus_requested = true;   // --slippi-menus on|off
 bool g_slippi_menus = false;            // requested and the layer loaded
 struct SystemFile { std::string path; uint32_t start; std::vector<uint8_t> data; };
 std::vector<SystemFile> g_system_files;
-// Between the disc (under 1.5 GB) and the mod overlay range (0xA0000000 up to the cosmetics at
+// Between the disc (under 1.5 GB) and the mod overlay range (ModOverlay::base up to the cosmetics at
 // 0xF0000000). It used to sit at 0xC0000000, inside the overlay's range: a pack large enough to
 // reach it (the 20XX Hack Pack's 776 files) had its files there refused, and the game waited on them.
-constexpr uint32_t kSystemFileBase = 0x90000000u;
+// It moved from 0x90000000 to 0x60000000 so the overlay could start lower and hold 2 GiB: a large
+// m-ex build (Chaos Eternal) changes more than the 1.25 GiB the old range held.
+constexpr uint32_t kSystemFileBase = 0x60000000u;
+static_assert(kSystemFileBase >= 0x58000000u && kSystemFileBase + 0x10000000u <= ModOverlay::base,
+              "Slippi system files sit past the largest disc and below the mod overlay");
 const char* const kSystemFileNames[] = {
   "MnMaAll.usd", "MnMaAll.dat", "SdMenu.usd", "SdMenu.dat", "MnSlMap.usd", "MnSlMap.dat",
   "SdSlChr.usd", "SdSlChr.dat", "MnExtAll.usd", "MnExtAll.dat", "slpCSS.dat",

@@ -65,6 +65,8 @@ int main(int argc, char** argv) {
   if (argc == 3) return check_real_iso(argv[1], argv[2]);
   namespace fs = std::filesystem;
   using Overlay = source_port::ModOverlay;
+  // Room for changed files: 2 GiB past the largest disc (Chaos Eternal changes more than 1.25 GiB).
+  CHECK(Overlay::base >= 0x60000000u + 0x10000000u && Overlay::limit - Overlay::base >= (2ull << 30));
   const auto root = fs::temp_directory_path() /
       ("mu-overlay-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   CHECK(fs::create_directory(root));

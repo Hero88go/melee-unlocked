@@ -42,6 +42,12 @@ HLE(OSPanic) {
   if (ARG1 == 52 && file == "memory.c" && msg.empty() && host::mod_disc_active())
     host::die("OSPanic at memory.c:52: this mod ran out of the game's memory while loading a screen. "
               "An older build of a mod can need more than fits here: try the mod's newest build");
+  // lbFile stops when the disc has no file of the name it was given: on a mod disc that is a file the
+  // mod's own tables name but its disc left out (Chaos Eternal: GrTFloats.dat, a stage). The player is
+  // told which file, and the start of the line is unchanged for grouping.
+  if (file == "lbfile" && host::mod_disc_active() && *host::last_missing_file())
+    host::die("OSPanic at lbfile:%u: this mod's disc has no %s, which the mod asked for. Patch the mod's "
+              "disc again, or avoid what loads that file (a stage or a fighter)", ARG1, host::last_missing_file());
   host::die("OSPanic at %s:%u: %s", file.c_str(), ARG1, msg.c_str());
 }
 // HSD_MemAlloc (sysdolphin memory.c), as the game has it: nothing for a size of 0 or less, else

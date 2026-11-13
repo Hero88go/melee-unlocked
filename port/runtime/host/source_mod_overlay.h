@@ -10,7 +10,10 @@
 namespace source_port {
 class ModOverlay {
  public:
-  static constexpr uint32_t base = 0xA0000000u;
+  // Changed files sit from here up to the cosmetics at 0xF0000000 (2.0 GiB), past the disc (under
+  // 1.5 GB) and the Slippi system files at 0x60000000.
+  static constexpr uint32_t base = 0x70000000u;
+  static constexpr uint64_t limit = 0xF0000000ull;
   struct File {
     std::string path;
     uint32_t start = 0;

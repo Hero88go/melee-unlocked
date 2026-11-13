@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -258,8 +259,17 @@ bool ModOverlay::add_files(std::vector<File>&& files, std::string& error) {
       superseded.push_back(file.path);
     }
     const uint64_t span = std::max<uint64_t>(0x8000u, (uint64_t(file.length) + 0x7FFFu) & ~uint64_t(0x7FFFu));
-    if (next + span > 0xF0000000ull || files_.size() + accepted.size() >= 4096) {
-      error = "enabled mod packs exceed the virtual disc range or 4096 files"; return false;
+    if (next + span > limit || files_.size() + accepted.size() >= 4096) {
+      // Say how much was asked for, so a report shows whether the range or the file count ran out.
+      uint64_t need = next - base;
+      for (auto it = &file; it != files.data() + files.size(); ++it)
+        need += std::max<uint64_t>(0x8000u, (uint64_t(it->length) + 0x7FFFu) & ~uint64_t(0x7FFFu));
+      char text[200];
+      std::snprintf(text, sizeof text, "enabled mod packs exceed the virtual disc range or 4096 files "
+                    "(%llu MB of changed files in %zu files; room for %llu MB)",
+                    (unsigned long long)(need >> 20), files_.size() + files.size(),
+                    (unsigned long long)((limit - base) >> 20));
+      error = text; return false;
     }
     file.start = uint32_t(next); next += span;
     accepted.push_back(std::move(file));

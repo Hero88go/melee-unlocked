@@ -2320,6 +2320,10 @@ void report_object_memory();
 // The last files a mod disc's game asked for by name: the heap stop's report prints them, so it
 // names the fighters and the stage that were being loaded.
 static char g_recent_files[12][24];
+// The last file the game asked for that this disc does not have (empty when none): a stop in lbfile
+// right after it is the game finding no such file, so the crash names it.
+static char g_missing_file[64];
+const char* last_missing_file() { return g_missing_file; }
 static uint32_t g_recent_file_count = 0;
 static void note_file_asked(const char* path) {
   const char* slash = std::strrchr(path, '/');
@@ -2374,6 +2378,12 @@ void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
       static bool told = false;
       if (!told && entry >= 0) { told = true; log("mods: the game asked for a movie this disc does not have (%s); another movie plays in its place", base); }
     }
+    if (entry < 0) {
+      std::strncpy(g_missing_file, base, sizeof g_missing_file - 1);
+      g_missing_file[sizeof g_missing_file - 1] = 0;
+    }
+  } else {
+    g_missing_file[0] = 0;   // only the newest lookup counts
   }
   c.r[3] = (uint32_t)entry;
 }

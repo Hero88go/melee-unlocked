@@ -969,6 +969,20 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     // build plays on both engines too: the Static Recomp runs its code, the Source Port loads its
     // files (costumes, stages, sounds, menus) over the native game and runs none of its code.
     const bool native = known && (std::string(known->id) == "akaneia" || std::string(known->id) == "ace");
+    // Chaos Eternal's added fighters run on its own code: with only its files, the Source Port stops
+    // loading them (ftdata.c 1944 and 2479, then a full heap at lbmemory.c 233, reports from 0.9.114).
+    // It plays on the Static Recomp, which runs that code. Matched by the disc's own title.
+    std::string lower_title = info.title;
+    for (auto& ch : lower_title) ch = (char)std::tolower((unsigned char)ch);
+    if (!native && lower_title.find("chaos eternal") != std::string::npos) {
+      set_support(d, Engine::Recomp, Support::Untested, true);
+#ifdef MELEE_NO_SLIPPI
+      d.message = "Detected: " + d.name + ". Its fighters need its own code, which this build cannot run.";
+#else
+      d.message = "Detected: " + d.name + ". Plays on the Static Recomp (its fighters need its own code): launcher > Mods > Play.";
+#endif
+      return d;
+    }
     set_support(d, Engine::Either, native ? Support::Supported : Support::Untested, true);
 #ifdef MELEE_NO_SLIPPI   // one engine in this build: the Source Port
     d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +
@@ -1076,7 +1090,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 16";   // 16: unknown m-ex builds and code mods play on either engine; 15: Training Mode CE v1.4 d2 and v1.4.1 discs play natively; 14: retail content identity independent of disc padding
+constexpr const char kCacheHeader[] = "mu-scan 17";   // 17: Chaos Eternal plays on the Static Recomp; 16: unknown m-ex builds and code mods play on either engine; 15: Training Mode CE v1.4 d2 and v1.4.1 discs play natively; 14: retail content identity independent of disc padding
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

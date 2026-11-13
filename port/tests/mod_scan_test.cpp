@@ -149,6 +149,7 @@ int main(int argc, char** argv) {
     std::ofstream(root / "Mods" / "Discs" / "tm.iso", std::ios::binary).write((const char*)disc.data(), (std::streamsize)disc.size());
   }
   write_disc(root / "Mods" / "Discs" / "akaneia-like.iso", "GALE01", 2, "Super Smash Bros Melee", {{"MxDt.dat", "mex data"}}, 0x11);
+  write_disc(root / "Mods" / "Discs" / "chaos.iso", "GALE01", 2, "Super Smash Bros. Chaos Eternal", {{"MxDt.dat", "chaos mex data"}}, 0x33);
   write_disc(root / "Mods" / "Discs" / "codes.iso", "GALE01", 2, "Code Mod Build", {{"codes.gct", "gecko"}}, 0x22);
   write_disc(root / "Mods" / "Discs" / "pal.iso", "GALP01", 0, "Melee PAL", {{"a.dat", "x"}});
 
@@ -168,6 +169,12 @@ int main(int argc, char** argv) {
         "an m-ex disc (MxDt.dat) is recognized and plays on either engine (Static runs its code, Source loads its files)");
   check(mex.name == "akaneia-like" && mex.enabled && mex.status == Support::Untested,
         "an unknown m-ex pack has its own name, turns on, and retains its untested status");
+  {
+    Detected chaos{};
+    for (const auto& d : first.items) if (d.path.filename() == "chaos.iso") chaos = d;
+    check(chaos.kind == Kind::Mex && chaos.needs == Engine::Recomp && chaos.status == Support::Untested,
+          "Chaos Eternal (its fighters need its own code) plays on the Static Recomp");
+  }
   const Detected code = find(first, Kind::CodeMod);
   check(code.kind == Kind::CodeMod && code.needs == Engine::Either, "a disc with its own codes is a code mod for either engine");
   check(code.status == Support::Untested && code.can_enable,
