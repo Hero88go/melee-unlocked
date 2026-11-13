@@ -88,7 +88,7 @@ Code ported or adapted from other projects:
 - slippi-js (LGPL-3.0-or-later): the landing lag table in the launcher
 - hps_decode (MIT): docs/licenses/hps_decode-MIT.txt
 - Slippi Lab (MIT): docs/licenses/slippilab-MIT.txt
-- Phillip / slippi-ai by Vlad Firoiu (MIT, https://github.com/vladfi1/slippi-ai): the observation
+- Phillip / slippi-ai by Vlad Firoiu (x_pilot) (MIT, https://github.com/vladfi1/slippi-ai): the observation
   and controller contract of its published policies, in port/runtime/hle/phillip_ai.cpp;
   docs/licenses/slippi-ai-MIT.txt
 - onnxruntime C API headers (MIT): port/third_party/onnxruntime/LICENSE
