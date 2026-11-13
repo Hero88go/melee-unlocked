@@ -77,6 +77,7 @@ public:
 struct MexCostume {
   std::string family;
   uint32_t external = 0, costume = 0;
+  uint32_t internal = 0;   // m-ex internal fighter id (its stock icon column)
   std::string joint, matanim;
   uint32_t visibility = 0;
 };
@@ -114,6 +115,7 @@ inline bool mex_costumes(const std::vector<uint8_t>& bytes, MexCostumes* out) {
       if (file.size() < 7 || file.find_first_of("/\\:") != std::string::npos || file.find("..") != std::string::npos) continue;
       for (char& c : file) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
       MexCostume row{codes[ext], ext, costume};
+      row.internal = kind;
       row.visibility = dat.word(list + costume * 16 + 12);
       for (const auto field : {std::make_pair(4u, &row.joint), std::make_pair(8u, &row.matanim)}) {
         uint32_t symbol;

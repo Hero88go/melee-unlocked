@@ -2049,7 +2049,7 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 10");
+      const size_t at = text.find("\"rules\": 11");
       check(at != std::string::npos, "the scan records the rules it used");
       if (at != std::string::npos) text.replace(at, 11, "\"rules\": 5");
       std::ofstream out(state, std::ios::binary); out << text;
@@ -2647,7 +2647,7 @@ int main(int argc, char** argv) {
     const fs::path state = iso_settings.parent_path() / L"CosmeticMods" / L"state.json";
     auto state_bytes = read_file(state);
     std::string state_text(state_bytes.begin(), state_bytes.end());
-    const auto rule = state_text.find("\"rules\": 10");
+    const auto rule = state_text.find("\"rules\": 11");
     check(rule != std::string::npos, "m-ex scan writes its new rule version");
     if (rule != std::string::npos) state_text.replace(rule, 11, "\"rules\": 9");
     write_file(state, std::vector<uint8_t>(state_text.begin(), state_text.end()));

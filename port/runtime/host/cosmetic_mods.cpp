@@ -104,8 +104,9 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // under an older number is scanned again at the next boot. 9: m-ex costume filenames and the
 // portrait animation's own stride, dimensions and palette keys, including added costumes. 10: an m-ex
 // stage stub (stage code, no collision data) is not a stage skin, and the alternates of a
-// dynamic alternate stages disc ("GrSt/GrSt-name(L).dat") are stage skins of their stage.
-constexpr uint32_t kScanRules = 10;
+// dynamic alternate stages disc ("GrSt/GrSt-name(L).dat") are stage skins of their stage. 11: an m-ex
+// costume's stock icon from the HUD file's "Stc_icns".
+constexpr uint32_t kScanRules = 11;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -3692,7 +3693,7 @@ bool possible_mex_costume(const std::string& name) {
 // Every file in a disc image whose name is a costume, fighter sound archive, or stage skin.
 // *screen gets the disc's character select file when it has one.
 bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, DiscCandidate* screen, DiscCandidate* metadata,
-                        std::string* error) {
+                        DiscCandidate* hud, std::string* error) {
   std::vector<uint8_t> header;
   if (!read_range(iso, 0, 0x440, &header)) { *error = "The disc image could not be read."; return false; }
   const uint64_t fst_offset = be32(header.data() + 0x424), fst_size = be32(header.data() + 0x428);
@@ -3708,6 +3709,7 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, Di
     std::string variant, stage, label;
     note_select_screen(name, iso, file.start, file.size, screen);
     if (lower(name) == "mxdt.dat") *metadata = {name, iso, file.start, file.size};
+    if (lower(name) == "ifall.usd") *hud = {name, iso, file.start, file.size};
     if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant) &&
         !disc_fighter_sound_member(name) && !possible_mex_costume(name)) continue;
     out->push_back({name, iso, file.start, file.size});
@@ -3715,7 +3717,8 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, Di
   return true;
 }
 
-void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out, DiscCandidate* screen, DiscCandidate* metadata) {
+void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out, DiscCandidate* screen, DiscCandidate* metadata,
+                          DiscCandidate* hud) {
   std::error_code ec;
   for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
     if (!it->is_regular_file(ec)) continue;
@@ -3725,6 +3728,7 @@ void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out,
     if (ec) continue;
     note_select_screen(name, it->path(), 0, length, screen);
     if (lower(name) == "mxdt.dat") *metadata = {name, it->path(), 0, length};
+    if (lower(name) == "ifall.usd") *hud = {name, it->path(), 0, length};
     if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant) &&
         !disc_fighter_sound_member(name) && !possible_mex_costume(name)) continue;
     out->push_back({name, it->path(), 0, length});
@@ -3808,6 +3812,8 @@ bool texture_track_keys(const uint8_t* block, size_t size, uint32_t track, std::
 // Frame -> portrait of a character select file, from the first texture animation whose tables hold
 // portraits. False when the file has no such animation (not a character select file, or one built
 // another way): then no portrait is taken from it.
+bool texture_animation_frames(const std::vector<uint8_t>& dat, uint32_t mex_animation, std::map<int, SelectPortrait>* frames);
+
 bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortrait>* frames, int* mex_stride = nullptr) {
   frames->clear();
   if (mex_stride) *mex_stride = 0;
@@ -3822,6 +3828,31 @@ bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortr
     stride = (int)archive.word(mex_root + 16);
     if (stride < 26 || stride > 512) return false;
   }
+  if (!texture_animation_frames(dat, mex_animation, frames)) return false;
+  if (mex_stride) *mex_stride = stride;
+  return true;
+}
+
+// The m-ex stock icons of a HUD file (IfAll): "Stc_icns" = {reserved frames, frames per costume row,
+// material animation joint}. A fighter's icon is frame reserved + costume * stride + m-ex internal id.
+bool mex_stock_icons(const std::vector<uint8_t>& dat, std::map<int, SelectPortrait>* frames, int* reserved, int* stride) {
+  frames->clear();
+  disc_metadata::Archive archive(dat);
+  uint32_t root = 0, joint = 0, material = 0, animation = 0;
+  if (!archive.parse() || !archive.root("Stc_icns", &root) || !archive.bounds(root, 8) ||
+      !archive.pointer(root + 4, &joint) || !archive.bounds(joint, 12) || !archive.pointer(joint + 8, &material) ||
+      !archive.bounds(material, 12) || !archive.pointer(material + 8, &animation)) return false;
+  const uint32_t head = archive.word(root);
+  *reserved = (int)(head >> 16); *stride = (int)(head & 0xFFFF);
+  if (*stride < 26 || *stride > 512) return false;
+  return texture_animation_frames(dat, animation, frames);
+}
+
+// Frame -> picture of one texture animation: the one at mex_animation, or with UINT32_MAX the first whose
+// tables hold retail character select portraits.
+bool texture_animation_frames(const std::vector<uint8_t>& dat, uint32_t mex_animation, std::map<int, SelectPortrait>* frames) {
+  frames->clear();
+  const int stride = mex_animation != UINT32_MAX;   // a named animation: any picture size
   const uint64_t data_size = be32(dat.data() + 4), relocations = be32(dat.data() + 8);
   if (0x20ull + data_size + relocations * 4ull > dat.size()) return false;
   const uint8_t* block = dat.data() + 0x20;
@@ -3906,7 +3937,6 @@ bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortr
           (uint64_t)entry.colors + 2ull * entry.palette_entries > data_size) continue;
       (*frames)[frame] = entry;
     }
-    if (mex_stride) *mex_stride = stride;
     return !frames->empty();
   }
   return false;
@@ -4085,6 +4115,42 @@ size_t pack_portraits_locked(const DiscCandidate& screen, const disc_metadata::M
   return stored;
 }
 
+// Gives each m-ex costume the stock icon the pack's HUD file shows for it (mex_stock_icons), as the
+// skin's "stock" companion. m-ex picks the icon by its own ids, which the standard game cannot read,
+// so without this an m-ex pack's stock icons never show outside the full mod.
+size_t pack_stock_icons_locked(const DiscCandidate& hud, const disc_metadata::MexCostumes& costumes,
+                               std::map<std::string, AssetRecord>* fresh) {
+  if (hud.member.empty() || costumes.empty() || !hud.length || hud.length > kMaxAssetBytes) return 0;
+  std::vector<uint8_t> pack;
+  std::map<int, SelectPortrait> icons;
+  int reserved = 0, stride = 0;
+  if (!read_range(hud.file, hud.offset, hud.length, &pack) || !mex_stock_icons(pack, &icons, &reserved, &stride)) return 0;
+  size_t stored = 0;
+  for (auto& item : *fresh) {
+    AssetRecord& asset = item.second;
+    SlotName slot;
+    if (asset.info.kind != "character_costume" || !find_slot(asset.info.target_path, &slot)) continue;
+    const auto origin = costumes.find(lower(asset.source_member));
+    if (origin == costumes.end() || origin->second.family != slot.family->file_code ||
+        origin->second.internal >= (uint32_t)stride) continue;
+    const auto picture = icons.find(reserved + stride * (int)origin->second.costume + (int)origin->second.internal);
+    if (picture == icons.end()) continue;
+    const std::vector<uint8_t> png =
+        rgba_png(decode_portrait(pack.data() + 0x20, picture->second), picture->second.width, picture->second.height);
+    AssetRecord::Companion companion;
+    companion.kind = "stock";
+    companion.sha256 = sha256(png);
+    companion.source_member = hud.member;
+    companion.stored_path = (fs::path(L"assets") / fs::u8path(asset.info.id) / L"companions" / L"stock.png").generic_u8string();
+    std::string write_error;
+    if (companion.sha256.empty() ||
+        !write_atomic(g_root / fs::u8path(companion.stored_path), png.data(), png.size(), &write_error)) continue;
+    asset.companions.push_back(std::move(companion));
+    ++stored;
+  }
+  return stored;
+}
+
 }  // namespace
 
 ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pack_name, std::string* error) {
@@ -4111,9 +4177,10 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       }
   std::vector<DiscCandidate> candidates;
   DiscCandidate select_screen;   // the pack's character select file, when it has one
+  DiscCandidate hud;             // and its match HUD file (m-ex keeps every stock icon there)
   DiscCandidate metadata;
-  if (folder) folder_costume_files(root, &candidates, &select_screen, &metadata);
-  else if (!disc_costume_files(root, &candidates, &select_screen, &metadata, error)) { result.message = *error; return result; }
+  if (folder) folder_costume_files(root, &candidates, &select_screen, &metadata, &hud);
+  else if (!disc_costume_files(root, &candidates, &select_screen, &metadata, &hud, error)) { result.message = *error; return result; }
   disc_metadata::MexCostumes mex_costumes;
   if (!metadata.member.empty()) {
     std::vector<uint8_t> bytes;
@@ -4289,6 +4356,8 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     fresh[fresh_key] = std::move(asset);
   }
   const size_t portraits = pack_portraits_locked(select_screen, mex_costumes, &fresh);
+  const size_t stocks = pack_stock_icons_locked(hud, mex_costumes, &fresh);
+  if (stocks) host::log("cosmetics: %zu stock icons taken from the %s of %s", stocks, hud.member.c_str(), key.c_str());
   const size_t costumes = std::count_if(fresh.begin(), fresh.end(), [](const auto& item) {
     return item.second.info.kind == "character_costume";
   });  // count before moving the records; portraits are costume companions, not entries to subtract
