@@ -514,8 +514,14 @@ void* mu_mex_stage_coll_table(int grkind)
     return row != NULL ? row->coll : NULL;
 }
 
+/* Internal 0 is the game's empty dummy stage: no music, nothing to stand on. An m-ex select icon with
+ * stage id 0 (an unused slot, 0.9.115 report on an Akaneia disc) is locked, as a missing stage is;
+ * picked, it stopped the game at the music lookup (ground.c, bgm != BGM_Undefined). */
 int mu_mex_stage_usable(int grkind)
 {
+    if (grkind == 0) {
+        return 0;
+    }
     if (grkind >= 0 && grkind < MU_MEX_STAGE_RETAIL) {
         return mu_ground_retail_stage(grkind) != NULL;
     }
@@ -588,6 +594,9 @@ ItemKind mu_gr_item_kind(int index)
 
 const char* mu_mex_stage_lock_reason(int grkind)
 {
+    if (grkind == 0) {
+        return "the empty dummy stage";
+    }
     if (grkind >= 0 && grkind < MU_MEX_STAGE_RETAIL) {
         return mu_ground_retail_stage(grkind) != NULL ? NULL : "no retail row";
     }

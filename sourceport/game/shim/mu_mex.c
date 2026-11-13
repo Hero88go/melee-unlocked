@@ -34,7 +34,9 @@ extern Fighter_CostumeStrings* ftData_803C2360[FT_KIND_TABLE_MAX];
 #include "mu_mex_data.h"
 
 /* ---- state, fixed after boot ---- */
-#define MEX_MAX_COSTUMES 16
+/* An MxDt costume count is a byte. 0.9.116 and earlier stopped at 16, so a disc with more (31 Marth
+ * costumes on a player's m-ex build, 11-12 report) lost the rest on the Source Port. */
+#define MEX_MAX_COSTUMES 255
 #ifdef MU_AKANEIA_FIGHTERS
 /* The most fighters an MxDt may list (internal or external). Nothing is sized by it: Akaneia
  * 1.0.1 has 41, ACE 2.0.0 has 65. Ids past it would not fit the signed bytes that hold them. */

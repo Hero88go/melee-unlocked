@@ -102288,7 +102288,7 @@ index 95fed62c6..44a63a6e7 100644
  /* 168FC4 */ void gm_LoadAnnouncer(void);
  /* 169000 */ void fn_80169000(MatchEnd* arg0, u8* arg1);
 diff --git a/src/melee/gm/gm_16A2.c b/src/melee/gm/gm_16A2.c
-index 9cd503dcc..d9a2d3099 100644
+index 9cd503dcc..692f451ad 100644
 --- a/src/melee/gm/gm_16A2.c
 +++ b/src/melee/gm/gm_16A2.c
 @@ -1,5 +1,10 @@
@@ -102307,15 +102307,15 @@ index 9cd503dcc..d9a2d3099 100644
      s32 color_i;
      u8 ncolors;
 +#ifdef MU_NATIVE
-+    s8 colors[16];   /* m-ex characters can have more than the retail six costumes */
++    s8 colors[255];   /* m-ex characters can have more than the retail six costumes (a byte's worth) */
 +#else
      s8 colors[6];
 +#endif
  
      ncolors = gm_GetNumCostumesForCKind(arg0);
 +#ifdef MU_NATIVE
-+    if (ncolors > 16) {
-+        ncolors = 16;
++    if (ncolors > 255) {
++        ncolors = 255;
 +    }
 +#endif
      if ((s8) arg0 != 0x21) {
@@ -154919,7 +154919,7 @@ index edf0acae2..9e2a8b63a 100644
          it_804A0E30.x18 = gm_8016AEA4();
          if (it_8026D018_inline()) {
 diff --git a/src/melee/it/itzako.c b/src/melee/it/itzako.c
-index dd204e998..5c313ca70 100644
+index dd204e998..8661bad9d 100644
 --- a/src/melee/it/itzako.c
 +++ b/src/melee/it/itzako.c
 @@ -96,11 +96,6 @@ Item_GObj* it_8027B5B0(ItemKind kind, Vec3* pos, HSD_JObj* jobj, Vec3* vel,
@@ -154989,7 +154989,22 @@ index dd204e998..5c313ca70 100644
  f32 it_8027CBFC(Item_GObj* item_gobj)
  {
      s32 ret_val;
-@@ -709,11 +689,6 @@ void it_8027CE44(Item_GObj* item_gobj)
+@@ -664,7 +644,14 @@ Item_GObj* it_8027CC88(Item_GObj* item_gobj_arg)
+     Item* var_item;
+     u32 pad[20];
+     Vec3 sp44;
++#ifdef MU_NATIVE
++    /* Two trophy lists of up to 10 each go in here (the second at the first one's end), so up to 20
++     * entries. The console writes the rest into the stack beside it and reads them back the same;
++     * on Linux the stack guard stopped the game at a Goomba (0.9.115 Steam Deck report, Adventure). */
++    s32 sp1C[20];
++#else
+     s32 sp1C[10];
++#endif
+     u32 pad2[4];
+ 
+     item_gobj_var = NULL;
+@@ -709,11 +696,6 @@ void it_8027CE44(Item_GObj* item_gobj)
      grZakoGenerator_801CACB8(item_gobj);
  }
  
@@ -155001,7 +155016,7 @@ index dd204e998..5c313ca70 100644
  /// Appears to be a function for Game&Watch items
  void it_8027CE64(Item_GObj* item_gobj, HSD_GObj* fighter_gobj,
                   void* arg_attr_address)
-@@ -727,11 +702,11 @@ void it_8027CE64(Item_GObj* item_gobj, HSD_GObj* fighter_gobj,
+@@ -727,11 +709,11 @@ void it_8027CE64(Item_GObj* item_gobj, HSD_GObj* fighter_gobj,
      ftLib_8008770C(fighter_gobj, (void*) &sp18);
      it_80278574(item_gobj, &sp18);
      ftLib_80087744(fighter_gobj, &item->xBC8);
