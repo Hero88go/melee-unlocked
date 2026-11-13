@@ -946,8 +946,13 @@ void refresh_window() {
     SetWindowLongPtrW(g_buttons[i], GWLP_USERDATA, style);
     EnableWindow(g_buttons[i], enabled);
     const bool current = row.found && !m.version.empty() && same_version(m.version, f.version);
-    set_label(g_updates[i], launcher::lang::txw(current ? L"Up to date" : L"Update"));
-    EnableWindow(g_updates[i], row.found && !busy && m.one_click && !m.version.empty() && !current && !g_playing);
+    // A mod that is not one click and not installed yet: this slot picks the downloaded file (the same
+    // as dropping it on the window, which players did not find; 0.9.116 Animelee report).
+    const bool add_file = !row.found && !m.one_click;
+    set_label(g_updates[i], launcher::lang::txw(add_file ? L"Add file..." : current ? L"Up to date" : L"Update"));
+    SetWindowLongPtrW(g_updates[i], GWLP_USERDATA, add_file ? STYLE_ACCENT : 0);
+    EnableWindow(g_updates[i], add_file ? !busy && !g_playing
+                                        : row.found && !busy && m.one_click && !m.version.empty() && !current && !g_playing);
     set_label(g_removes[i], launcher::lang::txw(L"Remove"));
     EnableWindow(g_removes[i], row.found && !busy && !g_playing);
     set_label(g_toggles[i], launcher::lang::txw(f.enabled && row.found ? L"On" : L"Off"));
@@ -1040,7 +1045,7 @@ void paint_page(HDC dc) {
       if (runs_here(f)) state += " | " + tx(f.enabled ? "On" : "Off");
       if (f.status == "untested") state += " | " + tx("Untested");
       state_color = f.status == "supported" ? C_OK : C_WARN;
-    } else state = tx(m.one_click ? "Not installed" : "Not installed. Put the file in the Mods folder.");
+    } else state = tx(m.one_click ? "Not installed" : "Not installed. Download it from its page, then press Add file.");
     draw_text(dc, widen(state), LR(x + 44, y + 50, text_w, 18), g_font, state_color, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     // Last line: what is happening now, else what runs this mod.
     std::string line; COLORREF line_color = C_DIM;
@@ -1168,13 +1173,35 @@ void choose_link() {
     scan_installed(); set_status("drop", "Linked. Your disc stays where it is.");
   }).detach();
 }
+// "Add file..." on a mod's card: the downloaded patch zip, .xdelta or disc, installed as a drop is.
+void choose_mod_file(const std::string& id) {
+  wchar_t file[32768]{}; OPENFILENAMEW ofn{sizeof ofn}; ofn.hwndOwner = g_main;
+  ofn.lpstrFilter = L"Mod download (*.zip;*.7z;*.xdelta;*.iso;*.gcm;*.rvz;*.wia) *.zip;*.7z;*.xdelta;*.iso;*.gcm;*.rvz;*.wia All files *.* ";
+  ofn.lpstrFile = file; ofn.nMaxFile = (DWORD)std::size(file); ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+  if (!GetOpenFileNameW(&ofn)) return;
+  (void)id;
+  std::thread(install_file, std::wstring(file), std::string(), g_iso).detach();
+}
 void cancel_job(const std::string& id) {
   std::lock_guard<std::mutex> lock(g_mutex);
   if (g_jobs.count(id)) g_jobs[id]->store(true);
 }
 LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
-    case WM_APP + 41: capture_test_client(w, "mods-capture.bmp"); return 0;
+    case WM_APP + 41: {
+      capture_test_client(w, "mods-capture.bmp");
+      // Test runs: each shown card's mod and its button labels, as the controls hold them now.
+      if (FILE* out = _wfopen((launcher_dir() / "mods-buttons.txt").wstring().c_str(), L"w")) {
+        for (size_t i = 0; i < g_rows.size() && i < g_buttons.size(); ++i) {
+          if (!IsWindowVisible(g_buttons[i])) continue;
+          wchar_t a[128]{}, b[128]{}; GetWindowTextW(g_buttons[i], a, 128); GetWindowTextW(g_updates[i], b, 128);
+          fprintf(out, "%s | %ls (%s) | %ls (%s)\n", g_rows[i].catalog.id.c_str(), a, IsWindowEnabled(g_buttons[i]) ? "on" : "off",
+                  b, IsWindowEnabled(g_updates[i]) ? "on" : "off");
+        }
+        fclose(out);
+      }
+      return 0;
+    }
     case WM_PRINTCLIENT: paint_page((HDC)wp); print_client_children(w, (HDC)wp); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -1225,6 +1252,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         g_mod_launch_engine = catalog_core::play_engine(row.installed, g_engine == ENGINE_SOURCE ? "source" : "recomp");
         select_tab(0); start_game(); return 0;
       }
+      if (base == ID_MOD_UPDATE && !row.found && !row.catalog.one_click) { if (!g_playing) choose_mod_file(row.catalog.id); return 0; }
       if (base == ID_MOD_BUTTON || base == ID_MOD_UPDATE) {
         if (base == ID_MOD_UPDATE && row.found && same_version(row.catalog.version, row.installed.version)) return 0;
         if (row.catalog.one_click) {
@@ -1283,6 +1311,19 @@ bool is_mod_file(const std::wstring& path) {
 // Test runs only (MELEE_LAUNCHER_TEST_GET=<catalog id>): Get that mod at startup, as its button
 // does; every status line lands in mods-status.log beside the launcher.
 void test_get() {
+  // MELEE_LAUNCHER_TEST_MODS_CAPTURE_MS=<ms>: the Mods page opens, and after that long it is saved as
+  // mods-capture.bmp beside the launcher.
+  if (const char* ms = g_launcher_test ? std::getenv("MELEE_LAUNCHER_TEST_MODS_CAPTURE_MS") : nullptr) {
+    select_tab(4);
+    // MELEE_LAUNCHER_TEST_MODS_PAGES=<n> scrolls that many pages down first.
+    const char* pages = std::getenv("MELEE_LAUNCHER_TEST_MODS_PAGES");
+    std::thread([ms = std::atoi(ms), pages = pages ? std::atoi(pages) : 0] {
+      Sleep(ms);
+      for (int i = 0; i < pages && g_window; ++i) PostMessageW(g_window, WM_VSCROLL, SB_PAGEDOWN, 0);
+      Sleep(500);
+      if (g_window) PostMessageW(g_window, WM_APP + 41, 0, 0);
+    }).detach();
+  }
   // MELEE_LAUNCHER_TEST_DROP=<file>: that file is dropped on the launcher at startup.
   if (const char* drop = std::getenv("MELEE_LAUNCHER_TEST_DROP"); g_launcher_test && drop && *drop) {
     std::thread(install_file, widen(drop), std::string(), g_iso).detach();
