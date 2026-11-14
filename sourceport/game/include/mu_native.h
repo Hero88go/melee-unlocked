@@ -514,7 +514,7 @@ int mu_ucf_shield_sdi(struct Fighter* fp);
 int mu_ucf_shield_drop(struct Fighter* fp);
 int mu_ucf_shield_drop_extended(struct Fighter* fp);
 int mu_ucf_tumble_wiggle(struct Fighter* fp);
-int mu_ucf_enabled(void);   /* General Codes on, and the replay (if any) carries UCF 0.84 */
+int mu_ucf_enabled(void);   /* General Codes on, and the replay (if any) carries UCF 0.84 or 0.8 */
 
 /* Slippi replay playback (--replay), shim/mu_replay.c: the native form of Slippi's playback codes,
  * called from the sites those codes patch. Codes are MU_REPLAY_CODE_* in mu_host.h. */
@@ -534,6 +534,7 @@ int mu_ucf_enabled(void);   /* General Codes on, and the replay (if any) carries
 #define MU_RC_NANA_DETERMINISM 0x00002000u
 #define MU_RC_PS_MONITOR 0x00004000u
 #define MU_RC_PREVENT_WOBBLING 0x00008000u
+#define MU_RC_UCF08 0x00020000u
 struct StartMeleeData;
 int mu_replay_on(void);
 int mu_replay_code(unsigned int code);     /* playback and the replay carries the code */

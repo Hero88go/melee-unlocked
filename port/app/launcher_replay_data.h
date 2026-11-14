@@ -47,6 +47,11 @@ struct Info {
   std::vector<Player> players;
 };
 Info inspect(const std::filesystem::path& path,bool with_stats=false);
+// When the game was played, for sorting by date: from the name Slippi and this game give a recording
+// (Game_YYYYMMDDTHHMMSS in local time, anything after it ignored), else the file's last write time.
+// The file time alone put years-old games first once a tool rewrote them (the slpz compressor stamps
+// every file it converts with the day it ran).
+long long game_time(const std::filesystem::path& path,std::filesystem::file_time_type written);
 std::string display_date(const Info& info);
 const char* character_name(int id);
 const char* move_name(int move_id);        // "Forward Air", "Self Destruct" for -1, ...

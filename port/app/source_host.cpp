@@ -3119,12 +3119,16 @@ std::vector<uint8_t> read_replay_event(const std::string& path, uint8_t wanted) 
 // Which of the replay's gameplay codes the native game knows, by injection address.
 uint32_t replay_codes(const Slippi::GameSettings& s, uint8_t* ps_frozen_toggle) {
   struct Known { uint32_t address; uint32_t code; const char* name; };
+  // UCF 0.8 (Slippi's list until it moved to 0.84, so replays from 2023 and before) patches the same
+  // three places as 0.84's dashback, shield drop and tumble, with different code. These say "a UCF"
+  // here; which one is settled after the loop, from the 0.84-only codes and the code sizes.
+  constexpr uint32_t kUcfShared = 0x80000000u;
   static const Known known[] = {
       {0x800D65EC, MU_REPLAY_CODE_UCF084, "UCF 0.84 DBOOC SquatRv fix"},
-      {0x800C9A44, MU_REPLAY_CODE_UCF084, "UCF dashback"}, {0x8006B460, MU_REPLAY_CODE_UCF084, "UCF pad buffer"},
+      {0x800C9A44, kUcfShared, "UCF dashback"}, {0x8006B460, MU_REPLAY_CODE_UCF084, "UCF pad buffer"},
       {0x8008E54C, MU_REPLAY_CODE_UCF084, "UCF SDI"}, {0x8009A0B8, MU_REPLAY_CODE_UCF084, "UCF shield drop extended"},
-      {0x800998A4, MU_REPLAY_CODE_UCF084, "UCF shield drop"}, {0x80093294, MU_REPLAY_CODE_UCF084, "UCF shield SDI"},
-      {0x800908F4, MU_REPLAY_CODE_UCF084, "UCF tumble"},
+      {0x800998A4, kUcfShared, "UCF shield drop"}, {0x80093294, MU_REPLAY_CODE_UCF084, "UCF shield SDI"},
+      {0x800908F4, kUcfShared, "UCF tumble"},
       {0x8016E510, MU_REPLAY_CODE_NEUTRAL_SPAWN, "NeutralSpawn"},
       {0x801239A8, MU_REPLAY_CODE_FREEZE_GLITCH, "FreezeGlitchFix"},
       {0x801C154C, MU_REPLAY_CODE_INIT_STAGE_DATA, "Init Stage Data"},
@@ -3157,6 +3161,7 @@ uint32_t replay_codes(const Slippi::GameSettings& s, uint8_t* ps_frozen_toggle) 
   auto kept = slippi::playback::gameplay_codes(s.geckoCodes, sys, &dropped);
   uint32_t codes = 0;
   size_t unknown = 0;
+  size_t ucf_dashback_bytes = 0, ucf_shield_drop_bytes = 0;
   for (const auto& c : kept) {
     const Known* k = nullptr;
     for (const auto& e : known) if (e.address == c.address) { k = &e; break; }
@@ -3164,12 +3169,30 @@ uint32_t replay_codes(const Slippi::GameSettings& s, uint8_t* ps_frozen_toggle) 
       ++unknown;
       host::log("replay: code %08X (type %02X, %zu bytes) is not implemented natively; this replay may diverge",
                 c.address, c.type, c.bytes.size());
-      if ((c.address == 0x800C9A44 || c.address == 0x800998A4) && !(codes & MU_REPLAY_CODE_UCF084)) codes |= MU_REPLAY_CODE_UCF_OTHER;
       continue;
     }
     codes |= k->code;
+    if (c.address == 0x800C9A44) ucf_dashback_bytes = c.bytes.size();
+    if (c.address == 0x800998A4) ucf_shield_drop_bytes = c.bytes.size();
     // IngameCheckIfFrozen keeps its toggle in its own code: b; blrl; .byte toggle.
     if (c.address == 0x801D457C && c.bytes.size() >= 8 + 12) *ps_frozen_toggle = c.bytes[8 + 8];
+  }
+  // Which UCF the shared sites belong to. 0.84 brings codes of its own (pad buffer, SDI, ...); 0.8's
+  // dashback and shield drop are 352 and 312 bytes (External/UCF 0.8, Slippi's list_console_UCF).
+  // Anything else is a UCF the native game does not have: said, and the replay plays without one.
+  if (codes & kUcfShared) {
+    codes &= ~kUcfShared;
+    if (codes & MU_REPLAY_CODE_UCF084) {
+      // 0.84: the shared sites are its own.
+    } else if (ucf_dashback_bytes == 352 && ucf_shield_drop_bytes == 312) {
+      codes |= MU_REPLAY_CODE_UCF08;
+      host::log("replay: recorded with UCF 0.8 (dashback, shield drop, tumble); played with UCF 0.8");
+    } else {
+      codes |= MU_REPLAY_CODE_UCF_OTHER;
+      ++unknown;
+      host::log("replay: recorded with a UCF other than 0.84 or 0.8 (dashback %zu bytes, shield drop %zu bytes); "
+                "this replay may diverge", ucf_dashback_bytes, ucf_shield_drop_bytes);
+    }
   }
   host::log("replay: code list %zu bytes, %zu gameplay codes kept (%zu denylisted by %s), %zu not native; codes mask %08X",
             s.geckoCodes.size(), kept.size(), dropped, sys.c_str(), unknown, codes);

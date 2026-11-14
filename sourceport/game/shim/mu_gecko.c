@@ -128,11 +128,23 @@ int mu_language_override(void)
     return choice == 1 ? 0 : choice == 2 ? 1 : -1;
 }
 
-/* UCF 0.84 is part of the General Codes; in a replay it runs only when the replay carries it.
- * Exported for the tumble wiggle site (ftCo_DamageFall.c). */
+/* Which UCF runs: 84 (UCF 0.84, part of the General Codes), 8 (UCF 0.8, only in the playback of a
+ * replay that carries it: Slippi recorded with 0.8 before it moved to 0.84, so 2023 and older
+ * replays need it to play as they were played), or 0. A replay runs only the version it carries. */
+static int ucf_version(void)
+{
+    if (!mu_general_codes())
+        return 0;
+    if (mu_replay_allows(MU_RC_UCF084))
+        return 84;
+    return mu_replay_code(MU_RC_UCF08) ? 8 : 0;
+}
+
+/* Either version. Exported for the tumble wiggle site (ftCo_DamageFall.c): the two tumble codes
+ * decide alike (mu_ucf_tumble_wiggle). */
 int mu_ucf_enabled(void)
 {
-    return mu_general_codes() && mu_replay_allows(MU_RC_UCF084);
+    return ucf_version() != 0;
 }
 
 /* The pad-buffer code's data, per controller port: the raw stick of the last four fighter-input
@@ -154,6 +166,26 @@ static int ucf_delta2(int port, int axis)
 {
     int idx = ucf_ring[port].idx;
     int d = ucf_ring[port].s[idx][axis] - ucf_ring[port].s[(idx - 2) & 3][axis];
+    return d * d;
+}
+
+/* UCF 0.8 keeps no buffer of its own: it reads the raw stick X from the pad library's queue of
+ * five polls, the newest (qread - 1) against the one two polls earlier, as its helper indexes it. */
+static int ucf08_raw_x(int index, int port)
+{
+    index -= 1;
+    if (index < 0)
+        index += 5;
+    return HSD_PadLibData.queue[index].stat[port].stickX;
+}
+
+static int ucf08_delta2_x(const Fighter* fp)
+{
+    int qread = HSD_PadLibData.qread;
+    int d;
+    if (fp->pad_port >= 4)
+        return 0;
+    d = ucf08_raw_x(qread, fp->pad_port) - ucf08_raw_x(qread - 2, fp->pad_port);
     return d * d;
 }
 
@@ -190,7 +222,8 @@ void mu_ucf_pad_buffer(Fighter* fp)
     const PADStatus* raw;
     int port, qread, idx, flick;
 
-    if (!mu_ucf_enabled() || ftCo_IsCpuControlled(fp) || (port = ucf_port(fp)) < 0)
+    /* 0.84 only: UCF 0.8 has no pad buffer and no 1.0 cardinals. */
+    if (ucf_version() != 84 || ftCo_IsCpuControlled(fp) || (port = ucf_port(fp)) < 0)
         return;
     qread = HSD_PadLibData.qread != 0 ? HSD_PadLibData.qread - 1 : 4;
     raw = &HSD_PadLibData.queue[qread].stat[port];
@@ -231,20 +264,21 @@ void mu_ucf_dashback(Fighter* fp)
 {
     unsigned int frame_bits;
     float toward;
-    int port;
+    int port, version = ucf_version();
     HSD_GObj* partner;
 
-    if (!mu_ucf_enabled() || fp->is_sub_fighter)
+    if (version == 0 || fp->is_sub_fighter)
         return;
     __builtin_memcpy(&frame_bits, &fp->cur_anim_frame, sizeof frame_bits);
     if (frame_bits != 0x40000000u)
         return;
-    toward = fp->facing_dir * fp->input.lstick[0].x;
+    /* 0.84 asks for the stick toward the new facing; 0.8 for its size either way (fabs). */
+    toward = version == 84 ? fp->facing_dir * fp->input.lstick[0].x : __builtin_fabsf(fp->input.lstick[0].x);
     if (toward < p_ftCommonData->dash_smash_stick_threshold)
         return;
     if (fp->active_timer.lstick.x > 1 || (port = ucf_port(fp)) < 0)
         return;
-    if (ucf_delta2(port, 0) <= 5625)
+    if ((version == 84 ? ucf_delta2(port, 0) : ucf08_delta2_x(fp)) <= 5625)
         return;
     fp->mv.co.turn.has_turned = true;
     fp->mv.co.turn.just_turned = true;
@@ -266,7 +300,7 @@ void mu_ucf_dashback(Fighter* fp)
 float mu_ucf_squatrv_threshold(Fighter* fp, float vanilla)
 {
     int ux, uy;
-    if (!mu_ucf_enabled() || fp->active_timer.lstick.x >= 1)
+    if (ucf_version() != 84 || fp->active_timer.lstick.x >= 1)
         return vanilla;
     ux = ucf_units(fp->input.lstick[0].x);
     uy = ucf_units(fp->input.lstick[0].y);
@@ -285,7 +319,7 @@ int mu_ucf_sdi(Fighter* fp)
 {
     float yy, prev, th;
     int port;
-    if (!mu_ucf_enabled())
+    if (ucf_version() != 84)
         return 0;
     if (fp->active_sticky.lstick.x > 1 && fp->active_sticky.lstick.y > 1)
         return 0;
@@ -304,7 +338,7 @@ int mu_ucf_sdi(Fighter* fp)
 int mu_ucf_shield_sdi(Fighter* fp)
 {
     int port;
-    if (!mu_ucf_enabled() || fp->active_sticky.lstick.x > 1)
+    if (ucf_version() != 84 || fp->active_sticky.lstick.x > 1)
         return 0;
     if (fp->input.lstick[1].x >= p_ftCommonData->sdi_min_stick_mag || (port = ucf_port(fp)) < 0)
         return 0;
@@ -317,10 +351,46 @@ int mu_ucf_shield_sdi(Fighter* fp)
 /* UCF Shield Drop, at the start of the spot dodge from shield: on a platform, a control-stick input
  * past the stick ring that is not a straight-down spot dodge input is left to the shield drop
  * check instead. Nonzero means cancel the spot dodge (the caller then reports no spot dodge). */
+/* UCF 0.8's stick units: ((int) (|v| * 80 - 0x37270000) + 2) / 80, one single-precision step at a
+ * time (fmuls, fsubs, fctiwz, then the count back to a float and fdivs). */
+static float ucf08_unit(float v)
+{
+    float scaled = __builtin_fabsf(v) * 80.0f;
+    float less = scaled - 0x1.4Ep-17f;
+    int units = (int) less + 2;
+    float back = (float) units;
+    return back / 80.0f;
+}
+
+/* UCF 0.8 Shield Drop: the same cancel as 0.84's with its own math: the squared units summed in
+ * floats against 1.0 (so exactly on the ring counts), the stick timer past 3, and no platform test. */
+static int ucf08_shield_drop(Fighter* fp)
+{
+    float fx, fy, xx, yy, sum;
+    if (fp->input.cstick[0].y <= p_ftCommonData->x314)
+        return 0;
+    fx = ucf08_unit(fp->input.lstick[0].x);
+    fy = ucf08_unit(fp->input.lstick[0].y);
+    xx = fx * fx;
+    yy = fy * fy;
+    sum = yy + xx;
+    if (sum < 1.0f)
+        return 0;
+    if (fp->active_timer.lstick.x <= 3)
+        return 0;
+    if (-0.8f >= fp->input.lstick[0].y)
+        return 0;
+    ucf_trace("shield-drop-0.8", fp);
+    return 1;
+}
+
 int mu_ucf_shield_drop(Fighter* fp)
 {
     int ux, uy;
-    if (!mu_ucf_enabled())
+    const int version = ucf_version();
+    if (version == 8)
+        return ucf08_shield_drop(fp);
+    if (version != 84)
         return 0;
     if (fp->input.cstick[0].y <= p_ftCommonData->x314)
         return 0;
@@ -343,7 +413,7 @@ int mu_ucf_shield_drop(Fighter* fp)
 int mu_ucf_shield_drop_extended(Fighter* fp)
 {
     int port = ucf_port(fp);
-    if (!(mu_ucf_enabled() && port >= 0 && ucf_ring[port].flick > 1))
+    if (!(ucf_version() == 84 && port >= 0 && ucf_ring[port].flick > 1))
         return 0;
     ucf_trace("shield-drop-extended", fp);
     return 1;
@@ -361,7 +431,8 @@ int mu_ucf_tumble_wiggle(Fighter* fp)
         return 0;
     if (__builtin_fabsf(fp->input.lstick[1].x) >= p_ftCommonData->x210 || (port = ucf_port(fp)) < 0)
         return 0;
-    if (ucf_delta2(port, 0) <= 5625)
+    /* Both versions decide alike; 0.8 reads the pad queue where 0.84 reads its own buffer. */
+    if ((ucf_version() == 84 ? ucf_delta2(port, 0) : ucf08_delta2_x(fp)) <= 5625)
         return 0;
     ucf_trace("tumble", fp);
     return 1;

@@ -230,5 +230,21 @@ int main(int argc,char** argv) {
     return 0;
   }
   if(int result=ground_truth()) return result;
+  {
+    // Sorting by when a game was played: a 2023 game rewritten today by the slpz tool still sorts
+    // before a 2026 one, a suffix after the stamp is ignored, and a name without a stamp falls back
+    // to the file's time.
+    namespace fs=std::filesystem;
+    const auto today=fs::file_time_type::clock::now();
+    const long long old_game=launcher::replay::game_time("Game_20230914T232455.slpz",today);
+    const long long new_game=launcher::replay::game_time("Game_20261113T202942.slp",today-std::chrono::hours(24*400));
+    const long long suffixed=launcher::replay::game_time("Game_20261113T202942_1.slp",today);
+    const long long other=launcher::replay::game_time("my favourite game.slp",today);
+    if(!(old_game<new_game)) return 31;
+    if(suffixed!=new_game) return 32;
+    if(other<=new_game) return 33;   // today's file time, later than any stamped game above
+    const long long not_a_date=launcher::replay::game_time("Game_20231399T999999.slp",today);
+    if(not_a_date<other-1||not_a_date>other+1) return 34;   // the file's time, as for any other name
+  }
   std::cout<<"replay metadata and Slippi edge-cancel L-cancel test passed\n";
 }

@@ -94,6 +94,30 @@ const char* move_name(int id) {
     case 62:return "Edge Attack"; default:return "Unknown Move";
   }
 }
+long long game_time(const std::filesystem::path& path,std::filesystem::file_time_type written) {
+  const std::string name=path.stem().string();
+  if(name.size()>=20&&name.compare(0,5,"Game_")==0&&name[13]=='T') {
+    int v[6]{};
+    static const int at[6][2]={{5,4},{9,2},{11,2},{14,2},{16,2},{18,2}};
+    bool digits=true;
+    for(int i=0;i<6&&digits;++i) for(int k=0;k<at[i][1];++k) {
+      const char c=name[at[i][0]+k];
+      if(c<'0'||c>'9') { digits=false; break; }
+      v[i]=v[i]*10+(c-'0');
+    }
+    if(digits&&v[1]>=1&&v[1]<=12&&v[2]>=1&&v[2]<=31&&v[3]<=23&&v[4]<=59&&v[5]<=60) {
+      std::tm tm{}; tm.tm_year=v[0]-1900; tm.tm_mon=v[1]-1; tm.tm_mday=v[2];
+      tm.tm_hour=v[3]; tm.tm_min=v[4]; tm.tm_sec=v[5]; tm.tm_isdst=-1;
+      const std::time_t t=std::mktime(&tm);
+      if(t!=(std::time_t)-1) return (long long)t;
+    }
+  }
+  // The file's time on the system clock (file_clock's epoch differs between platforms).
+  const auto since=written-std::filesystem::file_time_type::clock::now();
+  const auto when=std::chrono::system_clock::now()+std::chrono::duration_cast<std::chrono::system_clock::duration>(since);
+  return (long long)std::chrono::system_clock::to_time_t(when);
+}
+
 Info inspect(const std::filesystem::path& path,bool with_stats) {
   Info info;info.path=path;
   // A .slpz (replay_slpz.h) is read as the .slp it holds, from memory.

@@ -127,7 +127,8 @@ typedef struct MuReplayFrame {
 #define MU_REPLAY_CODE_NANA_DETERMINISM  0x00002000u
 #define MU_REPLAY_CODE_PS_MONITOR        0x00004000u
 #define MU_REPLAY_CODE_PREVENT_WOBBLING  0x00008000u
-#define MU_REPLAY_CODE_UCF_OTHER         0x00010000u   /* a UCF version other than 0.84 */
+#define MU_REPLAY_CODE_UCF_OTHER         0x00010000u   /* a UCF version other than 0.84 or 0.8 */
+#define MU_REPLAY_CODE_UCF08             0x00020000u   /* UCF 0.8: dashback, shield drop, tumble (Slippi before 0.84) */
 
 /* Version 13, test harness only (--online-test): an online match the game enters without its
  * menus, the way replay playback does. */

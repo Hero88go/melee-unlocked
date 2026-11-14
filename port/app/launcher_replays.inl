@@ -433,7 +433,18 @@ void refresh_replays(const std::filesystem::path& selected={}) {
     if(!choice.empty()&&std::none_of(found.begin(),found.end(),[&](const auto& f){return f.second==choice;})) {
       std::error_code fe; found.emplace_back(std::filesystem::last_write_time(choice,fe),choice);
     }
-    std::sort(found.begin(),found.end(),[](const auto& a,const auto& b){return a.first>b.first;});
+    {
+      // Newest game first by when it was played (launcher::replay::game_time), not the file's time:
+      // the 500 kept below are then the newest 500 games. Computed once per file.
+      std::vector<std::pair<long long,size_t>> order;
+      order.reserve(found.size());
+      for(size_t i=0;i<found.size();++i) order.emplace_back(launcher::replay::game_time(found[i].second,found[i].first),i);
+      std::stable_sort(order.begin(),order.end(),[](const auto& a,const auto& b){return a.first>b.first;});
+      std::vector<std::pair<std::filesystem::file_time_type,std::filesystem::path>> sorted;
+      sorted.reserve(found.size());
+      for(const auto& o:order) sorted.push_back(std::move(found[o.second]));
+      found.swap(sorted);
+    }
     // Keep navigation instant for players with years of Slippi recordings.
     if(found.size()>500) {
       auto picked=std::find_if(found.begin(),found.end(),[&](const auto& f){return f.second==choice;});

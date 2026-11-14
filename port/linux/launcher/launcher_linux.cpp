@@ -384,9 +384,20 @@ void refresh_replays() {
         if (seen.insert(canon).second) files.push_back(it->path());
       }
     }
-    std::sort(files.begin(), files.end(), [](const fs::path& a, const fs::path& b) {
-      std::error_code ec; return fs::last_write_time(a, ec) > fs::last_write_time(b, ec);
-    });
+    {
+      // Newest game first by when it was played (launcher::replay::game_time), not the file's time.
+      std::vector<std::pair<long long, size_t>> order;
+      order.reserve(files.size());
+      for (size_t i = 0; i < files.size(); ++i) {
+        std::error_code ec;
+        order.emplace_back(launcher::replay::game_time(files[i], fs::last_write_time(files[i], ec)), i);
+      }
+      std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      std::vector<fs::path> sorted;
+      sorted.reserve(files.size());
+      for (const auto& o : order) sorted.push_back(std::move(files[o.second]));
+      files.swap(sorted);
+    }
     if (files.size() > 2000) files.resize(2000);
     std::map<std::string, launcher::replay::Info> info;
     for (const auto& f : files) info[f.string()] = launcher::replay::inspect(f);
