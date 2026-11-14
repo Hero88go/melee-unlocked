@@ -40,8 +40,10 @@
 #include "temporal_history.h"
 #ifdef _WIN32
 #include "gx_fsr.h"
-#include "gx_streamline.h"   // the jitter sequence the Direct3D 12 upscalers use
 #endif
+// The jitter sequence the Direct3D 12 upscalers use, and publish_latency for the render latency
+// readout (Linux and macOS: port/linux/full/gpu_features_linux.cpp).
+#include "gx_streamline.h"
 #include "host.h"
 #include "exi_slippi.h"
 #include "window.h"
