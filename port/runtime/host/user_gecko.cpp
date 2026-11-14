@@ -915,6 +915,11 @@ const char* native_equivalent(const Code& c) {
       {0x040D4040u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
       // "No Character Shadows" (Altimor): the community code switch of the same effect.
       {0x040872F8u, 0x38600000u, "Hide fighter shadows (Community codes)"},
+      // Slippi's "Optional: Freeze Final Destination Background", UnclePunch's "Boot to CSS" and
+      // Slippi's "Optional: Center Align 2P HUD": switches of the same effect.
+      {0x0421AAE0u, 0x48000008u, "Freeze Final Destination (Game, Stages)"},
+      {0x041BFA20u, 0x38600002u, "Boot to character select (Community codes)"},
+      {0xC216E9ACu, 0x00000009u, "Center the HUD for two players (Community codes)"},
   };
   for (const Known& k : known)
     if (!c.lines.empty() && c.lines[0].first == k.w && c.lines[0].second == k.v) return k.label;

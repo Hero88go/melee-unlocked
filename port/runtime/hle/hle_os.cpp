@@ -48,6 +48,13 @@ HLE(OSPanic) {
   if (file == "lbfile" && host::mod_disc_active() && *host::last_missing_file())
     host::die("OSPanic at lbfile:%u: this mod's disc has no %s, which the mod asked for. Patch the mod's "
               "disc again, or avoid what loads that file (a stage or a fighter)", ARG1, host::last_missing_file());
+  // ftdata.c 0xA0F: a fighter's animation in the file just loaded does not parse (HSD_ArchiveParse).
+  // On a mod disc that is a damaged or partly patched disc (a Chaos Eternal disc missing files its own
+  // tables name, in a player's report): the player is told so, and which files were being loaded.
+  if (ARG1 == 0xA0F && file == "ftdata.c" && host::mod_disc_active())
+    host::die("OSPanic at ftdata.c:%u: a fighter's animation on this mod's disc could not be read (after %s). "
+              "The disc is probably damaged or only partly patched: patch it again from a clean Melee 1.02 ISO",
+              ARG1, host::recent_files(2).c_str());
   host::die("OSPanic at %s:%u: %s", file.c_str(), ARG1, msg.c_str());
 }
 // HSD_MemAlloc (sysdolphin memory.c), as the game has it: nothing for a size of 0 or less, else

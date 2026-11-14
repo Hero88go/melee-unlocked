@@ -2358,6 +2358,12 @@ static char g_recent_files[12][24];
 static char g_missing_file[64];
 const char* last_missing_file() { return g_missing_file; }
 static uint32_t g_recent_file_count = 0;
+std::string recent_files(uint32_t count) {
+  std::string names;
+  const uint32_t shown = std::min<uint32_t>(std::min<uint32_t>(g_recent_file_count, 12), count);
+  for (uint32_t i = g_recent_file_count - shown; i < g_recent_file_count; ++i) { if (!names.empty()) names += ", "; names += g_recent_files[i % 12]; }
+  return names;
+}
 static void note_file_asked(const char* path) {
   const char* slash = std::strrchr(path, '/');
   const char* base = slash ? slash + 1 : path;

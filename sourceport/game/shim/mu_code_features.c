@@ -31,7 +31,7 @@ int mu_code_feature(unsigned int bit)
 static int mu_offline_code(unsigned int bit)
 {
     static unsigned int logged = ~0u;
-    const unsigned int on = mu_display_options() & (MU_DISPLAY_INSTANT_MELEE | MU_DISPLAY_FREE_PAUSE_CAMERA);
+    const unsigned int on = mu_display_options() & (MU_DISPLAY_INSTANT_MELEE | MU_DISPLAY_FREE_PAUSE_CAMERA | MU_DISPLAY_BOOT_TO_CSS);
     if (on != logged) {
         logged = on;
         OSReport("[codes] offline codes %06X\n", on);
@@ -40,6 +40,7 @@ static int mu_offline_code(unsigned int bit)
 }
 int mu_instant_melee(void) { return mu_offline_code(MU_DISPLAY_INSTANT_MELEE); }
 int mu_free_pause_camera(void) { return mu_offline_code(MU_DISPLAY_FREE_PAUSE_CAMERA); }
+int mu_boot_to_css(void) { return mu_offline_code(MU_DISPLAY_BOOT_TO_CSS); }
 
 /* Hitboxes Display Knockback Angle (rmn, PKFreeZZy): a line from the bubble's centre to its edge
  * along the hit's knockback angle, mirrored for a fighter facing left. The Sakurai angle (361) is

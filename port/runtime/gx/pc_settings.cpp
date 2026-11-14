@@ -9517,6 +9517,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
          "The menu's confirm sound plays on a successful V-cancel."},
         {MU_DISPLAY_OPTION_NO_FIGHTER_SHADOWS, "Hide fighter shadows",
          "Fighters cast no shadow on the stage (the No Character Shadows code)."},
+        {MU_DISPLAY_OPTION_CENTER_2P_HUD, "Center the HUD for two players",
+         "With only players 1 and 2 in a match, their percents sit in the middle of the screen\n"
+         "(the Center Align 2P HUD code)."},
         {MU_DISPLAY_OPTION_HITBOX_ID_COLORS, "Hitbox colours by ID",
          "Shown hitboxes: ID 0 red, 1 green, 2 cyan, 3 purple."},
         {MU_DISPLAY_OPTION_HITBOX_ID_ORDER, "Highest-priority hitbox on top",
@@ -9545,6 +9548,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
          "match countdown."},
         {MU_DISPLAY_OPTION_FREE_PAUSE_CAMERA, "Unrestricted pause camera",
          "The pause camera turns all the way down, left and right and zooms much further."},
+        {MU_DISPLAY_OPTION_BOOT_TO_CSS, "Boot to character select",
+         "The game starts at the character select, past the title screen and menus\n"
+         "(the Boot to CSS code)."},
       };
       for (const Code& c : kOffline) {
         bool on = (options.community_codes & c.bit) != 0;

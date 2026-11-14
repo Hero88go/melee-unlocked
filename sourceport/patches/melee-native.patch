@@ -108878,7 +108878,7 @@ index bb212dca2..f239bd76c 100644
      HSD_JObjAnimAll(jobj);
      HSD_GObj_SetupProc(gobj, fn_801AD920, 1);
 diff --git a/src/melee/gm/gmboot.c b/src/melee/gm/gmboot.c
-index d96e86982..83eaddce2 100644
+index d96e86982..1dcac2c23 100644
 --- a/src/melee/gm/gmboot.c
 +++ b/src/melee/gm/gmboot.c
 @@ -1,4 +1,3 @@
@@ -108911,14 +108911,15 @@ index d96e86982..83eaddce2 100644
  
      if (!Toy_803048C0(TROPHY_PIKMIN)) {
          if (!lb_8001C2D8(0, "01",
-@@ -79,7 +78,13 @@ void bootOnLeave(GameModeState* data)
+@@ -79,7 +78,14 @@ void bootOnLeave(GameModeState* data)
  
      // Enter mode
      // Gekko "boot to CSS" code changes scene_id to a hardcoded 2 (::GM_VS)
 +#ifdef MU_NATIVE
 +    /* Slippi online menus, boot.asm: straight to the main menu, which opens the online submenu. */
 +    /* The Lossless adapter lag test: "Boot to CSS", the hardcoded 2 above (shim/mu_lagtest.c). */
-+    gm_ChangeGameModeAfterCurrentScene(mu_lag_test() ? 2 : mu_slippi_boot_mode(scene_data->mode_id));
++    /* The community code "Boot to CSS" (offline, HUD tab; the player's 041BFA20 38600002) the same. */
++    gm_ChangeGameModeAfterCurrentScene(mu_lag_test() || mu_boot_to_css() ? 2 : mu_slippi_boot_mode(scene_data->mode_id));
 +#else
      gm_ChangeGameModeAfterCurrentScene(scene_data->mode_id);
 +#endif
@@ -119293,7 +119294,7 @@ index 2adba8159..1d2b33edb 100644
  
      gm_InitVsMode(temp_r31);
 diff --git a/src/melee/gm/gmvs.c b/src/melee/gm/gmvs.c
-index b2fc84a75..5e3eebea3 100644
+index b2fc84a75..5b5454985 100644
 --- a/src/melee/gm/gmvs.c
 +++ b/src/melee/gm/gmvs.c
 @@ -1,4 +1,9 @@
@@ -119385,9 +119386,8 @@ index b2fc84a75..5e3eebea3 100644
 +        lbAudioAx_80024030(5);
 +    }
 +    return -1;
- }
- 
--VsSceneController* gmVs_GetController_1(void)
++}
++
 +static void mu_online_init_pause(void)
 +{
 +    int mode = mu_online_rules_mode();
@@ -119399,9 +119399,10 @@ index b2fc84a75..5e3eebea3 100644
 +    controller.start.check_for_pauser_override = mu_online_lras_check;
 +    mu_lras_display = false;
 +    controller.start.disable_pausing = false;
-+}
+ }
 +#endif
-+
+ 
+-VsSceneController* gmVs_GetController_1(void)
 +VsSceneController* gmVs_GetSceneController(void)
  {
      return &controller;
@@ -120061,10 +120062,10 @@ index b2fc84a75..5e3eebea3 100644
 +#ifdef MU_NATIVE
 +    /* Instant Melee, "Pause During Game Start" (offline): pausing does not wait for the HUD. */
 +    if (arg0->state.unpause_timer == 0 && (arg0->state.hud_enabled != 0 || mu_instant_melee()) &&
-+        !arg0->start.disable_pausing)
+         !arg0->start.disable_pausing)
 +#else
 +    if (arg0->state.unpause_timer == 0 && arg0->state.hud_enabled != 0 &&
-         !arg0->start.disable_pausing)
++        !arg0->start.disable_pausing)
 +#endif
      {
          if (arg0->start.check_for_pauser_override != NULL) {
@@ -120965,7 +120966,25 @@ index b2fc84a75..5e3eebea3 100644
      if (arg0->rules.on_match_start != NULL) {
          arg0->rules.on_match_start();
      }
-@@ -2059,7 +2489,7 @@ struct EndMeleeData {
+@@ -2052,6 +2482,17 @@ void gm_Scene_Vs_OnEnter(void* arg0)
+         ifStatus_802F6EA4(3, -1, -1, 0, (void*) fn_8016B7B4, fn_8016B7F8);
+     }
+     ifTime_CreateTimers();
++#ifdef MU_NATIVE
++    /* Community code "Center Align 2P HUD" (UnclePunch, Fizzi; 8016E9AC): with players 1 and 2 in
++     * the match and 3 and 4 empty, the HUD is laid out as for two players. Picture only. */
++    if (mu_code_feature(MU_DISPLAY_CENTER_2P_HUD) && tmp->players[0].slot_type != 3 &&
++        tmp->players[1].slot_type != 3 && tmp->players[2].slot_type == 3 &&
++        tmp->players[3].slot_type == 3)
++    {
++        ifStatus_802F665C(2);
++        return;
++    }
++#endif
+     ifStatus_802F665C(tmp->rules.x0_3);
+ }
+ 
+@@ -2059,7 +2500,7 @@ struct EndMeleeData {
      /* 00 */ u32 x0;
      /* 04 */ u32 x4;
      /* 08 */ u32 x8;
@@ -120974,7 +120993,7 @@ index b2fc84a75..5e3eebea3 100644
  };
  
  static inline bool gm_8016E9C8_inline(void)
-@@ -2086,43 +2516,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
+@@ -2086,43 +2527,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -121054,7 +121073,7 @@ index b2fc84a75..5e3eebea3 100644
  }
  
  void gm_Scene_SuddenDeath_OnEnter(void* user_data)
-@@ -2145,7 +2601,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
+@@ -2145,7 +2612,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
      grStadium_801D410C();
      un_802FD404();
      tmp2 = &controller;
@@ -121063,7 +121082,7 @@ index b2fc84a75..5e3eebea3 100644
      Stage_802252E4(tmp2->start.stkind, NULL);
      grStadium_801D4040();
      if (!controller.start.x1_3) {
-@@ -2187,7 +2643,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2187,7 +2654,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
      float var_f1;
      PAD_STACK(8);
  
@@ -121072,7 +121091,7 @@ index b2fc84a75..5e3eebea3 100644
          Player_GetPlayerSlotType(arg0) == Gm_PKind_NA &&
          Player_GetEntity(arg0) == NULL)
      {
-@@ -2211,7 +2667,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2211,7 +2678,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
          Player_80032768(arg0, &sp18);
          setPlayerUnk45(arg0);
          Player_80031AD0(arg0);
@@ -121081,7 +121100,7 @@ index b2fc84a75..5e3eebea3 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_8016E124();
-@@ -2225,7 +2681,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2225,7 +2692,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
  
  bool fn_8016EF98(int arg0)
  {
@@ -121092,7 +121111,7 @@ index b2fc84a75..5e3eebea3 100644
          ifStatus_802F6788(arg0);
          Player_80031EBC(arg0);
          Player_SetSlottype(arg0, Gm_PKind_NA);
-@@ -2281,10 +2739,20 @@ int gm_8016F120(int arg0)
+@@ -2281,10 +2750,20 @@ int gm_8016F120(int arg0)
  
  void fn_8016F140(int arg0)
  {

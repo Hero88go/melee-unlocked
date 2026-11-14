@@ -443,12 +443,14 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
 #define MU_DISPLAY_OPTION_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
 #define MU_DISPLAY_OPTION_NO_FIGHTER_SHADOWS 0x01000000u   /* No Character Shadows: fighters cast no shadow on the stage */
-#define MU_DISPLAY_OPTION_CODES_ALL 0x013FF000u
+#define MU_DISPLAY_OPTION_CENTER_2P_HUD      0x04000000u   /* Center Align 2P HUD: players 1 and 2 only, the HUD laid out for two */
+#define MU_DISPLAY_OPTION_CODES_ALL 0x053FF000u
 /* Offline community codes: they change menu timing and the pause, so the host sends them only
  * outside network play (source_host.cpp h_display_options). Saved with the codes above. */
 #define MU_DISPLAY_OPTION_INSTANT_MELEE      0x00400000u   /* Instant Melee: faster stage, stage select and character select loads; pause during the countdown */
 #define MU_DISPLAY_OPTION_FREE_PAUSE_CAMERA  0x00800000u   /* Unrestricted pause camera */
-#define MU_DISPLAY_OPTION_OFFLINE_CODES 0x00C00000u
+#define MU_DISPLAY_OPTION_BOOT_TO_CSS        0x02000000u   /* Boot to CSS: the game starts at the character select */
+#define MU_DISPLAY_OPTION_OFFLINE_CODES 0x02C00000u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

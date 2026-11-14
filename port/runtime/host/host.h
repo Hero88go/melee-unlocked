@@ -241,7 +241,8 @@ void install_clean_mode_music();   // Static Recomp, clean mode: music through t
 void install_preload_room();   // Static Recomp: the preloader makes room in a full heap instead of stopping
 void install_mod_disc_guards();   // Static Recomp, mod disc: a file the disc lacks opens as an empty file   // Static Recomp: audio blocks at their 5 ms times during the frame wait
 const char* last_missing_file();   // the last file the game asked for that the disc lacks, or ""
-void report_recent_files();   // a mod disc's game stopped: one line with the last files it asked for by name
+void report_recent_files();
+std::string recent_files(uint32_t count);   // the last `count` of those names, oldest first, comma separated   // a mod disc's game stopped: one line with the last files it asked for by name
 void report_heap_panic(ppc::Context& c);   // OSPanic at lbmemory.c:233: logs the heap that had no room and the title demo's draw
 void note_scene_memory();     // a mod disc's scene changed: one line with the current object heap's size and use
 void report_object_memory();   // OSPanic at memory.c:52: one line per object heap (size, free, largest free piece)

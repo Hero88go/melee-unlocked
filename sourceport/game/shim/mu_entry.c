@@ -195,6 +195,8 @@ _Static_assert(MU_DISPLAY_HQ_FOD_REFLECTIONS == MU_DISPLAY_OPTION_HQ_FOD_REFLECT
 _Static_assert(MU_DISPLAY_VCANCEL_SOUND == MU_DISPLAY_OPTION_VCANCEL_SOUND, "display option bits");
 _Static_assert(MU_DISPLAY_CODES_ALL == MU_DISPLAY_OPTION_CODES_ALL, "display option bits");
 _Static_assert(MU_DISPLAY_NO_FIGHTER_SHADOWS == MU_DISPLAY_OPTION_NO_FIGHTER_SHADOWS, "display option bits");
+_Static_assert(MU_DISPLAY_CENTER_2P_HUD == MU_DISPLAY_OPTION_CENTER_2P_HUD, "display option bits");
+_Static_assert(MU_DISPLAY_BOOT_TO_CSS == MU_DISPLAY_OPTION_BOOT_TO_CSS, "display option bits");
 
 /* The Arcade look grid's colour (0 from a host before version 21: the default). */
 float mu_screen_shake_scale(void)

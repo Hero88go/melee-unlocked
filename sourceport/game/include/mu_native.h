@@ -161,14 +161,17 @@ int mu_hud_emblems_hidden(void);
 #define MU_DISPLAY_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
 #define MU_DISPLAY_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
 #define MU_DISPLAY_NO_FIGHTER_SHADOWS 0x01000000u   /* No Character Shadows: fighters cast no shadow (ftlib.c ftLib_800872BC) */
-#define MU_DISPLAY_CODES_ALL         0x013FF000u
+#define MU_DISPLAY_CENTER_2P_HUD      0x04000000u   /* Center Align 2P HUD: players 1 and 2 only, the HUD laid out for two (gmvs.c) */
+#define MU_DISPLAY_CODES_ALL         0x053FF000u
 /* shim/mu_code_features.c: nonzero while the player has that community code on. */
 int mu_code_feature(unsigned int bit);
 /* Offline community codes (HUD tab): they change menu timing and the pause, so the host sends them
  * only outside network play (source_host.cpp h_display_options). */
 #define MU_DISPLAY_INSTANT_MELEE      0x00400000u   /* Instant Melee: faster stage, stage select and character select loads; pause during the countdown */
 #define MU_DISPLAY_FREE_PAUSE_CAMERA  0x00800000u   /* Unrestricted pause camera: no angle limits, zoom 2.5 to 32768 */
+#define MU_DISPLAY_BOOT_TO_CSS        0x02000000u   /* Boot to CSS: the game starts at the character select (gmboot.c) */
 int mu_instant_melee(void);
+int mu_boot_to_css(void);
 int mu_free_pause_camera(void);
 /* shim/mu_code_features.c: the knockback angle line of a hitbox bubble just drawn (ftdrawcommon.c). */
 struct HitCapsule;
