@@ -160,7 +160,8 @@ int mu_hud_emblems_hidden(void);
 #define MU_DISPLAY_HITBOX_ANGLES      0x00080000u   /* shown hitboxes carry a line along their knockback angle */
 #define MU_DISPLAY_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
 #define MU_DISPLAY_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
-#define MU_DISPLAY_CODES_ALL         0x003FF000u
+#define MU_DISPLAY_NO_FIGHTER_SHADOWS 0x01000000u   /* No Character Shadows: fighters cast no shadow (ftlib.c ftLib_800872BC) */
+#define MU_DISPLAY_CODES_ALL         0x013FF000u
 /* shim/mu_code_features.c: nonzero while the player has that community code on. */
 int mu_code_feature(unsigned int bit);
 /* Offline community codes (HUD tab): they change menu timing and the pause, so the host sends them

@@ -441,7 +441,8 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_HITBOX_ANGLES      0x00080000u   /* shown hitboxes carry a line along their knockback angle */
 #define MU_DISPLAY_OPTION_HQ_FOD_REFLECTIONS 0x00100000u   /* Fountain of Dreams reflections at full resolution with full models */
 #define MU_DISPLAY_OPTION_VCANCEL_SOUND      0x00200000u   /* the menu's confirm sound on a successful V-cancel */
-#define MU_DISPLAY_OPTION_CODES_ALL 0x003FF000u
+#define MU_DISPLAY_OPTION_NO_FIGHTER_SHADOWS 0x01000000u   /* No Character Shadows: fighters cast no shadow on the stage */
+#define MU_DISPLAY_OPTION_CODES_ALL 0x013FF000u
 /* Offline community codes: they change menu timing and the pause, so the host sends them only
  * outside network play (source_host.cpp h_display_options). Saved with the codes above. */
 #define MU_DISPLAY_OPTION_INSTANT_MELEE      0x00400000u   /* Instant Melee: faster stage, stage select and character select loads; pause during the countdown */
