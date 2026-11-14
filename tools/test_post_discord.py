@@ -14,7 +14,10 @@ class ReleaseEventNotesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             event = Path(folder) / 'event.json'
             event.write_text(json.dumps({'release': {'tag_name': 'v0.8.0', 'body': 'Published notes'}}))
-            with patch.object(post_discord, 'ROOT', Path(folder)), patch.dict(os.environ, {
+            # No network: on GitHub Actions a version without notes would otherwise be looked up on the
+            # live repository, which has a real 0.7.1 release.
+            with patch.object(post_discord, 'ROOT', Path(folder)), \
+                    patch.object(post_discord, 'release_by_tag', return_value=None), patch.dict(os.environ, {
                 'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'release'
             }):
                 self.assertEqual(post_discord.notes_for_version('0.8.0'), 'Published notes')
