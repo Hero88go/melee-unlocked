@@ -8,17 +8,55 @@
 #include "user_gecko_targets.h"
 #endif
 
+#include "gecko_function_patch.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <regex>
 #include <sstream>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace user_gecko {
 namespace {
+
+// The game functions whose native entry the host may overwrite with "return at once", by console
+// address, with the native return kind (tools/gecko_functions.py; the game library holds the same
+// table with the native addresses). The test supplies its own.
+#ifndef USER_GECKO_TEST_FUNCTIONS
+struct FunctionRow { uint32_t console; uint8_t kind; };
+const FunctionRow kFunctionRows[] = {
+#define MU_GECKO_FN(addr, name, kind) {addr, kind},
+#ifdef _WIN32
+#include "../../../sourceport/game/shim/mu_gecko_functions.inc"
+#else
+#include "../../../sourceport/game/shim/mu_gecko_functions_linux.inc"
+#endif
+#undef MU_GECKO_FN
+    {0xFFFFFFFFu, 0},
+};
+#endif
+const FunctionRow* function_row(uint32_t console) {
+  const FunctionRow* end = std::end(kFunctionRows);
+  const FunctionRow* it = std::lower_bound(std::begin(kFunctionRows), end, console,
+                                           [](const FunctionRow& r, uint32_t a) { return r.console < a; });
+  return it != end && it->console == console ? it : nullptr;
+}
 
 std::string g_path;
 std::vector<Code> g_codes;
@@ -140,7 +178,22 @@ struct Compiler {
     if (reading && why.compare(0, 6, "writes") == 0) why = "reads" + why.substr(6);
     return refuse(why);
   }
+  // A write into a game function the host may make "return at once": its bytes are kept for
+  // judge_functions(), which reads the function from the disc. 1 when taken, 0 when the write is not
+  // one (check() then says why), -1 when refused here.
+  int function_write(uint32_t addr, const uint8_t* data, uint32_t len) {
+    const ConsoleSymbol* s = symbol_at(addr);
+    if (!s || s->kind != kCode || !function_row(s->addr)) return 0;
+    if (len > s->size - (addr - s->addr)) return refuse("writes past the end of " + std::string(s->name)) ? 1 : -1;
+    if (depth) return refuse("rewrites " + std::string(s->name) + " only under a condition") ? 1 : -1;
+    for (uint32_t k = 0; k < len; ++k) c.fn_bytes.push_back({addr + k, data[k]});
+    return 1;
+  }
   bool write(uint32_t addr, const uint8_t* data, uint32_t len) {
+    if (len && addr >= 0x80003100u && len <= 0x81800000u - addr) {
+      const int taken = function_write(addr, data, len);
+      if (taken) return taken > 0;
+    }
     if (!check(addr, len, false)) return false;
     if (len == 0) return true;
     Op op;
@@ -478,6 +531,147 @@ int32_t run_plan(const Code& c, uint32_t& bad) {
   return 1;
 }
 
+// ---- the Source Port: codes that make a game function return at once ----
+const NativeFunction* g_native_fns = nullptr;
+uint32_t g_native_fn_count = 0;
+DolRead g_dol_read = nullptr;
+
+#ifdef MELEE_NO_SLIPPI   // no other engine to name in the build with one
+const char* const kCannotCopy = "";
+#else
+const char* const kCannotCopy = ": needs the Static Recomp engine";
+#endif
+
+void refuse_functions(Code& c, const std::string& why) {
+  c.supported = false;
+  c.enabled = false;   // `wanted` stays: the player's switch for the Static Recomp
+  c.reason = why;
+  c.fn_patches.clear();
+  host::log("gecko: \"%s\" cannot run here: %s", c.name.c_str(), why.c_str());
+}
+
+// What the code's writes do to each function it touches, from the function's console instructions
+// with the code's bytes in place (gecko_function_patch.h). Waits for the disc (set_native_functions).
+void judge_functions(Code& c) {
+  if (c.fn_judged || !c.supported || c.fn_bytes.empty()) { c.fn_judged = c.fn_judged || c.fn_bytes.empty(); return; }
+  if (!g_dol_read) return;
+  c.fn_judged = true;
+  c.fn_patches.clear();
+  std::map<uint32_t, std::vector<std::pair<uint32_t, uint8_t>>> by_function;
+  for (const auto& b : c.fn_bytes) {
+    const ConsoleSymbol* s = symbol_at(b.first);
+    if (s) by_function[s->addr].push_back(b);
+  }
+  for (const auto& [start, bytes] : by_function) {
+    const ConsoleSymbol* s = symbol_at(start);
+    const FunctionRow* row = function_row(start);
+    const std::string name = s ? s->name : hex8(start);
+    if (!s || !row || s->size < 4 || (s->size & 3)) return refuse_functions(c, "rewrites " + name + kCannotCopy);
+    std::vector<uint8_t> raw(s->size);
+    if (!g_dol_read(start, raw.data(), s->size)) return refuse_functions(c, "rewrites " + name + ", which could not be read from the disc");
+    for (const auto& b : bytes) raw[b.first - start] = b.second;
+    std::vector<uint32_t> words(s->size / 4);
+    for (size_t k = 0; k < words.size(); ++k) words[k] = be(&raw[4 * k], 4);
+    const gecko_fn::Result r = gecko_fn::analyse(start, words, row->kind);
+    if (!r.ok) return refuse_functions(c, "rewrites " + name + " so that it still " + r.why + kCannotCopy);
+    c.fn_patches.push_back({start, row->kind, r.value});
+    host::log("gecko: \"%s\": %s returns %s at once while it is on", c.name.c_str(), name.c_str(),
+              row->kind == gecko_fn::kVoid ? "(nothing)" : std::to_string((int32_t)r.value).c_str());
+  }
+}
+
+// Overwrites native code (`len` bytes at `at`) with `bytes`.
+bool write_native_code(void* at, const uint8_t* bytes, size_t len) {
+#ifdef _WIN32
+  DWORD old = 0, ignored = 0;
+  if (!VirtualProtect(at, len, PAGE_EXECUTE_READWRITE, &old)) return false;
+  std::memcpy(at, bytes, len);
+  VirtualProtect(at, len, old, &ignored);
+  FlushInstructionCache(GetCurrentProcess(), at, len);
+  return true;
+#else
+  const uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
+  const uintptr_t start = (uintptr_t)at & ~(page - 1), end = ((uintptr_t)at + len + page - 1) & ~(page - 1);
+  if (mprotect((void*)start, end - start, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) return false;
+  std::memcpy(at, bytes, len);
+  mprotect((void*)start, end - start, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char*)at, (char*)at + len);
+  return true;
+#endif
+}
+
+// A function overwritten now: its original first bytes, and what it returns.
+struct LivePatch { void* native = nullptr; uint8_t saved[6] = {}; uint32_t len = 0; uint8_t kind = 0; uint32_t value = 0; };
+std::map<uint32_t, LivePatch> g_live;   // by console address; game thread only
+
+void restore_function(std::map<uint32_t, LivePatch>::iterator it) {
+  if (!write_native_code(it->second.native, it->second.saved, it->second.len))
+    host::log("gecko: could not put back the native code of %08X", it->first);
+  g_live.erase(it);
+}
+
+// Makes the native functions match the enabled codes (none when `allowed` is false: online, a
+// replay, a vanilla-only session).
+void sync_functions(bool allowed) {
+  std::map<uint32_t, std::pair<const Code*, Code::FunctionPatch>> want;
+  if (allowed) {
+    for (Code& c : g_codes) {
+      if (!c.fn_judged && g_dol_read) judge_functions(c);
+      if (!c.enabled || !c.supported || !c.fn_judged || c.fn_patches.empty()) continue;
+      // A code a built-in switch stands for (native_equivalent) is that switch's to run.
+      if (native_equivalent(c)) continue;
+      bool clash = false;
+      for (const auto& p : c.fn_patches) {
+        auto it = want.find(p.console);
+        if (it != want.end() && it->second.second.value != p.value) {
+          const ConsoleSymbol* s = symbol_at(p.console);
+          refuse_functions(c, "makes " + std::string(s ? s->name : hex8(p.console)) + " return another number than \"" +
+                                  it->second.first->name + "\" does");
+          clash = true;
+          break;
+        }
+      }
+      if (clash) continue;
+      for (const auto& p : c.fn_patches) want[p.console] = {&c, p};
+    }
+  }
+  for (auto it = g_live.begin(); it != g_live.end();) {
+    auto w = want.find(it->first);
+    if (w == want.end() || w->second.second.value != it->second.value) { auto gone = it++; restore_function(gone); }
+    else ++it;
+  }
+  for (const auto& [console, wanted] : want) {
+    if (g_live.count(console)) continue;
+    const NativeFunction* fn = nullptr;
+    for (uint32_t k = 0; k < g_native_fn_count; ++k)
+      if (g_native_fns[k].console == console) { fn = &g_native_fns[k]; break; }
+    Code& owner = const_cast<Code&>(*wanted.first);
+    const ConsoleSymbol* s = symbol_at(console);
+    const std::string name = s ? s->name : hex8(console);
+    if (!fn || !fn->native || fn->kind != wanted.second.kind) {
+      refuse_functions(owner, "rewrites " + name + ", which this game library cannot change" + kCannotCopy);
+      continue;
+    }
+    LivePatch live;
+    live.native = fn->native; live.kind = wanted.second.kind; live.value = wanted.second.value;
+    uint8_t code[6];
+    if (live.kind == gecko_fn::kVoid) { code[0] = 0xC3; live.len = 1; }   // ret
+    else {
+      code[0] = 0xB8;   // mov eax, imm32 (a pointer's 0 clears all of rax); ret
+      for (int k = 0; k < 4; ++k) code[1 + k] = (uint8_t)(live.value >> (8 * k));
+      code[5] = 0xC3;
+      live.len = 6;
+    }
+    std::memcpy(live.saved, fn->native, live.len);
+    if (!write_native_code(fn->native, code, live.len)) {
+      refuse_functions(owner, "rewrites " + name + ", whose native code this system would not let it change");
+      continue;
+    }
+    g_live[console] = live;
+    host::log("gecko: %s now returns at once (\"%s\")", name.c_str(), owner.name.c_str());
+  }
+}
+
 // Checks every line and says why a code cannot run here, or leaves reason empty.
 void classify(Code& c) {
   c.supported = false;
@@ -509,9 +703,13 @@ void classify(Code& c) {
   // a plan (Compiler above).
   const bool source_port = !g_code_patches_allowed;
   if (source_port) {
+    c.fn_bytes.clear();
+    c.fn_patches.clear();
+    c.fn_judged = false;
     Compiler compiler(c);
     c.supported = compiler.compile();
-    if (!c.supported) { c.reason = compiler.fail; c.plan.clear(); c.plan_bytes.clear(); c.reads = false; }
+    if (!c.supported) { c.reason = compiler.fail; c.plan.clear(); c.plan_bytes.clear(); c.reads = false; c.fn_bytes.clear(); }
+    judge_functions(c);
     return;
   }
   // The Static runner uses the console handler for every code type. Check only
@@ -556,9 +754,10 @@ void classify(Code& c) {
 // The Source Port's apply(): each enabled code's plan, run against the game library, which keeps
 // the variables in host byte order and converts on the way in and out.
 void apply_native() {
+  sync_functions(true);
   if (!g_native_write) return;
   for (Code& c : g_codes) {
-    if (!c.enabled || !c.supported) continue;
+    if (!c.enabled || !c.supported || c.plan.empty()) continue;
     if (c.reads && !g_native_read) {
       // An older game library: it stores but cannot hand a variable back.
       c.supported = false;
@@ -618,6 +817,17 @@ void set_sources_allowed(bool allowed) { g_sources_allowed = allowed; }
 void set_code_patches_allowed(bool allowed) { g_code_patches_allowed = allowed; }
 void set_native_writer(NativeWrite write) { g_native_write = write; }
 void set_native_reader(NativeRead read) { g_native_read = read; }
+void set_native_functions(const NativeFunction* table, uint32_t count, DolRead dol_read) {
+  g_native_fns = table;
+  g_native_fn_count = table ? count : 0;
+  g_dol_read = dol_read;
+  for (Code& c : g_codes) {
+    const bool was = c.supported;
+    judge_functions(c);
+    if (was && !c.supported) c.enabled = false;
+  }
+}
+void suspend_function_patches() { if (!g_live.empty()) sync_functions(false); }
 void set_static_runtime(StaticRunner run, StaticReserve reserve, StaticStart start) {
   g_static_run = run; g_static_reserve = reserve; g_static_start = start;
 }
@@ -806,7 +1016,7 @@ bool save() {
 }
 
 void apply() {
-  if (host::gameplay::vanilla_only() || !g_sources_allowed) return;   // preserve enabled choices, suppress execution
+  if (host::gameplay::vanilla_only() || !g_sources_allowed) { suspend_function_patches(); return; }   // preserve enabled choices, suppress execution
   if (!g_code_patches_allowed) { apply_native(); return; }   // the Source Port has no console memory to write
   if (g_static_run) { g_static_run(g_codes); return; }
   for (Code& c : g_codes) {

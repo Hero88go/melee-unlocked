@@ -10475,7 +10475,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         else if (!runs_here)
           engine_only_reason("Cannot run in this build: this code %s.", c.reason.c_str());
         else if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Writes game variables only, so it runs here.\nNever applied online.");
+          ImGui::SetTooltip("%s\nNever applied online.",
+                            c.fn_bytes.empty() ? "Writes game variables only, so it runs here."
+                                               : "Only makes a game function give a fixed answer, which this build does too.");
         ImGui::PopID();
       }
     }
@@ -10530,7 +10532,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           }
         }
         else if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Writes game variables only, so it runs on the Source Port too.\nNever applied online or in replays.");
+          ImGui::SetTooltip("%s\nNever applied online or in replays.",
+                            c.fn_bytes.empty() ? "Writes game variables only, so it runs on the Source Port too."
+                                               : "Only makes a game function give a fixed answer, which the Source Port does too.");
         ImGui::PopID();
       }
     }

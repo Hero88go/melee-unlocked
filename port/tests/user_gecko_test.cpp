@@ -18,6 +18,7 @@ struct ConsoleSymbol { uint32_t addr, size; uint8_t kind; const char* name; };
 // kind: 0 a variable a code may write and read, 1 code, 2 holds pointers (user_gecko.cpp).
 static const ConsoleSymbol kConsoleSymbols[] = {
   {0x80100000u, 0x40u, 1, "ftCo_Attack_Example"},
+  {0x80100040u, 0x28u, 1, "ftCo_Getter"},
   {0x80400000u, 0x10u, 0, "tunable_floats"},
   {0x80400010u, 0x08u, 0, "tunable_shorts"},
   {0x80400018u, 0x10u, 0, "mixed_fields"},
@@ -35,6 +36,11 @@ static const BuiltInUnit kBuiltInUnits[] = {
   {0x04100020u, 1u, 0x02753CD4AC8530D6ull, 0},
   {0xC2100010u, 3u, 0x3E1F365EAE3C1F04ull, 0},
 };
+// The functions the host may make "return at once": the getter only (a bool), so every rule above
+// for ftCo_Attack_Example still refuses its code writes.
+#define USER_GECKO_TEST_FUNCTIONS
+struct FunctionRow { uint32_t console; uint8_t kind; };
+static const FunctionRow kFunctionRows[] = {{0x80100040u, 0x19u}, {0xFFFFFFFFu, 0}};
 }  // namespace user_gecko
 
 #include "../runtime/host/user_gecko.cpp"
@@ -636,6 +642,66 @@ void test_wanted_kept() {
   CHECK(codes().empty());
 }
 
+// A code that rewrites a game function. The getter's console instructions, made up in the shape of
+// waxo's No Character Shadows target: false on two early returns, true at the end (li r3,1 at
+// 80100060). The code turns that li into li r3,0: on the Source Port the native getter then
+// returns 0 at once, offline, and gets its bytes back when the code is off.
+const uint32_t kGetterWords[10] = {0x80A3002Cu, 0x38600000u, 0x88050010u, 0x5400D7FFu, 0x4C820020u,
+                                   0x88050011u, 0x5400D7FFu, 0x4D820020u, 0x38600001u, 0x4E800020u};
+bool fake_dol(uint32_t addr, void* dst, uint32_t size) {
+  if (addr < 0x80100040u || addr + size > 0x80100068u) return false;
+  uint8_t* out = (uint8_t*)dst;
+  for (uint32_t k = 0; k < size; ++k) {
+    const uint32_t w = kGetterWords[(addr - 0x80100040u + k) / 4];
+    out[k] = (uint8_t)(w >> (24 - 8 * ((addr + k) & 3)));
+  }
+  return true;
+}
+uint8_t g_native_getter[16] = {0x55, 0x48, 0x89, 0xE5, 0x90, 0x90, 0x90, 0x90, 0xC3};
+const NativeFunction kNativeFunctions[] = {{0x80100040u, 0x19u, g_native_getter}};
+
+void test_function_patches() {
+  fresh();
+  const uint8_t original[6] = {0x55, 0x48, 0x89, 0xE5, 0x90, 0x90};
+  // Loaded before the disc can be read: taken, judged once it can.
+  codes().push_back(compiled({{0x04100060u, 0x38600000u}}));
+  Code& off = codes().back();
+  CHECK(off.supported && off.fn_bytes.size() == 4 && !off.fn_judged);
+  set_native_functions(kNativeFunctions, 1, fake_dol);
+  CHECK(off.fn_judged && off.fn_patches.size() == 1);
+  if (off.fn_patches.size() == 1) CHECK(off.fn_patches[0].value == 0u && off.fn_patches[0].kind == 0x19u);
+  off.enabled = true;
+  apply();
+  const uint8_t patched[6] = {0xB8, 0, 0, 0, 0, 0xC3};
+  CHECK(std::memcmp(g_native_getter, patched, 6) == 0);
+  suspend_function_patches();   // online or a replay
+  CHECK(std::memcmp(g_native_getter, original, 6) == 0);
+  apply();
+  CHECK(std::memcmp(g_native_getter, patched, 6) == 0);
+  codes().back().enabled = false;
+  apply();
+  CHECK(std::memcmp(g_native_getter, original, 6) == 0);
+  // li r3,1 + blr at the start: returns 1 (true) at once.
+  codes().push_back(compiled({{0x06100040u, 0x00000008u}, {0x38600001u, 0x4E800020u}}));
+  CHECK(codes().back().supported && codes().back().fn_patches.size() == 1);
+  if (codes().back().fn_patches.size() == 1) CHECK(codes().back().fn_patches[0].value == 1u);
+  // Two codes on that want different answers: the second goes off with the reason.
+  codes()[0].enabled = codes()[1].enabled = true;
+  apply();
+  CHECK(codes()[0].enabled && !codes()[1].enabled && codes()[1].reason.find("another number") != std::string::npos);
+  codes()[0].enabled = false;
+  apply();
+  CHECK(std::memcmp(g_native_getter, original, 6) == 0);
+  // A rewrite that leaves the answer open (0 on the early returns, 2 at the end) is refused with why.
+  Code mixed = compiled({{0x04100060u, 0x38600002u}});
+  CHECK(!mixed.supported && mixed.reason.find("rewrites ftCo_Getter so that it still does not always return the same number") == 0);
+  // Under a condition: refused.
+  Code conditional = compiled({{0x20400034u, 0x00000001u}, {0x04100060u, 0x38600000u}, {0xE2000001u, 0x00000000u}});
+  CHECK(!conditional.supported && conditional.reason == "rewrites ftCo_Getter only under a condition");
+  set_native_functions(nullptr, 0, nullptr);
+  codes().clear();
+}
+
 int run_all() {
   set_code_patches_allowed(false);   // the Source Port
   set_native_writer(fake_write);
@@ -650,6 +716,7 @@ int run_all() {
   test_slippi_required();
   test_arcade_code();
   test_wanted_kept();
+  test_function_patches();
   // A vanilla listing suspends execution without changing the saved enabled code.
   fresh();
   codes().push_back(compiled({{0x00400030u, 0x00000011u}}));

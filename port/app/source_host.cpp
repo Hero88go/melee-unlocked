@@ -2323,6 +2323,7 @@ void h_pad_read(MuPadStatus out[4]) {
   // The player's data-only Gecko codes, once per frame. Offline only: the writer in the game
   // library also refuses during an online match, whichever kind.
   if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
+  else user_gecko::suspend_function_patches();   // a code's rewritten functions go back online and in replays
   // A pasted always-display hitbox code turns on the Arcade look switches its lines stand for.
   gx::set_arcade_display(gx::ArcadeSource::Codes, user_gecko::arcade_bits_of_codes());
   // Hidden test hook: MELEE_TEST_INSTALL_LOOK=<0 Diet, 1 Animelee, 2 Animelee x DBZ> starts that one-click install once.
@@ -4212,6 +4213,14 @@ int run(void (*shutdown)(int)) {
   g_look_items = (void (*)(MuLookItems*))game_proc("mu_look_items_v1");
   user_gecko::set_native_writer((user_gecko::NativeWrite)game_proc("mu_user_gecko_write"));
   user_gecko::set_native_reader((user_gecko::NativeRead)game_proc("mu_user_gecko_read"));
+  {
+    // Functions a code may make return at once (shim/mu_gecko_functions.c); an older library has none.
+    using Functions = uint32_t (*)(const user_gecko::NativeFunction**);
+    const auto functions = (Functions)game_proc("mu_user_gecko_functions");
+    const user_gecko::NativeFunction* table = nullptr;
+    const uint32_t count = functions ? functions(&table) : 0;
+    user_gecko::set_native_functions(table, count, host::dol_data_read);
+  }
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   // The game library and this program come from the same release and refuse each other otherwise.

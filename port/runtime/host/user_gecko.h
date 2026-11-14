@@ -18,7 +18,8 @@
 // number (42, 4A) or stored (44, 4C), the if types 20 to 2E with their endifs (E2, an address
 // ending in 1) and the terminator E0, and the Gecko registers (80 to 88). Each line is turned into
 // a step with its address worked out when the code is read (Code::plan), so nothing a code computes
-// at run time can become an address. The addresses follow the console handler's own arithmetic
+// at run time can become an address. A write into a game function's code also runs there when it
+// only makes that function give a fixed answer (set_native_functions below). The addresses follow the console handler's own arithmetic
 // (port/slippi_sys/codehandler.bin): a line counts from the pointer in full, but only from the top
 // seven bits of the base address, so a base address inside game memory counts as 80000000; 32-bit
 // writes and ifs round the address down to a word, 16-bit ifs to a half; a base or pointer store
@@ -77,7 +78,28 @@ struct Code {
   std::vector<Op> plan;             // the Source Port only: what apply() runs each frame
   std::vector<uint8_t> plan_bytes;  // the bytes of the plan's writes, in console order
   bool reads = false;               // the plan reads game variables (ifs, register loads)
+  // The Source Port only: bytes the code writes into game functions the host may make "return at
+  // once" (gecko_function_patch.h), judged against the disc's main.dol once it can be read; then
+  // what each of those functions returns at once while the code is on.
+  std::vector<std::pair<uint32_t, uint8_t>> fn_bytes;
+  struct FunctionPatch { uint32_t console = 0; uint8_t kind = 0; uint32_t value = 0; };
+  std::vector<FunctionPatch> fn_patches;
+  bool fn_judged = false;
 };
+
+// The Source Port only. A Gecko code that rewrites a game function's PowerPC runs there when the
+// rewrite means "this function returns N at once" (blr or li r3,N + blr at its start, or li r3,N
+// over the last value a getter computes): the host overwrites the native function's entry with
+// that return while the code is on, offline only, and puts the original bytes back otherwise.
+// `table` is the game library's list of functions that is safe for (mu_user_gecko_functions,
+// shim/mu_gecko_functions.c: never one the compiler copied into its callers), `dol_read` reads the
+// disc's main.dol by console address. Codes loaded before are judged now, later ones as they load.
+struct NativeFunction { uint32_t console; uint32_t kind; void* native; };
+using DolRead = bool (*)(uint32_t console_addr, void* dst, uint32_t size);
+void set_native_functions(const NativeFunction* table, uint32_t count, DolRead dol_read);
+// Puts every overwritten function back: an online match or a replay is running. apply() makes the
+// enabled codes' changes again.
+void suspend_function_patches();
 
 // Whether a write into the game's code can take effect: yes on the Static Recomp (the function runs
 // from RAM), no on the Source Port. Call before load(); the default is no.
