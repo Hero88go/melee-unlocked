@@ -1293,6 +1293,39 @@ void request_restart() {
   log("restart: relaunched, shutting down this instance");
   request_exit(0);
 }
+
+// The launcher this game belongs to: launcher.ini beside the game, or two folders up from
+// Versions\<id> (as main.cpp finds the launcher's replay choice). Empty when there is none (a
+// shortcut or a test run started the game directly).
+static std::filesystem::path launcher_folder() {
+  wchar_t module[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, module, MAX_PATH)) return {};
+  const std::filesystem::path exe_dir = std::filesystem::path(module).parent_path();
+  std::error_code ec;
+  for (const auto& dir : {exe_dir, exe_dir.parent_path().parent_path()})
+    if (std::filesystem::is_regular_file(dir / "launcher.ini", ec) &&
+        std::filesystem::is_regular_file(dir / "MeleeUnlockedLauncher.exe", ec))
+      return dir;
+  return {};
+}
+bool engine_switch_available() {
+  wchar_t module[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, module, MAX_PATH)) return false;
+  std::error_code ec;
+  return !launcher_folder().empty() &&
+         std::filesystem::is_regular_file(std::filesystem::path(module).parent_path() / "melee_port.exe", ec);
+}
+bool request_engine_switch() {
+  const std::filesystem::path dir = launcher_folder();
+  if (dir.empty()) { log("engine switch: no launcher beside this game"); return false; }
+  {
+    std::ofstream out(dir / "engine-switch.request", std::ios::binary | std::ios::trunc);
+    if (!(out << "static\n")) { log("engine switch: cannot write %s", (dir / "engine-switch.request").u8string().c_str()); return false; }
+  }
+  log("engine switch: asked the launcher for the Static Recomp; shutting down this instance");
+  request_exit(0);
+  return true;
+}
 // Splits a Windows command line the way the C runtime does: spaces outside quotes separate, 2n
 // backslashes before a quote are n backslashes and a quote that toggles, 2n+1 are n and a literal quote.
 static std::vector<std::wstring> split_command_line(const std::wstring& line) {

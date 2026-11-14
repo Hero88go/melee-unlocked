@@ -659,7 +659,8 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
   int supported = 0, enabled = 0;
   for (Code& c : g_codes) {
     classify(c);
-    c.enabled = c.supported && std::find(on.begin(), on.end(), c.name) != on.end();
+    c.wanted = std::find(on.begin(), on.end(), c.name) != on.end();
+    c.enabled = c.supported && c.wanted;
     supported += c.supported; enabled += c.enabled;
     if (!c.supported) host::log("gecko: \"%s\" cannot run here: %s", c.name.c_str(), c.reason.c_str());
   }
@@ -702,6 +703,8 @@ const char* native_equivalent(const Code& c) {
       {0x040D3B50u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
       {0x040D3DC8u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
       {0x040D4040u, 0x60000000u, "Hide KO explosions (GAME, HUD)"},
+      // "No Character Shadows" (Altimor): the community code switch of the same effect.
+      {0x040872F8u, 0x38600000u, "Hide fighter shadows (Community codes)"},
   };
   for (const Known& k : known)
     if (!c.lines.empty() && c.lines[0].first == k.w && c.lines[0].second == k.v) return k.label;

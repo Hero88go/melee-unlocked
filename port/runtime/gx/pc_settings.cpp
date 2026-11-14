@@ -2797,6 +2797,9 @@ static void draw_settings_icon(int index, ImVec2 p, ImU32 color) {
 // standalone settings window has no game behind it, so it shows none.
 static bool g_settings_standalone = false;
 static bool g_settings_restart_asked = false;
+// The restart asked is a switch to the Static Recomp (a Gecko code the Source Port cannot run):
+// host::request_engine_switch instead of host::request_restart.
+static bool g_settings_engine_switch = false;
 static void restart_now_button(const char* id) {
   if (g_settings_standalone) return;
   char label[96];
@@ -4523,8 +4526,10 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
     if (std::getenv("MELEE_LAG_TEST")) {   // the lag test's codes are not the player's: keep theirs
       for (const std::string& name : g_gecko_saved_on) file << "\ngeckocode " << name;
     } else {
+      // A code this engine cannot run keeps the switch it was saved with (on for the Static Recomp
+      // stays on when the Source Port writes this file); one that runs here is saved as it runs.
       for (const user_gecko::Code& c : user_gecko::codes())
-        if (c.enabled) file << "\ngeckocode " << c.name;
+        if (c.enabled || (!c.supported && c.wanted)) file << "\ngeckocode " << c.name;
     }
   }
   for (int i = 0; i < (int)host::BindAction::Count; ++i)
@@ -10459,7 +10464,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         const bool arcade_code = built_in == user_gecko::kArcadeHitboxCodeLabel;
         const bool runs_here = (c.supported && !built_in) || arcade_code;
         ImGui::BeginDisabled(!runs_here);
-        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
+        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { c.wanted = c.enabled; changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
         if (arcade_code) {
           if (ImGui::IsItemHovered())
@@ -10494,7 +10499,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         const bool arcade_code = built_in == user_gecko::kArcadeHitboxCodeLabel;
         const bool runs_here = (c.supported && !built_in) || arcade_code;
         ImGui::BeginDisabled(!runs_here);
-        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
+        // A code that cannot run here shows the switch it keeps for the Static Recomp.
+        if (settings_toggle(c.name.c_str(), runs_here ? &c.enabled : &c.wanted) && runs_here) { c.wanted = c.enabled; changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
         if (arcade_code) {
           if (ImGui::IsItemHovered())
@@ -10503,9 +10509,26 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         } else if (built_in)
           engine_only_reason("Built into the Source Port: \"%s\" is the switch that applies here.\n"
                              "This one is your setting for the Static Recomp.", built_in);
-        else if (!runs_here)
+        else if (!runs_here) {
           engine_only_reason("Cannot run on the Source Port: this code %s.\n"
                              "It keeps its setting for the Static Recomp.", c.reason.c_str());
+          // The way to play with it: the Static Recomp runs every Gecko code. One click turns the code
+          // on, picks that engine in the launcher and starts the game again on it.
+          if (!g_settings_standalone && host::engine_switch_available()) {
+            // Its own line: the switch above fills the row.
+            ImGui::Indent(12.0f);
+            const bool clicked = ImGui::SmallButton("Play on the Static Recomp");
+            ImGui::Unindent(12.0f);
+            if (clicked) {
+              c.wanted = true; g_gecko_chosen = true; changed = true;
+              g_settings_engine_switch = true; g_settings_restart_asked = true;
+            }
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Turns this code on and restarts the game on the Static Recomp engine, which runs\n"
+                                "every Gecko code. The launcher keeps that engine for your next Play; pick the\n"
+                                "Source Port there to come back.");
+          }
+        }
         else if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Writes game variables only, so it runs on the Source Port too.\nNever applied online or in replays.");
         ImGui::PopID();
@@ -10541,7 +10564,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this code.");
         ImGui::SameLine();
         ImGui::BeginDisabled(!c.supported);
-        if (settings_toggle(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
+        if (settings_toggle(c.name.c_str(), &c.enabled)) { c.wanted = c.enabled; changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
           std::string tip;
@@ -10632,21 +10655,28 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
       if (ImGui::BeginPopupModal(restart ? "Restart game?" : "Quit game?", nullptr,
                                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::TextUnformatted(restart ? "Restart now? The current match will end."
-                                       : "Quit now? The current match will end.");
-        if (!state.saved) ImGui::TextDisabled("Unsaved changes in this panel will be lost.");
+        const bool engine_switch = restart && g_settings_engine_switch;
+        ImGui::TextUnformatted(engine_switch ? "Restart on the Static Recomp? The current match will end."
+                               : restart     ? "Restart now? The current match will end."
+                                             : "Quit now? The current match will end.");
+        if (!state.saved && !engine_switch) ImGui::TextDisabled("Unsaved changes in this panel will be lost.");
         ImGui::Separator();
         if (ImGui::Button(restart ? "Restart" : "Quit", ImVec2(110, 0))) {
           state.confirm = SettingsState::Confirm::None;
           ImGui::CloseCurrentPopup();
           // The new process reads its settings from the file: an unsaved choice (the look or audio
-          // driver this restart is for) is written first.
-          if (restart && state.dirty) { state.dirty = false; state.saved = write_settings_file(state, options); }
-          if (restart) host::request_restart(); else host::request_exit(0);
+          // driver this restart is for, the code switched on for the Static Recomp) is written first.
+          if (restart && (state.dirty || engine_switch)) { state.dirty = false; state.saved = write_settings_file(state, options); }
+          g_settings_engine_switch = false;
+          if (engine_switch) {
+            if (!host::request_engine_switch()) g_settings_save_error = "Could not ask the launcher to switch engines. Pick the Static Recomp there and press Play.";
+          } else if (restart) host::request_restart();
+          else host::request_exit(0);
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(110, 0))) {
           state.confirm = SettingsState::Confirm::None;
+          g_settings_engine_switch = false;
           ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

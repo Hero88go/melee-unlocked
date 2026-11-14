@@ -7,6 +7,10 @@
 // (USER_GECKO_TEST_TARGETS) and the game library is a map of console bytes.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
 
 #define USER_GECKO_TEST_TARGETS
 namespace user_gecko {
@@ -609,6 +613,29 @@ void test_slippi_required() {
   CHECK(ok.supported);
 }
 
+// A code switched on for the Static Recomp that the Source Port cannot run: loaded here it stays
+// wanted (so the Source Port's settings save keeps it on) but does not run; a code that runs here
+// is both.
+void test_wanted_kept() {
+  fresh();
+  const std::string path = (std::filesystem::temp_directory_path() / "mu_user_gecko_wanted_test.ini").string();
+  {
+    std::ofstream ini(path, std::ios::binary | std::ios::trunc);
+    ini << "[Gecko]\n$Writes a variable\n00400030 000000AB\n$Patches code\n04100000 38600000\n";
+  }
+  load(path, {"Writes a variable", "Patches code"}, true);
+  std::remove(path.c_str());
+  CHECK_EQ((uint32_t)codes().size(), 2u);
+  if (codes().size() == 2) {
+    const Code& runs = codes()[0];
+    const Code& static_only = codes()[1];
+    CHECK(runs.supported && runs.enabled && runs.wanted);
+    CHECK(!static_only.supported && !static_only.enabled && static_only.wanted);
+  }
+  load(path, {}, true);   // the file is gone: nothing listed, nothing wanted
+  CHECK(codes().empty());
+}
+
 int run_all() {
   set_code_patches_allowed(false);   // the Source Port
   set_native_writer(fake_write);
@@ -622,6 +649,7 @@ int run_all() {
   test_built_in();
   test_slippi_required();
   test_arcade_code();
+  test_wanted_kept();
   // A vanilla listing suspends execution without changing the saved enabled code.
   fresh();
   codes().push_back(compiled({{0x00400030u, 0x00000011u}}));

@@ -67,6 +67,10 @@ struct Code {
   bool supported = false;
   std::string reason;               // why not, when unsupported
   bool enabled = false;
+  // The player's switch as saved, whether or not this engine can run the code: a code switched on for
+  // the Static Recomp stays on in the settings file when the Source Port saves it (it is only
+  // `enabled`, running, where it is supported).
+  bool wanted = false;
   bool patches_code = false;        // writes into the game's code: its functions run from RAM while on
   bool patch_live = false;          // those writes are in RAM now
   std::vector<std::pair<uint32_t, uint8_t>> original;   // the code bytes they replaced

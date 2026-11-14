@@ -1445,6 +1445,19 @@ void open_settings(const std::string& tab) {
   CloseHandle(pi.hProcess);
 }
 
+// engine-switch.request beside the launcher (host::request_engine_switch): taken once, and only when
+// the Static Recomp is here to start.
+bool take_engine_switch_request() {
+  const std::wstring path = widen(g_dir + "\\engine-switch.request");
+  std::ifstream in(std::filesystem::path(path), std::ios::binary);
+  if (!in) return false;
+  std::string word;
+  in >> word;
+  in.close();
+  DeleteFileW(path.c_str());
+  return word == "static" && g_active_version.empty() && file_exists(g_dir + "\\melee_port.exe");
+}
+
 // A GAME BUILD segment was clicked: remember the choice for the next PLAY and repaint the row.
 // build_seg_at() has already refused a Source Port segment with nothing installed behind it.
 void select_build(int seg) {
@@ -2284,6 +2297,15 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_APP_GAME_DONE:
       g_playing = false;
+      // The game closed to play a Gecko code only the Static Recomp runs (host::request_engine_switch):
+      // that engine is picked, as a click on its GAME BUILD segment would, and started now.
+      if (take_engine_switch_request()) {
+        launcher::lobby::game_running(false);
+        log_line("The game asked for the Static Recomp (a Gecko code only it runs); starting it.");
+        select_build(1);
+        start_game();
+        return 0;
+      }
       // The game closed to restart in the release YouGame is on: start it now, straight into the
       // YouGame mode the player picked. Only this start; the active version stays as it was.
       if (std::string folder, mode; take_yougame_restart(folder, mode)) {

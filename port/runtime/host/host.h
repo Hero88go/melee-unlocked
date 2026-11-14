@@ -199,6 +199,12 @@ void publish_lobby_result(int winner_index, int end_method, int lras = -1, const
 // Used for settings a running device cannot adopt, the graphics backend being the one that
 // matters today.
 void request_restart();
+// A Gecko code only the Static Recomp can run, asked for from the Source Port: the launcher that
+// started this game (launcher.ini beside it, or two folders up from Versions\<id>) is left
+// engine-switch.request and this game closes; on seeing the game end, the launcher picks the
+// Static Recomp and starts it. Available when that launcher and the Static Recomp's program are there.
+bool engine_switch_available();
+bool request_engine_switch();
 // A Static Recomp mod disc session (--iso <mod> --mod-base-iso <game>) starts again as the standard
 // game with that disc's looks (--iso <game> --look-iso <mod>): the form Unranked and Party play.
 // False when this is not such a session or the new process could not be started.
