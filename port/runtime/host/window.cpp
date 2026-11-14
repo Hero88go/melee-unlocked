@@ -1769,6 +1769,16 @@ void log_first_rumble(int game_port, const char* where) {
 void input_rumble(int game_port, bool on) {
   if (game_port < 0 || game_port > 3) return;
   std::lock_guard<std::mutex> lock(g_rumble_mutex);
+  // The Lossless adapter's lag test (lag_test_codes.h): its start signal is the character select's
+  // rumble on all four ports, which the adapter itself listens for. Dolphin in that setup sends port
+  // N's rumble to adapter socket N, so this does too, whatever feeds the port (no report may have
+  // arrived yet a few frames into the launch) and whatever the rumble switch says.
+  static const bool lag_test = [] { const char* v = std::getenv("MELEE_LAG_TEST"); return v && *v; }();
+  if (lag_test) {
+    gcadapter_rumble(game_port, on);
+    if (on) log_first_rumble(game_port, "GameCube adapter (lag test)");
+    return;
+  }
   if (!g_rumble_enabled.load()) on = false;
   const PortSource& src = g_port_feeding[game_port];   // where the input came from, fallback included
   const bool valid = src.index >= 0 && src.index < 4;

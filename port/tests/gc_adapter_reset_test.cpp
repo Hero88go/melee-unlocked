@@ -102,6 +102,16 @@ int main() {
   close_adapter(true);  // Handles are null: only the real lifecycle runs, no USB calls.
   check(stopped == 2 && !g_thread.joinable() && !g_writer.joinable(), "both I/O workers joined");
   check(!g_have_report && !g_running, "connection state cleared");
+  // A rumble the game asks for while the adapter is still connecting is kept for the connection's
+  // first command (the Lossless lag test's start signal); only a reset stops it.
+  g_resetting = false;
+  g_rumble_dirty = false;
+  gcadapter_rumble(2, true);
+  check(g_rumble[2] == 1 && g_rumble_dirty, "rumble wanted before the adapter connects is kept");
+  close_adapter();
+  check(g_rumble[2] == 1, "a plain reconnect keeps the wanted rumble");
+  close_adapter(true);
+  check(g_rumble[2] == 0, "a reset stops the motors");
   g_scanner_run = false;
   gcadapter_shutdown();
   check(!gcadapter_reset_pending() && !g_reset_requested, "shutdown clears pending reset");

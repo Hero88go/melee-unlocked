@@ -37,6 +37,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -346,8 +347,11 @@ void reader_thread() {
     if (rc != 0 || wrote != 1) log("gc adapter: start command failed (%s, wrote %d)", libusb_error_name(rc), wrote);
   };
   send_start();
-  // Some Wii U-mode adapters need the all-off rumble command after report startup.
-  uint8_t rumble_off[5] = {0x11, 0, 0, 0, 0};
+  // Some Wii U-mode adapters need a rumble command after report startup. It carries the motors the
+  // game wants now, normally all off: a blind "all off" here cancelled a rumble the game asked for
+  // while the adapter was still connecting, and the game does not ask again. The Lossless adapter's
+  // lag test waits for exactly that rumble on the character select, a few frames into the launch.
+  uint8_t rumble_off[5] = {0x11, g_rumble[0].load(), g_rumble[1].load(), g_rumble[2].load(), g_rumble[3].load()};
   int rumble_wrote = 0;
   const int rumble_rc = adapter_write(rumble_off, sizeof rumble_off, &rumble_wrote, 100);
   if (rumble_rc != 0 || rumble_wrote != sizeof rumble_off)
@@ -438,7 +442,9 @@ void close_adapter(bool reset_transport = false) {
   if (g_thread.joinable()) g_thread.join();
   if (g_writer.joinable()) g_writer.join();
   g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
-  for (auto& motor : g_rumble) motor.store(0);
+  // A reset stops the motors for good. A plain reconnect keeps what the game wants, so the next
+  // connection's first command (reader_thread) carries it.
+  if (reset_transport) for (auto& motor : g_rumble) motor.store(0);
   g_rumble_dirty.store(false);
   if (reset_transport && g_dev) {
     // Both I/O threads have stopped before touching the device or its pipes.
@@ -787,6 +793,25 @@ bool gcadapter_request_reset() {
   return true;
 }
 
+// The Lossless adapter's lag test plays its own inputs into the game after the start rumble. A report
+// from a player whose test stalls should say what arrived: each change of buttons, and of the main
+// stick by more than a few steps, per socket, with the time since the first one, up to 400 lines.
+static void lag_test_trace(int port, const uint8_t* c, uint16_t buttons) {
+  static const bool on = [] { const char* v = std::getenv("MELEE_LAG_TEST"); return v && *v; }();
+  if (!on) return;
+  static int lines = 0;
+  static uint16_t last_b[4];
+  static uint8_t last_x[4] = {128, 128, 128, 128}, last_y[4] = {128, 128, 128, 128};
+  static const auto start = std::chrono::steady_clock::now();
+  if (lines >= 400) return;
+  const bool moved = std::abs((int)c[3] - last_x[port]) > 8 || std::abs((int)c[4] - last_y[port]) > 8;
+  if (buttons == last_b[port] && !moved) return;
+  last_b[port] = buttons; last_x[port] = c[3]; last_y[port] = c[4];
+  const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  log("lag test: %lld ms socket %d buttons %04X stick %u,%u%s", ms, port + 1, buttons, c[3], c[4],
+      ++lines == 400 ? " (last line)" : "");
+}
+
 // Fills ports that have a controller plugged into the adapter; returns the mask of those ports.
 uint32_t gcadapter_poll(PadState out[4]) {
   if (options.no_gc_adapter || g_resetting.load()) return 0;
@@ -837,6 +862,7 @@ uint32_t gcadapter_poll(PadState out[4]) {
     p.sub_x = axis(c[5], o.cx); p.sub_y = axis(c[6], o.cy);
     p.trig_l = (uint8_t)(c[7] > o.tl ? c[7] - o.tl : 0);
     p.trig_r = (uint8_t)(c[8] > o.tr ? c[8] - o.tr : 0);
+    lag_test_trace(port, c, b);
     if (g_phob_live[port] && g_phob[port].s.enabled) {
       const phob::Output& q = g_phob_out[port];
       p.button = q.buttons;
