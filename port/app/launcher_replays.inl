@@ -398,34 +398,42 @@ void refresh_replays(const std::filesystem::path& selected={}) {
   const unsigned gen=++g_replay_gen;
   if(g_replay_files.empty()) replay_status("Loading replays...");
   std::thread([gen,folders,choice]{
+    const auto scan_began=std::chrono::steady_clock::now();
     // Dates come from the directory listing itself, read once per file: sorting with a file
     // query per comparison froze the page for seconds on a large Slippi folder.
     std::vector<std::pair<std::filesystem::file_time_type,std::filesystem::path>> found;
+    // One file reached through two of the folders (the chosen folder inside Documents\Slippi, or the same
+    // folder written with / and \) was listed twice: compare resolved, lower-case paths. The folder is
+    // resolved once and each file keyed from it: resolving every file took seconds on 20,000 replays.
+    std::vector<std::wstring> keys;
     for(const auto& folder:folders) {
       std::error_code ec;
+      std::error_code ce;
+      std::filesystem::path base=std::filesystem::weakly_canonical(folder,ce);
+      if(ce) base=folder.lexically_normal();
       std::filesystem::recursive_directory_iterator it(folder,std::filesystem::directory_options::skip_permission_denied,ec),end;
+      // A bound for a folder that is not a replay folder (a whole drive), well above a large real
+      // one: players keep 20,000+ games from years of Slippi in one flat folder, which Windows lists
+      // by name, oldest first, and a bound of 20,000 left out the newest games entirely.
       int scanned=0;
-      while(!ec&&it!=end&&scanned++<20000) {
+      while(!ec&&it!=end&&scanned++<250000) {
         if(it.depth()>3) it.disable_recursion_pending();
         auto extension=it->path().extension().wstring();
         std::transform(extension.begin(),extension.end(),extension.begin(),::towlower);
 #ifndef MELEE_NO_SLIPPI   // nothing is a replay there
         std::error_code fe;
-        if((extension==L".slp"||extension==L".slpz")&&it->is_regular_file(fe)) found.emplace_back(it->last_write_time(fe),it->path());
+        if((extension==L".slp"||extension==L".slpz")&&it->is_regular_file(fe)) {
+          found.emplace_back(it->last_write_time(fe),it->path());
+          auto key=(base/it->path().lexically_relative(folder)).lexically_normal().wstring();
+          std::transform(key.begin(),key.end(),key.begin(),::towlower);
+          keys.push_back(std::move(key));
+        }
 #endif
         it.increment(ec);
       }
     }
-    // One file reached through two of the folders (the chosen folder inside Documents\Slippi, or the same
-    // folder written with / and \) was listed twice: compare resolved, lower-case paths.
-    auto same_file=[](const std::filesystem::path& p){
-      std::error_code ce; auto key=std::filesystem::weakly_canonical(p,ce).wstring();
-      if(ce) key=p.lexically_normal().wstring();
-      std::transform(key.begin(),key.end(),key.begin(),::towlower);
-      return key;
-    };
     std::vector<std::pair<std::wstring,size_t>> keyed;
-    for(size_t i=0;i<found.size();++i) keyed.emplace_back(same_file(found[i].second),i);
+    for(size_t i=0;i<found.size();++i) keyed.emplace_back(std::move(keys[i]),i);
     std::sort(keyed.begin(),keyed.end());
     std::vector<std::pair<std::filesystem::file_time_type,std::filesystem::path>> unique_found;
     for(size_t i=0;i<keyed.size();++i) if(i==0||keyed[i].first!=keyed[i-1].first) unique_found.push_back(found[keyed[i].second]);
@@ -444,6 +452,14 @@ void refresh_replays(const std::filesystem::path& selected={}) {
       sorted.reserve(found.size());
       for(const auto& o:order) sorted.push_back(std::move(found[o.second]));
       found.swap(sorted);
+    }
+    // Test runs only: how many replays the scan found, how long it took, and the first ones listed.
+    if(const char* out=g_launcher_test?std::getenv("MELEE_LAUNCHER_TEST_REPLAY_LIST"):nullptr) {
+      if(FILE* f=_wfopen(widen(out).c_str(),L"w")) {
+        std::fprintf(f,"found %zu in %lld ms\n",found.size(),(long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-scan_began).count());
+        for(size_t i=0;i<found.size()&&i<5;++i) std::fprintf(f,"%s\n",narrow(found[i].second.filename().wstring()).c_str());
+        std::fclose(f);
+      }
     }
     // Keep navigation instant for players with years of Slippi recordings.
     if(found.size()>500) {
