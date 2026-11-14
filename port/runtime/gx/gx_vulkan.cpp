@@ -1065,6 +1065,11 @@ class VulkanBackend final : public Backend {
         present_id_on_ = present_wait_on_ = true;
       }
     }
+    // NVIDIA's Reflex frame report on Vulkan, for the render latency readout (markers carry present ids).
+    if (present_id_on_ && offered.count(VK_NV_LOW_LATENCY_2_EXTENSION_NAME)) {
+      extensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+      low_latency_on_ = true;
+    }
 #ifdef _WIN32
     if (surface_caps2_on_ && offered.count(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME)) { extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME); fse_supported_ = true; }
 #else
@@ -1103,6 +1108,14 @@ class VulkanBackend final : public Backend {
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
     if (!vkWaitForPresentKHR) present_wait_on_ = false;
     if (!vkCmdPushDescriptorSetKHR) push_descriptors_on_ = false;
+    if (low_latency_on_) {
+      set_latency_sleep_mode_ = (PFN_vkSetLatencySleepModeNV)vkGetDeviceProcAddr(device_, "vkSetLatencySleepModeNV");
+      set_latency_marker_ = (PFN_vkSetLatencyMarkerNV)vkGetDeviceProcAddr(device_, "vkSetLatencyMarkerNV");
+      get_latency_timings_ = (PFN_vkGetLatencyTimingsNV)vkGetDeviceProcAddr(device_, "vkGetLatencyTimingsNV");
+      low_latency_on_ = set_latency_sleep_mode_ && set_latency_marker_ && get_latency_timings_;
+    }
+    host::log("vulkan: render latency readout %s", low_latency_on_ ? "available (VK_NV_low_latency2)"
+                                                                   : "not offered (needs an NVIDIA driver with VK_NV_low_latency2)");
     host::log("vulkan: draw bindings %s", push_descriptors_on_ ? "pushed with each draw" : "in a descriptor set per draw");
     host::log("vulkan: pacing: %s; exclusive fullscreen %s; display timing %s",
               present_wait_on_ && present_wait_wanted() ? "synced presents hold one frame in line for the display (present wait, MELEE_VULKAN_PRESENT_WAIT=1)"
@@ -1289,7 +1302,22 @@ class VulkanBackend final : public Backend {
     info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; info.presentMode = present_mode_; info.clipped = VK_TRUE;
     info.oldSwapchain = swapchain_;
     VkSwapchainKHR created = VK_NULL_HANDLE;
-    check(vkCreateSwapchainKHR(device_, &info, nullptr, &created), "swapchain");
+    VkSwapchainLatencyCreateInfoNV latency{VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV};
+    if (low_latency_on_) { latency.latencyModeEnable = VK_TRUE; latency.pNext = info.pNext; info.pNext = &latency; }
+    VkResult made = vkCreateSwapchainKHR(device_, &info, nullptr, &created);
+    if (made != VK_SUCCESS && low_latency_on_) {
+      // A driver that will not take it with this present mode: the swapchain as before, no readout.
+      info.pNext = latency.pNext; low_latency_on_ = false;
+      host::log("vulkan: render latency readout off (the swapchain refused it: %d)", (int)made);
+      made = vkCreateSwapchainKHR(device_, &info, nullptr, &created);
+    }
+    check(made, "swapchain");
+    if (low_latency_on_) {
+      // Reports only: the low-latency sleep stays off, so pacing is exactly as without it.
+      VkLatencySleepModeInfoNV mode{VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV};
+      mode.lowLatencyMode = VK_FALSE; mode.lowLatencyBoost = VK_FALSE; mode.minimumIntervalUs = 0;
+      set_latency_sleep_mode_(device_, created, &mode);
+    }
     release_exclusive();   // the old swapchain's, before it goes
     destroy_swapchain();
     swapchain_ = created; swap_extent_ = extent;
@@ -1445,6 +1473,51 @@ class VulkanBackend final : public Backend {
     return at;
   }
 
+  // One stage of this frame for the driver's frame report (VK_NV_low_latency2), under the present id
+  // the frame will be shown with. No-op without the extension.
+  void latency_marker(VkLatencyMarkerNV marker) {
+    if (!low_latency_on_ || swapchain_ == VK_NULL_HANDLE || latency_frame_id_ == 0) return;
+    VkSetLatencyMarkerInfoNV info{VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV};
+    info.presentID = latency_frame_id_; info.marker = marker;
+    set_latency_marker_(device_, swapchain_, &info);
+  }
+  // The driver's recent frame reports, averaged as Direct3D 12's Reflex reading is
+  // (gx_streamline.cpp update_reflex_stats): simulation start to GPU finished, and each stage's share.
+  void update_latency_stats() {
+    if (!low_latency_on_ || swapchain_ == VK_NULL_HANDLE) return;
+    VkLatencyTimingsFrameReportNV reports[64];
+    for (auto& r : reports) { r = {}; r.sType = VK_STRUCTURE_TYPE_LATENCY_TIMINGS_FRAME_REPORT_NV; }
+    VkGetLatencyMarkerInfoNV info{VK_STRUCTURE_TYPE_GET_LATENCY_MARKER_INFO_NV};
+    info.timingCount = 64; info.pTimings = reports;
+    get_latency_timings_(device_, swapchain_, &info);
+    double total = 0, sim = 0, submit = 0, drv = 0, queue = 0, gpu = 0;
+    int n = 0, ns = 0, nu = 0, nd = 0, nq = 0, ng = 0;
+    auto span = [](uint64_t a, uint64_t b) { return b > a ? (double)(b - a) : -1.0; };
+    for (uint32_t i = 0; i < info.timingCount && i < 64; ++i) {
+      const auto& r = reports[i];
+      if (r.simStartTimeUs && r.gpuRenderEndTimeUs > r.simStartTimeUs) { total += (double)(r.gpuRenderEndTimeUs - r.simStartTimeUs); ++n; }
+      double v;
+      if ((v = span(r.simStartTimeUs, r.simEndTimeUs)) >= 0) { sim += v; ++ns; }
+      if ((v = span(r.renderSubmitStartTimeUs, r.renderSubmitEndTimeUs)) >= 0) { submit += v; ++nu; }
+      if ((v = span(r.driverStartTimeUs, r.driverEndTimeUs)) >= 0) { drv += v; ++nd; }
+      if ((v = span(r.osRenderQueueStartTimeUs, r.osRenderQueueEndTimeUs)) >= 0) { queue += v; ++nq; }
+      if ((v = span(r.gpuRenderStartTimeUs, r.gpuRenderEndTimeUs)) >= 0) { gpu += v; ++ng; }
+    }
+    // Said every 600 frames (the call comes on frames 2, 32, 62, ...), as Direct3D 12 says Reflex's.
+    const bool say = frame_counter_ % 600 == 2;
+    if (!n) {
+      if (say) host::log("vulkan: render latency: no frame reports yet (%u returned)", info.timingCount);
+      return;
+    }
+    streamline::ReflexBreakdown b;
+    b.sim = ns ? (float)(sim / ns / 1000.0) : 0; b.render_submit = nu ? (float)(submit / nu / 1000.0) : 0;
+    b.driver = nd ? (float)(drv / nd / 1000.0) : 0; b.os_queue = nq ? (float)(queue / nq / 1000.0) : 0;
+    b.gpu_render = ng ? (float)(gpu / ng / 1000.0) : 0;
+    streamline::publish_latency((float)(total / n / 1000.0), b);
+    if (say) host::log("vulkan: render latency %.2f ms (%d frame reports; sim %.2f, submit %.2f, driver %.2f, queue %.2f, gpu %.2f)",
+                       total / n / 1000.0, n, b.sim, b.render_submit, b.driver, b.os_queue, b.gpu_render);
+  }
+
   void begin_frame(const Frame& frame) {
     slot_ = (slot_ + 1) % kFrames;
     Frame_& f = frames_[slot_];
@@ -1463,6 +1536,12 @@ class VulkanBackend final : public Backend {
       gpu_frame_ms_ = gpu_present_ms_ = 0; gpu_frame_samples_ = gpu_present_samples_ = 0;
     }
     if (frame_counter_ % 30 == 1) update_vram();
+    if (frame_counter_ % 30 == 2) update_latency_stats();
+    // This frame's stages, under the id it will be presented with (as Direct3D 12 marks them).
+    latency_frame_id_ = present_id_ + 1;
+    latency_marker(VK_LATENCY_MARKER_SIMULATION_START_NV);
+    latency_marker(VK_LATENCY_MARKER_SIMULATION_END_NV);
+    latency_marker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV);
     for (auto& img : f.dead) destroy(img);
     f.dead.clear();
     for (auto& b : f.dead_buffers) { vkDestroyBuffer(device_, b.first, nullptr); vkFreeMemory(device_, b.second, nullptr); }
@@ -1570,8 +1649,11 @@ class VulkanBackend final : public Backend {
       submit.waitSemaphoreCount = 1; submit.pWaitSemaphores = &f.acquired; submit.pWaitDstStageMask = &wait_stage;
       submit.signalSemaphoreCount = 1; submit.pSignalSemaphores = &swap_done_[image_index_];
     }
+    VkLatencySubmissionPresentIdNV latency_submit{VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV};
+    if (low_latency_on_ && presented && acquired_ && latency_frame_id_) { latency_submit.presentID = latency_frame_id_; submit.pNext = &latency_submit; }
     vkResetFences(device_, 1, &f.fence);
     const VkResult submitted = vkQueueSubmit(queue_, 1, &submit, f.fence);
+    latency_marker(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV);
     if (submitted == VK_ERROR_DEVICE_LOST) {
       // The driver lost the GPU (a Linux AMD player: "GPUVM fault" as every Training stage loaded, on
       // 0.9.93 and 0.9.95; OpenGL drew it). Counted as two failed starts: the next launch starts on the
@@ -1602,7 +1684,10 @@ class VulkanBackend final : public Backend {
       if (display_timing_on_) { present_times.swapchainCount = 1; present_times.pTimes = &present_time; *tail = &present_times; tail = &present_times.pNext; }
 #endif
       (void)tail;
+      if (present_id_on_) latency_frame_id_ = id;   // the swapchain may have been made again since begin_frame
+      latency_marker(VK_LATENCY_MARKER_PRESENT_START_NV);
       const VkResult r = [&] { host::perf::Scope wait_cost(host::perf::Stage::Wait); return vkQueuePresentKHR(queue_, &p); }();
+      latency_marker(VK_LATENCY_MARKER_PRESENT_END_NV);
       const double present_end = host::now_seconds();
       present_wait_ = acquire_wait_ + (present_end - wait_start);
       stat_acquire_ += acquire_wait_; stat_wait_ += spin_start - wait_start; stat_spin_ += present_call - spin_start;
@@ -3219,6 +3304,15 @@ class VulkanBackend final : public Backend {
   bool fse_supported_ = false, fse_failed_ = false, fse_logged_ = false, want_exclusive_ = false;
   FullscreenState fullscreen_state_;
   uint64_t present_id_ = 0, last_present_id_ = 0;
+  // ---- Render latency (VK_NV_low_latency2, NVIDIA): the Reflex frame report, measured only ----
+  // Each frame marks its stages with the present id it will be shown under; every 30 frames the
+  // driver's reports become the readout under the FPS (streamline::publish_latency). The sleep mode
+  // stays off: nothing about pacing changes.
+  bool low_latency_on_ = false;
+  PFN_vkSetLatencySleepModeNV set_latency_sleep_mode_ = nullptr;
+  PFN_vkSetLatencyMarkerNV set_latency_marker_ = nullptr;
+  PFN_vkGetLatencyTimingsNV get_latency_timings_ = nullptr;
+  uint64_t latency_frame_id_ = 0;   // the present id this frame's markers carry
   int present_wait_timeouts_ = 0;
   double present_deadline_ = 0, present_wait_ = 0, acquire_wait_ = 0;
   bool present_synced_ = true, tear_free_ = false, vrr_readable_ = false;

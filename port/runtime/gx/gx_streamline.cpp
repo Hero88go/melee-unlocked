@@ -83,8 +83,21 @@ void set_frame_generation(int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
 bool frame_generation_prepare(ID3D12GraphicsCommandList*, int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
 void set_reflex(int, uint32_t) {}
 bool reflex_sleep(uint32_t) { return false; }
-float reflex_latency_ms() { return 0.0f; }
-ReflexBreakdown reflex_breakdown() { return {}; }
+namespace {
+std::atomic<float> g_pub_total{0}, g_pub_sim{0}, g_pub_submit{0}, g_pub_driver{0}, g_pub_queue{0}, g_pub_gpu{0};
+}
+float reflex_latency_ms() { return g_pub_total.load(std::memory_order_relaxed); }
+ReflexBreakdown reflex_breakdown() {
+  ReflexBreakdown b;
+  b.sim = g_pub_sim.load(std::memory_order_relaxed); b.render_submit = g_pub_submit.load(std::memory_order_relaxed);
+  b.driver = g_pub_driver.load(std::memory_order_relaxed); b.os_queue = g_pub_queue.load(std::memory_order_relaxed);
+  b.gpu_render = g_pub_gpu.load(std::memory_order_relaxed);
+  return b;
+}
+void publish_latency(float total_ms, const ReflexBreakdown& s) {
+  g_pub_sim = s.sim; g_pub_submit = s.render_submit; g_pub_driver = s.driver; g_pub_queue = s.os_queue; g_pub_gpu = s.gpu_render;
+  g_pub_total = total_ms;
+}
 void update_reflex_stats() {}
 void pcl_marker(int) {}
 void log_frame_generation() {}
@@ -527,6 +540,10 @@ ReflexBreakdown reflex_breakdown() {
   b.driver = g_driver_ms.load(std::memory_order_relaxed); b.os_queue = g_os_queue_ms.load(std::memory_order_relaxed);
   b.gpu_render = g_gpu_render_ms.load(std::memory_order_relaxed);
   return b;
+}
+void publish_latency(float total_ms, const ReflexBreakdown& s) {
+  g_sim_ms = s.sim; g_render_submit_ms = s.render_submit; g_driver_ms = s.driver; g_os_queue_ms = s.os_queue;
+  g_gpu_render_ms = s.gpu_render; g_latency_ms = total_ms;
 }
 void update_reflex_stats() {
   if (!g_reflex_ready) return;

@@ -5447,7 +5447,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                                 state.practice_release_capture;
   host::window_input_capture(state.open || state.menu_open || practice_capture || replay_bar::wants_cursor());
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
-  if (streamline::reflex_available())
+  if (streamline::reflex_available() || streamline::reflex_latency_ms() > 0.0f)   // Vulkan on NVIDIA too
     state.latencies[state.latency_cursor++ % state.latencies.size()] = streamline::reflex_latency_ms();
   bool changed = false;
   if (panel_visible) {
@@ -9510,6 +9510,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
          "No GO! graphic when a match starts. Its sound and timing are unchanged."},
         {MU_DISPLAY_OPTION_VCANCEL_SOUND, "V-cancel sound",
          "The menu's confirm sound plays on a successful V-cancel."},
+        {MU_DISPLAY_OPTION_NO_FIGHTER_SHADOWS, "Hide fighter shadows",
+         "Fighters cast no shadow on the stage (the No Character Shadows code)."},
         {MU_DISPLAY_OPTION_HITBOX_ID_COLORS, "Hitbox colours by ID",
          "Shown hitboxes: ID 0 red, 1 green, 2 cyan, 3 purple."},
         {MU_DISPLAY_OPTION_HITBOX_ID_ORDER, "Highest-priority hitbox on top",
@@ -10405,6 +10407,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
                           "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too.\n"
+                          "Direct3D 12, and Vulkan on an NVIDIA card (its driver's frame report).\n"
                           "The full breakdown by stage is on the performance graph.");
 #ifndef MELEE_NO_SLIPPI   // as for the Lab view switch above
       if (kLabViewAvailable) {
@@ -10941,9 +10944,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       // Render latency: works whether or not Reflex's low-latency mode is on, so Native has a number
       // to show too (and something to compare "On" against). The breakdown adds up to roughly the
       // total; osRenderQueue and driver overlap the other stages a little, per NVIDIA's own report.
-      if (streamline::reflex_available()) {
+      // Vulkan on NVIDIA publishes the same report (VK_NV_low_latency2) without Streamline.
+      const bool reflex_here = streamline::reflex_available();
+      if (reflex_here || streamline::reflex_latency_ms() > 0.0f) {
         const float lat = streamline::reflex_latency_ms();
-        ImGui::Text("Render latency: %.2f ms%s", lat, options.reflex_mode == 0 ? " (Reflex off)" : "");
+        ImGui::Text("Render latency: %.2f ms%s", lat, reflex_here && options.reflex_mode == 0 ? " (Reflex off)" : "");
         ImGui::PlotLines("##latency", state.latencies.data(), (int)state.latencies.size(),
                          state.latency_cursor % state.latencies.size(), nullptr, 0, std::max(8.0f, lat * 2.0f), ImVec2(plot_w, 60));
         const streamline::ReflexBreakdown b = streamline::reflex_breakdown();

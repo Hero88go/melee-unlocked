@@ -128,6 +128,10 @@ float reflex_latency_ms();
 // little, which NVIDIA's own report structure allows for).
 struct ReflexBreakdown { float sim = 0, render_submit = 0, driver = 0, os_queue = 0, gpu_render = 0; };
 ReflexBreakdown reflex_breakdown();
+// The Vulkan renderer's own reading of the same report (VK_NV_low_latency2, NVIDIA): what
+// reflex_latency_ms() and reflex_breakdown() return from then on, so the readout under the FPS and
+// the performance graph show it as they show Reflex's on Direct3D 12.
+void publish_latency(float total_ms, const ReflexBreakdown& stages);
 void update_reflex_stats();
 // Reflex latency markers for the current frame token (0 sim start, 1 sim end, 2 render submit
 // start, 3 render submit end, 4 present start, 5 present end). No-op without a token or Reflex.
