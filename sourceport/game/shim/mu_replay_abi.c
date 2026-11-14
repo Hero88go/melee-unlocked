@@ -152,7 +152,7 @@ void mu_replay_abi_log(const char* text)
 
 _Static_assert(MU_RC_UCF084 == MU_REPLAY_CODE_UCF084 && MU_RC_PREVENT_WOBBLING == MU_REPLAY_CODE_PREVENT_WOBBLING &&
                MU_RC_PS_MONITOR == MU_REPLAY_CODE_PS_MONITOR && MU_RC_DEAD_UP_FALL == MU_REPLAY_CODE_DEAD_UP_FALL &&
-               MU_RC_UCF08 == MU_REPLAY_CODE_UCF08,
+               MU_RC_UCF08 == MU_REPLAY_CODE_UCF08 && MU_RC_PS_PRELOAD == MU_REPLAY_CODE_PS_PRELOAD,
                "mu_native.h MU_RC_* must match mu_host.h MU_REPLAY_CODE_*");
 
 #ifdef MU_NATIVE

@@ -536,6 +536,7 @@ int mu_ucf_enabled(void);   /* General Codes on, and the replay (if any) carries
 #define MU_RC_PS_MONITOR 0x00004000u
 #define MU_RC_PREVENT_WOBBLING 0x00008000u
 #define MU_RC_UCF08 0x00020000u
+#define MU_RC_PS_PRELOAD 0x00040000u
 struct StartMeleeData;
 int mu_replay_on(void);
 int mu_replay_code(unsigned int code);     /* playback and the replay carries the code */

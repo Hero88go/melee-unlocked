@@ -129,6 +129,7 @@ typedef struct MuReplayFrame {
 #define MU_REPLAY_CODE_PREVENT_WOBBLING  0x00008000u
 #define MU_REPLAY_CODE_UCF_OTHER         0x00010000u   /* a UCF version other than 0.84 or 0.8 */
 #define MU_REPLAY_CODE_UCF08             0x00020000u   /* UCF 0.8: dashback, shield drop, tumble (Slippi before 0.84) */
+#define MU_REPLAY_CODE_PS_PRELOAD        0x00040000u   /* 2023 Preload Stadium Transformations: the next one rolled early */
 
 /* Version 13, test harness only (--online-test): an online match the game enters without its
  * menus, the way replay playback does. */
