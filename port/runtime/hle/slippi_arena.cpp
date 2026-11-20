@@ -1055,7 +1055,9 @@ void service_links() {
       } else if (state == Matchmaking::ERROR_ENCOUNTERED) {
         event("search for %s: %s", l.code.c_str(), l.mm->GetErrorMessage().c_str());
         drop_later(l.mm);
-        l.retry_at = now + 3000;
+        // Under YouGame every search is a ticket, and a player gets 30 a minute across all of them;
+        // a waiting search holds its seat, so only a failed one asks again, spread over the links.
+        l.retry_at = now + (yougame::active() ? 6000 * (uint64_t)std::max<size_t>(1, g_links.size()) : 3000);
       }
       continue;
     }
