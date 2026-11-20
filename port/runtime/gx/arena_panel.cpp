@@ -1730,7 +1730,6 @@ bool wants_capture() { return g.page != Page::None; }
 uint16_t withheld_buttons() { return g.side != 0 && g.page == Page::None ? kPanelButtons : g.swallow; }
 
 void frame(const Frame& f) {
-  if (yougame::active()) { leave_panel(); g.page = Page::None; return; }   // rooms are a Slippi Direct feature
   if (!ar::rooms_enabled()) { leave_panel(); g.page = Page::None; return; }   // tests only: rooms off
   load();
   if (const int forced = ar::test_fixture_look(); forced >= 0) {   // tests only: the fixture's cycle

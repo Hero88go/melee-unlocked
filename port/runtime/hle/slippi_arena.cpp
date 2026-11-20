@@ -977,7 +977,6 @@ void leave_room() {
 }
 
 void do_act(const Pending& p) {
-  if (yougame::active() && !g_test.on) return;   // not in YouGame mode
   if (p.a == Act::OpenRoom) {
     if (!g_active && !g_code.empty()) open_room();
     return;
@@ -1437,7 +1436,7 @@ void stray_room_hello() {
     if (!get_str(m, at, code) || !get_str(m, at, name)) continue;
     const bool they_host = at + 2 <= m.size() && m[at] != 0;
     const online::ArenaMatchStatus st = online::arena_match_status();
-    if (st.in_match || !online::in_online_menus() || (yougame::active() && !g_test.on)) continue;
+    if (st.in_match || !online::in_online_menus()) continue;
     online::native_cleanup_match();
     g_next_match_ms = now_ms() + 2000;
     if (g_active || !they_host) { event("the Direct search met a room link (%s): searching again", code.c_str()); return; }
