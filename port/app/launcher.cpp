@@ -1963,6 +1963,8 @@ void launch_game_now() {
     SetEnvironmentVariableW(hybrid ? L"MELEE_YOUGAME_MATCH_BRIDGE" : L"MELEE_YOUGAME_LAUNCHER", L"1");
     launcher::yougame::warm();   // the browser view is open and its session checked before the game's first search
   }
+  // Which YouGame the game looks for: the launcher's own choice (launcher.ini yougame_env), not only the build's.
+  SetEnvironmentVariableW(L"MELEE_YOUGAME_ENV", widen(launcher::yougame::env().id).c_str());
   PROCESS_INFORMATION pi{};
   const DWORD error = launcher::start_process(widen(exe), widen(cmd), widen(cwd), 0, pi);
   if (!yougame_bridge.empty()) {
@@ -1971,6 +1973,7 @@ void launch_game_now() {
     SetEnvironmentVariableW(L"MELEE_YOUGAME_LAUNCHER", nullptr);
     SetEnvironmentVariableW(L"MELEE_YOUGAME_MATCH_BRIDGE", nullptr);
   }
+  SetEnvironmentVariableW(L"MELEE_YOUGAME_ENV", nullptr);
   if (error != ERROR_SUCCESS) {
     launcher::lobby::game_running(false);
 #ifdef MELEE_NO_SLIPPI

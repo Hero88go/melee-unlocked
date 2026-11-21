@@ -113,7 +113,7 @@ class Build106Fixes(unittest.TestCase):
         self.assertIn("open_get_page();", press)
         # Get YouGame goes to production's page unless the build is the staging-only start build.
         get = body(link, "void open_get_page() {")
-        self.assertIn('kStartStaging ? "https://staging.yougame.co/desktop" : "https://yougame.co/desktop"', get)
+        self.assertIn('start_staging() ? "https://staging.yougame.co/desktop" : "https://yougame.co/desktop"', get)
         self.assertIn("if (reach_showing() || update_showing() || home_showing()) return true;", body(link, "bool sign_in_showing() {"))
         self.assertIn("if (reach_view(out) || update_view(out) || home_view(out)) return;", body(link, "void sign_in_view(signin::View& out) {"))
         self.assertIn("if (reach_showing()) { reach_press(button); return; }", body(link, "void sign_in_press(signin::Button button) {"))
