@@ -174,7 +174,7 @@ typedef struct yg_config {
   const char *game_slug;
   const char *game_version;  /* the build's version, told to an app found on the local channel */
   const char *engine;        /* a short label for hello's "engine"; NULL: "native" */
-  const char *feedback_site; /* where the feedback page opens; NULL: https://yougame.co */
+  const char *feedback_site; /* where the feedback page opens; NULL: https://yougame.co (staging: https://staging.yougame.co) */
   void *user;                /* passed to every callback below */
   /* One line, without secrets, names, drafts or answers. NULL: written to stderr. */
   void (*log)(void *user, int level, const char *message);
@@ -192,6 +192,12 @@ typedef struct yg_config {
    * and yg_hello_json() say who. At most once per connection to YouGame; never for a player hello
    * already named (on_ready covers that). */
   void (*on_player)(void *user);
+  /* Which YouGame this build talks to. 0 (the default, also when the field is left out): production,
+   * yougame.co and the YouGame app. 1: staging, staging.yougame.co and the YouGame Staging app, for a
+   * test listing on staging. A copy started on its own looks only for that app's local channel, and
+   * feedback_site defaults to that site. A copy the app starts uses that app's site, whatever this says.
+   * Set yg_start_options.staging (yougame_start.h) to the same value. */
+  int staging;
 } yg_config;
 
 /* Picks the channel from the environment and says hello. 0 ok, -1 already started. Lines it logs
@@ -383,6 +389,7 @@ extern "C" {
 #define YG__PIPE_BUSY_WAIT_MS 200
 #define YG__READ_WAIT_MS 250
 #define YG__DEFAULT_SITE "https://yougame.co"
+#define YG__STAGING_SITE "https://staging.yougame.co"
 
 #ifdef YOUGAME_TESTING
 /* Test hooks: the test file sets these. Never defined in a game build. */
@@ -2202,7 +2209,7 @@ static void *yg__local_main(void *arg)
 #endif
 {
   long long handled = 0, wanted;
-  int stop, pass;
+  int stop, pass, said_none = 0;
   yg__conn c;
   (void)arg;
   for (;;) {
@@ -2219,13 +2226,22 @@ static void *yg__local_main(void *arg)
     }
     handled = wanted;
     memset(&c, 0, sizeof c);
-    /* Production first, then staging (contract section 1). */
-    for (pass = 0; pass < 2; ++pass) {
-      if (yg__conn_open(pass, &c)) {
+    /* Only the app of this build's YouGame (config.staging; contract section 1): a production game
+     * never talks to the staging app, nor a staging game to the production one. */
+    pass = yg__g.cfg.staging ? 1 : 0;
+    if (yg__conn_open(pass, &c)) {
+      yg__post(YG__EV_LOG, 0, 0, NULL,
+               pass ? "YouGame: found the YouGame app's local channel (staging)"
+                    : "YouGame: found the YouGame app's local channel (production)");
+    } else {
+      pass = 2;
+      /* Said once per run: which app it looked for, so a production build next to only the staging app
+       * (or the reverse) is plain in the log. */
+      if (!said_none) {
+        said_none = 1;
         yg__post(YG__EV_LOG, 0, 0, NULL,
-                 pass ? "YouGame: found the YouGame app's local channel (staging)"
-                      : "YouGame: found the YouGame app's local channel (production)");
-        break;
+                 yg__g.cfg.staging ? "YouGame: no YouGame Staging app open (this build is set to staging)"
+                                   : "YouGame: no YouGame app open (this build is set to production)");
       }
     }
     if (yg__stopping()) {
@@ -3304,6 +3320,7 @@ int yg_init(const yg_config *config) {
       yg__g.engine[n++] = config->engine[i];
   if (!n) strcpy(yg__g.engine, "native");
   yg__copy_trimmed(yg__g.site, sizeof yg__g.site, config ? config->feedback_site : NULL);
+  if (!yg__g.site[0] && yg__g.cfg.staging) strcpy(yg__g.site, YG__STAGING_SITE);
   /* The strings in the copy of config belong to the game; only the copies above are used. */
   yg__g.cfg.game_slug = yg__g.cfg.game_version = yg__g.cfg.engine = yg__g.cfg.feedback_site = NULL;
 #ifdef _WIN32

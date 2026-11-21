@@ -1298,7 +1298,38 @@ void yougame_sign_in_thread(bool use_app) {
     // started (a running app overlays any Melee Unlocked window); Play then asks for the launcher's own sign-in
     // once (yougame_sign_in_for_play). An account the app already gave goes on to the launcher's own sign-in.
     const bool listed = launcher::yougame::listed_current();
-    if (use_app_asked && !launcher::yougame::account().app) {
+    // YouGame's own way in first, the default since the launcher hands YouGame to the YouGame app or mini app
+    // when one is there: YouGame's standard start hook, asked on use as the game asks it from its YouGame rows.
+    // A running app (or one it started quietly, tray only) gives its account with no second sign-in; with no
+    // YouGame on this computer the hook's own small window offers Get YouGame or Play offline, and either answer
+    // ends Connect there (the launcher stays as it was, and plays offline). Only where the hook cannot run
+    // (administrator, a system without it, test runs) does Connect go on to the launcher's own sign-in below.
+    // While YouGame does not list this build the app cannot serve it, so the earlier steps below stay as they were.
+    bool app_asked = false;
+    if (use_app_asked && listed && !launcher::yougame::account().app && launcher::yougame::app_hook_available()) {
+      std::string detail;
+      const auto hook = launcher::yougame::ask_app_hook(&detail);
+      log_line("yougame: Connect: %s", detail.c_str());
+      if (hook == launcher::yougame::AppHook::kChose) {
+        g_yg_connecting = false;
+        PostMessageW(g_main, WM_APP_YOUGAME_WEB, 0, (LPARAM)new std::string("hook"));
+        return;
+      }
+      if (hook == launcher::yougame::AppHook::kRunning) {
+        app_asked = true;
+        detail.clear();
+        // Already up (the hook started it and waited for it): asked, never started a second time here.
+        const auto app = launcher::yougame::sign_in_app(false, version, &detail);
+        log_line("yougame: Connect: %s", detail.c_str());
+        if (app == launcher::yougame::AppSignIn::kSignedIn) {
+          g_yg_connecting = false;
+          PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
+          return;
+        }
+        // The app is signed out (or did not answer): the launcher's own sign-in, so Connect still connects.
+      }
+    }
+    if (use_app_asked && !app_asked && !launcher::yougame::account().app) {
       std::string detail;
       const auto app = launcher::yougame::sign_in_app(listed, version, &detail);
       log_line("yougame: Connect: %s", detail.c_str());
@@ -1943,9 +1974,30 @@ void launch_game_now() {
   // running; closed or gone mid-session, the game goes on through the bridge. Unticked: no app, no channel.
   // Owner 11-20: the extension is only the game's own YouGame button (top left) and its menu; the launcher never
   // starts the YouGame app for it. The app opens only from Open YouGame (or the player's own start).
-  const bool hybrid = !vanilla_active() && launcher::yougame::extension();
-  const std::string app_channel = hybrid ? yougame_app_channel() : std::string();   // for the log line only
-  SetEnvironmentVariableW(L"MELEE_YOUGAME_EXTENSION", hybrid ? L"1" : nullptr);
+  // YouGame's own way in is the default now: with no YouGame sign-in of the launcher's own (nobody connected, or
+  // the account came from the YouGame app), the game is handed to the YouGame app or mini app, as a game started on
+  // its own is: MELEE_YOUGAME_EXTENSION=1 and no bridge, so every YouGame request goes over the app's local channel
+  // with the app's sign-in (no second sign-in, no browser window). With no app running, a YouGame row runs YouGame's
+  // standard start hook in the game: an installed app starts quietly, and with none on this computer the hook's own
+  // small window offers Get YouGame or Play offline (yougame_link.cpp first_row_picked). Changed from "every match
+  // through the launcher's bridge" because that asked a player already signed in to YouGame to sign in again in
+  // the launcher's browser window, and a player without YouGame never got YouGame's offer.
+  // The launcher's own sign-in (a saved or new browser-view sign-in) keeps the bridge exactly as before, with the
+  // extension option as it was. So do the cases the app cannot serve: YouGame does not list this build yet, the
+  // hook cannot run here (administrator, test runs), the launcher is set to the other YouGame than this build's,
+  // or the player chose Disconnect for the app's account.
+  const launcher::yougame::Account yg_account = launcher::yougame::account();
+#ifdef MELEE_YOUGAME_START_STAGING
+  const bool yg_same_env = launcher::yougame::env().id == "staging";   // the YouGame this build's game looks for
+#else
+  const bool yg_same_env = launcher::yougame::env().id != "staging";
+#endif
+  const bool app_backed = !vanilla_active() && !(yg_account.signed_in && !yg_account.app) && yg_same_env &&
+                          launcher::yougame::listed_current() && launcher::yougame::app_hook_available() &&
+                          !launcher::yougame::app_declined();
+  const bool hybrid = !vanilla_active() && !app_backed && launcher::yougame::extension();
+  const std::string app_channel = hybrid || app_backed ? yougame_app_channel() : std::string();   // for the log line only
+  SetEnvironmentVariableW(L"MELEE_YOUGAME_EXTENSION", hybrid || app_backed ? L"1" : nullptr);
   SetEnvironmentVariableW(L"MELEE_YOUGAME_POOL", nullptr);   // the bridge's hello names the rooms (pool) now
 #ifdef MELEE_YOUGAME_COMING_SOON
   const std::string yougame_bridge;   // YouGame is not open yet: the game gets no bridge
@@ -1953,8 +2005,10 @@ void launch_game_now() {
       : "YouGame: this launcher has no bridge in this build; the game looks for the YouGame app itself (" +
         (app_channel.empty() ? std::string("no app channel for this user now") : "the " + app_channel + " app is running") + ").";
 #else
-  const std::string yougame_bridge = vanilla_active() ? std::string() : launcher::yougame::bridge_url();
+  const std::string yougame_bridge = vanilla_active() || app_backed ? std::string() : launcher::yougame::bridge_url();
   const std::string yougame_decision = vanilla_active() ? std::string()
+      : app_backed ? "YouGame: no launcher sign-in; the game uses the YouGame app's channel (" +
+                         (app_channel.empty() ? std::string("the app is not running; a YouGame row asks for it with YouGame's start hook") : "the " + app_channel + " app is running") + ")."
       : hybrid ? "YouGame: the game uses the launcher's bridge for matches and the YouGame app's channel for the extension (" +
                      (app_channel.empty() ? std::string("the app is not running; it is not started for the extension") : "the " + app_channel + " app is running") + ")."
       : std::string("YouGame: the game uses the launcher's bridge (extension off: no YouGame app).");
@@ -2666,9 +2720,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_YOUGAME_WEB: {
       std::unique_ptr<std::string> why((std::string*)lp);
       g_yg_closed_at = GetTickCount64();
-      if (*why != "app") SetForegroundWindow(hwnd);   // back from the sign-in window
-      if (!wp && !why->empty()) MessageBoxW(hwnd, widen(*why).c_str(), L"YouGame", MB_OK | MB_ICONINFORMATION);
+      if (*why != "app") SetForegroundWindow(hwnd);   // back from the sign-in window (or YouGame's own window)
+      // "hook": YouGame's own window answered (Get YouGame or Play offline): nothing more to say.
+      if (!wp && !why->empty() && *why != "hook") MessageBoxW(hwnd, widen(*why).c_str(), L"YouGame", MB_OK | MB_ICONINFORMATION);
       if (*why == "app") log_line("yougame: connected with the account signed in to the YouGame app");
+      else if (*why == "hook") log_line("yougame: YouGame's own window answered; not connected");
       else log_line("yougame: sign-in window closed (%s)", wp ? "signed in" : why->empty() ? "closed by the player" : why->c_str());
       if (g_tab == 0) InvalidateRect(hwnd, nullptr, FALSE);
       // Play opened it (yougame_sign_in_for_play): the game starts now, signed in or not.

@@ -28,7 +28,18 @@ struct Answer {
 // fetch_identity, yougame_signin.h hello_signed_out). *pending: signed in, the player not ready yet.
 Answer read_hello(const nlohmann::json& answer, bool* pending);
 
+// YouGame's start hook (third_party/yougame_start/yougame_start.h), asked on use, as the game asks it from its
+// YouGame rows (yougame_link.cpp reach_ask_on_use): a running YouGame app or mini app, nothing shown; installed
+// and not running, started quietly (tray only, its identity and signature checked by the hook); not on this
+// computer, the hook's own small window ("Play Melee Unlocked online": Get YouGame / Play offline). Returns the
+// hook's yg_start_result. Blocks while that window is up: never on the window thread.
+// YG_START_UNAVAILABLE where the hook cannot run: not Windows, or this launcher runs as administrator (the hook
+// would only show its "started as administrator" window there; the launcher's own sign-in is the way then).
+// elevated(): this launcher runs as administrator (an elevated token).
+
 #if defined(_WIN32) && defined(_MSC_VER)
+int start_hook(bool staging);
+bool elevated();
 // The YouGame app for this environment is installed (its link type is registered for this user or machine).
 bool installed(bool staging);
 // Its local channel is there for this Windows user (the app is running). Never connects.
@@ -44,6 +55,8 @@ inline bool installed(bool) { return false; }
 inline bool running(bool) { return false; }
 inline bool start(bool, int) { return false; }
 inline Answer ask(bool, const std::string&, int = 12000) { return {}; }
+inline int start_hook(bool) { return 4; }   // YG_START_UNAVAILABLE: the hook runs on Windows only here
+inline bool elevated() { return false; }
 #endif
 
 }  // namespace launcher::yougame::app
