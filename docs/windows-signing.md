@@ -44,7 +44,7 @@ Set the variables in the shell that runs the packager, then package as usual:
 set MU_SIGN_METADATA=C:\signing\metadata.json
 set MU_SIGN_DLIB=C:\signing\Microsoft.Trusted.Signing.Client\bin\x64\Azure.CodeSigning.Dlib.dll
 rem optional, when signtool.exe is not on PATH or in the default SDK folder:
-set MU_SIGNTOOL=C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe
+set MU_SIGNTOOL=C:\Program Files (x86)\Windows Kits\10\bin\<SDK version>\x64\signtool.exe
 python tools\package_release.py ...
 ```
 
