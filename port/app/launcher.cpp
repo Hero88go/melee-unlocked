@@ -279,6 +279,7 @@ void load_language() {
   launcher::lang::set_language(code, {widen(g_dir + "\\lang")});
 }
 bool source_available();   // below: the Source Port is installed beside the launcher
+bool recomp_available();   // below: the Static Recomp is there to start
 
 void load_ini() {
   {
@@ -328,6 +329,9 @@ void load_ini() {
   std::string root = repo_root();
   if (g_iso.empty() && !root.empty() && file_exists(root + "\\melee.iso")) g_iso = root + "\\melee.iso";
   if (!g_iso.empty() && !file_exists(g_iso)) g_iso.clear();
+  // A package without the Static Recomp (YouGame's builds ship only the Source Port) could not start it:
+  // the Source Port is picked, whatever an older launcher.ini with no engine line kept.
+  if (g_engine == ENGINE_LEGACY && !recomp_available() && source_available()) g_engine = ENGINE_SOURCE;
 }
 void save_ini() {
   {
@@ -468,6 +472,11 @@ std::string source_exe_dir() {
   return launcher::source_exe_dir(in);
 }
 bool source_available() { return !source_exe_dir().empty(); }
+// melee_port.exe (or its compatibility build) in the game folder, or a source checkout that builds it.
+bool recomp_available() {
+  return file_exists(active_dir() + "\\melee_port.exe") || file_exists(active_dir() + "\\melee_port_compat.exe") ||
+         !repo_root().empty();
+}
 
 // A processor without AVX2 (or the compatibility build picked by hand) gets the _compat programs.
 bool wants_compat_build() { return g_cpu_build == CPU_COMPAT || (g_cpu_build == CPU_AUTO && !cpu_has_avx2()); }
@@ -730,7 +739,8 @@ int build_seg_at(POINT p) {
 #endif
   for (int i = 0; i < kBuildSegments; ++i) {
     RECT r = build_seg_rect(i);
-    if (PtInRect(&r, p)) return (i != 1 && !source_available()) || (i == 2 && !vanilla_supported()) ? -1 : i;
+    if (PtInRect(&r, p))
+      return (i != 1 && !source_available()) || (i == 1 && !recomp_available()) || (i == 2 && !vanilla_supported()) ? -1 : i;
   }
   return -1;
 }
@@ -1070,12 +1080,14 @@ void paint_play(HDC dc) {
     const bool installed = source_available();
     const int on = g_engine == ENGINE_SOURCE && installed ? (g_vanilla.vanilla && vanilla_supported() ? 2 : 0) : 1;
     const std::wstring vanilla_name = launcher::lang::txw(L"Vanilla");
-    const wchar_t* names[kBuildSegments] = {installed ? L"Source Port (Beta)" : L"Source Port (not installed)", L"Static Recomp (Legacy)", vanilla_name.c_str()};
+    const bool recomp = recomp_available();
+    const wchar_t* names[kBuildSegments] = {installed ? L"Source Port (Beta)" : L"Source Port (not installed)",
+                                            recomp ? L"Static Recomp (Legacy)" : L"Static Recomp (not installed)", vanilla_name.c_str()};
     for (int i = 0; i < kBuildSegments; ++i) {
       const RECT r = build_seg_rect(i);
       COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
       if (i == on) { top = C_ACC_HI; bot = C_ACC_LO; border = NO_FILL; text = C_PLAY_TEXT; }
-      else if ((i != 1 && !installed) || (i == 2 && !vanilla_supported())) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
+      else if ((i != 1 && !installed) || (i == 1 && !recomp) || (i == 2 && !vanilla_supported())) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
       round_rect(dc, r, 7, top, bot, border);
       draw_text(dc, names[i], r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }

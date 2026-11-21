@@ -577,6 +577,7 @@ add_test(NAME port_yougame_app_button_wiring COMMAND "${Python3_EXECUTABLE}" -B 
 add_test(NAME port_build106_fixes_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/build106_fixes_wiring_test.py")
 add_test(NAME port_standalone_update_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/standalone_update_wiring_test.py")
 add_test(NAME port_yougame_open_connect_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/yougame_open_connect_wiring_test.py")
+add_test(NAME port_launcher_recomp_missing_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/launcher_recomp_missing_wiring_test.py")
 add_executable(port_pipeline_cache_store_test tests/pipeline_cache_store_test.cpp)
 target_include_directories(port_pipeline_cache_store_test PRIVATE runtime/gx)
 target_compile_features(port_pipeline_cache_store_test PRIVATE cxx_std_17)
