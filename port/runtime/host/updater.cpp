@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "updater.h"
+#include "updater_check_retry.h"
 #include "host.h"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -38,6 +39,8 @@ namespace {
 // The release list rather than /releases/latest: that endpoint skips pre-releases (betas).
 const char* REPO_API = "https://api.github.com/repos/hero88go/melee-unlocked/releases?per_page=100";
 std::atomic<State> g_state{State::Idle};
+std::atomic<bool> g_check_failed{false};   // the last Failed came from the release check, not a download
+std::atomic<bool> g_stopping{false};       // shutdown(): a check waiting to ask again stops waiting
 std::mutex g_mutex;
 std::string g_current, g_latest, g_zip_url, g_message, g_zip_path, g_zip_digest;
 size_t g_zip_size = 0;
@@ -531,20 +534,42 @@ std::string releases_from_feed(const std::string& feed) {
 void check(const std::string& current_version, bool install_experimental) {
   join();
   g_current = current_version;
+  // The launcher's own check (not the Retry after a failed one) asks again quietly before it reports a failure
+  // (updater_check_retry.h): on a fresh install its first ask can come before the network or GitHub answers.
+  const bool quiet = g_state.load() != State::Failed;
+  g_check_failed = false;
   g_state = State::Checking;
-  g_thread = std::thread([install_experimental] {
+  g_thread = std::thread([install_experimental, quiet] {
     std::string body; int status = 0;
     bool from_feed = false;
-    bool got = http_get(REPO_API, &body, &status) && status == 200;
-    if (!got) {
-      std::string feed; int feed_status = 0;
-      if (http_get(kReleasesFeed, &feed, &feed_status) && feed_status == 200 && !(body = releases_from_feed(feed)).empty()) {
-        host::log("updater: GET %s failed, HTTP %d: the newest releases come from the releases feed instead", REPO_API, status);
-        from_feed = got = true;
+    nlohmann::json list;
+    for (int failures = 0;;) {
+      body.clear(); status = 0;
+      bool answered = http_get(REPO_API, &body, &status) && status == 200;
+      const unsigned long error = GetLastError();
+      if (!answered) {
+        std::string feed; int feed_status = 0;
+        if (http_get(kReleasesFeed, &feed, &feed_status) && feed_status == 200 && !(body = releases_from_feed(feed)).empty()) {
+          host::log("updater: GET %s failed, HTTP %d: the newest releases come from the releases feed instead", REPO_API, status);
+          from_feed = answered = true;
+        }
+      }
+      if (answered) {
+        list = nlohmann::json::parse(body, nullptr, false);
+        if (list.is_array()) break;
+        from_feed = false;
+      }
+      const int wait = check_retry::delay_ms(++failures, quiet);
+      host::log("updater: GET %s failed (ask %d), HTTP %d, error %lu%s%s", REPO_API, failures, status, error,
+                answered ? ", not a release list" : "", wait < 0 ? "" : "; asking again shortly");
+      for (int waited = 0; waited < wait && !g_stopping.load(); waited += 100) Sleep(100);
+      if (wait < 0 || g_stopping.load()) {
+        set_message(check_retry::failed_text(answered ? 200 : status));
+        g_check_failed = true;
+        g_state = State::Failed;
+        return;
       }
     }
-    if (!got) { set_message(status ? "Update check failed (HTTP " + std::to_string(status) + ")" : "Update check failed (no connection)"); host::log("updater: GET %s failed, HTTP %d, error %lu", REPO_API, status, (unsigned long)GetLastError()); g_state = State::Failed; return; }
-    auto list = nlohmann::json::parse(body, nullptr, false);
     // GitHub gives at most 100 releases a page: the older ones (157 by 0.9.200) are on the next
     // pages, and the version picker lists every release. A page that fails only shortens the list.
     for (int page = 2; !from_feed && list.is_array() && list.size() == (size_t)(page - 1) * 100 && page <= 20; ++page) {
@@ -577,7 +602,7 @@ void check(const std::string& current_version, bool install_experimental) {
       if (d.release.legacy || d.release.experimental) catalog.push_back(std::move(d));
       if (!j.is_object()) j = r;
     }
-    if (!j.is_object()) { set_message("Update check failed (bad response)"); g_state = State::Failed; return; }
+    if (!j.is_object()) { set_message(check_retry::failed_text(200)); g_check_failed = true; g_state = State::Failed; return; }
     host::log("updater: %zu releases on GitHub, %zu with a download for this platform", list.is_array() ? list.size() : (size_t)0, catalog.size());
     std::string tag = j["tag_name"].get<std::string>();
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
@@ -656,6 +681,7 @@ std::vector<unsigned long> install_processes(const std::string& install_root_utf
 
 void shutdown();   // below, with the DLSS 5 model download it also waits for
 State state() { return g_state.load(); }
+bool check_failed() { return g_state.load() == State::Failed && g_check_failed.load(); }
 std::string latest_version() { std::lock_guard<std::mutex> lk(g_mutex); return g_latest; }
 std::string message() { std::lock_guard<std::mutex> lk(g_mutex); return g_message; }
 std::vector<Release> releases() { std::lock_guard<std::mutex> lk(g_mutex); std::vector<Release> out; for (const auto& d : g_releases) out.push_back(d.release); return out; }
@@ -1508,6 +1534,7 @@ ModelState xess_state(const std::string& game_dir_utf8) {
 std::string xess_message() { return part_message(g_xess); }
 
 void shutdown() {
+  g_stopping = true;   // a check waiting to ask again (check_retry) ends now instead of holding the exit
   join();
   if (g_rollback_thread.joinable()) g_rollback_thread.join();
   if (g_model_thread.joinable()) g_model_thread.join();

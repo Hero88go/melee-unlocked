@@ -2090,7 +2090,9 @@ void refresh_updater() {
   }
   std::string line = "Version " MELEE_PORT_VERSION ". " + host::updater::message() + " | " + launcher::lang::tx("What's new");
   if (st == State::Checking) line = "Version " MELEE_PORT_VERSION ". Checking for updates...";
-  COLORREF d = st == State::Checking ? C_FAINT : st == State::UpdateAvailable ? C_WARN : st == State::Failed ? C_BAD : C_OK;
+  // A check that could not reach GitHub is not an error with this copy (it plays as it is): a faint dot, not red.
+  COLORREF d = st == State::Checking ? C_FAINT : st == State::UpdateAvailable ? C_WARN
+             : st == State::Failed ? (host::updater::check_failed() ? C_FAINT : C_BAD) : C_OK;
   // Only repaint when something actually changed: this runs on a 500 ms timer, and repainting the
   // label's rect from the background every tick is what stops old text showing through the new.
   if (line != g_version_line || d != g_version_dot) {
