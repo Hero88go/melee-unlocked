@@ -68,6 +68,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <filesystem>
 #include <cstring>
 #include <deque>
 #include <future>
@@ -2337,6 +2338,43 @@ bool start_staging() {
 // Owner 11-20: everything is on YouGame's production now (staging has no test build of a new release, and
 // searches there said "Test build not available"), so the GitHub build never falls back to YouGame Staging.
 constexpr bool kStagingFallback = false;
+namespace {
+// The opened disc (disc_opened) and the channel connection it was told on (g_channel_epoch).
+std::mutex g_disc_mutex;
+std::string g_disc_path;
+uint64_t g_disc_epoch = 0;
+// The app's rules for a disc path (yougame.h's yg__disc_path_ok): absolute (a drive letter or /), at most
+// 1,024 bytes, no control characters, never a network path.
+bool disc_path_ok(const std::string& p) {
+  if (p.empty() || p.size() > 1024) return false;
+  for (unsigned char c : p)
+    if (c < 0x20 || c == 0x7f) return false;
+  if (p.size() >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) return false;
+  if (p[0] == '/') return true;
+  return p.size() >= 3 && std::isalpha((unsigned char)p[0]) && p[1] == ':' && (p[2] == '\\' || p[2] == '/');
+}
+// Sends the disc once on this connection: after hello (the channel is up), on its own thread.
+void report_disc() {
+  if (!g_channel_allowed || !g_channel_up.load()) return;
+  std::string path;
+  {
+    std::lock_guard<std::mutex> lock(g_disc_mutex);
+    const uint64_t epoch = g_channel_epoch.load();
+    if (g_disc_path.empty() || g_disc_epoch == epoch) return;
+    g_disc_epoch = epoch;
+    path = g_disc_path;
+  }
+  std::thread([path] {
+    try {
+      const json r = bridge_channel({{"type", "disc"}, {"path", path}}, 5000);
+      const bool ok = r.is_object() && r.value("ok", false);
+      host::log("yougame channel: disc %s", ok ? "reported" : "refused");
+    } catch (const std::exception& e) {
+      host::log("yougame channel: disc not reported (%s)", channel::log_text(e.what()).c_str());
+    }
+  }).detach();
+}
+}  // namespace
 // One probe: the YouGame this game uses, production unless staging was chosen (Linux: three folders
 // each). The first that connects, passes the checks and answers hello is kept. One line in the log per probe.
 // quiet: the background re-look (start_channel's watch) logs only a host it finds, not each empty look.
@@ -2396,6 +2434,7 @@ bool probe_channel(bool quiet = false) {
     { std::lock_guard<std::mutex> lock(g_mutex); g_identity = Identity{}; g_identity_asked = false; }
     start_player_wait();
     fetch_identity_now();   // on this thread, so the Online menu opens the rows once it is in
+    report_disc();
     return true;
   }
   if (refused.empty()) { if (!quiet) host::log("yougame channel: none"); }
@@ -3311,6 +3350,18 @@ bool launcher() {
   return !coming_soon() && (((g_launcher || g_match_bridge) && !g_bridge_url.empty() && !g_bridge_token.empty()) || g_channel_up);
 }
 bool channel_connected() { return g_channel_up; }
+void disc_opened(const std::string& path) {
+  if (!g_channel_allowed) return;   // the app started this game with its own disc
+  std::error_code ec;
+  const std::filesystem::path abs = std::filesystem::absolute(std::filesystem::u8path(path), ec);
+  const std::string full = ec ? std::string() : abs.u8string();
+  std::string ext = abs.extension().u8string();
+  for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+  if (ext != ".iso" && ext != ".gcm") { host::log("yougame channel: disc not reported (not an .iso or .gcm)"); return; }
+  if (!disc_path_ok(full)) { host::log("yougame channel: disc not reported (path)"); return; }
+  { std::lock_guard<std::mutex> lock(g_disc_mutex); if (g_disc_path == full) return; g_disc_path = full; g_disc_epoch = 0; }
+  report_disc();
+}
 static std::atomic<bool> g_automated_run{false};
 void start_channel(bool automated) {
   if (automated) g_automated_run = true;
