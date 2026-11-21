@@ -220,6 +220,10 @@ void publish_lobby_result(int winner_index, int end_method, int lras = -1, const
 // Used for settings a running device cannot adopt, the graphics backend being the one that
 // matters today.
 void request_restart();
+// Called right before this game starts its own replacement (request_restart, restart_after_device_loss,
+// restart_with_mod_looks), so values this process took out of its environment at start (the YouGame
+// launcher's bridge) are there again for the new process.
+void set_before_restart(void (*hook)());
 // The graphics device was lost (a driver reset, a display change): the game starts again in a new
 // process with the same command line and this one ends quietly, with no crash report. A loss again
 // within 10 minutes of such a restart calls `switch_backend` first (Direct3D 11 in the settings), so

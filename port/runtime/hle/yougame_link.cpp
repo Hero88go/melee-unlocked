@@ -319,6 +319,16 @@ bool g_match_bridge = false;
 // said App, decided on every fetch_identity): the match requests go over the app's channel with the app's sign-in,
 // as for a game the player started, instead of a refusal. Cleared when the channel closes.
 std::atomic<bool> g_app_sign_in{false};
+bool g_hybrid_env = false;                      // started with MELEE_YOUGAME_MATCH_BRIDGE=1 (put back for a restart)
+// A restart (a setting the device cannot adopt, a lost graphics device, a mod's looks) starts a new copy
+// from this process's environment, which start() emptied: the launcher's bridge goes back in for it, so
+// the new copy is signed in like this one. The launcher keeps its last few launch tokens, so this one
+// still answers.
+void restore_bridge_for_restart() {
+  _putenv_s("YOUGAME_BRIDGE", g_bridge_url.c_str());
+  _putenv_s("YOUGAME_TOKEN", g_bridge_token.c_str());
+  _putenv_s(g_hybrid_env ? "MELEE_YOUGAME_MATCH_BRIDGE" : "MELEE_YOUGAME_LAUNCHER", "1");
+}
 bool routed_to_bridge(const json& body) {
   return g_match_bridge && channel::to_launcher_bridge(body.is_object() ? body.value("type", std::string()) : std::string(),
                                                        g_channel_up.load(), g_app_sign_in.load());
@@ -3252,6 +3262,8 @@ void start() {
   slippi_linking::presentation.enabled = take("YOUGAME_SLIPPI_LINKABLE") == "1";
   g_launcher = take("MELEE_YOUGAME_LAUNCHER") == "1" && !g_stdio;
   take("MELEE_YOUGAME_MATCH_BRIDGE");
+  g_hybrid_env = hybrid;
+  if (!g_stdio && !g_bridge_url.empty() && !g_bridge_token.empty()) host::set_before_restart(restore_bridge_for_restart);
   // The hybrid with the channel allowed; without it (no extension) it is the launcher's bridge alone.
   g_match_bridge = hybrid && !g_stdio && g_channel_allowed && !g_bridge_url.empty() && !g_bridge_token.empty();
   if (hybrid && !g_stdio && !g_match_bridge && !g_bridge_url.empty()) g_launcher = true;

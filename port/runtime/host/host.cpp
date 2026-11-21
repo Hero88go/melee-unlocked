@@ -1347,6 +1347,8 @@ void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
 static std::atomic<bool> g_replay_viewing{false};
 void set_replay_viewing(bool on) { g_replay_viewing.store(on); }
 void request_user_exit() { request_exit(g_replay_viewing.load() ? kViewerClosedExit : 0); }
+static void (*g_before_restart)() = nullptr;
+void set_before_restart(void (*hook)()) { g_before_restart = hook; }
 void request_restart() {
   // Start the replacement first and only then ask for a clean shutdown: if the launch fails there
   // is nothing to recover to, so the running game is left alone rather than closed into nothing.
@@ -1355,6 +1357,7 @@ void request_restart() {
   std::wstring cmd = GetCommandLineW();
   // The replacement reads the shader and pipeline caches as it starts: write them first.
   ::gx::cache_store::flush_all("relaunch", std::chrono::milliseconds(3000));
+  if (g_before_restart) g_before_restart();
   STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   // The new process must not inherit the window or the adapter, so it waits for this one to go.
   if (!CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
@@ -1381,6 +1384,7 @@ bool restart_after_device_loss(const char* why, bool (*switch_backend)()) {
   std::snprintf(env, sizeof env, "%d:%lld", restarts + 1, now);
   SetEnvironmentVariableA("MELEE_DEVICE_LOST", env);
   std::wstring cmd = GetCommandLineW();
+  if (g_before_restart) g_before_restart();
   STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   if (!CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
     log("device lost (%s): the game could not start again (error %lu)", why, (unsigned long)GetLastError());
@@ -1477,6 +1481,7 @@ bool restart_with_mod_looks() {
          L" --look-iso " + quote_argument(std::filesystem::u8path(options.iso).wstring());
   // The new copy reads the shader and pipeline caches as it starts: write them first (as request_restart).
   ::gx::cache_store::flush_all("relaunch", std::chrono::milliseconds(3000));
+  if (g_before_restart) g_before_restart();
   STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   if (!CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
     log("restart: CreateProcess failed, error %lu", (unsigned long)GetLastError());
