@@ -1306,7 +1306,9 @@ void yougame_sign_in_thread(bool use_app) {
     // (administrator, a system without it, test runs) does Connect go on to the launcher's own sign-in below.
     // While YouGame does not list this build the app cannot serve it, so the earlier steps below stay as they were.
     bool app_asked = false;
-    if (use_app_asked && listed && !launcher::yougame::account().app && launcher::yougame::app_hook_available()) {
+    // Asked whether or not YouGame lists this build: with no YouGame here its window is the way to get it, and a
+    // running app's account for a build it does not list goes on as below (Play asks for the launcher's own sign-in once).
+    if (use_app_asked && !launcher::yougame::account().app && launcher::yougame::app_hook_available()) {
       std::string detail;
       const auto hook = launcher::yougame::ask_app_hook(&detail);
       log_line("yougame: Connect: %s", detail.c_str());

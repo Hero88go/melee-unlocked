@@ -71,7 +71,7 @@ class LauncherUsesYouGameApp(unittest.TestCase):
         self.assertLess(thread.index("launcher::yougame::resume_web(&resume_why)"), hook)   # a saved sign-in first
         self.assertLess(hook, thread.index("launcher::yougame::sign_in_web("))
         gate = thread[:hook]
-        self.assertIn("if (use_app_asked && listed && !launcher::yougame::account().app && launcher::yougame::app_hook_available()) {", gate)
+        self.assertIn("if (use_app_asked && !launcher::yougame::account().app && launcher::yougame::app_hook_available()) {", gate)
         after = thread[hook:thread.index("launcher::yougame::sign_in_web(")]
         # Get YouGame or Play offline: Connect ends there, no browser window, no message box.
         chose = after[after.index("AppHook::kChose"):]
