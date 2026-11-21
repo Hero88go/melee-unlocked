@@ -109,7 +109,9 @@ bool start(bool staging, int wait_ms) {
   return false;
 }
 
-Answer ask(bool staging, const std::string& version, int timeout_ms) {
+namespace {
+// ask, and with `disc` set tell_disc: after hello the disc instead of the connect code (*disc_said: the result).
+Answer talk(bool staging, const std::string& version, int timeout_ms, const std::string* disc, std::string* disc_said) {
   Answer out;
   channel::Candidate where;
   std::string why;
@@ -176,6 +178,19 @@ Answer ask(bool staging, const std::string& version, int timeout_ms) {
   }
   if (pending) { out.state = Answer::kNoAnswer; out.why = "the app's player did not arrive"; }
   if (out.state == Answer::kNoAnswer && out.why.empty()) out.why = "no hello";
+  if (disc) {
+    // Signed in or not, once hello answered: the app keeps the disc for this game (signed out, for its sign-in).
+    if (out.state == Answer::kSignedIn || out.state == Answer::kSignedOut) {
+      const json r = request({{"type", "disc"}, {"path", *disc}}, 5000);
+      const std::string c = r.is_object() && r.count("code") && r["code"].is_string() ? r["code"].get<std::string>() : "";
+      *disc_said = !r.is_object() ? "no answer" : r.value("ok", false) ? "reported" : "refused" + (c.empty() || c.size() > 24 ? std::string() : " " + c);
+    } else {
+      *disc_said = "no hello (" + out.why + ")";
+    }
+    conn->close();
+    reader.join();
+    return out;
+  }
   if (out.state == Answer::kSignedIn) {
     // The connect code, asked as the game asks it; accountSwitching: again after its retryAfter, twice at most.
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -196,6 +211,18 @@ Answer ask(bool staging, const std::string& version, int timeout_ms) {
   conn->close();
   reader.join();
   return out;
+}
+}  // namespace
+
+Answer ask(bool staging, const std::string& version, int timeout_ms) {
+  return talk(staging, version, timeout_ms, nullptr, nullptr);
+}
+
+std::string tell_disc(bool staging, const std::string& version, const std::string& path, int timeout_ms) {
+  std::string said;
+  const Answer a = talk(staging, version, timeout_ms, &path, &said);
+  if (said.empty()) said = a.state == Answer::kNotRunning ? "not running" : "no hello (" + a.why + ")";
+  return said;
 }
 
 }  // namespace launcher::yougame::app
