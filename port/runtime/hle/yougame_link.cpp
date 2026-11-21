@@ -1059,7 +1059,22 @@ class Socket {
   uint64_t agent_test_first_open_at() const { return broker_ ? broker_->agent_test_first_open_at() : 0; }
   void agent_test_drop_room() { if (broker_) broker_->agent_test_drop_room(); }
 #endif
+  // A first connection right after the game starts (or the PC wakes) can find name lookups not ready yet:
+  // WinHTTP 12007 (name not resolved) or 12029 (cannot connect) on the first search, where a second try a
+  // moment later works. One more try after a second, only for those two, before the player is told.
   bool open(const std::string& address, std::string* error, int timeout, const std::function<bool()>& cancelled) {
+    if (open_once(address, error, timeout, cancelled)) return true;
+    constexpr DWORD kNameNotResolved = 12007, kCannotConnect = 12029;   // ERROR_WINHTTP_*; the Linux shim has no names for them
+    if (last_net_error_ != kNameNotResolved && last_net_error_ != kCannotConnect) return false;
+    for (int waited = 0; waited < 1000; waited += 50) {
+      if (cancelled && cancelled()) return false;
+      Sleep(50);
+    }
+    host::log("yougame: socket open: trying once more after WinHTTP %lu", (unsigned long)last_net_error_);
+    return open_once(address, error, timeout, cancelled);
+  }
+  bool open_once(const std::string& address, std::string* error, int timeout, const std::function<bool()>& cancelled) {
+    last_net_error_ = 0;
     // The Unranked queue reopens on the same Socket after a drop: end the old connection and join its
     // reader first. A new std::thread assigned over a joinable one calls std::terminate, which closed
     // the game with "the game stopped itself (abort)" on the first 1006 drop of a search (121.1, 11-17).
@@ -1071,7 +1086,8 @@ class Socket {
     }
     HINTERNET conn = WinHttpConnect(http_session(), u.host.c_str(), u.port, 0);
     if (!conn) {
-      host::log("yougame: socket open failed: at=%s step=connect error=%lu", address.substr(0, address.find('?')).c_str(), (unsigned long)GetLastError());
+      last_net_error_ = GetLastError();
+      host::log("yougame: socket open failed: at=%s step=connect error=%lu", address.substr(0, address.find('?')).c_str(), (unsigned long)last_net_error_);
       *error = "Could not reach YouGame";
       return false;
     }
@@ -1097,6 +1113,7 @@ class Socket {
                 status == 101;
       if (ok) ws_ = WinHttpWebSocketCompleteUpgrade(req, 0);
       if (ok && !ws_ && !step) { step = "complete upgrade"; step_error = GetLastError(); }
+      if (!ws_ && !status) last_net_error_ = step_error;
       if (!ws_ && !(cancelled && cancelled()))
         host::log("yougame: socket open failed: at=%s step=%s error=%lu status=%lu", address.substr(0, address.find('?')).c_str(),
                   step ? step : "status", (unsigned long)step_error, (unsigned long)status);
@@ -1215,6 +1232,7 @@ class Socket {
     cv_.notify_all();
   }
   std::unique_ptr<transport::Stream> broker_;
+  DWORD last_net_error_ = 0;            // own socket: the WinHTTP error of the last failed open with no HTTP status
   std::atomic<int> close_code_{1006};   // own socket: the room's close code, 1006 when the connection just dropped
   std::atomic<bool> stopping_{false};   // our own close(): its receive error is not a drop
   std::atomic<uint64_t> heard_at_{0}, relay_heard_at_{0};
