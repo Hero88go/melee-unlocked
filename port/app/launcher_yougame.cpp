@@ -2,6 +2,7 @@
 #include "launcher_yougame.h"
 #include "launcher_yougame_app.h"
 #include "launcher_yougame_web.h"
+#include "yougame_start/yougame_start.h"   // the hook's results (its code is in launcher_yougame_app.cpp)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -582,6 +583,40 @@ bool start_app_quietly(std::string* detail) {
   return up;
 }
 
+bool app_hook_available() {
+  if (std::getenv("MELEE_LAUNCHER_TEST") && !std::getenv("MELEE_LAUNCHER_TEST_YOUGAME_APP")) return false;
+#if defined(_WIN32) && defined(_MSC_VER)
+  return !app::elevated();
+#else
+  return false;   // the hook's window and quiet start are Windows-only in this launcher
+#endif
+}
+
+AppHook ask_app_hook(std::string* detail) {
+  auto say = [&](const std::string& s) { if (detail) *detail = s; };
+  if (!app_hook_available()) {
+    say(std::getenv("MELEE_LAUNCHER_TEST") ? "test run: YouGame's start hook is not asked"
+        : app::elevated() ? "the launcher runs as administrator: YouGame's start hook is not asked"
+        : "YouGame's start hook does not run on this system");
+    return AppHook::kUnavailable;
+  }
+  bool staging;
+  { std::lock_guard<std::mutex> lock(g_mutex); staging = g_env.id == "staging"; }
+  const std::string name = staging ? "YouGame Staging" : "YouGame";
+  const auto t0 = std::chrono::steady_clock::now();
+  const int r = app::start_hook(staging);
+  const std::string took = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - t0).count()) + " ms)";
+  switch (r) {
+    case YG_START_RUNNING: say("YouGame's start hook: the " + name + " app is running" + took); return AppHook::kRunning;
+    case YG_START_OPENED: say("YouGame's start hook: the " + name + " app was started quietly (tray)" + took); return AppHook::kRunning;
+    case YG_START_UPDATING: say("YouGame's start hook: the " + name + " app is installing an update" + took); return AppHook::kRunning;
+    case YG_START_OFFERED: say("YouGame's start hook: its window was shown, Get YouGame pressed" + took); return AppHook::kChose;
+    case YG_START_DECLINED: say("YouGame's start hook: its window was shown, Play offline (or closed)" + took); return AppHook::kChose;
+    default: say("YouGame's start hook could not run (result " + std::to_string(r) + ")" + took); return AppHook::kUnavailable;
+  }
+}
+
 bool app_declined() { std::lock_guard<std::mutex> lock(g_mutex); return g_app_choice == 0; }
 bool app_used_before() { std::lock_guard<std::mutex> lock(g_mutex); return g_app_choice == 1; }
 
@@ -624,7 +659,7 @@ bool resume_web(std::string* why) {
   return true;
 }
 
-AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail) {
+AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail, bool sign_in_there) {
   // Every step goes into *detail ("; " between), for the launcher's log.
   std::string steps;
   auto step = [&](const std::string& s) { steps += (steps.empty() ? "" : "; ") + s; if (detail) *detail = steps; };
@@ -646,7 +681,9 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
     if (!up) { step("its channel did not come up in " + std::to_string(ms) + " ms"); return AppSignIn::kNoAnswer; }
     step("its channel came up after " + std::to_string(ms) + " ms");
   }
-  const app::Answer a = app::ask(staging, version);
+  // Up to 10 minutes in the app's sign-in window (its code lasts about that long; it says signInExpired after).
+  if (sign_in_there) step("signed out there: asking for its own sign-in window");
+  const app::Answer a = app::ask(staging, version, 12000, sign_in_there ? 10 * 60 * 1000 : 0);
   switch (a.state) {
     case app::Answer::kSignedIn: {
       Session s;
@@ -661,10 +698,13 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
         g_app_choice = 1;   // the launcher starts the app quietly next time, to take this account again
       }
       changed();
-      step(std::string("the app says signed in") + (a.code.empty() ? " (no connect code)" : ""));
+      step(std::string(a.app_window ? "signed in through the app's own sign-in window" : "the app says signed in") + (a.code.empty() ? " (no connect code)" : ""));
       return AppSignIn::kSignedIn;
     }
-    case app::Answer::kSignedOut: step("the app says signed out"); return AppSignIn::kSignedOut;
+    case app::Answer::kSignedOut:
+      if (a.app_window) { step("the app's sign-in window closed without a sign-in (" + a.why + ")"); return AppSignIn::kAppWindow; }
+      step(std::string("the app says signed out") + (sign_in_there && !a.why.empty() ? " (" + a.why + ")" : ""));
+      return AppSignIn::kSignedOut;
     case app::Answer::kNotRunning: step("the app's channel is gone"); return AppSignIn::kNoApp;
     case app::Answer::kRefused: step("the app refused (" + a.why + ")"); return AppSignIn::kNoAnswer;
     case app::Answer::kNoAnswer: break;

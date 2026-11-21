@@ -3596,6 +3596,15 @@ bool coming_soon() {
   return false;
 #endif
 }
+bool ask_on_use() {
+  // A game on the app's local channel with no YouGame answering it yet: one started on its own, or one Melee
+  // Unlocked's launcher handed to the YouGame app because the launcher holds no YouGame sign-in of its own
+  // (MELEE_YOUGAME_EXTENSION=1, no bridge). Its YouGame rows ask through YouGame's start hook when picked, as a
+  // build whose rows wait for YouGame does (first_row_picked). Never under the launcher's bridge: the launcher's
+  // own sign-in serves those rows. Never in runs that may not reach an app (g_channel_allowed turned off).
+  return !kNoApp && !g_stdio && g_channel_allowed.load() && !g_channel_up.load() && !g_launcher && !g_match_bridge &&
+         !active();
+}
 bool coming_soon_build() {
 #ifdef MELEE_YOUGAME_COMING_SOON
   static const bool soon = !host::test_env::getenv("MELEE_TEST_YOUGAME_OPEN");
