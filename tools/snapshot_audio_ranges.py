@@ -20,6 +20,12 @@ import sys
 
 FILES = ("synth.c.obj", "axdriver.c.obj", "AXVPB.c.obj", "AXAux.c.obj", "AXCL.c.obj", "AXOut.c.obj",
          "AXAlloc.c.obj", "AXSPB.c.obj", "AXProf.c.obj")
+# State written once a game can no longer be rolled back, so a rollback must never restore it: the
+# ranked set's game result (shim/mu_ranked_setup_online.c), which report_game sets as a game ends. A
+# rollback after that restored its "no result yet" values (winner none, disconnected), and the set was
+# abandoned and voided after a conclusive game 1 (11-20, a YouGame ranked set marked unrated). Only in
+# builds that have ranked play, so not required.
+OPTIONAL = ("mu_ranked_setup_online.c.obj",)
 LINE = re.compile(r"^ \.(bss|data)(?:\.[^\s]+)?\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+) (.+)$")
 WRAPPED = re.compile(r"^ (\.(?:bss|data)(?:\.[^\s]+)?)\s*$")
 
@@ -43,7 +49,7 @@ def audio_ranges(lines, base):
         name = obj.replace('\\', '/').rsplit('/', 1)[-1]
         if name.endswith('.c.o'):
             name = name[:-2] + '.obj'
-        if name in FILES and size and address >= base:
+        if (name in FILES or name in OPTIONAL) and size and address >= base:
             yield address - base, size, section, name
 
 

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "args": [
+    "--iso",
+    "{disc}",
+    "--threaded-renderer",
+    "--settings-path",
+    "{data}/port-settings.ini",
+    "--sys-dir",
+    "{build}/Sys",
+    "--user-dir",
+    "{data}/User/Slippi",
+    "--replay-dir",
+    "{data}/Replays",
+    "--card-dir",
+    "{data}/User/GC/CardA",
+    "--log-file",
+    "{data}/melee.log",
+    "--shader-cache",
+    "{data}/shadercache",
+    "--vanilla-only"
+  ],
+  "disc": true,
+  "embed": {
+    "class": "MeleePortWindow",
+    "title": "Melee Unlocked"
+  },
+  "controllers": "mirror",
+  "net": "yougame",
+  "memoryMb": 6144,
+  "direct": true
+}

@@ -419,6 +419,8 @@ def main():
     shutil.copy2(ROOT / 'port/sys_deltas/manifest.json', folder / 'deltas/manifest.json')
     for f in deltas['files']:
         shutil.copy2(ROOT / 'port/sys_deltas' / f['delta'], folder / 'deltas' / f['delta'])
+    # How the YouGame app starts this build, beside the program as on Windows (tools/package_release.py).
+    shutil.copy2(ROOT / 'port/yougame/yougame-native.json', folder / 'yougame-native.json')
     (folder / 'Shaders').mkdir()
     (folder / 'Shaders/crt-shaders.pak').write_bytes(shader_pak())
     if (ROOT / 'lang').is_dir():

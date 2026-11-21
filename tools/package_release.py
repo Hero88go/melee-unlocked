@@ -543,6 +543,9 @@ def main():
     shutil.copy2(ROOT / "port/sys_deltas/manifest.json", folder / "deltas/manifest.json")
     for f in deltas["files"]:
         shutil.copy2(ROOT / "port/sys_deltas" / f["delta"], folder / "deltas" / f["delta"])
+    # How the YouGame app starts this build (launch arguments, the player's disc, the game window): YouGame reads it
+    # from the top of the release zip, so the published asset goes up on YouGame as it is.
+    shutil.copy2(ROOT / "port/yougame/yougame-native.json", folder / "yougame-native.json")
     # Warmed pipeline recipes: the newest cache namespace that has them (the exe's shader sources
     # decide the namespace, so this must come from the same build).
     recipes = ROOT / "shadercache/recipes.bin"

@@ -4905,6 +4905,8 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
       if (!room || !*room || !(*room)->arena) return;
       std::unique_ptr<Room> back = std::move(*room);
       back->size = friends::kArenaSeats; back->mode = -2;
+      // A search that failed after opening links: close them here, or the next game's links hit the cap of three.
+      transport::close_links(back->links, [](const json& q, int ms) { return bridge(q, ms); });
       std::lock_guard<std::mutex> lock(g_mutex);
       if (g_arena_open && !g_arena && back->socket && !back->socket->closed()) {
         Room* raw = back.get();
@@ -4914,6 +4916,9 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
     }
   } arena_keep;
   if (arena) arena_keep.room = &parked;
+  // Every ticket and room hold this search asks for says whether this copy can share a match with a links:false
+  // seat (transport::with_links_flag): decide_transport below is that path. Other requests go out as they are.
+  const auto ticket_bridge = [&](json q, int ms) { return bridge(transport::with_links_flag(q), ms, cancelled); };
   json ticket;
   g_bridge_refusal.clear();   // read in the catch below: only this ticket's refusal counts
   try {
@@ -4932,14 +4937,14 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
       // Renewals ask for the same room again, never a new hold.
       // The Doubles home holds a 2-seat teams home (doubles_hold) and its partner joins by code.
       if (lobby_room.empty()) {
-        ticket = bridge(doubles_home ? friends::doubles_hold(lobby_key) : friends::lobby_hold(lobby_key), 30000, cancelled);
+        ticket = ticket_bridge(doubles_home ? friends::doubles_hold(lobby_key) : friends::lobby_hold(lobby_key), 30000);
         const std::string held = ticket.is_object() && ticket.count("room") && ticket["room"].is_string()
                                      ? ticket["room"].get<std::string>() : std::string();
         if (held.empty()) throw std::runtime_error("YouGame did not return a Friends lobby room");
         request = doubles_home ? friends::doubles_home_ticket(lobby_key, held) : friends::lobby_ticket(lobby_key, held);
       } else {
         request = doubles_home ? friends::doubles_home_ticket(lobby_key, lobby_room) : friends::lobby_ticket(lobby_key, lobby_room);
-        ticket = bridge(request, 30000, cancelled);
+        ticket = ticket_bridge(request, 30000);
       }
       std::lock_guard<std::mutex> lock(g_mutex);
       if (!g_search_generation.current(epoch) || cancelled()) throw std::runtime_error("Cancelled");
@@ -4954,12 +4959,12 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
         if (!g_search_generation.current(epoch) || cancelled()) throw std::runtime_error("Cancelled");
         friends::events.current_room(team_room);
       }
-      ticket = bridge(request, 30000, cancelled);
+      ticket = ticket_bridge(request, 30000);
     } else if (friends_mode) {
       ticket = friends::request_ticket(compat, search.friend_room, request,
           [&](const json& q, int ms) {
             if (q.value("type", "") == "mpFriend") host::log("friends: picker requested");
-            auto answer = bridge(q, ms, cancelled);
+            auto answer = ticket_bridge(q, ms);
             if (q.value("type", "") == "mpFriend") host::log("friends: invite sent");
             return answer;
           }, cancelled,
@@ -4970,7 +4975,7 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
           });
     } else {
       // The blend cancels this side when Slippi's is first: the ticket wait must not hold it up.
-      ticket = bridge(request, 30000, cancelled);
+      ticket = ticket_bridge(request, 30000);
     }
   } catch (const update::Required&) {
     // update_required: the answer's own words as the app gave them (it may say it is getting the update), else ours.
@@ -5025,7 +5030,7 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
     if (now >= until || cancelled() || (last_renew && now - last_renew < 1500)) return false;
     last_renew = now;
     const bool renewed = transport::renew_room_ticket(pass, room_code, [&] {
-      try { return bridge(request, (int)std::min<uint64_t>(3000, until - now), cancelled); }
+      try { return ticket_bridge(request, (int)std::min<uint64_t>(3000, until - now)); }
       catch (const update::Required&) { update_refused = true; throw; }
     }, [](const char* message) { host::log("%s", message); });
     if (renewed) pass_at = now_ms();
@@ -5766,7 +5771,7 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
           queue_generation = party.generation;
           try {
             const json queue_request = friends::doubles_queue_ticket(lobby_key, room_code, queue_generation, lobby_session->owns_local() ? 1 : party.humans);
-            const json qt = bridge(queue_request, 15000, cancelled);
+            const json qt = ticket_bridge(queue_request, 15000);
             queue_url = qt.value("url", "");
             queue_pass = qt.value("ticket", "");
             auto qs = std::make_unique<Socket>();
@@ -6367,16 +6372,17 @@ void run_sender() {
 }
 void open_thread(const std::string& asked, uint64_t generation) {
   const auto stale = [generation] { std::lock_guard<std::mutex> lock(a.mutex); return a.generation != generation; };
-  const auto failed = [&](const std::string& why) {
+  // `why` goes to the log; the player sees `shown` (the arena's own line), or `why` itself when null.
+  const auto failed = [&](const std::string& why, const char* shown = friends::kArenaOpenFailed) {
     std::lock_guard<std::mutex> lock(a.mutex);
     if (a.generation != generation) return;
     a.state = -1;
-    a.error = why;
+    a.error = shown ? std::string(shown) : why;
     host::log("arena: the room could not open: %.120s", why.c_str());
   };
   try {
     const std::string key = arena_key();
-    if (key.empty()) return failed("Could not verify this mod's content. Restart the game before playing online.");
+    if (key.empty()) return failed("Could not verify this mod's content. Restart the game before playing online.", nullptr);
     std::string code = asked;
     if (code.empty()) {   // the host's own room code: 10 of [a-z0-9], within the ticket route's 6 to 12
       static const char* kChars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -6402,8 +6408,8 @@ void open_thread(const std::string& asked, uint64_t generation) {
     std::string error;
     if (!room->socket->open_session(room->url, room->ticket, code, &error, 10000, stale)) {
       if (stale()) return;
-      return failed(room->socket->room_full() ? std::string("That arena is full")
-                    : error.empty() ? std::string("Could not join the arena's room") : error);
+      if (room->socket->room_full()) return failed("That arena is full", nullptr);
+      return failed(error.empty() ? std::string("Could not join the arena's room") : error);
     }
     bool kept = false;
     {
@@ -6423,9 +6429,9 @@ void open_thread(const std::string& asked, uint64_t generation) {
     if (!kept) { shutdown_room(std::move(room)); return; }
     host::log("arena: the room is open (%s)", asked.empty() ? "hosting" : "joined");
   } catch (const update::Required&) {
-    failed(g_bridge_update_text.empty() ? std::string(update::kMessage) : g_bridge_update_text);
+    failed(g_bridge_update_text.empty() ? std::string(update::kMessage) : g_bridge_update_text, nullptr);
   } catch (const std::exception& e) {
-    if (!stale()) failed(e.what());
+    if (!stale()) failed(e.what(), std::string(e.what()) == kChannelClosed ? nullptr : friends::kArenaOpenFailed);
   }
 }
 }  // namespace
@@ -6561,8 +6567,9 @@ void invite() {
           break;
         }
         const auto full = friends::invite_room_full(g_bridge_refusal, what);
-        result = -1; why = full.empty() ? what : full;
-        host::log("arena: invite failed: %.120s", why.c_str());
+        host::log("arena: invite failed: %.120s", (full.empty() ? what : full).c_str());
+        // The panel shows the site's words for a full room, or YouGame not open; else the arena's own line.
+        result = -1; why = !full.empty() ? full : what == kChannelClosed ? what : std::string(friends::kArenaInviteFailed);
         if (!full.empty()) break;
       }
     }

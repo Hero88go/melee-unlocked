@@ -499,6 +499,36 @@ bool unpack_tar_gz(const std::filesystem::path& archive, const std::filesystem::
   }
   return true;
 }
+
+// GitHub's API answers 60 requests an hour per internet address without sign-in, and a check takes two (the
+// list is longer than one page). Players who share an address (a mobile or a carrier network, a house of
+// players) ran out and saw "Update check failed (HTTP 403)" (player report 11-20). The releases feed on
+// github.com itself has no such limit: its ten newest releases, turned into the API's shape with this
+// platform's download at its usual address (no size or digest: the API alone lists those).
+constexpr const char* kReleasesFeed = "https://github.com/hero88go/melee-unlocked/releases.atom";
+std::string releases_from_feed(const std::string& feed) {
+  nlohmann::json list = nlohmann::json::array();
+  const std::string marker = "/releases/tag/";
+  for (size_t at = feed.find("<entry>"); at != std::string::npos; at = feed.find("<entry>", at + 7)) {
+    const size_t end = feed.find("</entry>", at);
+    if (end == std::string::npos) break;
+    const std::string entry = feed.substr(at, end - at);
+    const size_t t = entry.find(marker);
+    if (t == std::string::npos) continue;
+    const size_t t_end = entry.find('"', t);
+    if (t_end == std::string::npos) continue;
+    const std::string tag = entry.substr(t + marker.size(), t_end - t - marker.size());
+    if (tag.size() < 2 || tag[0] != 'v' || !safe_version(tag.substr(1))) continue;
+    std::string updated;
+    const size_t u = entry.find("<updated>");
+    if (u != std::string::npos) updated = entry.substr(u + 9, 20);
+    const std::string name = "MeleeUnlocked-" + tag.substr(1) + kPlatformAsset;
+    list.push_back({{"tag_name", tag}, {"published_at", updated}, {"body", ""},
+                    {"assets", nlohmann::json::array({{{"name", name},
+                        {"browser_download_url", "https://github.com/Hero88go/melee-unlocked/releases/download/" + tag + "/" + name}}})}});
+  }
+  return list.empty() ? std::string() : list.dump();
+}
 }  // namespace
 
 void check(const std::string& current_version, bool install_experimental) {
@@ -511,14 +541,23 @@ void check(const std::string& current_version, bool install_experimental) {
   g_state = State::Checking;
   g_thread = std::thread([install_experimental, quiet] {
     std::string body; int status = 0;
+    bool from_feed = false;
     nlohmann::json list;
     for (int failures = 0;;) {
       body.clear(); status = 0;
-      const bool answered = http_get(REPO_API, &body, &status) && status == 200;
+      bool answered = http_get(REPO_API, &body, &status) && status == 200;
       const unsigned long error = GetLastError();
+      if (!answered) {
+        std::string feed; int feed_status = 0;
+        if (http_get(kReleasesFeed, &feed, &feed_status) && feed_status == 200 && !(body = releases_from_feed(feed)).empty()) {
+          host::log("updater: GET %s failed, HTTP %d: the newest releases come from the releases feed instead", REPO_API, status);
+          from_feed = answered = true;
+        }
+      }
       if (answered) {
         list = nlohmann::json::parse(body, nullptr, false);
         if (list.is_array()) break;
+        from_feed = false;
       }
       const int wait = check_retry::delay_ms(++failures, quiet);
       host::log("updater: GET %s failed (ask %d), HTTP %d, error %lu%s%s", REPO_API, failures, status, error,
@@ -533,7 +572,7 @@ void check(const std::string& current_version, bool install_experimental) {
     }
     // GitHub gives at most 100 releases a page: the older ones (157 by 0.9.200) are on the next
     // pages, and the version picker lists every release. A page that fails only shortens the list.
-    for (int page = 2; list.is_array() && list.size() == (size_t)(page - 1) * 100 && page <= 20; ++page) {
+    for (int page = 2; !from_feed && list.is_array() && list.size() == (size_t)(page - 1) * 100 && page <= 20; ++page) {
       std::string more; int more_status = 0;
       const std::string url = std::string(REPO_API) + "&page=" + std::to_string(page);
       if (!http_get(url.c_str(), &more, &more_status) || more_status != 200) { host::log("updater: GET %s failed, HTTP %d", url.c_str(), more_status); break; }

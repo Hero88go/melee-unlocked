@@ -2112,7 +2112,8 @@ void tick() {
 #endif
       auto room = yougame::friends::events.take_join(true);
       // An invite into an arena (inviteMode "arena"): the arena joins its YouGame room and the player
-      // waits on Direct's character select, where the arena starts each game it puts them in.
+      // waits on the online character select (YouGame Friends, the arena's home under YouGame; the game's
+      // own mode there is Direct's), where the arena starts each game it puts them in.
       if (!room.empty() && yougame::friends::events.join_arena()) {
         host::log("arena: invite accepted (%s)", yougame::friends::events.trigger().c_str());
         yougame::friends::events.online_menu(false);

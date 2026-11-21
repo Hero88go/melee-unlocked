@@ -1291,26 +1291,23 @@ void yougame_sign_in_thread(bool use_app) {
     std::wstring title;
     // Owner 11-19: while YouGame does not list this build nothing of the YouGame app runs: it is never started
     // or asked (a running app overlays any Melee Unlocked window); the launcher's own sign-in is the way.
-    bool use_app = use_app_asked;
-    if (use_app && !launcher::yougame::listed_current()) {
-      use_app = false;
-      title = unlisted;
-      log_line("yougame: Connect: YouGame does not list this build yet; the YouGame app is not started or asked, the launcher's own sign-in opens");
-    }
-    if (use_app || launcher::yougame::account().app) {
+    // The YouGame app's account when the app is signed in (owner 11-20, later: "it should detect I have YouGame
+    // logged in"). While YouGame does not list this build the app is only asked when already running, never
+    // started (a running app overlays any Melee Unlocked window); Play then asks for the launcher's own sign-in
+    // once (yougame_sign_in_for_play). An account the app already gave goes on to the launcher's own sign-in.
+    const bool listed = launcher::yougame::listed_current();
+    if (use_app_asked && !launcher::yougame::account().app) {
       std::string detail;
-      const auto app = use_app ? launcher::yougame::sign_in_app(true, version, &detail) : launcher::yougame::AppSignIn::kSignedIn;
-      if (use_app) log_line("yougame: Connect: %s", detail.c_str());
+      const auto app = launcher::yougame::sign_in_app(listed, version, &detail);
+      log_line("yougame: Connect: %s", detail.c_str());
       if (app == launcher::yougame::AppSignIn::kSignedIn) {
-        if (launcher::yougame::listed_current()) {
-          g_yg_connecting = false;
-          PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
-          return;
-        }
-        log_line("yougame: Connect: YouGame does not list this build yet, so the app's account cannot search with it; the launcher's own sign-in opens");
-        title = unlisted;
+        if (!listed) log_line("yougame: Connect: YouGame does not list this build yet; Play asks for the launcher's own sign-in once");
+        g_yg_connecting = false;
+        PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
+        return;
       }
     }
+    if (launcher::yougame::account().app && !listed) title = unlisted;
     // YouGame's own sign-in page, in the launcher's browser view. The player signs in there once, and the
     // launcher asks YouGame through that page from then on (remembered: it connects by itself at every start).
     std::string why;
@@ -1351,7 +1348,7 @@ void yougame_connect() {
   if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);   // "YouGame: connecting..."
   // The launcher's window stays enabled and responsive throughout: everything below runs on its own thread,
   // and the sign-in window is never owned by this one (launcher_yougame_web.h).
-  yougame_sign_in_thread(false);   // owner 11-20: the launcher's own sign-in; the YouGame app is never asked
+  yougame_sign_in_thread(true);   // a signed-in YouGame app first (asked; started only when YouGame lists this build)
 }
 // Play with an account the YouGame app gave while YouGame does not list this build: the app's searches would be
 // refused, so the game plays through the launcher's bridge, which needs the launcher's own sign-in. Its window
@@ -2343,13 +2340,22 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 0) InvalidateRect(hwnd, nullptr, FALSE);
         std::thread([version = yougame_build_version()] {
           std::string how;
-          // Owner 11-20: only the launcher's own saved sign-in (the YouGame app is never asked for an account).
+          // The launcher's own saved sign-in, else the YouGame app's account when the app is already running and
+          // signed in (owner 11-20, later: "it should detect I have YouGame logged in"). The app is asked, never
+          // started; listed or not, the row shows the account (Play asks for the launcher's own sign-in once when
+          // YouGame does not list this build, yougame_sign_in_for_play).
           std::string why;
           const ULONGLONG asked = GetTickCount64();
           if (launcher::yougame::resume_web(&why)) how = "the launcher's own saved sign-in answered signed in";
-          else how = "not connected: " + why;
+          else {
+            std::string detail;
+            const bool declined = launcher::yougame::app_declined();
+            if (declined) detail = "not asked: Disconnect was chosen for its account";
+            if (!declined && launcher::yougame::sign_in_app(false, version, &detail) == launcher::yougame::AppSignIn::kSignedIn)
+              how = "the YouGame app's account (" + detail + ")";
+            else how = "not connected: " + why + "; YouGame app: " + detail;
+          }
           how += " (" + std::to_string((GetTickCount64() - asked) / 1000) + " s)";
-          (void)version;
           log_line("yougame: at start: %s", how.c_str());
           g_yg_connecting = false;
           g_yg_start_check = false;

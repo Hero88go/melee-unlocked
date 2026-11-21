@@ -197,7 +197,9 @@ class BlendWiringTest(unittest.TestCase):
         # Cancelled, it leaves the queue at once; the ticket wait stops with it.
         cancelled = queue.split("if (cancelled()) {", 1)[1].split("return fail(", 1)[0]
         self.assertIn("queue.send(", cancelled)
-        self.assertIn("ticket = bridge(request, 30000, cancelled);", find)
+        self.assertIn("ticket = ticket_bridge(request, 30000);", find)
+        self.assertIn("const auto ticket_bridge = [&](json q, int ms) { return bridge(transport::with_links_flag(q), ms, cancelled); };",
+                      find)
         # An Unranked queue room nobody else arrives in is left (retry), not waited in forever.
         self.assertIn("search_policy::no_show_deadline(host::gameplay::vanilla_only(), queued,", find)
         self.assertIn("search.mode, friends_mode || team_code, now_ms());", find)

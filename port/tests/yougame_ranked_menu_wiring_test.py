@@ -77,7 +77,7 @@ class RankedMenuWiringTest(unittest.TestCase):
         link = source("port/runtime/hle/yougame_link.cpp")
         self.assertNotIn("Stage striking comes next", link)
         self.assertIn("g_rank_score = g_room->set.score_text()", link)
-        before_ticket = link.split("ranked::set_contract(request);", 1)[1].split("ticket = bridge(request, 30000)", 1)[0]
+        before_ticket = link.split("ranked::set_contract(request);", 1)[1].split("ticket = ticket_bridge(request, 30000)", 1)[0]
         self.assertIn("ranked_header();", before_ticket)
         self.assertIn("if (!g_rank_read.in_flight) break;", before_ticket)
 

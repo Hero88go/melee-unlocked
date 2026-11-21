@@ -178601,7 +178601,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..081419011 100644
+index d580c0aa4..e7c15067c 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -1,4 +1,14 @@
@@ -179830,7 +179830,7 @@ index d580c0aa4..081419011 100644
                      cursor->xC = (f32) ((15.0f * cursor->x4) - 31.0f);
 +#ifdef MU_NATIVE
 +                    /* General Codes, "CSS Player Hands Default to HMN Button". */
-+                    cursor->x10 = mu_general_codes() ? -2.5f : -21.5f;
++                    cursor->x10 = (mu_general_codes() && !mu_lag_test()) ? -2.5f : -21.5f;
 +#else
                      cursor->x10 = -21.5f;
 +#endif
@@ -180303,7 +180303,7 @@ index d580c0aa4..081419011 100644
              if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                  for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
                      s32 j;
-@@ -3721,6 +4548,40 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3721,6 +4548,41 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
  
@@ -180332,7 +180332,8 @@ index d580c0aa4..081419011 100644
 +                    gmMainLib_804D3EE0->x1850.stage_sel = 1;
 +                    start = true;
 +                } else {
-+                    if (mu_general_codes() && (trigger & HSD_PAD_START)) {
++                    /* The lag test keeps its own rules (random stage, Dream Land only), as on its Dolphin setup. */
++                    if (mu_general_codes() && !mu_lag_test() && (trigger & HSD_PAD_START)) {
 +                        gmMainLib_804D3EE0->x1850.stage_sel = 0;
 +                    }
 +                    start = (trigger & HSD_PAD_START) != 0;
@@ -180344,7 +180345,7 @@ index d580c0aa4..081419011 100644
          if (mnCharSel_804D6CF2 == 0 && (trigger & HSD_PAD_START)) {
              if (mnCharSel_804D6CF7 != 0) {
                  mnCharSel_804D6CF6 = 1;
-@@ -3750,12 +4611,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3750,12 +4612,23 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
      }
@@ -180369,7 +180370,7 @@ index d580c0aa4..081419011 100644
          HSD_JObjReqAnimAll(jobj, 0.0F);
      }
      HSD_JObjAnimAll(jobj);
-@@ -3820,6 +4692,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3820,6 +4693,12 @@ void fn_802633B0(HSD_GObj* gobj)
      } else {
          num_entries = num_entries - 7;
      }
@@ -180382,7 +180383,7 @@ index d580c0aa4..081419011 100644
  
      if (mnCharSel_804D6CF5 == 1) {
          lb_80011E24(mnCharSel_804D6CC0, &list_jobj, mnCharSel_803F0EBC.xc4,
-@@ -3834,9 +4712,9 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3834,9 +4713,9 @@ void fn_802633B0(HSD_GObj* gobj)
      switch ((s32) tag->state) {
      case 1:
          mnCharSel_8025D1C4((s32) tag->port, 1);
@@ -180394,7 +180395,7 @@ index d580c0aa4..081419011 100644
              {
                  HSD_SisLib_803A70A0(tag->name_ls, 0,
                                      (char*) mnCharSel_803F0A48.gnw_name);
-@@ -3939,13 +4817,25 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3939,13 +4818,25 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          HSD_SisLib_803A746C(tag->name_ls, 0, 0.0f, tag->x8);
@@ -180420,7 +180421,7 @@ index d580c0aa4..081419011 100644
              for (j = 0; j < 9; j++) {
                  row_idx = j - page_off;
                  if (row_idx < 0) {
-@@ -3977,6 +4867,10 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3977,6 +4868,10 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          if (trigger & HSD_PAD_A) {
@@ -180431,7 +180432,7 @@ index d580c0aa4..081419011 100644
              if (mnCharSel_804D6CF5 == 1) {
                  lb_80011E24(mnCharSel_804D6CC0, &list_origin_jobj,
                              mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -3992,7 +4886,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3992,7 +4887,7 @@ void fn_802633B0(HSD_GObj* gobj)
  
              if ((s32) cursor_row == 0) {
                  if (lbLang_IsSavedLanguageUS() != 0 &&
@@ -180440,7 +180441,7 @@ index d580c0aa4..081419011 100644
                  {
                      HSD_SisLib_803A70A0(tag->text, 0,
                                          (char*) mnCharSel_803F0A48.gnw_name);
-@@ -4004,7 +4898,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4004,7 +4899,7 @@ void fn_802633B0(HSD_GObj* gobj)
                                  .char_kind));
                  }
                  tag->text->default_kerning = 1;
@@ -180449,7 +180450,7 @@ index d580c0aa4..081419011 100644
                      tag->text->hidden = 0;
                  } else {
                      tag->text->hidden = 1;
-@@ -4039,7 +4933,14 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4039,7 +4934,14 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -180464,7 +180465,7 @@ index d580c0aa4..081419011 100644
                  if (IsNameListFull() == 0) {
                      if (mnCharSel_804D6CF5 == 1) {
                          mnCharSel_804D6CF9 = mnCharSel_804D6CF0;
-@@ -4063,7 +4964,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4063,7 +4965,12 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -180477,7 +180478,7 @@ index d580c0aa4..081419011 100644
                  {
                      s32 p;
                      for (p = 0; p < (s32) mnCharSel_804D6CF5; p++) {
-@@ -4178,6 +5084,40 @@ void fn_8026407C(HSD_GObj* gobj)
+@@ -4178,6 +5085,40 @@ void fn_8026407C(HSD_GObj* gobj)
      HSD_FogSet(GET_FOG(gobj));
  }
  
@@ -180518,7 +180519,7 @@ index d580c0aa4..081419011 100644
  static const GXColor mnCharSel_804DC580 = { 255, 255, 0, 255 };
  static const GXColor mnCharSel_804DC584 = { 20, 80, 160, 255 };
  static const GXColor mnCharSel_804DC588 = { 60, 140, 80, 255 };
-@@ -4185,6 +5125,156 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
+@@ -4185,6 +5126,156 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
  static const GXColor mnCharSel_804DC590 = { 180, 80, 0, 255 };
  static const GXColor mnCharSel_804DC594 = { 220, 0, 0, 255 };
  
@@ -180675,7 +180676,7 @@ index d580c0aa4..081419011 100644
  s32 mnCharSel_802640A0(void)
  {
      HSD_JObj* sp108;
-@@ -4220,9 +5310,18 @@ s32 mnCharSel_802640A0(void)
+@@ -4220,9 +5311,18 @@ s32 mnCharSel_802640A0(void)
      u8 match_type = mnCharSel_804D6CB0->match_type;
  
      if (match_type != 0) {
@@ -180694,7 +180695,7 @@ index d580c0aa4..081419011 100644
          switch (gmMainLib_GetGameRules()->mode) {
          case 0:
              lbAudioAx_800237A8(0x7535, 0x7F, 0x40);
-@@ -4239,11 +5338,20 @@ s32 mnCharSel_802640A0(void)
+@@ -4239,11 +5339,20 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -180715,7 +180716,7 @@ index d580c0aa4..081419011 100644
      mnCharSel_804D6CF3 = 0;
      {
          u8* mt_p = &mnCharSel_804D6CB0->match_type;
-@@ -4272,25 +5380,34 @@ s32 mnCharSel_802640A0(void)
+@@ -4272,25 +5381,34 @@ s32 mnCharSel_802640A0(void)
      if ((u8) mnCharSel_804D6CF4 != 0) {
          mnCharSel_804D6CF4 = 0;
          for (i = 0; i < num_players; i++) {
@@ -180754,7 +180755,7 @@ index d580c0aa4..081419011 100644
          HSD_LObjSetNext(lobj0, lobj1);
          HSD_GObjObject_80390A70(gobj, HSD_GObj_LightKind, lobj0);
      }
-@@ -4298,35 +5415,57 @@ s32 mnCharSel_802640A0(void)
+@@ -4298,35 +5416,57 @@ s32 mnCharSel_802640A0(void)
  
      gobj = GObj_Create(0xE, 2, 0);
      {
@@ -180825,7 +180826,7 @@ index d580c0aa4..081419011 100644
      {
          u8 obj_kind = HSD_GObj_JObjKind;
          HSD_GObjObject_80390A70(mnCharSel_804D6CBC, obj_kind,
-@@ -4339,7 +5478,17 @@ s32 mnCharSel_802640A0(void)
+@@ -4339,7 +5479,17 @@ s32 mnCharSel_802640A0(void)
      HSD_ForeachAnim(mnCharSel_804D6CC0, JOBJ_TYPE, ALL_TYPE_MASK,
                      HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
  
@@ -180843,7 +180844,7 @@ index d580c0aa4..081419011 100644
          row_a = 2;
          row_b = 0x13;
      } else {
-@@ -4363,8 +5512,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4363,8 +5513,12 @@ s32 mnCharSel_802640A0(void)
      icons[row_b].bound_u = ICONROWHT_TOP_TOP;
      icons[row_b].bound_d = ICONROWHT_MID_TOP;
  
@@ -180857,7 +180858,7 @@ index d580c0aa4..081419011 100644
          icons[icon].anim_timer = 0;
          if (mnCharSel_804D6CF5 == 1) {
              lb_80011E24(mnCharSel_804D6CC0, &sp108, icons[icon].joint_id_1p,
-@@ -4404,21 +5557,24 @@ s32 mnCharSel_802640A0(void)
+@@ -4404,21 +5558,24 @@ s32 mnCharSel_802640A0(void)
              break;
          }
      }
@@ -180886,7 +180887,7 @@ index d580c0aa4..081419011 100644
              HSD_JObjReqAnimAll(mnCharSel_804D6CC8, 0.0f);
              HSD_ForeachAnim(mnCharSel_804D6CC8, JOBJ_TYPE, ALL_TYPE_MASK,
                              HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
-@@ -4428,22 +5584,31 @@ s32 mnCharSel_802640A0(void)
+@@ -4428,22 +5585,31 @@ s32 mnCharSel_802640A0(void)
      if (mnCharSel_804D6CB0->match_type == 0x17) {
          u8 ck;
          gobj = GObj_Create(4, 5, 0x80);
@@ -180923,7 +180924,7 @@ index d580c0aa4..081419011 100644
              } while (icons[i].state == 0);
              char_kinds = &icons[0].char_kind;
              icon_off = getIconOffset(i);
-@@ -4457,14 +5622,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4457,14 +5623,14 @@ s32 mnCharSel_802640A0(void)
  
      if (mnCharSel_804D6CB0->match_type == 1) {
          gobj = GObj_Create(4, 5, 0x80);
@@ -180942,7 +180943,7 @@ index d580c0aa4..081419011 100644
          HSD_JObjReqAnimAll(mnCharSel_804D6CCC, 0.0f);
      }
  
-@@ -4472,15 +5637,15 @@ s32 mnCharSel_802640A0(void)
+@@ -4472,15 +5638,15 @@ s32 mnCharSel_802640A0(void)
          HSD_GObj* cursor_gobj;
          struct CSSCursorData* cursor;
          cursor_gobj = GObj_Create(4, 5, 0x80);
@@ -180962,12 +180963,13 @@ index d580c0aa4..081419011 100644
          HSD_JObjReqAnimAll(jobj, 0.0f);
          HSD_JObjAnimAll(jobj);
          HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
-@@ -4494,13 +5659,17 @@ s32 mnCharSel_802640A0(void)
+@@ -4494,13 +5660,18 @@ s32 mnCharSel_802640A0(void)
          cursor->x6 = 0;
          cursor->x5 = 2;
          cursor->xC = (f32) ((15.0f * (f32) i) - 31.0f);
 +#ifdef MU_NATIVE
-+        cursor->x10 = mu_general_codes() ? -2.5f : -21.5f;
++        /* The Lossless adapter's lag test plays a fixed input sequence timed from vanilla's start (shim/mu_lagtest.c). */
++        cursor->x10 = (mu_general_codes() && !mu_lag_test()) ? -2.5f : -21.5f;
 +#else
          cursor->x10 = -21.5f;
 +#endif
@@ -180981,7 +180983,7 @@ index d580c0aa4..081419011 100644
              {
                  int player;
                  struct CSSCharModel* model = HSD_MemAlloc(sizeof(*model));
-@@ -4508,9 +5677,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4508,9 +5679,9 @@ s32 mnCharSel_802640A0(void)
                  GObj_InitUserData(model_gobj, 4, HSD_Free, model);
                  GObj_SetupGXLink(model_gobj, HSD_GObj_JObjCallback, 2, 0x80);
                  HSD_GObj_SetupProc(model_gobj, fn_80262648, 2);
@@ -180994,7 +180996,7 @@ index d580c0aa4..081419011 100644
                  HSD_JObjReqAnimAll(jobj, 0.0f);
                  {
                      HSD_JObj* anim_jobj = jobj;
-@@ -4532,17 +5701,34 @@ s32 mnCharSel_802640A0(void)
+@@ -4532,17 +5703,34 @@ s32 mnCharSel_802640A0(void)
                  } else {
                      player = i;
                  }
@@ -181031,7 +181033,7 @@ index d580c0aa4..081419011 100644
                      u8* slot_type;
                      mnCharSel_804D6CB0->vs.start.players[player].ckind =
                          CKind_Playable_Count;
-@@ -4650,6 +5836,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4650,6 +5838,12 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->text, 80.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -181044,7 +181046,7 @@ index d580c0aa4..081419011 100644
          if (mnCharSel_804D6CF5 == 1) {
              lb_80011E24(mnCharSel_804D6CC0, &sp108,
                          mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -4661,6 +5853,10 @@ s32 mnCharSel_802640A0(void)
+@@ -4661,6 +5855,10 @@ s32 mnCharSel_802640A0(void)
              }
          }
          lb_8000B1CC(sp108, NULL, &spEC);
@@ -181055,7 +181057,7 @@ index d580c0aa4..081419011 100644
          td->name_ls = HSD_SisLib_803A6754(0, ctx);
          td->name_ls->default_fitting = 1;
          text = td->name_ls;
-@@ -4697,6 +5893,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4697,6 +5895,9 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->name_ls, 10.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -181065,7 +181067,7 @@ index d580c0aa4..081419011 100644
          for (found = 0; found < 0x78; found++) {
              if (GetNameText((u8) found) == NULL) {
                  break;
-@@ -4745,10 +5944,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4745,10 +5946,14 @@ s32 mnCharSel_802640A0(void)
                  mnCharSel_804D6CF8 - 1;
              mnCharSel_804D6CF8 = td->next_tag;
          }
@@ -181080,7 +181082,7 @@ index d580c0aa4..081419011 100644
              td->use_tag = 1;
              HSD_SisLib_803A70A0(
                  td->text, 0,
-@@ -5156,6 +6359,33 @@ s32 mnCharSel_802640A0(void)
+@@ -5156,6 +6361,33 @@ s32 mnCharSel_802640A0(void)
          u8 mt;
          s32 clear;
          mnCharSel_803F0EBC.scroll_flag = 0;
@@ -181114,7 +181116,7 @@ index d580c0aa4..081419011 100644
          text =
              HSD_SisLib_803A5ACC(0, ctx, -12.0f, -23.3f, 0.0f, 450.0f, 32.0f);
          text->default_alignment = 1;
-@@ -5164,6 +6394,10 @@ s32 mnCharSel_802640A0(void)
+@@ -5164,6 +6396,10 @@ s32 mnCharSel_802640A0(void)
          text->font_size.x = 0.07f;
          text->font_size.y = 0.07f;
          HSD_SisLib_803A6368(text, 0x4A);
@@ -181125,7 +181127,7 @@ index d580c0aa4..081419011 100644
          mnCharSel_8025BD30();
          mt = mnCharSel_804D6CB0->match_type;
          if ((s32) mt < 3) {
-@@ -5190,6 +6424,26 @@ s32 mnCharSel_802640A0(void)
+@@ -5190,6 +6426,26 @@ s32 mnCharSel_802640A0(void)
                  text->font_size.x = 0.07f;
                  text->font_size.y = 0.07f;
                  mnCharSel_8025D1C4(i, 0);
@@ -181152,7 +181154,7 @@ index d580c0aa4..081419011 100644
              }
          } else {
              for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
-@@ -5203,13 +6457,13 @@ s32 mnCharSel_802640A0(void)
+@@ -5203,13 +6459,13 @@ s32 mnCharSel_802640A0(void)
      (void) ((u8*) text)[num_players];
      (void) icons[num_players];
      gobj = GObj_Create(4, 5, 0x80);
@@ -181170,7 +181172,7 @@ index d580c0aa4..081419011 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
                      AOBJ_ARG_AOV, 0, 0);
-@@ -5296,6 +6550,12 @@ s32 mnCharSel_802640A0(void)
+@@ -5296,6 +6552,12 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -181183,7 +181185,7 @@ index d580c0aa4..081419011 100644
      mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
      PAD_STACK(0x20);
      return lbAudioAx_80023F28(gmMainLib_8015ECB0());
-@@ -5305,9 +6565,22 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5305,9 +6567,22 @@ void mnCharSel_Scene_OnEnter(void* arg0)
  {
      PAD_STACK(8);
  
@@ -181206,7 +181208,7 @@ index d580c0aa4..081419011 100644
  
      mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
  
-@@ -5341,6 +6614,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5341,6 +6616,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      css_data_table = HSD_ArchiveGetPublicAddress(mnCharSel_804D6CD0,
                                                   "MnSelectChrDataTable");
      css_models = &css_data_table->models;
@@ -181231,7 +181233,7 @@ index d580c0aa4..081419011 100644
      if (lbLang_IsSavedLanguageJP() != 0) {
          HSD_SisLib_803A62A0(0, "SdSlChr.dat", "SIS_SelCharData");
      } else {
-@@ -5348,10 +6639,26 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5348,10 +6641,26 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      }
      mnCharSel_804D6CF4 = 0;
      mnCharSel_802640A0();
@@ -181258,7 +181260,7 @@ index d580c0aa4..081419011 100644
      int num_slots;
      u8 slot_type;
      struct GameCache* cache;
-@@ -5359,6 +6666,20 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5359,6 +6668,20 @@ void mnCharSel_Scene_OnFrame(void)
  
      PAD_STACK(8);
  
@@ -181279,7 +181281,7 @@ index d580c0aa4..081419011 100644
      mnCharSel_804D6CEC += 1;
      if (mnCharSel_804D6CF6 <= 1) {
          cache = &lbDvd_GetPreloadCacheScene()->game_cache;
-@@ -5415,9 +6736,45 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5415,9 +6738,45 @@ void mnCharSel_Scene_OnFrame(void)
                  }
              }
          }
@@ -181326,7 +181328,7 @@ index d580c0aa4..081419011 100644
          sfxBack();
          lb_800145F4();
          mn_8022F138(1, 8);
-@@ -5444,6 +6801,22 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5444,6 +6803,22 @@ void mnCharSel_Scene_OnFrame(void)
              if (mnCharSel_804D6CF5 == 4) {
                  lbAudioAx_8002411C(0x147);
              }
@@ -181349,7 +181351,7 @@ index d580c0aa4..081419011 100644
              sfxForward();
          }
          break;
-@@ -5466,16 +6839,41 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5466,16 +6841,41 @@ void mnCharSel_Scene_OnFrame(void)
          sfxForward();
          break;
      }
@@ -181391,7 +181393,7 @@ index d580c0aa4..081419011 100644
      if (mnCharSel_804D6CD0 != NULL) {
          lbArchive_80016EFC(mnCharSel_804D6CD0);
          mnCharSel_804D6CD0 = NULL;
-@@ -5526,3 +6924,35 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5526,3 +6926,35 @@ void mnCharSel_Scene_OnExit(void* unused)
      lbAudioAx_8002702C(4, tmp);
      lbAudioAx_80027168();
  }

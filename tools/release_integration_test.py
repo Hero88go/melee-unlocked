@@ -28,6 +28,17 @@ class ReleaseIntegrationTests(unittest.TestCase):
         self.assertIn("Source Port (not installed)", launcher)
         self.assertIn("melee_game.snapexcl", package)
 
+    def test_release_carries_yougame_spec(self):
+        import json
+        spec = json.loads(self.read("port/yougame/yougame-native.json"))
+        self.assertTrue(spec["disc"])
+        self.assertIn("{disc}", spec["args"])
+        self.assertEqual(spec["net"], "yougame")
+        for packager in ("tools/package_release.py", "tools/package_linux_release.py"):
+            text = self.read(packager)
+            self.assertIn("port/yougame/yougame-native.json", text)
+            self.assertIn("yougame-native.json')", text.replace('"', "'"))
+
 
 if __name__ == "__main__":
     unittest.main()

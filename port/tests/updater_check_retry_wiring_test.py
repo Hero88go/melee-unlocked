@@ -31,7 +31,7 @@ class UpdaterCheckRetryWiring(unittest.TestCase):
         self.assertIn("check_retry::delay_ms(++failures, quiet)", check)
         self.assertIn("check_retry::failed_text(", check)
         self.assertIn("g_check_failed = true;", check)
-        self.assertNotIn("Update check failed", self.updater)
+        self.assertNotIn("Update check failed", check)   # the text comes from failed_text alone
         # A wait to ask again never holds the launcher's exit.
         self.assertIn("!g_stopping.load()", check)
         stop = body(self.updater, "void shutdown() {")

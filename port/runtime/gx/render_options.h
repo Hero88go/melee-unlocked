@@ -126,7 +126,7 @@ struct RenderOptions {
   int input_overlay_stick = 5;
   // Where each port's controller overlay was last left (x, y, width, height in window pixels); width 0: not
   // moved yet (it starts in the bottom left corner of the picture). Saved, so it comes back where it was.
-  float input_overlay_rect[4][4] = {};
+  float input_overlay_rect[4][6] = {};   // x, y, width, height, screen width, screen height
   bool input_overlay_hide_border = false;  // draw the pads with no panel background or resize grip
   // Drop in-world translucent effects to buy frame rate on weak machines: 0 everything, 1 skips
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.

@@ -804,7 +804,7 @@ static std::string active_pad_buttons_label(uint16_t button) {
 // `row` stacks several overlays upward so two to four players can be shown at once. `editable` is on
 // while the settings panel is open, which is when the overlay may be dragged and resized.
 static void draw_input_overlay(int port, int row, bool lone, bool editable, bool borderless, bool values, int knob,
-                               float (*rects)[4], bool* moved) {
+                               float (*rects)[6], bool* moved) {
   host::PadState pads[4]{};
   host::input_last_pads(pads);
   int slot = port < 0 || port > 3 ? 0 : port;
@@ -819,8 +819,11 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
 
   // Taller with the stick values on, so the numbers get their own row under the sticks.
   const float pad_w = 300.f, pad_h = values ? 150.f : 132.f;
+  // Named and placed by the port the player picked, not the one shown: with a lone port whose socket
+  // went quiet for a moment, the overlay used to swap to another port's window and its own spot.
+  const int home = port < 0 || port > 3 ? 0 : port;
   char title[32];
-  std::snprintf(title, sizeof title, "Controller%d", slot);
+  std::snprintf(title, sizeof title, "Controller%d", home);
   // Laid out for this size and scaled to whatever the window is dragged to, so it can be sized to
   // taste for a stream layout. While the settings panel is open it can be moved and resized; the
   // rest of the time it ignores the mouse entirely so it can never swallow a click meant for the
@@ -830,13 +833,25 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
   if (!editable) flags |= ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
   if (borderless) flags |= ImGuiWindowFlags_NoBackground;
   const OverlayBounds bounds = overlay_bounds();
-  float* saved = rects[slot];
-  if (saved[2] > 0.0f) {   // where it was left last time (settings file), once per run
-    ImGui::SetNextWindowPos(ImVec2(saved[0], saved[1]), ImGuiCond_Once);
+  // Saved as x, y, width, height and the screen it was placed on. Positions used to be kept as pixels
+  // from the top left, so an overlay put at the bottom of a small window (the launcher's settings
+  // window, or the game window before a resize) showed halfway up a bigger one (player report 11-20).
+  // Now it keeps its distance to the nearest edges of whatever screen it is on, re-placed whenever
+  // that screen changes size. A line saved without the screen (0.9.993 and older) keeps its size only.
+  float* saved = rects[home];
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  static ImVec2 placed_for[4];
+  const bool reflow = placed_for[home].x != display.x || placed_for[home].y != display.y;
+  placed_for[home] = display;
+  const ImGuiCond when = reflow ? ImGuiCond_Always : ImGuiCond_Once;
+  if (saved[2] > 0.0f && saved[4] > 0.0f && saved[5] > 0.0f) {
+    const float x = saved[0] + saved[2] * 0.5f > saved[4] * 0.5f ? display.x - (saved[4] - saved[0]) : saved[0];
+    const float y = saved[1] + saved[3] * 0.5f > saved[5] * 0.5f ? display.y - (saved[5] - saved[1]) : saved[1];
+    ImGui::SetNextWindowPos(ImVec2(x, y), when);
     ImGui::SetNextWindowSize(ImVec2(saved[2], saved[3]), ImGuiCond_Once);
   } else {
-    ImGui::SetNextWindowPos(ImVec2(bounds.left + 16, bounds.bottom - 16 - row * (pad_h + 6)), ImGuiCond_FirstUseEver, ImVec2(0, 1));
-    ImGui::SetNextWindowSize(ImVec2(pad_w, pad_h), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(bounds.left + 16, bounds.bottom - 16 - row * (pad_h + 6)), when, ImVec2(0, 1));
+    ImGui::SetNextWindowSize(saved[2] > 0.0f ? ImVec2(saved[2], saved[3]) : ImVec2(pad_w, pad_h), ImGuiCond_Once);
   }
   ImGui::SetNextWindowBgAlpha(borderless ? 0.0f : 0.30f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, borderless ? 0.0f : 1.0f);
@@ -850,16 +865,19 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
   }
   ImGui::Begin(title, nullptr, flags);
   {   // Anywhere in the window, the side borders beside the picture included (player request 11-20).
-    const ImVec2 display = ImGui::GetIO().DisplaySize, pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+    const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
     const ImVec2 clamped(std::clamp(pos.x, 0.0f, std::max(0.0f, display.x - size.x)),
                          std::clamp(pos.y, 0.0f, std::max(0.0f, display.y - size.y)));
     if (clamped.x != pos.x || clamped.y != pos.y) ImGui::SetWindowPos(clamped);
   }
-  if (editable) {   // moved or resized while the panel is open: remembered in the settings file
+  // Remembered in the settings file only when the player drags or resizes it with the panel open.
+  // Keeping it on screen above is not a move: that clamp, in the small settings window, used to save
+  // the squeezed spot as if the player had put it there.
+  if (editable && ImGui::IsWindowFocused() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
-    const float now[4] = {pos.x, pos.y, size.x, size.y};
-    for (int i = 0; i < 4; ++i)
-      if (std::fabs(now[i] - saved[i]) > 0.5f) { std::copy(now, now + 4, saved); *moved = true; break; }
+    const float now[6] = {pos.x, pos.y, size.x, size.y, display.x, display.y};
+    for (int i = 0; i < 6; ++i)
+      if (std::fabs(now[i] - saved[i]) > 0.5f) { std::copy(now, now + 6, saved); *moved = true; break; }
   }
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
@@ -2515,10 +2533,13 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       if (!matched) {
       if (key == "inputoverlaystick") options.input_overlay_stick = std::clamp(std::atoi(value.c_str()), 1, 10);
       else if (key.rfind("inputoverlayrect", 0) == 0 && key.size() == 17 && key[16] >= '0' && key[16] <= '3') {
-        float r[4] = {};
-        if (std::sscanf(value.c_str(), "%f %f %f %f", &r[0], &r[1], &r[2], &r[3]) == 4 && r[2] >= 40 && r[3] >= 20 &&
+        // x y width height, then the screen it was placed on (0.9.994); older lines have no screen.
+        float r[6] = {};
+        const int n = std::sscanf(value.c_str(), "%f %f %f %f %f %f", &r[0], &r[1], &r[2], &r[3], &r[4], &r[5]);
+        if (n == 6 && !(r[4] >= 100 && r[5] >= 100 && r[4] <= 10000 && r[5] <= 10000)) r[4] = r[5] = 0;
+        if (n >= 4 && r[2] >= 40 && r[3] >= 20 &&
             r[2] <= 4000 && r[3] <= 4000 && std::isfinite(r[0]) && std::isfinite(r[1]))
-          std::copy(r, r + 4, options.input_overlay_rect[key[16] - '0']);
+          std::copy(r, r + 6, options.input_overlay_rect[key[16] - '0']);
       }
       else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
       else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 6);
@@ -5163,7 +5184,8 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
   for (int i = 0; i < 4; ++i)
     if (options.input_overlay_rect[i][2] > 0.0f)
       file << "\ninputoverlayrect" << i << " " << options.input_overlay_rect[i][0] << " " << options.input_overlay_rect[i][1]
-           << " " << options.input_overlay_rect[i][2] << " " << options.input_overlay_rect[i][3];
+           << " " << options.input_overlay_rect[i][2] << " " << options.input_overlay_rect[i][3]
+           << " " << options.input_overlay_rect[i][4] << " " << options.input_overlay_rect[i][5];
   file << "\neffects " << options.effects_level
        << "\nlightweight " << options.lightweight << "\nlowspec_look 1"
        << "\nretro " << (options.retro ? 1 : 0)
@@ -10746,9 +10768,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         settings_end_combo();
       }
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("The Arena card beside the Direct character select, out of a room.\n"
+        ImGui::SetTooltip("The Arena card beside the Direct character select (YouGame Friends under YouGame), out of a room.\n"
                           "Show briefly: for ten seconds the first time, then when your hand or mouse comes near the right side.\n"
-                          "Never: no card. Friends can still add your code and bring you into their room.");
+                          "Never: no card. Friends can still bring you into their room (a code, or a YouGame invite).");
       bool room_tabs = arena_panel::tabs();
       if (settings_toggle("Hide the room panels until the hand comes near", &room_tabs)) arena_panel::set_tabs(room_tabs);
       if (ImGui::IsItemHovered())

@@ -1188,8 +1188,25 @@ void install_guest_heap_trace() {
   log("[guest-heap] opt-in retail allocator failure hooks installed; no allocation behavior changes");
 }
 
+// Static Recomp: the text heap Melee sizes at boot (gmmain.c, 0xC000) runs out under a player's own
+// Gecko code that opens the developer menu ("Memory Empty", OSPanic at sislib.c:86, 0.9.992 crash
+// report). The Source Port already doubles every text heap (sislib.c). Doubled here only while the
+// player's own codes are on: a session without them keeps the retail heap layout, as online play needs.
+void install_text_heap_for_user_codes() {
+  ppc::add_entry_hook(0x803A6048u, [](ppc::Context& c) {
+    if (c.r[3] != 0xC000u) return;
+    bool any = false;
+    for (const auto& code : user_gecko::codes()) any = any || code.enabled;
+    if (!any) return;
+    c.r[3] = 0x18000u;
+    static bool logged = false;
+    if (!logged) { logged = true; log("gecko: your own codes are on: the game's text heap is doubled (the developer menu fills the retail one)"); }
+  });
+}
+
 void boot_setup() {
   install_guest_heap_trace();
+  install_text_heap_for_user_codes();
   init_state_digest();
   if (!options.state_trace.empty()) {
     g_state_trace = std::fopen(options.state_trace.c_str(), "w");

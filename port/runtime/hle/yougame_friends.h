@@ -296,6 +296,12 @@ inline json arena_invite(const std::string& code, bool multi) {
   if (multi) q["multi"] = true;
   return q;
 }
+// The arena panel's lines for a room that did not open or an invite that did not go: the arena's own plain words,
+// never the app's or the socket's reason ("Test build not available", "This game sent a match request YouGame
+// can't read."), which goes to the log. Reasons that already speak to the player show as they are: a full room in
+// the site's words (invite_room_full), an update, YouGame not open.
+inline constexpr const char* kArenaOpenFailed = "Couldn't open the arena. Try again.";
+inline constexpr const char* kArenaInviteFailed = "Couldn't send the invite. Press Z to try again.";
 // The ticket route's refusals of a Doubles home ticket that mean "not a Doubles home for this build", not "gone"
 // (web/src/app/api/multiplayer/ticket/route.ts): teams_lobby_off 403 (Teams is off on this site), bad_teams_lobby
 // 400/403 (no Teams for this listing or room), teams_lobby_branch 409 (a test build without Teams). Since build 94

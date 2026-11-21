@@ -1039,7 +1039,12 @@ bool yg_act(const Pending& p) {
       if (!yg_identity()) return true;
       yg_open({});
     }
-    if (!g_hosting) { event("only the host invites"); return true; }
+    if (!g_hosting) {
+      event("only the host invites");
+      g_notice = "Only the room's host can invite";
+      g_notice_until = now_ms() + 6000;
+      return true;
+    }
     g_yg_invite = true;
     return true;
   }
@@ -1214,6 +1219,7 @@ void service_yg_links() {
   }
   if (g_yg_invite && g_hosting) {
     g_yg_invite = false;
+    g_yg_invite_seen = 0;   // this invite's answer shows even when it is the same as the last one's (a second failure)
     ar::invite();
   }
   const int invite = ar::invite_state(&why);
@@ -1676,7 +1682,12 @@ void tick() {
     std::deque<Pending> todo;
     { std::lock_guard<std::mutex> lk(g_mutex); todo.swap(g_pending); }
     if (g_code.empty() && !todo.empty()) online::local_identity(&g_code, &g_name);   // a real room: the Slippi account
-    for (const Pending& p : todo) do_act(p);
+    for (const Pending& p : todo) {
+      // The player's next action clears the last line (a failed invite, a room that did not open). Not the room's
+      // own character report, nor a code it adds for the player (a Direct search that met a room says "Joining").
+      if (p.a != Act::SetCharacter && !(p.a == Act::AddCode && !p.text.empty())) g_notice_until = 0;
+      do_act(p);
+    }
   }
   {
     static int every = 0;

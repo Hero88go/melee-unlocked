@@ -62,6 +62,26 @@ inline bool any_seat_without_links(const json& participants) {
   for (const auto& p : participants) if (seat_without_links(p)) return true;
   return false;
 }
+// links_flag 1 on an mpTicket, or on an mpFriend hold (the Friends lobby's or the Doubles home's room): this
+// copy can play a match with a links:false seat, its own included (the whole match moves to own UDP + STUN,
+// any_seat_without_links above). Rooms seats a copy started outside the app with app copies only when every
+// game in the match sent it. Only Windows copies can, app-started or not: own UDP is always allowed there,
+// while a Mac or Linux copy the app brokers has no sockets at all. Never on invites or any other mpFriend.
+#ifdef _WIN32
+inline constexpr bool kLinksFlag = true;
+#else
+inline constexpr bool kLinksFlag = false;
+#endif
+inline json& with_links_flag(json& request, bool can_link = kLinksFlag) {
+  if (!can_link || !request.is_object()) return request;
+  const auto type = request.find("type");
+  if (type == request.end() || !type->is_string()) return request;
+  const auto hold = request.find("hold");
+  const bool is_hold = type->get<std::string>() == "mpFriend" && hold != request.end() && hold->is_boolean() &&
+                       hold->get<bool>();
+  if (type->get<std::string>() == "mpTicket" || is_hold) request["links_flag"] = 1;
+  return request;
+}
 struct PosixAttachment { int section = -1, wake = -1, wait = -1; size_t size = 0; };
 inline bool posix_attachment(const json& answer, PosixAttachment& out) {
   const auto p = answer.find("posix");
