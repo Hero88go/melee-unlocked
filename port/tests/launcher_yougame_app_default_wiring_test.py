@@ -82,7 +82,7 @@ class LauncherUsesYouGameApp(unittest.TestCase):
         self.assertIn("return;", chose[:300])
         # A running app: its account, asked, never started a second time.
         running = after[after.index("AppHook::kRunning) {"):]
-        self.assertIn("launcher::yougame::sign_in_app(false, version, &detail)", running)
+        self.assertIn("launcher::yougame::sign_in_app(false, version, &detail, true)", running)
         self.assertIn('new std::string("app")', running)
         handler = self.launcher[self.launcher.index("case WM_APP_YOUGAME_WEB: {"):]
         handler = handler[:handler.index("return 0;")]

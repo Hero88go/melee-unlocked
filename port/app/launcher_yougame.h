@@ -43,8 +43,12 @@ void sign_out();
 // running; else only a running app is asked. `version`: this build, named in the hello as the game does.
 // Blocking (seconds; up to ~30 s when it starts the app): never on the window thread.
 // kSignedIn: account() is the app's player (app = true). Otherwise nothing changed. *detail: every step taken.
-enum class AppSignIn { kSignedIn, kSignedOut, kNoApp, kNoAnswer };
-AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail);
+// sign_in_there (Connect): when the app is signed out, sign in through the app's own sign-in window (YouGame Online's),
+// waiting for the player there, so the session is the app's and carries over to the full app. kAppWindow: that window
+// opened and the player closed it or did not finish; the caller opens no sign-in of its own. An app with no window of
+// its own answers kSignedOut as before.
+enum class AppSignIn { kSignedIn, kSignedOut, kNoApp, kNoAnswer, kAppWindow };
+AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail, bool sign_in_there = false);
 // Disconnect chose not to use the app's account: the launcher no longer takes it by itself when it starts
 // (Connect takes it again). Saved in launcher.ini (yougame_app=0).
 bool app_declined();

@@ -659,7 +659,7 @@ bool resume_web(std::string* why) {
   return true;
 }
 
-AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail) {
+AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail, bool sign_in_there) {
   // Every step goes into *detail ("; " between), for the launcher's log.
   std::string steps;
   auto step = [&](const std::string& s) { steps += (steps.empty() ? "" : "; ") + s; if (detail) *detail = steps; };
@@ -681,7 +681,9 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
     if (!up) { step("its channel did not come up in " + std::to_string(ms) + " ms"); return AppSignIn::kNoAnswer; }
     step("its channel came up after " + std::to_string(ms) + " ms");
   }
-  const app::Answer a = app::ask(staging, version);
+  // Up to 10 minutes in the app's sign-in window (its code lasts about that long; it says signInExpired after).
+  if (sign_in_there) step("signed out there: asking for its own sign-in window");
+  const app::Answer a = app::ask(staging, version, 12000, sign_in_there ? 10 * 60 * 1000 : 0);
   switch (a.state) {
     case app::Answer::kSignedIn: {
       Session s;
@@ -696,10 +698,13 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
         g_app_choice = 1;   // the launcher starts the app quietly next time, to take this account again
       }
       changed();
-      step(std::string("the app says signed in") + (a.code.empty() ? " (no connect code)" : ""));
+      step(std::string(a.app_window ? "signed in through the app's own sign-in window" : "the app says signed in") + (a.code.empty() ? " (no connect code)" : ""));
       return AppSignIn::kSignedIn;
     }
-    case app::Answer::kSignedOut: step("the app says signed out"); return AppSignIn::kSignedOut;
+    case app::Answer::kSignedOut:
+      if (a.app_window) { step("the app's sign-in window closed without a sign-in (" + a.why + ")"); return AppSignIn::kAppWindow; }
+      step(std::string("the app says signed out") + (sign_in_there && !a.why.empty() ? " (" + a.why + ")" : ""));
+      return AppSignIn::kSignedOut;
     case app::Answer::kNotRunning: step("the app's channel is gone"); return AppSignIn::kNoApp;
     case app::Answer::kRefused: step("the app refused (" + a.why + ")"); return AppSignIn::kNoAnswer;
     case app::Answer::kNoAnswer: break;

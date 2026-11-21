@@ -22,6 +22,9 @@ struct Answer {
     kNoAnswer,    // the app did not answer in time (`why`)
   } state = kNotRunning;
   std::string player_id, name, code, why;
+  // ask with sign_in_wait_ms: the app opened its own sign-in window (YouGame Online's "Sign in here") for this ask.
+  // Not signed in then means the player closed it or did not finish (`why`); the caller opens no second sign-in.
+  bool app_window = false;
 };
 
 // What a hello answer ({"re":n,"ok":..,"result":{..}}) says, as the game reads it (yougame_link.cpp
@@ -49,12 +52,18 @@ bool running(bool staging);
 bool start(bool staging, int wait_ms);
 // Connects to the running app's channel, says hello as this game (`version`), asks the connect code when
 // signed in, and closes. Blocking (a few seconds at most, `timeout_ms` overall); never on a window thread.
-Answer ask(bool staging, const std::string& version, int timeout_ms = 12000);
+// sign_in_wait_ms > 0 and the app signed out: asks the app's own sign-in first (`signIn`, mode code, as a game asks
+// it), which YouGame Online answers by opening its sign-in window (window true, or where "window"; any other app that
+// says it opened its sign-in counts too); then waits up to
+// sign_in_wait_ms for its signedIn push and says hello again. The session stays the app's, so a hand-over to the full
+// app carries it. An app that answers with only a code to show (no window of its own) is not asked further: the
+// caller uses its own sign-in.
+Answer ask(bool staging, const std::string& version, int timeout_ms = 12000, int sign_in_wait_ms = 0);
 #else
 inline bool installed(bool) { return false; }
 inline bool running(bool) { return false; }
 inline bool start(bool, int) { return false; }
-inline Answer ask(bool, const std::string&, int = 12000) { return {}; }
+inline Answer ask(bool, const std::string&, int = 12000, int = 0) { return {}; }
 inline int start_hook(bool) { return 4; }   // YG_START_UNAVAILABLE: the hook runs on Windows only here
 inline bool elevated() { return false; }
 #endif

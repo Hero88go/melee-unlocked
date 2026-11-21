@@ -1321,11 +1321,17 @@ void yougame_sign_in_thread(bool use_app) {
         app_asked = true;
         detail.clear();
         // Already up (the hook started it and waited for it): asked, never started a second time here.
-        const auto app = launcher::yougame::sign_in_app(false, version, &detail);
+        // Signed out there: the app's own sign-in window (YouGame Online's), so the session is the app's.
+        const auto app = launcher::yougame::sign_in_app(false, version, &detail, true);
         log_line("yougame: Connect: %s", detail.c_str());
         if (app == launcher::yougame::AppSignIn::kSignedIn) {
           g_yg_connecting = false;
           PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
+          return;
+        }
+        if (app == launcher::yougame::AppSignIn::kAppWindow) {   // closed there: no second sign-in here
+          g_yg_connecting = false;
+          PostMessageW(g_main, WM_APP_YOUGAME_WEB, 0, (LPARAM)new std::string("hook"));
           return;
         }
         // The app is signed out (or did not answer): the launcher's own sign-in, so Connect still connects.
@@ -1333,12 +1339,18 @@ void yougame_sign_in_thread(bool use_app) {
     }
     if (use_app_asked && !app_asked && !launcher::yougame::account().app) {
       std::string detail;
-      const auto app = launcher::yougame::sign_in_app(listed, version, &detail);
+      // Listed: signed out there means the app's own sign-in window (unlisted, the app cannot serve this build).
+      const auto app = launcher::yougame::sign_in_app(listed, version, &detail, listed);
       log_line("yougame: Connect: %s", detail.c_str());
       if (app == launcher::yougame::AppSignIn::kSignedIn) {
         if (!listed) log_line("yougame: Connect: YouGame does not list this build yet; Play asks for the launcher's own sign-in once");
         g_yg_connecting = false;
         PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
+        return;
+      }
+      if (app == launcher::yougame::AppSignIn::kAppWindow) {   // closed there: no second sign-in here
+        g_yg_connecting = false;
+        PostMessageW(g_main, WM_APP_YOUGAME_WEB, 0, (LPARAM)new std::string("hook"));
         return;
       }
     }
