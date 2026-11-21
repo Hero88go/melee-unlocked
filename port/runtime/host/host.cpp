@@ -10,6 +10,7 @@
 #include "squad_digest.h"
 #endif
 #include "session_logs.h"
+#include "sysgen.h"
 #include "sim_work.h"
 #include "audio.h"
 #include "cosmetic_mods.h"
@@ -155,9 +156,24 @@ static void open_log_file() {
   if (tried) return;
   tried = true;
   // Keep the previous session's log (a desync or crash report is often noticed only after relaunching).
-  const std::string path = options.log_file.empty() ? "melee_port.log" : options.log_file;
-  const bool rotated = rotate_session_logs(path);
+  std::string path = options.log_file.empty() ? "melee_port.log" : options.log_file;
+  bool rotated = rotate_session_logs(path);
   g_log_file = std::fopen(path.c_str(), rotated ? "w" : "a");
+  // A copy the YouGame app runs in its sandbox (AppContainer) cannot write beside the program, and a relative
+  // name lands there: the log goes to the player's own folder instead (in the sandbox, the sandbox's copy of it),
+  // so a run that goes wrong there still leaves its log.
+  if (!g_log_file && !std::filesystem::path(path).is_absolute()) {
+    const std::filesystem::path user = sysgen::user_data_dir();
+    std::error_code ec;
+    if (!user.empty()) std::filesystem::create_directories(user.parent_path(), ec);
+    if (!user.empty() && !ec) {
+      const std::string moved = (user.parent_path() / std::filesystem::path(path).filename()).string();
+      rotated = rotate_session_logs(moved);
+      g_log_file = std::fopen(moved.c_str(), rotated ? "w" : "a");
+      std::fprintf(stderr, "log: %s is not writable here; logging to %s\n", path.c_str(), g_log_file ? moved.c_str() : "nowhere");
+      if (g_log_file) path = moved;
+    }
+  }
   if (!rotated) {
     std::fprintf(stderr,"log: could not rotate %s; appending to preserve the previous session\n",path.c_str());
     if (g_log_file) std::fprintf(g_log_file,"log: could not rotate previous session; appending\n");
