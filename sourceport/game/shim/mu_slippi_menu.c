@@ -180,6 +180,10 @@ static int pages(void);
 static int pages_start(void);
 static void pages_install(void);
 static void pages_flip(int to_start);
+/* YouGame's sign-in arrived while Slippi's page was up (pages_frame): the turn to YouGame's page waits for the
+ * menu's own think below. pages_frame runs from a drawing proc, and a page turn started there left the new page's
+ * rows undrawn. */
+static int pages_flip_pending;
 static int pages_player_flipped;   /* the player pressed Z since the menu opened (no automatic page turn after) */
 static void pages_unranked_step(int dir);
 static int pick_slippi(void);
@@ -1297,6 +1301,13 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         }
     }
 #endif
+    if (pages_flip_pending) {
+        pages_flip_pending = 0;
+        if (pages() && mn_804A04F0.cur_menu == MENU_KIND_8 && slippi_submenu && !pages_player_flipped) {
+            pages_flip(1);
+            return;
+        }
+    }
     if (pages() && accepts_input && mn_804A04F0.cur_menu == MENU_KIND_8 &&
         !(buttons & (MenuInput_Confirm | MenuInput_Back | MenuInput_Up | MenuInput_Down))) {
         u64 pressed = 0;

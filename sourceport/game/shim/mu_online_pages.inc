@@ -567,6 +567,7 @@ static void pages_frame(HSD_GObj* menu, int canvas, int idle)
          * (they hid their arrows on their own last frame, below). */
         since_entry = 0;
         pages_player_flipped = 0;
+        pages_flip_pending = 0;
         if (mn_804A04F0.cur_menu != MENU_KIND_8) {
             pages_hint_frame(canvas, 0);
             pages_turn = 0;
@@ -614,7 +615,7 @@ static void pages_frame(HSD_GObj* menu, int canvas, int idle)
         if (pages_yougame_open()) {
             OSReport("online menu: YouGame's sign-in arrived after the menu opened; YouGame page\n");
             since_entry = 300;
-            pages_flip(1);
+            pages_flip_pending = 1;   /* turned by mu_slippi_online_menu_think, not from this drawing proc */
             return;
         }
     }
