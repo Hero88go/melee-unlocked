@@ -113,16 +113,11 @@ bool start(bool staging, int wait_ms) {
   return false;
 }
 
-bool elevated() {
-  HANDLE token = nullptr;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
-  TOKEN_ELEVATION elevation{};
-  DWORD size = 0;
-  const bool raised = GetTokenInformation(token, TokenElevation, &elevation, sizeof elevation, &size) &&
-                      elevation.TokenIsElevated != 0;
-  CloseHandle(token);
-  return raised;
-}
+// The start hook's own rule (yougame_start.h yg__start_raised), so the launcher and the game agree: a full
+// "Run as administrator" token is raised; an elevated token whose desktop shell is the same user and elevated too
+// (UAC off, as in Windows Sandbox, or the built-in Administrator) is not, since every program started there has
+// those rights anyway. A plain elevated-token check here refused the hook in exactly the places the game took it.
+bool elevated() { return yg__start_raised() != 0; }
 
 int start_hook(bool staging) {
   // As administrator the hook starts nothing and its window only says to start the game normally: the

@@ -41,6 +41,9 @@ class LauncherUsesYouGameApp(unittest.TestCase):
     def test_the_hook_is_asked_on_use_as_the_game_asks_it(self):
         hook = body(self.app, "int start_hook(bool staging) {")
         self.assertIn("if (elevated()) return YG_START_UNAVAILABLE;", hook)
+        # The launcher's "raised" is the hook's own rule, so it agrees with the game (Windows Sandbox: UAC off).
+        self.assertIn("bool elevated() { return yg__start_raised() != 0; }", self.app)
+        self.assertNotIn("TokenIsElevated", self.app)
         self.assertIn('o.game = "melee-unlocked";', hook)
         self.assertIn("o.ask = YG_START_ASK_ON_USE;", hook)
         self.assertIn('o.name = "Melee Unlocked";', hook)

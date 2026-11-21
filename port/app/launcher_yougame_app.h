@@ -35,7 +35,7 @@ Answer read_hello(const nlohmann::json& answer, bool* pending);
 // hook's yg_start_result. Blocks while that window is up: never on the window thread.
 // YG_START_UNAVAILABLE where the hook cannot run: not Windows, or this launcher runs as administrator (the hook
 // would only show its "started as administrator" window there; the launcher's own sign-in is the way then).
-// elevated(): this launcher runs as administrator (an elevated token).
+// elevated(): this launcher holds rights the player's own programs don't (the start hook's rule, yg__start_raised).
 
 #if defined(_WIN32) && defined(_MSC_VER)
 int start_hook(bool staging);
