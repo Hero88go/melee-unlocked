@@ -167,7 +167,7 @@ void draw(float x0, float y0, float x1, float y1) {
         wrapped_text(words::kBrowser, 13.0f * u, kText);
         if (!v.user_code.empty()) centred_text(v.user_code, 22.0f * u, kText);   // the /link page's code
         break;
-      case Screen::Window: wrapped_text(words::kWindow, 13.0f * u, kText); break;
+      case Screen::Window: wrapped_text(v.message.empty() ? std::string(words::kWindow) : v.message, 13.0f * u, kText); break;
       case Screen::SignedIn: centred_text(v.message, 22.0f * u, kText); break;
       case Screen::Looking:
       case Screen::Opening: wrapped_text(v.message, 13.0f * u, kSoft); break;

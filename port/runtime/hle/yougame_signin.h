@@ -6,6 +6,9 @@
 //   ask      yg {"id":n,"type":"signIn","mode":"code"}       (or "mode":"browser")
 //   answer   {"ok":true,"result":{"where":"code","code":{"user_code","verify_url","qr_text","expires_in"}}}
 //            an app older than v2 answers {"ok":true,"result":{"opened":true,"where":"overlay"|"browser"}}
+//            YouGame Online (the small app) shows the code's sign-in in its own window and says so: the code
+//            answer carries "window":true, or an ask with no provider answers {"opened":true,"where":"window"}.
+//            Nothing to draw then: "Finish signing in in YouGame Online" until signedIn, signInExpired or signInFailed.
 //   refusal  notYet (show its words, offer the browser), busy + retryAfter (wait, then ask again),
 //            alreadySignedIn (hello again), signInFailed (its words, Try again), badRequest (the browser instead)
 //   pushes   signedIn {name?}, signInExpired, signInFailed; any other push type is skipped
@@ -40,6 +43,7 @@ constexpr const char* kFailed = "That didn't work.";
 constexpr const char* kNoAnswer = "YouGame didn't answer.";
 constexpr const char* kBrowser = "Finish signing in in your browser";
 constexpr const char* kWindow = "Finish signing in in the YouGame window";
+constexpr const char* kWindowOnline = "Finish signing in in YouGame Online";   // the small app's own sign-in window
 constexpr const char* kSignedIn = "Signed in";       // "Signed in as Ada"
 constexpr const char* kSignedInAs = "Signed in as";
 constexpr const char* kWait = "YouGame is busy. Trying again in";   // "... in 12 s"
@@ -222,6 +226,9 @@ class Model {
     if (!answer.is_object()) return fail(kNoAnswer);
     if (true_of(answer, "ok")) {
       const nlohmann::json result = answer.count("result") && answer["result"].is_object() ? answer["result"] : nlohmann::json::object();
+      // YouGame Online signs the player in in its own window: no code or QR here, just wait for its push.
+      online_window_ = (asked == Ask::Code && true_of(result, "window")) || text_of(result, "where") == "window";
+      if (online_window_) { code_.clear(); screen_ = Screen::Window; return Ask::None; }
       if (asked == Ask::Code && text_of(result, "where") == "code" && result.count("code") && result["code"].is_object()) {
         const nlohmann::json& c = result["code"];
         const std::string user = c.count("user_code") && c["user_code"].is_string() ? c["user_code"].get<std::string>() : "";
@@ -275,7 +282,10 @@ class Model {
     }
     if (type == "signInExpired") {
       code_.clear();
-      if (screen_ == Screen::Code || screen_ == Screen::Asking || screen_ == Screen::Closed) screen_ = Screen::Expired;
+      if (screen_ == Screen::Code || screen_ == Screen::Asking || screen_ == Screen::Closed ||
+          (screen_ == Screen::Window && online_window_))
+        screen_ = Screen::Expired;
+      online_window_ = false;
       return true;
     }
     if (type == "signInFailed") {
@@ -294,6 +304,7 @@ class Model {
       if (screen_ != Screen::SignedIn) signed_in(name, now);
       else if (name_.empty() && !name.empty()) name_ = name;
     } else if (screen_ == Screen::SignedIn || screen_ == Screen::Closed) {
+      online_window_ = false;   // signed in, a step still owed in the full app's window
       screen_ = Screen::Window;
     }
   }
@@ -337,7 +348,10 @@ class Model {
       case Screen::Failed: v.buttons[0] = Button::TryAgain; v.buttons[1] = Button::Browser; v.buttons[2] = Button::Back; break;
       case Screen::NotYet: v.buttons[0] = Button::Browser; v.buttons[1] = Button::Back; break;
       case Screen::Browser: v.user_code = code_; v.buttons[0] = Button::Back; break;
-      case Screen::Window: v.buttons[0] = Button::Back; break;
+      case Screen::Window:
+        v.message = online_window_ ? kWindowOnline : "";   // empty: the overlay says kWindow
+        v.buttons[0] = Button::Back;
+        break;
       case Screen::SignedIn:
         v.message = name_.empty() ? std::string(kSignedIn) : std::string(kSignedInAs) + " " + name_;
         break;
@@ -368,12 +382,14 @@ class Model {
   Ask ask(Ask a) {
     if (a == Ask::None) return a;
     in_flight_ = true;
+    online_window_ = false;
     screen_ = Screen::Asking;
     return a;
   }
-  Ask fail(const std::string& words) { message_ = words; screen_ = Screen::Failed; return Ask::None; }
+  Ask fail(const std::string& words) { message_ = words; online_window_ = false; screen_ = Screen::Failed; return Ask::None; }
   Ask signed_in(const std::string& name, uint64_t now) {
     code_.clear();
+    online_window_ = false;
     name_ = name;
     screen_ = Screen::SignedIn;
     shown_until_ = now + kSignedInShowMs;
@@ -387,6 +403,7 @@ class Model {
   }
 
   bool open_ = false, in_flight_ = false, rehello_ = false;
+  bool online_window_ = false;   // Window: YouGame Online's own sign-in window has the code (window:true / where:"window")
   Screen screen_ = Screen::Closed;
   std::string code_, verify_, qr_, message_, name_;
   uint64_t expires_at_ = 0, retry_at_ = 0, shown_until_ = 0;

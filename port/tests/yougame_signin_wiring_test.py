@@ -112,6 +112,12 @@ for build in ("port/CMakeLists.txt", "port/linux/full/CMakeLists.txt", "port/mac
     text = read(build)
     need("runtime/gx/*.cpp" in text or "runtime/gx" in text, f"{build} builds runtime/gx")
 
+# YouGame Online signs the player in in its own window: a code answer with window:true (or where "window")
+# draws no code or QR, says where to finish, and the overlay shows that line.
+need('true_of(result, "window")' in model and 'text_of(result, "where") == "window"' in model, "the window answer read")
+need('"Finish signing in in YouGame Online"' in model and "online_window_ ? kWindowOnline" in model, "the YouGame Online line")
+need("words::kWindow) : v.message" in overlay, "the overlay draws the window line")
+
 if failures:
     print("yougame_signin_wiring_test: FAIL")
     for f in failures:
