@@ -1379,7 +1379,7 @@ void yougame_open_connect_from_game() {
   if (GetTickCount64() - g_yg_closed_at < 1500) return;
   if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else launcher::yougame::web::raise_sign_in(); return; }
   if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);   // "YouGame: connecting..."
-  yougame_sign_in_thread(false);
+  yougame_sign_in_thread(true);   // as Connect: a signed-in YouGame app first, then the launcher's own sign-in
 }
 // Play with an account the YouGame app gave while YouGame does not list this build: the app's searches would be
 // refused, so the game plays through the launcher's bridge, which needs the launcher's own sign-in. Its window

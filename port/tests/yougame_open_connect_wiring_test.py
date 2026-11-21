@@ -74,7 +74,7 @@ class OpenConnectWiring(unittest.TestCase):
         self.assertIn("yougame_open_connect_from_game();", case[:200])
         handler = body(self.launcher, "void yougame_open_connect_from_game() {")
         self.assertIn("launcher::yougame::web::raise_sign_in();", handler)   # already open: to the front
-        self.assertIn("yougame_sign_in_thread(false);", handler)
+        self.assertIn("yougame_sign_in_thread(true);", handler)
         self.assertNotIn("Disconnect", handler)   # never the Connect button's Disconnect question
 
 
