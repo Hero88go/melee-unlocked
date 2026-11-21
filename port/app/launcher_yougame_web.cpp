@@ -414,7 +414,14 @@ void take(std::unique_ptr<Job> job) {
       g->signin = std::move(job);
       g->site = g->signin->site;
       RECT area{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
-      if (g->signin->owner) GetWindowRect(g->signin->owner, &area);
+      // Placed over the launcher. A minimized launcher (it minimizes while the game runs) reports -32000,-32000,
+      // which put this window off screen: then where the launcher sits when restored.
+      if (g->signin->owner) {
+        WINDOWPLACEMENT wp{};
+        wp.length = sizeof(wp);
+        if (IsIconic(g->signin->owner) && GetWindowPlacement(g->signin->owner, &wp)) area = wp.rcNormalPosition;
+        else GetWindowRect(g->signin->owner, &area);
+      }
       const UINT dpi = GetDpiForWindow(g_window) ? GetDpiForWindow(g_window) : 96;
       const int w = MulDiv(520, dpi, 96), h = MulDiv(760, dpi, 96);
       SetWindowTextW(g_window, g->signin->title.c_str());
