@@ -711,8 +711,12 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
     g_stall_frame_counts[i]++;
     any_needs_inputs = true;
     if (behind < 0) behind = i;
-    if (g_stall_frame_counts[i] > 60 * 7) {
-      host::log("slippi: force-disconnecting player %u after 7 s stall (frame %d, latest %d)", pad->player_idx, frame, latest);
+    // 7 s without the other side's inputs means they are gone, except before their first frame (the frame-2
+    // hold above): they may still be loading the stage, which took 13.3 s on a slow GPU in one match, and the
+    // player waiting dropped them as "opponent left" before the match began. Until then they get 30 s.
+    const int stall_limit = latest < 1 ? 60 * 30 : 60 * 7;
+    if (g_stall_frame_counts[i] > stall_limit) {
+      host::log("slippi: force-disconnecting player %u after %d s stall (frame %d, latest %d)", pad->player_idx, stall_limit / 60, frame, latest);
       g_netplay->ForceDisconnectPlayer(pad->player_idx);
       g_stall_frame_counts[i] = 0;
       continue;
