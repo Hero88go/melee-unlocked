@@ -4,6 +4,7 @@
 #include "test_env.h"
 #include "yougame_link.h"
 #include "yougame_channel.h"
+#include "yougame_disc.h"
 #include "yougame_signin.h"
 #include "yougame_udp.h"
 #include "yougame_tourney.h"
@@ -2343,16 +2344,6 @@ namespace {
 std::mutex g_disc_mutex;
 std::string g_disc_path;
 uint64_t g_disc_epoch = 0;
-// The app's rules for a disc path (yougame.h's yg__disc_path_ok): absolute (a drive letter or /), at most
-// 1,024 bytes, no control characters, never a network path.
-bool disc_path_ok(const std::string& p) {
-  if (p.empty() || p.size() > 1024) return false;
-  for (unsigned char c : p)
-    if (c < 0x20 || c == 0x7f) return false;
-  if (p.size() >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) return false;
-  if (p[0] == '/') return true;
-  return p.size() >= 3 && std::isalpha((unsigned char)p[0]) && p[1] == ':' && (p[2] == '\\' || p[2] == '/');
-}
 // Sends the disc once on this connection: after hello (the channel is up), on its own thread.
 void report_disc() {
   if (!g_channel_allowed || !g_channel_up.load()) return;
@@ -3355,10 +3346,8 @@ void disc_opened(const std::string& path) {
   std::error_code ec;
   const std::filesystem::path abs = std::filesystem::absolute(std::filesystem::u8path(path), ec);
   const std::string full = ec ? std::string() : abs.u8string();
-  std::string ext = abs.extension().u8string();
-  for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
-  if (ext != ".iso" && ext != ".gcm") { host::log("yougame channel: disc not reported (not an .iso or .gcm)"); return; }
-  if (!disc_path_ok(full)) { host::log("yougame channel: disc not reported (path)"); return; }
+  if (!::yougame::disc::plain_image(full)) { host::log("yougame channel: disc not reported (not an .iso or .gcm)"); return; }
+  if (!::yougame::disc::path_ok(full)) { host::log("yougame channel: disc not reported (path)"); return; }
   { std::lock_guard<std::mutex> lock(g_disc_mutex); if (g_disc_path == full) return; g_disc_path = full; g_disc_epoch = 0; }
   report_disc();
 }

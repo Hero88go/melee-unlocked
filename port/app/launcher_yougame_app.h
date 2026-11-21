@@ -39,11 +39,16 @@ bool start(bool staging, int wait_ms);
 // Connects to the running app's channel, says hello as this game (`version`), asks the connect code when
 // signed in, and closes. Blocking (a few seconds at most, `timeout_ms` overall); never on a window thread.
 Answer ask(bool staging, const std::string& version, int timeout_ms = 12000);
+// Connects like ask, says hello, tells the app the disc this launcher starts the game with (the local channel's
+// `disc` message: an absolute .iso or .gcm, runtime/hle/yougame_disc.h), and closes. Returns what happened, for the
+// launcher's log: "reported", "refused <code>", "no answer", "no hello (...)", "not running". Blocking, seconds.
+std::string tell_disc(bool staging, const std::string& version, const std::string& path, int timeout_ms = 12000);
 #else
 inline bool installed(bool) { return false; }
 inline bool running(bool) { return false; }
 inline bool start(bool, int) { return false; }
 inline Answer ask(bool, const std::string&, int = 12000) { return {}; }
+inline std::string tell_disc(bool, const std::string&, const std::string&, int = 12000) { return "not running"; }
 #endif
 
 }  // namespace launcher::yougame::app
