@@ -30,6 +30,8 @@
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <cfloat>
 #include <sstream>
 #include <sstream>
@@ -4550,6 +4552,56 @@ static bool search_banner_test(RenderOptions& options, const slippi::native_prac
 
 // Play while searching (native_practice.cpp's kept search): the banner while a search the player chose
 // to keep runs outside its character select, sliding out when it ends; and the question on the select.
+// A game that started again after its graphics device was lost (host::restart_after_device_loss) says so for a
+// few seconds, and that the online match ended when one was on: the opponent saw "Opponent left" while this
+// side came back to the title screen with nothing said. While a match is on this process keeps
+// MELEE_IN_ONLINE_MATCH in its environment (track_online_match), so the new process, which inherits it, knows.
+static void set_env_flag(const char* name, bool on) {
+#ifdef _WIN32
+  _putenv_s(name, on ? "1" : "");
+#else
+  if (on) setenv(name, "1", 1); else unsetenv(name);
+#endif
+}
+struct RestartNotice { bool show = false, match = false; double since = -1.0; };
+static RestartNotice g_restart_notice;
+static void track_online_match() {
+  static bool first = true, was = false;
+  if (first) {
+    first = false;
+    // MELEE_DEVICE_LOST="<restarts>:<unix seconds>": only a restart made just now shows the notice, not the
+    // same variable inherited again by a later settings restart.
+    int restarts = 0;
+    long long at = 0;
+    if (const char* v = std::getenv("MELEE_DEVICE_LOST")) std::sscanf(v, "%d:%lld", &restarts, &at);
+    const long long now = (long long)std::time(nullptr);
+    g_restart_notice.show = restarts > 0 && now >= at && now - at < 120;
+    g_restart_notice.match = g_restart_notice.show && std::getenv("MELEE_IN_ONLINE_MATCH") != nullptr;
+    set_env_flag("MELEE_IN_ONLINE_MATCH", false);
+    if (g_restart_notice.show)
+      host::log("device loss restart: notice shown%s", g_restart_notice.match ? " (an online match ended)" : "");
+  }
+  const bool now = slippi::online::is_online_match();
+  if (now != was) { was = now; set_env_flag("MELEE_IN_ONLINE_MATCH", now); }
+}
+static void draw_restart_notice(RenderOptions& options) {
+  RestartNotice& r = g_restart_notice;
+  if (!r.show) return;
+  const double now = ImGui::GetTime();
+  if (r.since < 0.0) r.since = now;
+  if (now - r.since > 8.0) { r.show = false; return; }
+  practice_menu::Notice n;
+  n.title = "THE GAME RESTARTED";
+  n.detail = r.match ? "THE GRAPHICS DRIVER STOPPED ANSWERING, SO YOUR ONLINE MATCH ENDED"
+                     : "THE GRAPHICS DRIVER STOPPED ANSWERING";
+  n.alert = r.match;
+  n.shown_ms = (uint32_t)((now - r.since) * 1000.0);
+  const ImVec2 screen = ImGui::GetIO().DisplaySize;
+  float x0, y0, x1, y1;
+  game_picture(options, &x0, &y0, &x1, &y1);
+  practice_menu::draw_notice(n, screen.x, screen.y, x0, y0, x1, y1, 0.236f);
+}
+
 static void draw_search_keep(RenderOptions& options, const slippi::native_practice::Snapshot& practice) {
   if (search_banner_test(options, practice)) return;
   const ImVec2 screen = ImGui::GetIO().DisplaySize;
@@ -4600,6 +4652,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   using slippi::native_practice::Phase;
   const ImVec2 screen = ImGui::GetIO().DisplaySize;
   draw_search_keep(options, practice);
+  draw_restart_notice(options);
 
   if (practice.phase == Phase::Handoff) {
     practice_card_begin("##native_match_found", ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImVec2(0.5f, 0.5f), false);
@@ -12278,6 +12331,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
   }
 #endif
+  track_online_match();
   if (host::test_env::getenv("MELEE_TEST_SEARCH_BANNER")) {   // tests: whether the practice overlays are drawn at all
     static int n = 0;
     if (n++ % 600 == 0) host::log("search banner test: overlay frame %d (fill %d open %d menu %d)", n, state.fill_window, state.open, state.menu_open);
