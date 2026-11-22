@@ -352,6 +352,10 @@ struct FriendsLobby {
 // Bumps each time a lobby is armed or disarmed (READ's view.arm): a select that opened on another
 // arming never sends LEAVE, so it can't close the lobby an accepted invite just armed.
 uint8_t g_lobby_arm = 0;
+// The app's Leave ({"push":{"cmd":"leave"}}, yougame_link.cpp) for the armed lobby: READ reports it
+// (MU_LOBBY_F_LEAVE) and the select backs out as its B does. Set on the channel's thread; each arming,
+// disarm and the select's own LEAVE clear it.
+std::atomic<bool> g_lobby_leave_asked{false};
 // Each fighter's costume count in this build, from the select (MU_LOBBY_OP_COSTUMES); Melee's own
 // until it says. The match clamps every port's colour to it before the setup hash (lobby::apply).
 std::array<uint8_t, MU_LOBBY_CHARS> g_lobby_costumes = [] {
@@ -2775,6 +2779,7 @@ void arm_friends_lobby(const std::string& room, yougame::lobby::Profile profile)
   if (lobby.invite_stop) lobby.invite_stop->store(true);
   lobby = FriendsLobby{};
   ++g_lobby_arm;
+  g_lobby_leave_asked = false;
   lobby.armed = true;
   lobby.guest = !room.empty();
   lobby.room = room;
@@ -2797,6 +2802,13 @@ void disarm_friends_lobby() {
   if (lobby.armed) host::log("friends lobby: disarmed (another match starts)");
   lobby = FriendsLobby{};
   ++g_lobby_arm;
+  g_lobby_leave_asked = false;
+}
+void ask_friends_lobby_leave() {
+  if (!g_friends_lobby.armed) return;
+  // In a match the select is not up: the match's own way out applies, and the lobby stays for the next one.
+  if (g_in_online_match) { host::log("friends lobby: YouGame asked to leave during a match; the lobby stays"); return; }
+  if (!g_lobby_leave_asked.exchange(true)) host::log("friends lobby: YouGame asked to leave");
 }
 bool squad_friend_intent() {
 #if MU_SQUAD
@@ -3273,6 +3285,7 @@ static bool lobby_command(const uint8_t* p, uint32_t n, std::vector<uint8_t>& q)
     lb::ScreenFlags flags;
     flags.armed = lobby.armed; flags.guest = lobby.guest; flags.inviting = lobby.inviting->load();
     flags.closed = lobby.closed || failed;
+    flags.leave = g_lobby_leave_asked.load();
     flags.arm = g_lobby_arm;
     flags.note = lobby.note;
     flags.note_seq = lobby.note_seq;
@@ -3294,6 +3307,7 @@ static bool lobby_command(const uint8_t* p, uint32_t n, std::vector<uint8_t>& q)
     if (lobby.invite_stop) lobby.invite_stop->store(true);
     lobby = FriendsLobby{};
     ++g_lobby_arm;
+    g_lobby_leave_asked = false;
     if (was) host::log("friends lobby: leaving");
     cleanup_connection(yougame::Leave::Quit);
     q.assign(1, was ? 1 : 0);

@@ -207,6 +207,9 @@ bool friends_lobby_armed();
 // Another match takes over (a 1v1 friend invite accepted on the lobby's select): the lobby is let go
 // without its LEAVE, so the select's unload can't close the new connection (view.arm changed).
 void disarm_friends_lobby();
+// The YouGame app's Leave for the armed lobby (its overlay, {"push":{"cmd":"leave"}}): the select backs out
+// as its B does, to Online. Any thread; nothing when no lobby is armed or a match is running.
+void ask_friends_lobby_leave();
 // The Squad Strike row's "Play a friend" is waiting on the friend picker (it keeps the 1v1 friend room).
 bool squad_friend_intent();
 // Squad Strike in a friend room ("Play a friend" on the Squad Strike row). The room the friend

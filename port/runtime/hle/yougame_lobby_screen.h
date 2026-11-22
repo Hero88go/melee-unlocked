@@ -110,6 +110,7 @@ inline void screen_name(const std::string& in, char (&out)[MU_LOBBY_NAME]) { scr
 struct ScreenFlags {
   bool armed = false, guest = false, inviting = false;
   bool closed = false;   // the lobby's search failed or its room closed: only B (leave) is left
+  bool leave = false;    // YouGame asked to leave (the app's Leave push): the select backs out as B does
   unsigned char arm = 0;   // which arming this is (slippi_online.cpp): a select from an older one never leaves it
   std::string note;        // why the last match setup fell through, until the next match starts
   unsigned char note_seq = 0;   // bumps once per drop recorded (slippi_online.cpp): each drop's note shows once
@@ -120,7 +121,8 @@ inline MuLobbyView screen_view(const Control::View& v, const ScreenFlags& f) {
   std::memset(&out, 0, sizeof out);
   out.flags = (f.armed ? MU_LOBBY_F_ARMED : 0) | (v.known ? MU_LOBBY_F_KNOWN : 0) | (v.host ? MU_LOBBY_F_HOST : 0) |
               (v.started ? MU_LOBBY_F_STARTED : 0) | (v.unsupported ? MU_LOBBY_F_UNSUPPORTED : 0) |
-              (f.inviting ? MU_LOBBY_F_INVITING : 0) | (f.guest ? MU_LOBBY_F_GUEST : 0);
+              (f.inviting ? MU_LOBBY_F_INVITING : 0) | (f.guest ? MU_LOBBY_F_GUEST : 0) |
+              (f.armed && f.leave ? MU_LOBBY_F_LEAVE : 0);
   const bool doubles = v.profile == Profile::Doubles;
   // A closed room's last state can't keep it searching either: Rooms never sends the search's end once the
   // room is gone, and the select takes the player's whole pad while it searches (mu_lobby_pads, its B a

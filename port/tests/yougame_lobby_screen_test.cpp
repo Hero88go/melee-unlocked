@@ -161,6 +161,18 @@ int main() {
     CHECK(screen_view(view_of(s), f).refusal_seq == 1);   // a plain state: no new refusal
   }
 
+  // ---- YouGame's Leave (the app's lobby overlay): reported only while a lobby is armed ----
+  {
+    Session s(opts("c"));
+    s.receive(state(5, 0, {seat_human(0, "a", true), seat_open(1), seat_human(2, "c", true), seat_open(3)}));
+    ScreenFlags f; f.armed = true;
+    CHECK(!(screen_view(view_of(s), f).flags & MU_LOBBY_F_LEAVE));
+    f.leave = true;
+    CHECK(screen_view(view_of(s), f).flags & MU_LOBBY_F_LEAVE);
+    f.armed = false;
+    CHECK(!(screen_view(view_of(s), f).flags & MU_LOBBY_F_LEAVE));
+  }
+
   // ---- a match started: STARTING for everyone ----
   {
     Session s(opts("a"));

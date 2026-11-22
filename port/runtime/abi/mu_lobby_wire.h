@@ -98,6 +98,7 @@
 #define MU_LOBBY_F_UNSUPPORTED 0x10 /* the room has no Friends lobby */
 #define MU_LOBBY_F_INVITING 0x20    /* the invite picker is open */
 #define MU_LOBBY_F_GUEST 0x40       /* an invite opened this lobby */
+#define MU_LOBBY_F_LEAVE 0x80       /* YouGame asked to leave (its lobby overlay): the select backs out as B does */
 
 /* mode (the view's third byte) */
 #define MU_LOBBY_M_SQUAD 0x10

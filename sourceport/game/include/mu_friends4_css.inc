@@ -2182,6 +2182,13 @@ static void mu_friends4_css_frame(void)
     mu_f4.view_ok = v != NULL;
     if (v) mu_f4.view = *v;
     mu_lobby_curtain_frame(v);
+    /* YouGame's Leave (the app's lobby overlay): back out as B does, to Online with the row highlighted
+     * (lobby_css_decide); the major's unload then sends the lobby's LEAVE. */
+    if (!mu_f4.leaving && mnCharSel_804D6CF6 == 0 && v && (v->flags & MU_LOBBY_F_LEAVE)) {
+        OSReport("friends lobby: YouGame asked to leave, back to Online\n");
+        mu_f4.leaving = 1;
+        mnCharSel_804D6CF6 = 2;
+    }
     if (!mu_f4.curtain_made) {
         /* Here, not in the build: the build runs before the screen's text camera exists. Moved to the end of the
          * last list that camera draws, so it covers the coins, hands and every text. */
