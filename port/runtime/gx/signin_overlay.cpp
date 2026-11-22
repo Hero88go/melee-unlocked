@@ -34,6 +34,11 @@ const ImVec4 kPanel(15 / 255.0f, 15 / 255.0f, 15 / 255.0f, 1.0f);
 const ImVec4 kText(241 / 255.0f, 241 / 255.0f, 241 / 255.0f, 1.0f);
 const ImVec4 kSoft(170 / 255.0f, 170 / 255.0f, 170 / 255.0f, 1.0f);
 const ImVec4 kFocus(62 / 255.0f, 166 / 255.0f, 1.0f, 1.0f);
+const ImVec4 kBody(217 / 255.0f, 217 / 255.0f, 217 / 255.0f, 1.0f);   // the line under a heading
+const ImU32 kRed = IM_COL32(255, 0, 0, 255);
+// The header's close pill: Back (Esc, B and Shift+Tab are Back too), named with its key.
+const char* const kBackToGame = "Back to game";
+const char* const kCloseKey = "Shift+Tab";
 
 // One CSS pixel in window pixels: the box keeps the menu's size whatever the window's size (the
 // display's scale setting only, as a browser does). Mac windows already count in points.
@@ -113,6 +118,68 @@ void draw_qr(const qr_code::Matrix& m, float side) {
   ImGui::Dummy(ImVec2(full, full));
 }
 
+// Bold the way the header word is: the body font drawn twice a hair apart. Advances the cursor.
+void bold_text(const char* text, float px, const ImVec4& colour, float u) {
+  ImGui::PushFont(nullptr, font_size(px));
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float fs = ImGui::GetFontSize();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddText(ImGui::GetFont(), fs, at, ImGui::GetColorU32(colour), text);
+  dl->AddText(ImGui::GetFont(), fs, ImVec2(at.x + 0.75f * u, at.y), ImGui::GetColorU32(colour), text);
+  ImGui::Dummy(ImVec2(ImGui::CalcTextSize(text).x + 0.75f * u, fs));
+  ImGui::PopFont();
+}
+
+// YouGame's logo, `side` px square at `at`: the red tile with the white pad (the menu's 28 px mark).
+void draw_logo(ImDrawList* dl, ImVec2 at, float side) {
+  const float k = side / 28.0f;
+  auto P = [&](float x, float y) { return ImVec2(at.x + x * k, at.y + y * k); };
+  dl->AddRectFilled(P(0, 0), P(28, 28), kRed, 7.0f * k);
+  dl->AddRectFilled(P(5, 9.5f), P(23, 18.5f), IM_COL32(255, 255, 255, 255), 4.5f * k);
+  dl->AddRectFilled(P(9.25f, 11.5f), P(10.75f, 16.5f), kRed, 0.6f * k);
+  dl->AddRectFilled(P(7.5f, 13.25f), P(12.5f, 14.75f), kRed, 0.6f * k);
+  dl->AddCircleFilled(P(17.4f, 12.7f), 1.1f * k, kRed);
+  dl->AddCircleFilled(P(19.8f, 15.3f), 1.1f * k, kRed);
+}
+
+// The back arrow (24 px grid drawn at `side`): a turn-back arrow, 2 px strokes.
+void draw_back_icon(ImDrawList* dl, ImVec2 at, float side, ImU32 col) {
+  const float k = side / 24.0f, t = 2.0f * k;
+  auto P = [&](float x, float y) { return ImVec2(at.x + x * k, at.y + y * k); };
+  const ImVec2 head[3] = {P(9, 7), P(4, 12), P(9, 17)};
+  dl->AddPolyline(head, 3, col, ImDrawFlags_None, t);
+  dl->PathLineTo(P(4, 12));
+  dl->PathLineTo(P(15, 12));
+  dl->PathArcTo(P(15, 17), 5.0f * k, -1.5707963f, 1.5707963f);
+  dl->PathLineTo(P(13, 22));
+  dl->PathStroke(col, ImDrawFlags_None, t);
+}
+
+// The header's "Back to game  Shift+Tab" pill, right-aligned on the 58 px row at `row_y`. True when pressed.
+bool back_pill(float row_y, float right, float u, bool focus) {
+  ImGui::PushFont(nullptr, font_size(13.0f * u));
+  const float icon = 16.0f * u, gap = 7.0f * u, pad = 14.0f * u, h = 44.0f * u;
+  const float w_words = ImGui::CalcTextSize(kBackToGame).x, w_key = ImGui::CalcTextSize(kCloseKey).x;
+  const float w = pad + icon + gap + w_words + gap + w_key + pad;
+  const ImVec2 at(right - w, row_y + (58.0f * u - h) * 0.5f);
+  ImGui::SetCursorScreenPos(at);
+  if (focus) { ImGui::SetKeyboardFocusHere(); ImGui::SetNavCursorVisible(true); }
+  const bool pressed = ImGui::InvisibleButton("##yougame_back_to_game", ImVec2(w, h));
+  const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), IM_COL32(255, 255, 255, hot ? 51 : 26), h * 0.5f);
+  const float fs = ImGui::GetFontSize(), ty = at.y + (h - fs) * 0.5f;
+  float x = at.x + pad;
+  draw_back_icon(dl, ImVec2(x, at.y + (h - icon) * 0.5f), icon, ImGui::GetColorU32(kText));
+  x += icon + gap;
+  dl->AddText(ImGui::GetFont(), fs, ImVec2(x, ty), ImGui::GetColorU32(kText), kBackToGame);
+  dl->AddText(ImGui::GetFont(), fs, ImVec2(x + 0.5f * u, ty), ImGui::GetColorU32(kText), kBackToGame);   // 500 weight
+  x += w_words + gap;
+  dl->AddText(ImGui::GetFont(), fs, ImVec2(x, ty), ImGui::GetColorU32(kSoft), kCloseKey);
+  ImGui::PopFont();
+  return pressed;
+}
+
 bool g_was_open = false;
 Screen g_last_screen = Screen::Closed;
 std::string g_qr_text;
@@ -145,7 +212,7 @@ void draw(float x0, float y0, float x1, float y1) {
   // while it is up, so A and Enter press its buttons even after another window took the focus.
   ImGui::SetNextWindowFocus();
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 18.0f * u);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f * u, 0.0f));   // the header row starts at the top
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f * u, 0.0f));   // the header row starts at the top
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18.0f * u, 15.0f * u));   // 44 px buttons with 14 px words
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 22.0f * u);
@@ -161,25 +228,31 @@ void draw(float x0, float y0, float x1, float y1) {
                                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
   Button pressed = Button::None;
   if (ImGui::Begin("##yougame_sign_in", nullptr, flags)) {
-    // Header row, 58 px: "YouGame" in bold at 20 px (the body font drawn twice a hair apart).
+    // Header row, 58 px: the 28 px logo, "YouGame" in bold at 20 px, and on the right the close pill
+    // (Back to game, Shift+Tab). The pill is Back on every screen, so the rows below carry no Back.
+    // Shown buttons: the screen's own, less Back and Play offline (both close the box, as the pill does).
+    int shown = 0;
+    for (Button b : v.buttons) if (b != Button::None && b != Button::Back && b != Button::Offline) ++shown;
     {
       const ImVec2 at = ImGui::GetCursorScreenPos();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const float logo = 28.0f * u;
+      draw_logo(dl, ImVec2(at.x, at.y + (58.0f * u - logo) * 0.5f), logo);
       ImGui::PushFont(nullptr, font_size(20.0f * u));
       const float th = ImGui::GetFontSize();
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 tp(at.x, at.y + (58.0f * u - th) * 0.5f);
+      const ImVec2 tp(at.x + logo + 8.0f * u, at.y + (58.0f * u - th) * 0.5f);
       dl->AddText(ImGui::GetFont(), th, tp, ImGui::GetColorU32(kText), words::kHomeTitle);
       dl->AddText(ImGui::GetFont(), th, ImVec2(tp.x + 0.75f * u, tp.y), ImGui::GetColorU32(kText), words::kHomeTitle);
       ImGui::PopFont();
+      // 10 px from the panel's right edge, as the menu's bar is (6 px into the 16 px padding).
+      const float right = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - 10.0f * u;
+      if (back_pill(at.y, right, u, new_screen && shown == 0)) pressed = Button::Back;
+      ImGui::SetCursorScreenPos(at);
       ImGui::Dummy(ImVec2(0, 58.0f * u - ImGui::GetStyle().ItemSpacing.y));
     }
     // The screen's own title (Sign in to YouGame, Update to play online) as the first line of the body.
     const std::string title = v.title.empty() ? words::kTitle : v.title.c_str();
-    if (title != words::kHomeTitle) {
-      ImGui::PushFont(nullptr, font_size(16.0f * u));
-      ImGui::TextColored(kText, "%s", title.c_str());
-      ImGui::PopFont();
-    }
+    if (title != words::kHomeTitle) bold_text(title.c_str(), 16.0f * u, kText, u);   // the pane's heading
 
     switch (v.screen) {
       case Screen::Asking: wrapped_text(words::kAsking, 14.0f * u, kSoft); break;
@@ -205,13 +278,13 @@ void draw(float x0, float y0, float x1, float y1) {
         wrapped_text(words::kBrowser, 14.0f * u, kText);
         if (!v.user_code.empty()) centred_text(v.user_code, 22.0f * u, kText);   // the /link page's code
         break;
-      case Screen::Window: wrapped_text(v.message.empty() ? std::string(words::kWindow) : v.message, 14.0f * u, kText); break;
+      case Screen::Window: wrapped_text(v.message.empty() ? std::string(words::kWindow) : v.message, 14.0f * u, kBody); break;
       case Screen::SignedIn: centred_text(v.message, 22.0f * u, kText); break;
       case Screen::Looking:
       case Screen::Opening: wrapped_text(v.message, 14.0f * u, kSoft); break;
       case Screen::AppClosed:
       case Screen::NoApp:
-      case Screen::Admin: wrapped_text(v.message, 14.0f * u, kText); break;
+      case Screen::Admin: wrapped_text(v.message, 14.0f * u, kBody); break;
       // Update to play online (yougame_signin.h Update): the model writes each line whole.
       case Screen::UpdateChecking:
       case Screen::UpdateDownloading:
@@ -224,18 +297,18 @@ void draw(float x0, float y0, float x1, float y1) {
       case Screen::UpdateOldApp:
       case Screen::UpdateLatest:
       case Screen::UpdateNoCheck:
-      case Screen::Home: wrapped_text(v.message, 14.0f * u, kText); break;
+      case Screen::Home: wrapped_text(v.message, 14.0f * u, kBody); break;
       case Screen::Closed: break;
     }
 
     // The buttons, one row, the first one focused whenever the screen changes (A presses it).
-    ImGui::Dummy(ImVec2(0, 4.0f * u));
+    if (shown > 0) ImGui::Dummy(ImVec2(0, 4.0f * u));
     ImGui::PushFont(nullptr, font_size(14.0f * u));
     bool first = true;
     // One row while they fit, the next button on a new line when it wouldn't (three on the YouGame box).
     const float row_x2 = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
     for (Button b : v.buttons) {
-      if (b == Button::None) continue;
+      if (b == Button::None || b == Button::Back || b == Button::Offline) continue;   // the header's pill
       const float w = ImGui::CalcTextSize(label(b)).x + ImGui::GetStyle().FramePadding.x * 2.0f;
       if (!first && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w <= row_x2) ImGui::SameLine();
       if (first && new_screen) { ImGui::SetKeyboardFocusHere(); ImGui::SetNavCursorVisible(true); }
@@ -251,7 +324,7 @@ void draw(float x0, float y0, float x1, float y1) {
       first = false;
     }
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(0, 12.0f * u));   // 20 px under the buttons with the item spacing
+    ImGui::Dummy(ImVec2(0, (shown > 0 ? 12.0f : 10.0f) * u));   // 18-20 px under the last row with the item spacing
     // B on the controller is Back (Esc is Back from the window procedure: yougame::sign_in_escape).
     if (pressed == Button::None && !appearing && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) pressed = Button::Back;
   }
