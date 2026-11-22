@@ -133,6 +133,11 @@ void lines_and_pushes() {
   CHECK(channel::hello_player({{"player", {{"id", "p1"}, {"name", "A"}}}}));
   CHECK(!channel::hello_player({{"player", {{"id", ""}}}}));
   CHECK(!channel::hello_player({{"player", nullptr}}));
+  // The asks that open a YouGame sheet, so the game lets YouGame take the foreground first.
+  CHECK(channel::opens_app_sheet("mpFriend"));
+  CHECK(channel::opens_app_sheet("openFeedback"));
+  for (const char* t : {"hello", "mpTicket", "mpRoom", "gameState", "matchState", "menuButton", "pause", "signIn", ""})
+    CHECK(!channel::opens_app_sheet(t));
   // The hybrid route (the launcher's bridge for who the player is and every match, the app's channel for the
   // extension's own features; everything to the bridge while the channel is down).
   for (const char* t : {"hello", "mpCode", "mpTicket", "mpRank", "mpFriend", "mpRoom", "muRestartOlder"}) {

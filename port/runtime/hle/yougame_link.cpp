@@ -739,7 +739,16 @@ void start_player_wait();
 // A request over the local channel: the stdio bridge's request and answer, with the hello naming this
 // game (contract section 4). Every hello answer feeds the playerPending wait. `probing`: the probe's own
 // hello, sent before the channel counts as up.
+// An ask that opens a YouGame sheet (channel::opens_app_sheet): let YouGame take the foreground first.
+void allow_app_foreground(const json& body) {
+#ifdef _WIN32
+  if (body.is_object() && channel::opens_app_sheet(body.value("type", ""))) AllowSetForegroundWindow(ASFW_ANY);
+#else
+  (void)body;
+#endif
+}
 json bridge_channel(const json& body, int timeout_ms, const std::function<bool()>& cancelled = {}, bool probing = false) {
+  allow_app_foreground(body);
   if (!probing && !g_channel_up) throw BridgeNoAnswer(kChannelClosed);
   const bool hello = body.is_object() && body.value("type", "") == "hello";
   const uint64_t sent_at = now_ms();
@@ -896,6 +905,7 @@ json bridge_raw(const json& body, int timeout_ms) {
 }
 thread_local uint64_t g_channel_retry_after = 0;
 json bridge(const json& body, int timeout_ms = 15000, const std::function<bool()>& cancelled = {}) {
+  allow_app_foreground(body);   // also over the launcher bridge or stdio
   g_bridge_refusal.clear();
   g_bridge_update_text.clear();
   g_ticket_out_of_date = json();

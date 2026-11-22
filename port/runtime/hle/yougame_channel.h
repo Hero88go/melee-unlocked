@@ -140,6 +140,11 @@ inline bool to_launcher_bridge(const std::string& type, bool channel_up, bool ap
     if (type == t) return !app_sign_in;
   return false;
 }
+// The asks that open a sheet in YouGame (the friend picker, the feedback panel). The game is the foreground process
+// when it sends them, and Windows' foreground lock would keep focus with the game after its own key or pad press, so
+// a pad or keyboard player never sees the sheet. The game lets YouGame come to the front first (AllowSetForegroundWindow),
+// as it already does for sign-in and the launcher's Connect.
+inline bool opens_app_sheet(const std::string& type) { return type == "mpFriend" || type == "openFeedback"; }
 // Whose YouGame sign-in the hybrid plays with: the launcher's whenever it names a player (play never depends on the
 // app); with none, the app's while its channel is up and names a player; else nobody (the rows stay closed, and an
 // app that is up but signed out offers its sign-in: sign_in_needed()).
