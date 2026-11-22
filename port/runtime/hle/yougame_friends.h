@@ -618,6 +618,15 @@ class Events {
     std::lock_guard<std::mutex> lock(mutex_);
     return now < message_until_ ? message_ : std::string();
   }
+  // Milliseconds each notice has left (0: none): the game's own notice line fades out on its last part.
+  uint64_t toast_left(uint64_t now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return now < toast_until_ ? toast_until_ - now : 0;
+  }
+  uint64_t message_left(uint64_t now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return now < message_until_ ? message_until_ - now : 0;
+  }
   void current_room(const std::string& code) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!current_room_.empty() && code != current_room_) retired_.insert(current_room_);

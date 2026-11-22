@@ -5735,6 +5735,45 @@ void save(const RenderOptions& options, int tab, bool page) {
 }
 }  // namespace settings_view
 
+// The game's own invite and message notices, drawn only when YouGame is not there to draw them: the
+// YouGame button's line at the top-left, 16 px in, a 40 px rgba(20,20,20,0.95) pill with 14 px white
+// words, at most 480 px wide, fading out over its last 0.4 s (each notice shows about 6 s).
+static void draw_yougame_notices(const std::string& toast, uint64_t toast_left, const std::string& message,
+                                 uint64_t message_left) {
+  const ImVec2 screen = ImGui::GetIO().DisplaySize;
+  const auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  float top = 16.0f;
+  auto pill = [&](const char* id, const std::string& line, uint64_t left) {
+    if (line.empty()) return;
+    const float fade = std::clamp(float(left) / 400.0f, 0.0f, 1.0f);
+    const float font = 14.0f, pad_x = 16.0f, h = 40.0f, max_w = std::max(80.0f, std::min(480.0f, screen.x - 32.0f));
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * font / ImGui::GetFontSize());
+    const float wrap = max_w - pad_x * 2.0f;
+    const ImVec2 words = ImGui::CalcTextSize(line.c_str(), nullptr, false, wrap);
+    const float w = std::min(max_w, words.x + pad_x * 2.0f), ph = std::max(h, words.y + 22.0f);
+    ImGui::SetNextWindowPos(ImVec2(16.0f, top), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(w, ph), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, std::min(20.0f, ph * 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad_x, (ph - words.y) * 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(20 / 255.0f, 20 / 255.0f, 20 / 255.0f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+    ImGui::Begin(id, nullptr, flags);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap);
+    ImGui::TextUnformatted(line.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(4);
+    ImGui::PopFont();
+    top += ph + 8.0f;   // a chat line goes under the invite, so it never hides one
+  };
+  pill("##yougame_invite_notice", toast, toast_left);
+  pill("##yougame_message_notice", message, message_left);
+}
+
 bool settings_frame(SettingsState& state, RenderOptions& options) {
   // The Quit/Restart confirmation, drawn wherever the panel is (a category page or the first page, whose own
   // Quit game button asks it too).
@@ -5997,28 +6036,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     const auto screen = ImGui::GetIO().DisplaySize;
     const auto passive_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing;
-    // A new notice also brings the corner hint back at the picture's top-right; start below it.
-    float notice_bottom = std::max(16.0f, screen_label::corner_hint_bottom() + 8.0f);
-    if (!toast.empty()) {
-      ImGui::SetNextWindowPos(ImVec2(screen.x - 16, notice_bottom), ImGuiCond_Always, ImVec2(1, 0));
-      ImGui::SetNextWindowBgAlpha(0.85f);
-      ImGui::Begin("##yougame_invite_notice", nullptr, passive_flags);
-      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::min(380.0f, screen.x - 64));
-      ImGui::TextUnformatted(toast.c_str());
-      ImGui::PopTextWrapPos();
-      notice_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y + 8.0f;
-      ImGui::End();
-    }
-    if (const auto message = yougame::friends::events.message(now); !message.empty()) {
-      // Under the invite toast when both show, so a chat line never hides an invite.
-      ImGui::SetNextWindowPos(ImVec2(screen.x - 16, notice_bottom), ImGuiCond_Always, ImVec2(1, 0));
-      ImGui::SetNextWindowBgAlpha(0.85f);
-      ImGui::Begin("##yougame_message_notice", nullptr, passive_flags);
-      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::min(380.0f, screen.x - 64));
-      ImGui::TextUnformatted(message.c_str());
-      ImGui::PopTextWrapPos();
-      ImGui::End();
-    }
+    // Invite and message notices. YouGame draws its own over the game whenever it is there: the game was
+    // started by YouGame (active: the player box or the stdio bridge) or YouGame's local channel is up
+    // (a game started on its own beside the YouGame app or YouGame Online). Only without YouGame does the
+    // game draw them, as the YouGame button's line: top-left, 16 px in, a 40 px dark pill, 14 px words,
+    // shown about 6 s and fading out at the end.
+    if (!(yougame::active() || yougame::channel_connected()))
+      draw_yougame_notices(toast, yougame::friends::events.toast_left(now),
+                           yougame::friends::events.message(now), yougame::friends::events.message_left(now));
 #ifdef MELEE_DOUBLES
     // The Doubles home's own box, larger than the pill and over the picture's middle: what is happening,
     // then what each button does. While it shows, the home owns the pads, so it hides nothing playable.

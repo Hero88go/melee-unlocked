@@ -1207,7 +1207,7 @@ int main() {
 #include <string>
 static bool app_active, online_visible, playing;
 static std::string link_message, console_message;
-static int begins, ends, positions, checks, styles, fonts, same_lines, reserves;
+static int begins, ends, positions, checks, styles, fonts, same_lines, reserves, notices;
 static float g_overlay_game_aspect = 73.0f / 60.0f, pill_x, pill_y, pill_font;
 static std::vector<std::string> lines;
 #define CHECK(x) do { ++checks; if (!(x)) { std::fprintf(stderr,"line %d: %s\n",__LINE__,#x); std::abort(); } } while (0)
@@ -1249,6 +1249,8 @@ void TextUnformatted(const char* text) { lines.emplace_back(text); }
 void TextDisabled(const char* text, ...) { lines.emplace_back(text); }
 void End() { ++ends; }
 }
+// The game's own notice pills (pc_settings.cpp), drawn only without YouGame: counted here.
+static void draw_yougame_notices(const std::string&, uint64_t, const std::string&, uint64_t) { ++notices; }
 static void draw() {
 ''' + area + r'''
 }
@@ -1265,8 +1267,9 @@ int main() {
     for (auto message : messages) for (const char* console : {"", "Connecting...", "Cancelled", "Couldn't connect"}) {
       app_active=app; online_visible=online; playing=match;
       link_message=message.text; console_message=console;
-      begins=ends=positions=same_lines=reserves=0; lines.clear(); draw();
+      begins=ends=positions=same_lines=reserves=notices=0; lines.clear(); draw();
       CHECK(styles==0); CHECK(fonts==0);
+      CHECK(notices==int(!app && online));   // YouGame draws its own notices whenever it is there
       bool expected=(app || online) && !match && (*console || message.visible);
       CHECK(begins==int(expected)); CHECK(ends==begins); CHECK(positions==begins); CHECK(reserves==begins);
       if (expected) {
