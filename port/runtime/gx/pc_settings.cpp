@@ -315,6 +315,9 @@ float g_overlay_game_aspect = 73.0f / 60.0f;
 std::array<HudPlayerSnapshot, 4> g_hud_players{};
 std::array<std::string, 4> g_hud_player_names{};
 bool g_hud_match = false;
+// The fight itself (sudden death included), without the results screen after a VS match: what the quit
+// confirm calls "the current match".
+bool g_hud_fight = false;
 // The Arcade look's combo counter, counted per player hit, once per game frame (a frame presented again
 // on a fast display counts nothing twice). A hit is a rise of that player's percent; it goes to the
 // player whose combo link (Fighter x2094) holds them, or to the only opponent. The combo lives while
@@ -386,6 +389,7 @@ void settings_set_game_aspect(float aspect) {
 
 void settings_set_hud_snapshot(const Frame& frame) {
   g_hud_match = frame_in_match(frame);
+  g_hud_fight = frame_in_app_match(frame);
   g_hud_players = frame.hud_players;
   g_hud_player_names = frame.player_names;
   combo_track(frame.sequence);
@@ -12166,7 +12170,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   state.menu_quit ? (app ? "BACK TO YOUGAME?" : "QUIT MELEE UNLOCKED?") : "MELEE UNLOCKED");
     if (state.menu_quit)
       draw->AddText(body_font, body_size, ImVec2(p.x + 20 * k, p.y + 41 * k), IM_COL32(183, 174, 190, 255),
-                    !app || g_hud_match ? "The current match will end." : "Melee closes and your YouGame page is right behind it.");
+                    g_hud_fight ? "The current match will end."
+                    : app       ? "Melee closes and your YouGame page is right behind it."
+                                : "Melee Unlocked closes.");
     const float gap = 10.0f * k;
     const int count = state.menu_quit ? 2 : 3;
     const float button_w = (width - 40.0f * k - gap * (count - 1)) / count;
