@@ -1349,9 +1349,13 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         sfxForward();
         mu_slippi_tournament_notice(gp, tournament_text);
 #ifdef MELEE_DOUBLES
-    } else if ((buttons & MenuInput_Confirm) && friends_visible && selected_option == MU_SLP_OPT_DOUBLES) {
+    } else if ((buttons & MenuInput_Confirm) && ranked_supported && !slippi_submenu &&
+               selected_option == MU_SLP_OPT_DOUBLES) {
         /* The Doubles row opens the 2-seat Doubles home's select (G2: the Friends lobby on its Doubles
-         * profile, E6 value 16). The 4-seat md:1 console home (value 12) stays for md:1 invites. */
+         * profile, E6 value 16). The 4-seat md:1 console home (value 12) stays for md:1 invites. The app's
+         * layout only: under the launcher (split layout) the row's own branch below sends the YouGame pick
+         * first, and the host drops a value 16 that comes without it. friends_visible is not the test here:
+         * it is also true under the launcher once the YouGame app's channel is up (split_friends). */
         u8 open_doubles = 16;
         mu_slippi_cmd(CMD_YOUGAME_FRIENDS_MENU, &open_doubles, 1, NULL, 0, NULL);
         mn_804D6BC8.cooldown = 5;
