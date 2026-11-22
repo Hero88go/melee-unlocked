@@ -135,6 +135,24 @@ int main() {
   g.press(Button::Offline, 0);
   g.offer(refusal("old_build"));               // the next refused search this run: no Update to press again
   if (g.view().screen != Screen::UpdateNotAppCopy || !has(g.view(), Button::Offline)) return 63;
+  // The app says why (it opened this game's page in the browser): the panel shows the app's words instead.
+  Update b;
+  b.offer(refusal("old_build", "1.4.2"));
+  b.press(Button::Update, 0);
+  json browser = refusal("not_app_copy");
+  browser["error"] = "YouGame opened this game's page in your browser. Get the latest version there, then play online.";
+  b.answered(Step::Update, browser, 0);
+  if (b.view().screen != Screen::UpdateNotAppCopy || !has(b.view(), Button::Offline)) return 64;
+  if (b.view().message != "This copy of Melee is out of date (the latest is 1.4.2). YouGame opened this game's page in "
+                          "your browser. Get the latest version there, then play online.") return 65;
+  // Not a sentence, or not printable: this game's own words.
+  Update w;
+  w.offer(refusal("old_build"));
+  w.press(Button::Update, 0);
+  json odd = refusal("not_app_copy");
+  odd["error"] = "Bad\nline.";
+  w.answered(Step::Update, odd, 0);
+  if (w.view().message != "This copy of Melee is out of date. Get the latest from YouGame, then play online.") return 66;
   // An app with no updateGame yet (notYet): today's "Open YouGame to update it" words.
   Update o;
   o.offer(refusal("old_build"));

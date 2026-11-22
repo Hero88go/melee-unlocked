@@ -545,6 +545,22 @@ class Update {
   bool is_open() const { return open_; }
   Screen screen() const { return screen_; }
 
+  // The app's own words for a not_app_copy answer, for the panel: one printable sentence (it ends in '.' or '!'),
+  // under 200 bytes. Anything else (no text, a bare code word) keeps this game's own words. Since app PR 2891 the
+  // app says there that it opened this game's page in the browser, so the player knows why a browser window opened.
+  static std::string reason_text(const nlohmann::json& o) {
+    std::string out;
+    for (const char c : text_of(o, "error")) {
+      if (c < 0x20 || c > 0x7E) return "";
+      if (out.size() >= 200) return "";
+      out += c;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    while (!out.empty() && out.front() == ' ') out.erase(out.begin());
+    if (out.size() < 12 || out.find(' ') == std::string::npos || (out.back() != '.' && out.back() != '!')) return "";
+    return out;
+  }
+
   // The refused search's answer. An update already on its way is shown again as it stands.
   void offer(const nlohmann::json& refusal) {
     open_ = true;
@@ -607,7 +623,12 @@ class Update {
       return Step::None;                            // tick() asks again when the wait ends
     }
     started_ = false;
-    if (code == "not_app_copy") { not_app_copy_ = true; screen_ = Screen::UpdateNotAppCopy; return Step::None; }
+    if (code == "not_app_copy") {
+      not_app_copy_ = true;
+      not_app_copy_reason_ = reason_text(answer);
+      screen_ = Screen::UpdateNotAppCopy;
+      return Step::None;
+    }
     if (code == "up_to_date") { screen_ = Screen::UpdateLatest; return Step::None; }
     if (code == "notYet") { screen_ = Screen::UpdateOldApp; return Step::None; }   // an app with no updateGame
     return fail(kUpdateFailed);
@@ -666,7 +687,10 @@ class Update {
         v.message = message_;
         v.buttons[0] = Button::TryAgain; v.buttons[1] = Button::Offline;
         break;
-      case Screen::UpdateNotAppCopy: v.message = out_of_date + " " + kGetLatest; v.buttons[0] = Button::Offline; break;
+      case Screen::UpdateNotAppCopy:
+        v.message = out_of_date + " " + (not_app_copy_reason_.empty() ? std::string(kGetLatest) : not_app_copy_reason_);
+        v.buttons[0] = Button::Offline;
+        break;
       case Screen::UpdateOldApp: v.message = out_of_date + " " + kOpenToUpdate; v.buttons[0] = Button::Offline; break;
       case Screen::UpdateLatest: v.message = kLatest; v.buttons[0] = Button::Back; break;
       case Screen::UpdateNoCheck:
@@ -711,7 +735,7 @@ class Update {
 
   bool open_ = false, started_ = false, not_app_copy_ = false;
   Screen screen_ = Screen::Closed;
-  std::string latest_, version_, message_;
+  std::string latest_, version_, message_, not_app_copy_reason_;
   int percent_ = -1, retries_ = 0;
   uint64_t retry_at_ = 0;
 };
