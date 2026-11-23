@@ -6353,10 +6353,15 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
     player.port = seat + 1;
     player.local = seat == my_seat;
     player.id = p.value("id", "");
-    player.name = player.local ? me.name : p.value("name", "Player");
     // In Direct the room admits only the account behind the code we typed: that code is the
     // opponent's. Elsewhere the code is what the opponent sent, shown as theirs.
     player.code = player.local ? me.code : direct && !friends_mode ? search.direct_code : cands[conn].value("code", "");
+    player.name = player.local ? me.name : p.value("name", "");
+    // An opponent who hasn't shared their name with this game arrives as "Player": show the tag of
+    // their connect code instead, as this player's own name is shown (made from their YouGame name).
+    if (!player.local && (player.name.empty() || player.name == "Player") && !player.code.empty())
+      player.name = player.code.substr(0, player.code.find('#'));
+    if (player.name.empty()) player.name = "Player";
     for (auto& peer : peers) if (peer.port == player.port) player.address = addr_string(peer.chosen);
     out.players.push_back(player);
   }
