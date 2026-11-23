@@ -68,6 +68,10 @@ bool coming_soon();
 // coming_soon() without the local channel: true for the whole run when the GitHub build's rows wait
 // and the app did not start the game. The menu file is built from this (greyed and open copies).
 bool coming_soon_build();
+// No YouGame connected yet on the app's local channel, in a game that may ask for it (started on its own, or by
+// Melee Unlocked's launcher with no YouGame sign-in of its own): the YouGame rows read as not ready (the menu's
+// bit 6), and picking one runs YouGame's start hook (first_row_picked). False under the launcher's bridge.
+bool ask_on_use();
 // YouGame's online rows can be offered: the app started the game, or the launcher's bridge is up.
 bool available();
 // The local channel (yougame_channel.h): a game nothing started finds a running YouGame app on this

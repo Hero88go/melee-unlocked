@@ -61,6 +61,10 @@ extern char** environ;
 #include <mutex>
 #include <thread>
 #include "yougame_channel.h"
+// YouGame's start hook, the same public header the game carries (MIT, beside it in third_party/yougame_start).
+// The launcher is its own program, so this file is the one place in it that holds the hook's code.
+#define YOUGAME_START_IMPLEMENTATION
+#include "yougame_start/yougame_start.h"
 
 #if defined(_WIN32) && defined(_MSC_VER)
 #pragma comment(lib, "shell32.lib")
@@ -84,6 +88,7 @@ struct Inbox {
   std::condition_variable cv;
   std::map<int64_t, json> answers;
   bool arrived = false, eof = false;
+  bool signed_in = false, sign_in_failed = false;   // the app's signedIn / signInFailed pushes
 };
 
 }  // namespace
@@ -181,7 +186,46 @@ bool start(bool staging, int wait_ms) {
 }
 #endif
 
-Answer ask(bool staging, const std::string& version, int timeout_ms) {
+#if defined(_WIN32) && defined(_MSC_VER)
+// "Run as administrator" (a full elevated token, Windows' own token check): the start hook starts nothing
+// there and its window only says to start the game normally, so the launcher takes its own sign-in instead.
+// With UAC off (Windows Sandbox, the built-in Administrator) the token is not a full split token, so the hook runs.
+bool elevated() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+  DWORD size = 0;
+  const bool full = GetTokenInformation(token, TokenElevationType, &type, sizeof type, &size) &&
+                    type == TokenElevationTypeFull;
+  CloseHandle(token);
+  return full;
+}
+
+int start_hook(bool staging) {
+  // As administrator the hook starts nothing and its window only says to start the game normally: the
+  // launcher's own sign-in works there, so the caller takes that instead.
+  if (elevated()) return YG_START_UNAVAILABLE;
+  yg_start_options o{};
+  o.game = "melee-unlocked";
+  o.staging = staging ? 1 : 0;
+  o.ask = YG_START_ASK_ON_USE;   // the player pressed Connect: the window may show now, Play offline goes back
+  o.name = "Melee Unlocked";     // "Play Melee Unlocked online"; needs stays 0 (offline play works)
+  // Started quietly: up to 20 s for its channel, so YG_START_OPENED means the launcher can ask it at once
+  // (and one that does not come up gets the hook's own "YouGame didn't open" window, not a silent wait).
+  o.open_wait_ms = 20000;
+  // The first YouGame that starts hidden in the tray, as the game names it (yougame_link.cpp tray_from).
+#ifdef MELEE_YOUGAME_PROD_TRAY_FROM
+  o.tray_from = staging ? "0.13.1407" : MELEE_YOUGAME_PROD_TRAY_FROM;
+#else
+  o.tray_from = staging ? "0.13.1407" : "0.13.25";
+#endif
+  return (int)yg_start(&o);
+}
+
+int start_get_progress(int* percent) { return yg_start_get_progress(percent); }
+#endif
+
+Answer ask(bool staging, const std::string& version, int timeout_ms, std::string* sign_in, int sign_in_wait_ms) {
   Answer out;
   channel::Candidate where;
   std::string why;
@@ -201,7 +245,19 @@ Answer ask(bool staging, const std::string& version, int timeout_ms) {
         box->cv.notify_all();
         return;
       }
-      if (action != channel::LineAction::Answer) return;   // other pushes are the game's, not the launcher's
+      if (action == channel::LineAction::Push) {
+        // Only the sign-in pushes are the launcher's; other pushes are the game's.
+        const json p = json::parse(line.substr(3), nullptr, false);
+        const json t = p.is_object() && p.count("push") && p["push"].is_object() && p["push"].count("type") ? p["push"]["type"] : json();
+        if (!t.is_string()) return;
+        std::lock_guard<std::mutex> lock(box->m);
+        if (t == "signedIn") box->signed_in = true;
+        else if (t == "signInFailed") box->sign_in_failed = true;
+        else return;
+        box->cv.notify_all();
+        return;
+      }
+      if (action != channel::LineAction::Answer) return;
       json j = json::parse(line.substr(3), nullptr, false);
       if (!j.is_object()) return;
       const int64_t id = j["re"].get<int64_t>();
@@ -213,7 +269,7 @@ Answer ask(bool staging, const std::string& version, int timeout_ms) {
     box->eof = true;
     box->cv.notify_all();
   });
-  const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   int64_t next_id = 1;
   // One request and its answer; json() when none came (closed, too long, or past the overall time).
   auto request = [&](json body, int ms) -> json {
@@ -264,6 +320,28 @@ Answer ask(bool staging, const std::string& version, int timeout_ms) {
     }
     if (out.state == Answer::kSignedIn && out.name.empty())
       out.name = out.code.empty() ? std::string("Player") : out.code.substr(0, out.code.find('#'));
+  }
+  if (sign_in && out.state == Answer::kSignedOut) {
+    // The app's public signIn with no provider: YouGame's overlay takes it, or the app opens YouGame's own sign-in
+    // page in the browser; once the player approves, the app is signed in and a later hello gives the account.
+    const json r = request({{"type", "signIn"}}, 8000);
+    const std::string c = r.is_object() && r.count("code") && r["code"].is_string() ? r["code"].get<std::string>() : "";
+    if (r.is_object() && r.value("ok", false)) {
+      const json res = r.count("result") && r["result"].is_object() ? r["result"] : json::object();
+      *sign_in = res.count("where") && res["where"].is_string() ? res["where"].get<std::string>() : "browser";
+      if (sign_in_wait_ms > 0) {
+        // Kept open: the app's sign-in (its overlay, or the browser hand-back) belongs to this connection.
+        std::unique_lock<std::mutex> lock(box->m);
+        box->cv.wait_for(lock, std::chrono::milliseconds(sign_in_wait_ms),
+                         [&] { return box->signed_in || box->sign_in_failed || box->eof; });
+        *sign_in += box->signed_in ? "; signed in" : box->sign_in_failed ? "; failed" : box->eof ? "; closed" : "; timed out";
+        end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+      }
+    } else if (c == "busy") {
+      *sign_in = "busy " + std::to_string((unsigned long long)channel::retry_after_ms(r));
+    } else {
+      *sign_in = "refused " + (c.empty() ? std::string(r.is_object() ? "no code" : "no answer") : c);
+    }
   }
   conn->close();
   reader.join();

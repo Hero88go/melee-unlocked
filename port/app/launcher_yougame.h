@@ -45,6 +45,11 @@ void sign_out();
 // kSignedIn: account() is the app's player (app = true). Otherwise nothing changed. *detail: every step taken.
 enum class AppSignIn { kSignedIn, kSignedOut, kNoApp, kNoAnswer };
 AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail);
+// A running, signed-out YouGame app: asks its public signIn (YouGame's overlay or its sign-in page in the
+// browser). How it went, as app::ask says it ("overlay", "browser", "busy <ms>", "refused <code>"), or "" when the
+// app was signed in after all or did not answer. The connection stays open up to wait_ms for the player to finish
+// (the app ends a sign-in whose connection closed): then "; signed in", "; failed", "; closed" or "; timed out".
+std::string ask_app_sign_in(const std::string& version, int wait_ms);
 // Disconnect chose not to use the app's account: the launcher no longer takes it by itself when it starts
 // (Connect takes it again). Saved in launcher.ini (yougame_app=0).
 bool app_declined();
@@ -66,6 +71,23 @@ std::string extension_app_missing();
 bool adopt_staging_app();
 // This launcher's YouGame app is running (never the other environment's). Pipe check only.
 bool app_running();
+// YouGame's own way in (YouGame's standard start hook, launcher_yougame_app.h start_hook), the launcher's default:
+// Connect asks it first, on use, as the game asks it from its YouGame rows. kRunning: the YouGame app for this
+// environment runs, was started quietly (tray only), is installing an update and comes back by itself, or was
+// just installed by the hook's Get YouGame and started in the tray: its account is the one to take (sign_in_app),
+// with no second sign-in. kChose: the hook's own small window was shown ("Play Melee Unlocked online") and the
+// player pressed Play offline, or Get YouGame and its install did not finish: nothing more. kUnavailable: the hook
+// cannot run here (app_hook_available() false): the launcher's own sign-in, as before.
+// Blocking while that window is up: never on the window thread. *detail: what happened, for the launcher's log.
+enum class AppHook { kRunning, kChose, kUnavailable };
+AppHook ask_app_hook(std::string* detail);
+// While ask_app_hook runs: 1 Get YouGame is installing the YouGame app, 2 the app was started and Connect waits
+// for it to answer, else 0. The launcher's status line says so rather than a bare "connecting...".
+int app_hook_phase();
+// The hook can run here: Windows, the launcher not run as administrator, not a test run (MELEE_LAUNCHER_TEST,
+// unless MELEE_LAUNCHER_TEST_YOUGAME_APP=1). A game the launcher starts with no YouGame sign-in of its own is
+// handed to the YouGame app only then (the app's channel, and the hook's window on a YouGame row).
+bool app_hook_available();
 // The launcher starting: its browser view's folder holds a session (a sign-in made before) that launcher.ini
 // does not name. Asks the site through the hidden view, as warm() does (never a window); true when it answered
 // signed in (account() is that account then). Blocking: never on the window thread. *why (when given) says
