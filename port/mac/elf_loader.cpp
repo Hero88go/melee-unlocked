@@ -69,8 +69,12 @@ uintptr_t import(const char* name) {
     IMPORT(fprintf), IMPORT(atoi),
     {"fabs",reinterpret_cast<uintptr_t>(static_cast<double(*)(double)>(&::fabs))},
     IMPORT(snprintf), IMPORT(memmove),
-    IMPORT(sqrtf), IMPORT(fwrite)
+    IMPORT(sqrtf), IMPORT(fwrite), IMPORT(strcat),
+    // Both halves of the heap come from Darwin, so a block the game frees is always one Darwin's
+    // malloc gave it. The game library has called them since 0.9.990; without them it never loaded.
+    IMPORT(malloc), IMPORT(free)
   };
+  // The build refuses a game library that imports anything not in this table (port/mac/elf_imports.py).
   // fabs[f] is exact sign-bit clearing; sqrtf is IEEE single precision on x86.
   // Simulation's other math stays bound to its own ELF definitions (DT_SYMBOLIC).
   for (const auto& item:table) if (!std::strcmp(name,item.name)) return item.address;
