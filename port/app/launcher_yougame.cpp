@@ -641,6 +641,9 @@ bool app_hook_available() {
 #endif
 }
 
+static std::atomic<int> g_hook_phase{0};
+int app_hook_phase() { return g_hook_phase.load(); }
+
 AppHook ask_app_hook(std::string* detail) {
   auto say = [&](const std::string& s) { if (detail) *detail = s; };
   if (!app_hook_available()) {
@@ -658,10 +661,12 @@ AppHook ask_app_hook(std::string* detail) {
   // start after an install most of all. Connect asks the app over that channel next, so it waits for it here
   // rather than finding no app and going on to the launcher's own sign-in window.
   auto channel_up = [&]() {
+    g_hook_phase = 2;
     for (int waited = 0; waited < 45000; waited += 250) {
-      if (app::running(staging)) return true;
+      if (app::running(staging)) { g_hook_phase = 0; return true; }
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
+    g_hook_phase = 0;
     return app::running(staging);
   };
   const std::string took = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -682,6 +687,7 @@ AppHook ask_app_hook(std::string* detail) {
       // once YouGame is up its account is taken as for a running app. Up to 10 minutes; a failed install has
       // already opened YouGame's download page.
       int percent = 0, state = 0;
+      g_hook_phase = 1;
       const auto until = std::chrono::steady_clock::now() + std::chrono::minutes(10);
       for (int polls = 0; std::chrono::steady_clock::now() < until; ++polls) {
         state = app::start_get_progress(&percent);
@@ -689,6 +695,7 @@ AppHook ask_app_hook(std::string* detail) {
         if (state == YG_START_GET_NONE && polls >= 4) break;   // no install running (2 s grace for the worker to start)
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
       }
+      g_hook_phase = 0;
       const std::string got = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
                                          std::chrono::steady_clock::now() - t0).count()) + " ms)";
       if (state == YG_START_GET_READY) {

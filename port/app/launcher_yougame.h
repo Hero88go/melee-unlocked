@@ -76,6 +76,9 @@ bool app_running();
 // Blocking while that window is up: never on the window thread. *detail: what happened, for the launcher's log.
 enum class AppHook { kRunning, kChose, kUnavailable };
 AppHook ask_app_hook(std::string* detail);
+// While ask_app_hook runs: 1 Get YouGame is installing the YouGame app, 2 the app was started and Connect waits
+// for it to answer, else 0. The launcher's status line says so rather than a bare "connecting...".
+int app_hook_phase();
 // The hook can run here: Windows, the launcher not run as administrator, not a test run (MELEE_LAUNCHER_TEST,
 // unless MELEE_LAUNCHER_TEST_YOUGAME_APP=1). A game the launcher starts with no YouGame sign-in of its own is
 // handed to the YouGame app only then (the app's channel, and the hook's window on a YouGame row).

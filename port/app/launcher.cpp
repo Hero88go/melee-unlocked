@@ -966,7 +966,7 @@ void paint_yougame_line(HDC dc) {
     // The account, then its two links; the account name gives way (an ellipsis) before a link would.
     const PlayLayout l = play_layout();
     const std::wstring account = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
-                                             : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+                                             : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : launcher::yougame::app_hook_phase() == 1 ? L"YouGame: installing the YouGame app..." : launcher::yougame::app_hook_phase() == 2 ? L"YouGame: starting the YouGame app..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
     // The YouGame app's account while YouGame does not list this build: Connect (the launcher's own sign-in,
     // which the game needs to play this build) instead of Disconnect.
     const bool app_needs_web = a.app && !launcher::yougame::listed_current();
@@ -1015,7 +1015,7 @@ void paint_yougame_line(HDC dc) {
     return;
   }
   std::wstring base = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
-                                  : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+                                  : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : launcher::yougame::app_hook_phase() == 1 ? L"YouGame: installing the YouGame app..." : launcher::yougame::app_hook_phase() == 2 ? L"YouGame: starting the YouGame app..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
   dot(dc, CX, 287, a.signed_in ? C_OK : C_FAINT);
   const RECT line = LR(CX + 15, 284, CW - 15, 17);
   HGDIOBJ old = SelectObject(dc, g_font);
@@ -1323,7 +1323,19 @@ void yougame_sign_in_thread(bool use_app) {
     // running app's account for a build it does not list goes on as below (Play asks for the launcher's own sign-in once).
     if (use_app_asked && !launcher::yougame::account().app && launcher::yougame::app_hook_available()) {
       std::string detail;
+      // The status line follows the hook (installing the YouGame app, then starting it): repainted as it moves on.
+      std::atomic<bool> asking{true};
+      std::thread repaint([&asking] {
+        for (int last = -1; asking.load(); Sleep(250)) {
+          const int phase = launcher::yougame::app_hook_phase();
+          if (phase != last && g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
+          last = phase;
+        }
+      });
       const auto hook = launcher::yougame::ask_app_hook(&detail);
+      asking = false;
+      repaint.join();
+      if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
       log_line("yougame: Connect: %s", detail.c_str());
       if (hook == launcher::yougame::AppHook::kChose) {
         g_yg_connecting = false;
