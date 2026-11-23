@@ -755,6 +755,14 @@ bool resume_web(std::string* why) {
   return true;
 }
 
+std::string ask_app_sign_in(const std::string& version) {
+  bool staging;
+  { std::lock_guard<std::mutex> lock(g_mutex); staging = g_env.id == "staging"; }
+  std::string how;
+  app::ask(staging, version, 12000, &how);
+  return how;
+}
+
 AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail) {
   // Every step goes into *detail ("; " between), for the launcher's log.
   std::string steps;

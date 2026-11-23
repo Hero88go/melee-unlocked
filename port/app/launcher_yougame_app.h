@@ -57,13 +57,15 @@ bool running(bool staging);
 // for its channel.
 bool start(bool staging, int wait_ms);
 // Connects to the running app's channel, says hello as this game (`version`), asks the connect code when
-// signed in, and closes. Blocking (a few seconds at most, `timeout_ms` overall); never on a window thread.
-Answer ask(bool staging, const std::string& version, int timeout_ms = 12000);
+// signed in, and closes. With `sign_in` given and nobody signed in, it also asks the app's public signIn (no provider:
+// YouGame's overlay or its sign-in page in the browser) and says how it went: "overlay", "browser", "busy <ms>"
+// (ask again after that long) or "refused <code>". Blocking (a few seconds at most, `timeout_ms` overall); never on a window thread.
+Answer ask(bool staging, const std::string& version, int timeout_ms = 12000, std::string* sign_in = nullptr);
 #else
 inline bool installed(bool) { return false; }
 inline bool running(bool) { return false; }
 inline bool start(bool, int) { return false; }
-inline Answer ask(bool, const std::string&, int = 12000) { return {}; }
+inline Answer ask(bool, const std::string&, int = 12000, std::string* = nullptr) { return {}; }
 #endif
 
 }  // namespace launcher::yougame::app

@@ -45,7 +45,10 @@ need("if (state == YG_START_GET_READY) {" in getting and "return AppHook::kRunni
 
 # Only public calls: no sign-in window asked of the app, no add-on of the launcher's own.
 need("sign_in_there" not in ly and "sign_in_there" not in ly_h and "kAppWindow" not in ly_h, "no app sign-in window path")
-need('"signIn"' not in app and "app_window" not in app_h, "the launcher never asks the app for its own sign-in window")
+# The app's public signIn, with no provider (YouGame's overlay or its sign-in page in the browser): never a window
+# of the app's own and never a provider the launcher picks.
+need('request({{"type", "signIn"}}, 8000)' in app and '"provider"' not in app and "app_window" not in app_h,
+     "the launcher asks only the app's public signIn, with no provider")
 for name, text in (("launcher.cpp", launcher), ("launcher_yougame.cpp", ly), ("launcher_yougame.h", ly_h),
                    ("launcher_yougame_app.cpp", app), ("launcher_yougame_app.h", app_h)):
     need("YouGame Online" not in text and "mini app" not in text, name + " names no small add-on")

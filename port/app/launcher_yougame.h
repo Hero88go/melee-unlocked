@@ -45,6 +45,10 @@ void sign_out();
 // kSignedIn: account() is the app's player (app = true). Otherwise nothing changed. *detail: every step taken.
 enum class AppSignIn { kSignedIn, kSignedOut, kNoApp, kNoAnswer };
 AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail);
+// A running, signed-out YouGame app: asks its public signIn (YouGame's overlay or its sign-in page in the
+// browser). How it went, as app::ask says it ("overlay", "browser", "busy <ms>", "refused <code>"), or "" when the
+// app was signed in after all or did not answer.
+std::string ask_app_sign_in(const std::string& version);
 // Disconnect chose not to use the app's account: the launcher no longer takes it by itself when it starts
 // (Connect takes it again). Saved in launcher.ini (yougame_app=0).
 bool app_declined();
