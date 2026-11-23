@@ -928,13 +928,16 @@ json bridge(const json& body, int timeout_ms = 15000, const std::function<bool()
       }
       throw update::Required();
     }
-    // Inspect busy metadata before bridge converts a failure into display text.
-    const int delay = body.value("type", "") == "mpTicket" ? retry.delay(j) : 0;
+    // Inspect busy metadata before bridge converts a failure into display text. A ticket, or a room hold (the
+    // Friends lobby's and the Doubles home's first ask), refused only for now is asked again.
+    const bool ticket = body.value("type", "") == "mpTicket" ||
+                        (body.value("type", "") == "mpFriend" && body.value("hold", json()) == true);
+    const int delay = ticket ? retry.delay(j) : 0;
     if (!delay) break;
     // "notHere" is the local channel host's (the app has no page to ask yet), "busy" the site's.
-    host::log("yougame: %s, retrying the ticket in %d s (try %d/3)",
+    host::log("yougame: %s, retrying the ticket in %d s (try %d, %d s of %d)",
               ranked::str(j, "code") == "notHere" ? "the app has no page to ask yet" : "site busy",
-              delay, retry.tries());
+              delay, retry.tries(), retry.waited(), search_policy::BusyRetry::kWindow);
     if (!search_policy::wait(uint64_t(delay) * 1000, now_ms, [](int ms) { Sleep(ms); },
         [&] { return cancelled && cancelled(); })) throw std::runtime_error("Cancelled");
   }
@@ -943,6 +946,9 @@ json bridge(const json& body, int timeout_ms = 15000, const std::function<bool()
       j.count("result") && j["result"].is_object() && !ranked::str(j["result"], "room").empty();
   if (cancelled && cancelled() && !assigned) throw std::runtime_error("Cancelled");
   if (!j.value("ok", false)) {
+    // Still refused for now after the whole retry window: our words, not the answer's "try again in 2 s".
+    const bool gave_up = retry.gave_up() && search_policy::BusyRetry::transient(j);
+    if (gave_up) host::log("yougame: still busy after %d s; not asking again", retry.waited());
     g_bridge_refusal = ranked::str(j, "code");
     if (!g_stdio && g_channel_allowed && !routed_to_bridge(body)) {
       // The local channel's host (v1) answers only some types; the rest say notYet. Our words, never a
@@ -957,10 +963,11 @@ json bridge(const json& body, int timeout_ms = 15000, const std::function<bool()
       // app's update for the player's first ticket only. Its words still end the search below.
       if (body.value("type", "") == "mpTicket" && signin::Update::out_of_date(j)) g_ticket_out_of_date = j;
       const std::string ours = channel::refusal_text(j);
-      if (!ours.empty()) throw std::runtime_error(ours);
+      if (!ours.empty() && !gave_up) throw std::runtime_error(ours);
     }
     if (g_bridge_refusal.empty() || g_bridge_refusal.size() > 24 ||
         g_bridge_refusal.find_first_not_of("abcdefghijklmnopqrstuvwxyz_") != std::string::npos) g_bridge_refusal = "refused";
+    if (gave_up) throw std::runtime_error(search_policy::kBusyGaveUp);
     std::string error = j.count("error") && j["error"].is_string() ? j["error"].get<std::string>() : friends::kRequestFailed;
     throw std::runtime_error(friends::version_request(body) && friends::version_reason(j) ? friends::kVersion :
                              body.value("ranked", false) ? ranked::ticket_error(j) : error);
@@ -3685,19 +3692,44 @@ std::string build_version() {
 #endif
 }
 
+// Which release YouGame is on, asked with a hello off the game thread: the round trip held the game's frame
+// (0.6 s, or the whole 2 s when nothing answered) at Start and on every Doubles entry. A YouGame row picked asks
+// ahead of the Start that reads it, and each read asks again for the next one.
+namespace {
+std::mutex g_behind_mutex;
+std::string g_behind_version;
+bool g_behind_restart = false;
+std::atomic<bool> g_behind_asking{false};
+void ask_behind_version() {
+  if (!launcher() || g_behind_asking.exchange(true)) return;
+  std::thread([] {
+    std::string version;
+    bool restart = false;
+    try {
+      const json hello = bridge({{"type", "hello"}}, 2000);
+      if (hello.count("behind") && hello["behind"].is_object()) {
+        restart = hello["behind"].value("restart", true);
+        version = hello["behind"].value("version", "");
+      }
+    } catch (const std::exception& e) {
+      host::log("yougame: the launcher did not say which release YouGame is on: %s", e.what());
+    }
+    { std::lock_guard<std::mutex> lock(g_behind_mutex); g_behind_version = version; g_behind_restart = restart; }
+    g_behind_asking = false;
+  }).detach();
+}
+}  // namespace
 std::string behind_version_now(bool* can_restart) {
   if (can_restart) *can_restart = false;
   if (!launcher()) return {};
-  try {
-    const json hello = bridge({{"type", "hello"}}, 2000);
-    if (hello.count("behind") && hello["behind"].is_object()) {
-      if (can_restart) *can_restart = hello["behind"].value("restart", true);
-      return hello["behind"].value("version", "");
-    }
-  } catch (const std::exception& e) {
-    host::log("yougame: the launcher did not say which release YouGame is on: %s", e.what());
+  std::string version;
+  {
+    std::lock_guard<std::mutex> lock(g_behind_mutex);
+    version = g_behind_version;
+    if (can_restart) *can_restart = g_behind_restart;
   }
-  return {};
+  ask_behind_version();
+  return version;
 }
 
 bool restart_older(const std::string& mode, std::string* error) {
@@ -3744,6 +3776,7 @@ void set_launcher_session(bool yougame) {
   if (!launcher()) return;
   if (g_launcher_session.exchange(yougame) != yougame)
     host::log("yougame: %s row chosen", yougame ? "a YouGame" : "a Slippi");
+  if (yougame) ask_behind_version();   // read at Start (behind_version_now), off this thread
 }
 uintptr_t pad_mirror_handle() { return g_pad_mirror.load(); }
 #ifndef _WIN32
@@ -5138,6 +5171,9 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
     // shows 120 characters (slippi_online convert_string_for_game): this fits after a code of 10.
     if (g_bridge_refusal == "unknown_code")
       return fail(std::string(e.what()) + " YouGame codes differ from Slippi codes: ask for their YouGame one.");
+    // The Doubles home's panel has one short line for why: an out-of-date copy says so in its own words there.
+    if (doubles_home && (g_bridge_refusal == "old_build" || g_bridge_refusal == "build_replaced"))
+      return fail(std::string(signin::kOutOfDate) + ".");
     return fail(e.what());
   }
   if (search.mode == 0 && !ranked::set_contract_matches(ticket))

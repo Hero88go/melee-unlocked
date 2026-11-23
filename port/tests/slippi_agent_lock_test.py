@@ -154,9 +154,10 @@ int main() {
 int main() {
  setenv("YOUGAME_AGENT_COPY","1",1);unsetenv("YOUGAME_TEST_LABEL");
  User user("synthetic");
- for(bool yg : {false,true})for(bool local : {false,true})for(bool room : {false,true})for(int mode=0;mode<5;++mode) {
+ // yg: 0 no YouGame, 1 the app, 2 the launcher's YouGame row alone (session() without active()).
+ for(int yg : {0,1,2})for(bool local : {false,true})for(bool room : {false,true})for(int mode=0;mode<5;++mode) {
   reads=compatibility=prepared=selected_slippi=yg_search=yg_calls=blend=tickets=local_tickets=0;
-  active=yg;granted=login=vanilla=true;Matchmaking mm;mm.user_=&user;mm.local_peer.enabled=local;
+  active=yg==1;launcher_session=yg==2;granted=login=vanilla=true;Matchmaking mm;mm.user_=&user;mm.local_peer.enabled=local;
   mm.search_settings_={Matchmaking::OnlinePlayMode(mode),"",room?"friends":""};
   mm.startMatchmaking();
   bool allowed_yg=yg && (room || mode<2) && !local;
@@ -165,7 +166,8 @@ int main() {
   CHECK((mm.state_==Matchmaking::ERROR_ENCOUNTERED)==(!local && !allowed_yg));
   if(!local && !allowed_yg)CHECK(mm.error==slippi::agent_lock::refusal);
  }
- puts("agent routing: 40 combinations, YouGame/local-only passed");
+ launcher_session=false;
+ puts("agent routing: 60 combinations (app, launcher row, none), YouGame/local-only passed");
 }
 '''
         for flags in ((), ('-DYOUGAME_AGENT_TEST_HOOK',)):

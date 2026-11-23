@@ -2701,9 +2701,10 @@ void Matchmaking::startMatchmaking() {
     startYouGameMatchmaking();
     return;
   }
-  // Preserve YouGame rooms/tickets and local test peering; never blend an agent into Slippi.
+  // Preserve YouGame rooms/tickets and local test peering; never blend an agent into Slippi. A YouGame session
+  // (the app's, or a YouGame row under the launcher) searches YouGame alone.
   if (host::test_env::agent_copy() && !local_peer.enabled) {
-    if (yougame::active() && !yougame::mode_policy::slippi_menu_mode(
+    if (yougame::session() && !yougame::mode_policy::slippi_menu_mode(
             search_settings_.mode, !search_settings_.friend_room.empty())) {
       slippi_user_.reset();
       // The same search line and link state a player without a Slippi login sees.

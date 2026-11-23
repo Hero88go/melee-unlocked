@@ -752,6 +752,16 @@ int main(void)
     v.mode = MU_LOBBY_M_DOUBLES; v.my_seat = MU_LOBBY_NONE;
     check(NULL, MU_LOBBY_HINT_OPENING, 0, 0, "", LINES("Waiting for players", 1, "", 0, "", 0), "", "");
     check(&v, MU_LOBBY_HINT_OPENING, 0, 0, "", LINES("Waiting for players", 1, "", 0, "", 0), "", "");
+    /* The home never opened (its ticket was refused): the reason the view carries, not "Waiting for players". */
+    v.flags = MU_LOBBY_F_ARMED; v.block_hint = MU_LOBBY_HINT_CLOSED;
+    strcpy(v.note, "This copy of Melee is out of date.");
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "This copy of Melee is out of date.");
+    check(&v, MU_LOBBY_HINT_REFUSED, 1, 0, "", LINES("", 0, "", 0, "", 0), "", "This copy of Melee is out of date.");
+    v.note[0] = 0;
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Hold B to exit");
+    v.flags = 0;   /* not armed yet: still opening */
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("Waiting for players", 1, "", 0, "", 0), "", "");
+    v.block_hint = 0;
     v.flags = MU_LOBBY_F_ARMED | MU_LOBBY_F_KNOWN | MU_LOBBY_F_HOST; v.my_seat = 0;
     v.seats[0].kind = MU_LOBBY_KIND_HUMAN; v.seats[1].kind = MU_LOBBY_KIND_OPEN;
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_FIND, "",
