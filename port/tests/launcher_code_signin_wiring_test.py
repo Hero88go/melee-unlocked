@@ -133,12 +133,15 @@ class LauncherCodeSignIn(unittest.TestCase):
         # The code signs in whoever enters it until it expires, and players attach the launcher's logs.
         for text in (self.launcher, self.yg):
             for line in re.findall(r"log(?:_line)?\([^;]*;", text):
-                self.assertNotRegex(line, r"\bcode\.c_str\(\)|g_yg_code\.c_str\(\)|user_code", line)
+                self.assertNotRegex(line, r"\bcode\.c_str\(\)|g_yg_code\.c_str\(\)|user_code|\bopen\.c_str\(\)|code->open|verification_uri_complete", line)
 
     def test_code_opens_the_browser_by_itself(self):
         handler = self.launcher[self.launcher.index("case WM_APP_YOUGAME_CODE:"):]
         handler = handler[:handler.index("return 0;")]
-        self.assertIn("ShellExecuteW(nullptr, L\"open\", widen(g_yg_code_link)", handler)
+        # It opens the page with the code already filled in, so a player who signs in to the site first keeps it.
+        self.assertIn("ShellExecuteW(nullptr, L\"open\", widen(code->open)", handler)
+        self.assertIn('string_or_empty(j, "verification_uri_complete")', self.yg)
+        self.assertIn("if (open.rfind(e.site + \"/\", 0) != 0", self.yg)
 
     def test_vendored_headers_name_their_youGame_commit(self):
         for name in ("yougame_start.h", "yougame.h"):

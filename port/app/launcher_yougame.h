@@ -68,13 +68,14 @@ bool adopt_staging_app();
 // This launcher's YouGame app is running (never the other environment's). Pipe check only.
 bool app_running();
 // YouGame's game sign-in by code. Blocking (minutes: the player has 10 minutes per code, and an expired code is
-// replaced by a new one a few times); never on the window thread. on_code(code, link) is called (on this thread)
-// each time YouGame hands out a code: link is where to enter it (https://yougame.co/link). Test runs only:
+// replaced by a new one a few times); never on the window thread. on_code(code, link, open) is called (on this thread)
+// each time YouGame hands out a code: link is where to enter it (https://yougame.co/link), open the same page
+// with the code already in it (verification_uri_complete) for the browser. open carries the code: never log it. Test runs only:
 // YOUGAME_TEST_CODE_SIGNIN, an absolute folder, gets sign-in-code.json {"link","code"} for each code, so an
 // automated test can approve it. kSignedIn: account() is the player. *why (when given): the player's words when
 // it ended otherwise (empty when cancelled). Neither the device code nor any token is ever logged.
 enum class CodeSignIn { kSignedIn, kDenied, kExpired, kCancelled, kFailed };
-CodeSignIn sign_in_code(const std::function<void(const std::string& code, const std::string& link)>& on_code,
+CodeSignIn sign_in_code(const std::function<void(const std::string& code, const std::string& link, const std::string& open)>& on_code,
                         std::string* why);
 // Ends a sign_in_code that is waiting (Back on the sign-in box): it returns kCancelled. Any thread.
 void cancel_sign_in_code();

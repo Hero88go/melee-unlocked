@@ -713,7 +713,7 @@ std::string error_text(const std::exception& e) {
 
 void cancel_sign_in_code() { ++g_code_run; }
 
-CodeSignIn sign_in_code(const std::function<void(const std::string& code, const std::string& link)>& on_code,
+CodeSignIn sign_in_code(const std::function<void(const std::string& code, const std::string& link, const std::string& open)>& on_code,
                         std::string* why) {
   std::string local;
   if (!why) why = &local;
@@ -769,11 +769,15 @@ CodeSignIn sign_in_code(const std::function<void(const std::string& code, const 
     // Where to enter it: YouGame's own page on this site, never another address.
     std::string link = string_or_empty(j, "verification_uri");
     if (link.rfind(e.site + "/", 0) != 0 || link.size() > 120) link = e.site + "/link";
+    // The page to open in the browser: the same with the code filled in, so a player who has to sign in to the site
+    // first still lands on it with the code entered. Only YouGame's own page; otherwise the bare link.
+    std::string open = string_or_empty(j, "verification_uri_complete");
+    if (open.rfind(e.site + "/", 0) != 0 || open.size() > 160) open = link;
     const int64_t lasts = j.count("expires_in") && j["expires_in"].is_number_integer() ? std::clamp<int64_t>(j["expires_in"].get<int64_t>(), 60, 1800) : 600;
     int64_t interval = j.count("interval") && j["interval"].is_number_integer() ? std::clamp<int64_t>(j["interval"].get<int64_t>(), 1, 60) : 5;
     drop_test_code(test_file, shown);
     shown = code;
-    if (on_code) on_code(code, link);
+    if (on_code) on_code(code, link, open);
     write_test_code(test_file, link, code);
     const auto ends = std::chrono::steady_clock::now() + std::chrono::seconds(lasts);
     const std::string poll = "grant_type=" + form("urn:ietf:params:oauth:grant-type:device_code") + "&device_code=" + form(device) +

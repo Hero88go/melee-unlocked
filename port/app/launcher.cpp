@@ -97,7 +97,7 @@ const UINT WM_APP_GAME_DONE = WM_APP + 3;
 const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
 const UINT WM_APP_YOUGAME = WM_APP + 52;
 const UINT WM_APP_YOUGAME_WEB = WM_APP + 53;   // Connect's sign-in is done: wParam signed in, lParam heap std::string* why not
-const UINT WM_APP_YOUGAME_CODE = WM_APP + 56;   // a sign-in code to show: lParam heap std::pair<std::string, std::string>* (code, link)
+const UINT WM_APP_YOUGAME_CODE = WM_APP + 56;   // a sign-in code to show: lParam heap YgCodeShown*
 const UINT WM_APP_YOUGAME_SAVE = WM_APP + 57;   // launcher.ini is written now (a new YouGame refresh token), sent and waited on
 const UINT WM_APP_YOUGAME_CONNECT = WM_APP + 54;   // test runs only (MELEE_LAUNCHER_TEST_YG_CONNECT_MS): YouGame's Connect pressed
 const UINT WM_APP_YOUGAME_OPEN_CONNECT = WM_APP + 55;   // the game's YouGame row asked for Connect (muOpenConnect)
@@ -946,6 +946,8 @@ std::atomic<bool> g_yg_connecting{false};   // Connect is asking the YouGame app
 // The sign-in code Connect shows (YouGame's sign-in by code): in the YouGame box over the launcher, or, where
 // that box cannot be drawn, in this status line. Window thread only.
 std::string g_yg_code, g_yg_code_link;
+// What the sign-in thread hands the window: the code, the link to show, and the link to open (the code filled in).
+struct YgCodeShown { std::string code, link, open; };
 bool g_yg_box = false;   // the box with the code is up (ID_TIMER_YG_BOX polls it)
 // The status line while not connected: the code to enter when the box is not up, else connecting or not.
 std::wstring yougame_status_text() {
@@ -1329,9 +1331,9 @@ void yougame_sign_in_thread(bool use_app) {
     // players attach these logs.
     std::string why;
     const auto result = launcher::yougame::sign_in_code(
-        [](const std::string& code, const std::string& link) {
+        [](const std::string& code, const std::string& link, const std::string& open) {
           log_line("yougame: Connect: sign-in code shown, entered at %s", link.c_str());
-          PostMessageW(g_main, WM_APP_YOUGAME_CODE, 0, (LPARAM)new std::pair<std::string, std::string>(code, link));
+          PostMessageW(g_main, WM_APP_YOUGAME_CODE, 0, (LPARAM)new YgCodeShown{code, link, open});
         },
         &why);
     const bool ok = result == launcher::yougame::CodeSignIn::kSignedIn;
@@ -2757,12 +2759,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       yougame_open_connect_from_game();
       return 0;
     case WM_APP_YOUGAME_CODE: {
-      std::unique_ptr<std::pair<std::string, std::string>> code((std::pair<std::string, std::string>*)lp);
-      g_yg_code = code->first;
-      g_yg_code_link = code->second;
+      std::unique_ptr<YgCodeShown> code((YgCodeShown*)lp);
+      g_yg_code = code->code;
+      g_yg_code_link = code->link;
       yougame_show_code_box();
-      // The browser opens on the link by itself, so the player only types the code (Open in browser opens it again).
-      if ((INT_PTR)ShellExecuteW(nullptr, L"open", widen(g_yg_code_link).c_str(), nullptr, nullptr, SW_SHOWNORMAL) <= 32)
+      // The browser opens by itself on the page with the code already filled in (it stays filled in through the
+      // site's sign-in), so the player only approves. The box's Open in browser opens the plain link.
+      if ((INT_PTR)ShellExecuteW(nullptr, L"open", widen(code->open).c_str(), nullptr, nullptr, SW_SHOWNORMAL) <= 32)
         log_line("yougame: Connect: the browser did not open; the box's Open in browser can");
       return 0;
     }
