@@ -28,6 +28,26 @@ struct Answer {
 // fetch_identity, yougame_signin.h hello_signed_out). *pending: signed in, the player not ready yet.
 Answer read_hello(const nlohmann::json& answer, bool* pending);
 
+// YouGame's start hook (third_party/yougame_start/yougame_start.h, YouGame's public header), asked on use, as
+// the game asks it from its YouGame rows (yougame_link.cpp reach_ask_on_use): a running YouGame app, nothing
+// shown; installed and not running, started quietly (tray only, its identity and signature checked by the hook);
+// not on this computer, the hook's own small window ("Play Melee Unlocked online": Get YouGame / Play offline).
+// Returns the hook's yg_start_result. Blocks while that window is up: never on the window thread.
+// YG_START_UNAVAILABLE where the hook cannot run: not Windows, or this launcher runs as administrator (the hook
+// would only show its "started as administrator" window there; the launcher's own sign-in is the way then).
+// elevated(): this launcher holds rights the player's own programs don't ("Run as administrator": a full elevated token).
+// start_get_progress(): after YG_START_GETTING (Get YouGame pressed), the hook's background install of the
+// YouGame app in this process (yg_start_get_progress: YG_START_GET_DOWNLOADING .. READY or FAILED).
+#if defined(_WIN32) && defined(_MSC_VER)
+int start_hook(bool staging);
+bool elevated();
+int start_get_progress(int* percent);
+#else
+inline int start_hook(bool) { return 4; }   // YG_START_UNAVAILABLE: the hook runs on Windows only here
+inline bool elevated() { return false; }
+inline int start_get_progress(int*) { return 0; }   // YG_START_GET_NONE
+#endif
+
 #if (defined(_WIN32) && defined(_MSC_VER)) || defined(MELEE_LINUX)
 // The YouGame app for this environment is installed (its link type is registered for this user or machine).
 bool installed(bool staging);

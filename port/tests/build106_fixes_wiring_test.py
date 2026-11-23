@@ -133,8 +133,8 @@ class Build106Fixes(unittest.TestCase):
         self.assertIn('#define YG__START_OPEN "Open YouGame"', start)
         self.assertIn('#define YG__START_LATER "Play offline"', start)   # the C3 window (YouGame 55e1965c6)
         # v2 a678bb7b: a tray start waits for YouGame to come up; a slow one is DECLINED, never the download page.
-        # 122.6 (YouGame 3c9a9d020): a refused tray start falls back to the mini app, then the same wait.
-        self.assertIn("tray = yg__start_tray(staging, any, have);", start)
+        # The mini app is retired (YouGame 569624f25): a tray start of the full app only, then the same wait.
+        self.assertIn("tray = yg__start_tray(staging, want, have);", start)
         self.assertIn("if (tray == YG__START_TRAY_STARTED) {", start)
         self.assertIn("return up >= 0 ? (yg_start_result)up : YG_START_DECLINED;", start)
         self.assertIn("if (installed && YG__START_UPDATE_SYSTEM && yg__start_raised()) text = YG__START_TEXT_RAISED;", start)

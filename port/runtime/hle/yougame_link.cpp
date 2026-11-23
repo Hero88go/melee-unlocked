@@ -101,7 +101,7 @@ static void yg_link_start_shown(void* hwnd);
 #define YG__START_ON_SHOWN(u) yg_link_start_shown((void*)(u)->hwnd)
 #endif
 
-// YouGame's native headers (MIT, engines/native, claude/v2 0b5798f46). The start hook is enabled on
+// YouGame's native headers (MIT, engines/native, YouGame's public copies). The start hook is enabled on
 // Windows and macOS; Linux keeps its existing UNAVAILABLE behaviour.
 #if defined(_WIN32) || defined(__APPLE__)
 #define YOUGAME_START_IMPLEMENTATION
@@ -112,8 +112,8 @@ static void yg_link_start_shown(void* hwnd);
 extern "C" yg_start_result yg_start(const yg_start_options*) { return YG_START_UNAVAILABLE; }
 #endif
 #ifdef _WIN32
-// Closes YouGame's small window as its own X does (Play offline; an ask on use never remembers it),
-// unless Get YouGame is downloading or installing in it: the player asked for YouGame, so that carries on.
+// Closes YouGame's small window as its own X does (Play offline; an ask on use never remembers it).
+// Get YouGame closes the window at once and installs in the background, so a close never stops an install.
 // Only our own process's window of that class; a stale handle is refused. True when the close was sent.
 static bool yg_link_start_close() {
   HWND w = (HWND)g_yg_start_window.load();
@@ -122,7 +122,6 @@ static bool yg_link_start_close() {
   GetWindowThreadProcessId(w, &pid);
   wchar_t cls[64] = {};
   if (pid != GetCurrentProcessId() || !GetClassNameW(w, cls, 64) || wcscmp(cls, L"YouGameStartWindow") != 0) return false;
-  if (*(volatile int*)&yg__start_u.getting) return false;   // written on the window's thread; a plain flag
   return PostMessageW(w, WM_CLOSE, 0, 0) != 0;
 }
 static void yg_link_start_shown(void* hwnd) {
@@ -3523,6 +3522,7 @@ const char* start_result_name(int r) {
     case YG_START_INSTALLED: return "installed, not running";
     case YG_START_MISSING: return "not on this computer";
     case YG_START_UPDATING: return "YouGame is updating (treated as unavailable; it restarts by itself)";
+    case YG_START_GETTING: return "Get YouGame pressed, YouGame is installing in the background";
     default: return "?";
   }
 }
@@ -3664,6 +3664,15 @@ bool coming_soon() {
 #else
   return false;
 #endif
+}
+bool ask_on_use() {
+  // A game on the app's local channel with no YouGame answering it yet: one started on its own, or one Melee
+  // Unlocked's launcher handed to the YouGame app because the launcher holds no YouGame sign-in of its own
+  // (MELEE_YOUGAME_EXTENSION=1, no bridge). Its YouGame rows ask through YouGame's start hook when picked, as a
+  // build whose rows wait for YouGame does (first_row_picked). Never under the launcher's bridge: the launcher's
+  // own sign-in serves those rows. Never in runs that may not reach an app (g_channel_allowed turned off).
+  return !kNoApp && !g_stdio && g_channel_allowed.load() && !g_channel_up.load() && !g_launcher && !g_match_bridge &&
+         !active();
 }
 bool coming_soon_build() {
 #ifdef MELEE_YOUGAME_COMING_SOON
@@ -3935,6 +3944,37 @@ void reach_open() {
     g_reach_busy = false;
   }).detach();
 }
+// Get YouGame pressed in YouGame's window (Windows): the window closed at once and the hook installs the YouGame
+// app in the background in this process, then starts it in the tray. The game keeps playing offline meanwhile;
+// this waits on the hook's progress (yg_start_get_progress, at most 15 minutes) and, once YouGame is started,
+// looks for its channel so the YouGame rows open by themselves. A failed install has opened the download page.
+// One watcher at a time; a second press while installing gets YG_START_GETTING again with no window.
+void reach_after_get() {
+#if defined(_WIN32) || defined(__APPLE__)
+  static std::atomic<bool> watching{false};
+  bool idle = false;
+  if (!watching.compare_exchange_strong(idle, true)) return;
+  std::thread([] {
+    int state = YG_START_GET_NONE, percent = 0, said = -1;
+    for (int i = 0; i < 15 * 60 * 2; ++i) {
+      state = yg_start_get_progress(&percent);
+      if (state != said) {
+        said = state;
+        host::log("yougame: Get YouGame: %s", state == YG_START_GET_DOWNLOADING ? "downloading" : state == YG_START_GET_INSTALLING ? "installing"
+                  : state == YG_START_GET_READY ? "installed and started in the tray" : state == YG_START_GET_FAILED ? "failed (download page opened)" : "not running");
+      }
+      if (state == YG_START_GET_READY || state == YG_START_GET_FAILED) break;
+      if (state == YG_START_GET_NONE && i >= 4) break;   // no install running (2 s grace for the worker to start)
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    if (state == YG_START_GET_READY) {
+      const bool up = reach_wait_for_channel(25);
+      host::log(up ? "yougame: Get YouGame: YouGame answered" : "yougame: Get YouGame: YouGame did not answer yet");
+    }
+    watching = false;
+  }).detach();
+#endif
+}
 // Windows and Mac, a YouGame row pressed with no YouGame connected: the start hook with ASK_ON_USE, on its
 // own thread (it blocks while YouGame's window is up; presses meanwhile are ignored). Running or opened:
 // our panel's "Opening YouGame..." until the channel answers. Play offline, or Get YouGame (the page is
@@ -3974,6 +4014,7 @@ void reach_ask_on_use() {
       return;
     }
     g_reach_busy = false;
+    if (r == YG_START_GETTING) { reach_after_get(); return; }   // Get YouGame: installing in the background
     if (r == YG_START_DECLINED || r == YG_START_OFFERED) return;   // the player chose; never remembered
     reach_open();   // UNAVAILABLE, or a quiet run that showed nothing: today's panel
   }).detach();
@@ -3991,7 +4032,8 @@ void reach_open_app() {
     g_app_opening = true;
     const int r = run_start_hook("Open YouGame pressed", false, YG_START_ASK_ON_USE);
     const bool asked = r == YG_START_OPENED || r == YG_START_RUNNING;
-    if (r == YG_START_DECLINED || r == YG_START_OFFERED) {   // its window asked; Play offline or Get YouGame
+    if (r == YG_START_DECLINED || r == YG_START_OFFERED || r == YG_START_GETTING) {   // its window asked; Play offline or Get YouGame
+      if (r == YG_START_GETTING) reach_after_get();
       g_app_opening = false;
       { std::lock_guard<std::mutex> lock(g_reach_mutex); g_reach.close(); }
       g_reach_busy = false;

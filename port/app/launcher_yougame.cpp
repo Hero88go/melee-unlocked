@@ -2,6 +2,7 @@
 #include "launcher_yougame.h"
 #include "launcher_yougame_app.h"
 #include "launcher_yougame_web.h"
+#include "yougame_start/yougame_start.h"   // the hook's results (its code is in launcher_yougame_app.cpp)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -629,6 +630,60 @@ bool adopt_staging_app() {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_env_named = true;
   return true;
+}
+
+bool app_hook_available() {
+  if (std::getenv("MELEE_LAUNCHER_TEST") && !std::getenv("MELEE_LAUNCHER_TEST_YOUGAME_APP")) return false;
+#if defined(_WIN32) && defined(_MSC_VER)
+  return !app::elevated();
+#else
+  return false;   // the hook's window and quiet start are Windows-only in this launcher
+#endif
+}
+
+AppHook ask_app_hook(std::string* detail) {
+  auto say = [&](const std::string& s) { if (detail) *detail = s; };
+  if (!app_hook_available()) {
+    say(std::getenv("MELEE_LAUNCHER_TEST") ? "test run: YouGame's start hook is not asked"
+        : app::elevated() ? "the launcher runs as administrator: YouGame's start hook is not asked"
+        : "YouGame's start hook does not run on this system");
+    return AppHook::kUnavailable;
+  }
+  bool staging;
+  { std::lock_guard<std::mutex> lock(g_mutex); staging = g_env.id == "staging"; }
+  const std::string name = staging ? "YouGame Staging" : "YouGame";
+  const auto t0 = std::chrono::steady_clock::now();
+  const int r = app::start_hook(staging);
+  const std::string took = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - t0).count()) + " ms)";
+  switch (r) {
+    case YG_START_RUNNING: say("YouGame's start hook: the " + name + " app is running" + took); return AppHook::kRunning;
+    case YG_START_OPENED: say("YouGame's start hook: the " + name + " app was started quietly (tray)" + took); return AppHook::kRunning;
+    case YG_START_UPDATING: say("YouGame's start hook: the " + name + " app is installing an update" + took); return AppHook::kRunning;
+    case YG_START_OFFERED: say("YouGame's start hook: its window was shown, Get YouGame pressed (download page opened)" + took); return AppHook::kChose;
+    case YG_START_GETTING: {
+      // Get YouGame pressed: the hook downloads the YouGame app and installs it in the background (per-user, signed,
+      // never elevated), then starts it in the tray. The launcher keeps running meanwhile, so the install finishes;
+      // once YouGame is up its account is taken as for a running app. Up to 10 minutes; a failed install has
+      // already opened YouGame's download page.
+      int percent = 0, state = 0;
+      const auto until = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+      for (int polls = 0; std::chrono::steady_clock::now() < until; ++polls) {
+        state = app::start_get_progress(&percent);
+        if (state == YG_START_GET_READY || state == YG_START_GET_FAILED) break;
+        if (state == YG_START_GET_NONE && polls >= 4) break;   // no install running (2 s grace for the worker to start)
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
+      const std::string got = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - t0).count()) + " ms)";
+      if (state == YG_START_GET_READY) { say("YouGame's start hook: Get YouGame pressed; the " + name + " app was installed and started in the tray" + got); return AppHook::kRunning; }
+      say(std::string("YouGame's start hook: Get YouGame pressed; ") +
+          (state == YG_START_GET_FAILED ? "the install failed (the download page was opened)" : "the install is still running") + got);
+      return AppHook::kChose;
+    }
+    case YG_START_DECLINED: say("YouGame's start hook: its window was shown, Play offline (or closed)" + took); return AppHook::kChose;
+    default: say("YouGame's start hook could not run (result " + std::to_string(r) + ")" + took); return AppHook::kUnavailable;
+  }
 }
 
 bool app_declined() { std::lock_guard<std::mutex> lock(g_mutex); return g_app_choice == 0; }

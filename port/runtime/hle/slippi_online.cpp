@@ -3772,7 +3772,7 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
         s_yg_pick = 0;
         yougame::withdraw_ask("Online menu left");
       } else if (payload_len == 1 && payload[0] == 0x20) {
-        if (yougame::coming_soon()) yougame::first_row_picked();
+        if (yougame::coming_soon() || yougame::ask_on_use()) yougame::first_row_picked();
         // YouGame is open but signed out (local channel): the sign-in panel, then the menu carries on.
         else if (yougame::sign_in_needed()) yougame::sign_in_open();
         if (!yougame::sign_in_needed()) s_yg_pick = now_pick_ms();   // not known yet: the poll opens it
@@ -3821,7 +3821,9 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       if ((q[0] & 4) && yougame::channel_connected() && yougame::friends_flow()) q[0] |= 128;
       // Bit 6: YouGame is not ready for the rows yet: not open (picking a row starts it), or open and signed
       // out (picking a row opens Sign in by code). Either way the menu then carries on into that row.
-      if ((yougame::coming_soon() || yougame::sign_in_needed()) && !yougame::active() && (q[0] & 2)) q[0] |= 64;
+      // Also a game on the app's channel with no YouGame found yet (yougame::ask_on_use: the launcher handed it to
+      // the YouGame app, or it started on its own): picking a row asks with YouGame's start hook.
+      if ((yougame::coming_soon() || yougame::ask_on_use() || yougame::sign_in_needed()) && !yougame::active() && (q[0] & 2)) q[0] |= 64;
       // Bit 4/5: started for a YouGame mode (--online-mode): the menu opens Ranked (16) or Direct (32).
       if (payload_len == 0 && (q[0] & 4)) {
         if (const int arg = yougame::take_online_mode_arg()) q[0] |= arg == 2 ? 32 : 16;
