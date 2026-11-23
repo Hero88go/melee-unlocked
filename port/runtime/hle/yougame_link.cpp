@@ -3711,10 +3711,13 @@ void ask_behind_version() {
         restart = hello["behind"].value("restart", true);
         version = hello["behind"].value("version", "");
       }
+      std::lock_guard<std::mutex> lock(g_behind_mutex);
+      g_behind_version = version;
+      g_behind_restart = restart;
     } catch (const std::exception& e) {
+      // No answer this time: keep the last one, so a launcher that stops answering doesn't hide that YouGame is behind.
       host::log("yougame: the launcher did not say which release YouGame is on: %s", e.what());
     }
-    { std::lock_guard<std::mutex> lock(g_behind_mutex); g_behind_version = version; g_behind_restart = restart; }
     g_behind_asking = false;
   }).detach();
 }
