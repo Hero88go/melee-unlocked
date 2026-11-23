@@ -1799,7 +1799,7 @@ transport::RoomIO room_io(Room& r) {
 void end_links(Room& r) { transport::end_links(r, room_io(r)); }
 void pump_room(Room* r) { transport::pump_room(r, g_mutex, room_io(*r)); }
 
-// The four-seat Friends lobby the page was last told it holds. Every ending tells the page it is gone, or
+// The four-seat Friends lobby or Doubles home the page was last told it holds. Every ending tells the page it is gone, or
 // its two-seat Friends picker keeps refusing with "This Friends room has 4 seats". Only the room the page
 // still holds is cleared, so a slow ending can never wipe the report of a lobby opened after it.
 std::mutex g_lobby_report_mutex;
@@ -1809,7 +1809,7 @@ void report_lobby(const std::string& code, const json& report) {
   g_lobby_reported = code;
   bridge(report, 1000);
 }
-// A 2-seat or Doubles room took over the page's report: nothing an older lobby ends may retract it.
+// A 2-seat room took over the page's report: nothing an older lobby ends may retract it.
 void lobby_report_replaced() {
   std::lock_guard<std::mutex> lock(g_lobby_report_mutex);
   g_lobby_reported.clear();
@@ -5898,11 +5898,10 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
         lobby_reported = room->revision;
         if (doubles_home && !doubles_epoch) doubles_epoch = lobby::next_room_epoch();
         try {
-          if (doubles_home) {
-            lobby_report_replaced();
-            bridge(lobby::doubles_room_report(room_code, room_code, false, doubles_epoch, room->participants, lobby_me,
-                                              room->revision), 1000);
-          } else
+          if (doubles_home)   // recorded as the page's room, so leaving the home tells the page it is gone
+            report_lobby(room_code, lobby::doubles_room_report(room_code, room_code, false, doubles_epoch, room->participants,
+                                                                lobby_me, room->revision));
+          else
             report_lobby(room_code, json{{"type", "mpRoom"}, {"code", room_code}, {"queue", "private"}, {"size", 4}, {"me", lobby_me},
                                          {"players", room->participants}, {"participants", room->participants},
                                          {"revision", room->revision}});
