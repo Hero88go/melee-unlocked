@@ -19,6 +19,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace signin_overlay {
@@ -70,11 +72,48 @@ const char* label(Button b) {
   return "";
 }
 
-// ImGui sizes fonts by its base size times the style's scales: undo those so `px` is window pixels.
+// ImGui sizes a font by its line height (the font's ascent to descent); a page sizes it by its em, which is smaller
+// (Segoe UI's line is 1.33 em). This is the current font's line height per em, read from its own TTF tables, so a
+// `px` here matches the same font-size on the page. 1 when the font has no readable tables (ImGui's built-in one).
+float line_per_em() {
+  static ImFont* cached_font = nullptr;
+  static float cached = 1.0f;
+  ImFont* font = ImGui::GetFont();
+  if (!font || font == cached_font) return cached;
+  cached_font = font;
+  cached = 1.0f;
+  if (font->Sources.Size == 0 || !font->Sources[0]) return cached;
+  const ImFontConfig* src = font->Sources[0];
+  const unsigned char* d = static_cast<const unsigned char*>(src->FontData);
+  const size_t n = src->FontDataSize > 0 ? (size_t)src->FontDataSize : 0;
+  auto u16 = [&](size_t at) -> unsigned { return at + 2 <= n ? (unsigned)(d[at] << 8 | d[at + 1]) : 0u; };
+  auto u32 = [&](size_t at) -> size_t {
+    return at + 4 <= n ? ((size_t)d[at] << 24 | (size_t)d[at + 1] << 16 | (size_t)d[at + 2] << 8 | d[at + 3]) : 0u;
+  };
+  if (!d || n < 12) return cached;
+  size_t base = 0;
+  if (std::memcmp(d, "ttcf", 4) == 0) base = u32(12 + 4 * (size_t)src->FontNo);  // a collection: this face's header
+  const unsigned tables = u16(base + 4);
+  size_t head = 0, hhea = 0;
+  for (unsigned i = 0; i < tables; ++i) {
+    const size_t rec = base + 12 + 16 * (size_t)i;
+    if (rec + 16 > n) break;
+    if (std::memcmp(d + rec, "head", 4) == 0) head = u32(rec + 8);
+    if (std::memcmp(d + rec, "hhea", 4) == 0) hhea = u32(rec + 8);
+  }
+  if (!head || !hhea) return cached;
+  const unsigned em = u16(head + 18);
+  const int ascent = (int16_t)u16(hhea + 4), descent = (int16_t)u16(hhea + 6);
+  if (em >= 16 && ascent - descent > 0) cached = std::clamp((float)(ascent - descent) / (float)em, 0.8f, 2.0f);
+  return cached;
+}
+
+// ImGui sizes fonts by its base size times the style's scales: undo those so `px` is window pixels, and size by
+// the em (line_per_em) so a `px` here is the page's font-size in CSS pixels.
 float font_size(float px) {
   const ImGuiStyle& s = ImGui::GetStyle();
   const float scale = std::max(0.01f, s.FontScaleMain * s.FontScaleDpi);
-  return std::max(8.0f, px / scale);
+  return std::max(8.0f, px * line_per_em() / scale);
 }
 
 void centred_text(const std::string& text, float px, const ImVec4& colour) {
