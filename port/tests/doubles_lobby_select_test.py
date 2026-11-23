@@ -109,7 +109,7 @@ class TwoDoors(unittest.TestCase):
         coin = body(self.inc, 'static int mu_friends4_coin_locked(u8 door)')
         self.assertIn('door < mu_f4_doors_open()', coin)
         texts = body(self.inc, 'static void mu_f4_texts(int mine)')
-        self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles) {', texts)   # no labels
+        self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {', texts)   # no labels
         # The runtime sends them as open, with no fighter (yougame_lobby_screen.h).
         screen = read('port/runtime/hle/yougame_lobby_screen.h')
         self.assertIn('if (doubles && i >= kDoublesSeats) { d.hover_ch = d.pick_ch = MU_LOBBY_NONE; continue; }', screen)
@@ -300,7 +300,7 @@ class TwoPortraits(unittest.TestCase):
 
     def test_door_labels_outside_doubles_only(self):
         texts = body(self.inc, 'static void mu_f4_texts(int mine)')
-        order = ['&& !doubles) {', '"Inviting..." : "Invite"', 'sprintf(buf, "CPU Lv %u", (unsigned) s->level);',
+        order = ['&& !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {', '"Inviting..." : "Invite"', 'sprintf(buf, "CPU Lv %u", (unsigned) s->level);',
                  'else if (s->route != MU_LOBBY_ROUTE_NONE)']
         at = [texts.index(x) for x in order]
         self.assertEqual(at, sorted(at))

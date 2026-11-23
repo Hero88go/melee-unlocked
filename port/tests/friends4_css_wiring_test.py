@@ -229,7 +229,8 @@ class Screen(unittest.TestCase):
         self.assertIn('"CPU Lv %u"', texts)
         self.assertIn('else if (s->route != MU_LOBBY_ROUTE_NONE)', texts)
         # Build 95: Doubles draws no door labels (build 96: its Slippi panel says it); every other select keeps them.
-        self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles) {', texts)
+        # A closed lobby draws no door labels (no Invite to offer, and its hint would sit on P2 and P3's).
+        self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {', texts)
         invite = body(self.inc, 'static void mu_f4_invite(int mine)')
         self.assertIn('unsigned char req = MU_LOBBY_OP_INVITE;', invite)
         self.assertIn('mu_f4.view.seats[i].kind != MU_LOBBY_KIND_OPEN', invite)
@@ -915,7 +916,7 @@ class OtherScreensUnchanged(unittest.TestCase):
         # Build 95: the hint, rules and door labels stay outside Doubles; build 96: the panel is blank there.
         self.assertIn('const int doubles = v ? (v->mode & MU_LOBBY_M_DOUBLES) != 0 : mu_f4.shut;', texts)
         friends_open = texts.index('"Inviting..." : "Invite"')
-        self.assertLess(texts.index('&& !doubles) {'), friends_open)
+        self.assertLess(texts.index('&& !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {'), friends_open)
         self.assertIn('if (!doubles) mu_f4_panel(v, 0, hint, noted, "", mine);', texts)
         self.assertIn('} else mu_f4_line(0, hint == MU_LOBBY_HINT_PRESS_START ? "" : mu_lobby_hint_text(hint));', texts)
         panel = body(inc, 'static void mu_f4_panel(const MuLobbyView* v, int doubles')

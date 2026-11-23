@@ -1258,6 +1258,7 @@ static void mu_f4_invite(int mine)
     if (hand->x5 == 1 && hand->x6 >= 4) why = "holding a level slider";
     else if (mu_f4.view.flags & MU_LOBBY_F_STARTED) why = "a match is being set up";
     else if (mu_f4.view.flags & MU_LOBBY_F_INVITING) why = "the invite picker is already open";
+    else if (mu_f4.view.block_hint == MU_LOBBY_HINT_CLOSED) why = "the lobby closed";
     for (i = 0; why == NULL && i < MU_LOBBY_SEATS; ++i) {
         unsigned char req = MU_LOBBY_OP_INVITE;
         if (i == mine || mu_f4.view.seats[i].kind != MU_LOBBY_KIND_OPEN || mu_f4_over_door(i, hand->xC, hand->x10) != 1)
@@ -1932,7 +1933,9 @@ static void mu_f4_texts(int mine)
             OSReport("doubles: seat %d link %s %ums\n", i, mu_lobby_route_text(s->route), (unsigned) s->rtt_ms);
             mu_f4.route_logged[i] = (unsigned char) (s->route + 1);
         }
-        if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles) {
+        /* A closed lobby draws no door labels: nobody can be invited any more, and its hint (under the doors,
+         * wider than a door) would sit on the P2 and P3 labels. */
+        if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {
             if (s->kind == MU_LOBBY_KIND_OPEN)
                 sprintf(buf, "%s", i == mu_f4_inviting_door(v, mine) ? "Inviting..." : "Invite");
             else if (s->kind == MU_LOBBY_KIND_CPU)

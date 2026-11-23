@@ -279,6 +279,19 @@ class ClosedHomeBackTest(unittest.TestCase):
         pads = body(read("sourceport/game/shim/mu_slippi_menu.c"), "void mu_lobby_pads(PADStatus* status)")
         self.assertIn("(lobby.view.flags & MU_LOBBY_F_INVITING) && lobby.view.block_hint != MU_LOBBY_HINT_CLOSED) {", pads)
 
+    def test_closed_lobby_doors_stop_offering_invite(self):
+        # Once the lobby closed, the empty doors drop their "Invite" label (its hint, under the doors, sat on
+        # P2 and P3's labels) and A on an open door no longer opens the invite picker.
+        f4 = read("sourceport/game/include/mu_friends4_css.inc")
+        texts = body(f4, "static void mu_f4_texts(int mine)")
+        guard = texts.index("&& !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {")
+        self.assertLess(guard, texts.index('"Inviting..." : "Invite"'))
+        self.assertLess(guard, texts.index('"CPU Lv %u"'))
+        self.assertLess(texts.index("buf[0] = 0;"), guard)   # the label is blank, not last frame's
+        invite = body(f4, "static void mu_f4_invite(int mine)")
+        closed = invite.index('else if (mu_f4.view.block_hint == MU_LOBBY_HINT_CLOSED) why = "the lobby closed";')
+        self.assertLess(closed, invite.index("for (i = 0; why == NULL && i < MU_LOBBY_SEATS; ++i) {"))
+
 
 if __name__ == "__main__":
     unittest.main()
