@@ -113,7 +113,7 @@ extern "C" yg_start_result yg_start(const yg_start_options*) { return YG_START_U
 #endif
 #ifdef _WIN32
 // Closes YouGame's small window as its own X does (Play offline; an ask on use never remembers it),
-// unless Get YouGame is downloading or installing in it: the player asked for YouGame, so that carries on.
+// Get YouGame never runs inside it (it runs on a worker after the window returns), so nothing in it is cut short.
 // Only our own process's window of that class; a stale handle is refused. True when the close was sent.
 static bool yg_link_start_close() {
   HWND w = (HWND)g_yg_start_window.load();
@@ -122,7 +122,6 @@ static bool yg_link_start_close() {
   GetWindowThreadProcessId(w, &pid);
   wchar_t cls[64] = {};
   if (pid != GetCurrentProcessId() || !GetClassNameW(w, cls, 64) || wcscmp(cls, L"YouGameStartWindow") != 0) return false;
-  if (*(volatile int*)&yg__start_u.getting) return false;   // written on the window's thread; a plain flag
   return PostMessageW(w, WM_CLOSE, 0, 0) != 0;
 }
 static void yg_link_start_shown(void* hwnd) {
