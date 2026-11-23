@@ -1,0 +1,158 @@
+name: macOS release asset
+
+# When a game version (v<version>) is published, builds the macOS app from that tag and attaches
+# MeleeUnlocked-<version>-macos.zip (MeleeUnlocked.app inside) to the same release, next to the
+# Windows and Linux files. Manual runs build the tag given and replace its macOS zip.
+#
+# - The app is x86_64 and runs through Rosetta 2 on Apple silicon (macOS 15 or newer): the host loads
+#   the x86-64 game library (an ELF, the same game as on Linux) into its own process, so it cannot be
+#   arm64 or universal. The game library is built on Linux without stack protector
+#   (tools/ci/build-game-linux.sh); the host and app on macOS (tools/ci/build-macos.sh).
+# - Signed ad hoc (no certificate, no secrets). Players confirm the first launch in System Settings >
+#   Privacy & Security > Open Anyway, as for any app without a Developer ID.
+# - No disc: the two generated headers come from the symbol map (port/recomp/host_headers.py), and the
+#   zip is checked for disc files, dumps, logs and build paths (tools/ci/verify_macos_package.py).
+# - Uses only GITHUB_TOKEN. The upload needs "Read and write permissions" for workflows, or the
+#   repository default allowing the contents: write asked for below.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the macOS zip to (e.g. v1.0.10)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  game:
+    # Only game versions: parts-<version> and content-<n> releases hold files the game downloads by
+    # itself. Prereleases are skipped unless started by hand.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build ccache gcc-14 g++-14 binutils
+
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: macos-game-ccache-${{ steps.commit.outputs.sha }}
+          restore-keys: macos-game-ccache-
+
+      - name: Build the game library without stack protector
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+        run: |
+          ccache --zero-stats
+          bash tools/ci/build-game-linux.sh "$RUNNER_TEMP/game"
+          ccache --show-stats
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-game-library
+          path: |
+            ${{ runner.temp }}/game/melee_game.so
+            ${{ runner.temp }}/game/melee_game.snapexcl
+          if-no-files-found: error
+          retention-days: 3
+
+  app:
+    needs: game
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      MELEE_MAC_DEPS: ${{ runner.temp }}/deps
+      MU_CI_WORK: ${{ runner.temp }}/mu-mac
+      MU_MAC_OUT: ${{ runner.temp }}/out
+      MELEE_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: ${{ runner.temp }}/ccache
+      # The checkout path differs between runs only by the workspace; let ccache hit across them.
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      MELEE_MAC_JOBS: 3
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Tag and VERSION agree
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          version=$(tr -d '[:space:]' < VERSION)
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::tag $TAG does not match VERSION $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-game-library
+          path: ${{ runner.temp }}/game
+
+      - name: Dependencies cache (SDL2, glslang, SPIRV-Cross)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MELEE_MAC_DEPS }}
+          key: macos-deps-${{ hashFiles('tools/ci/macos-deps.sh') }}
+
+      - name: Dependencies
+        run: bash tools/ci/macos-deps.sh
+
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: macos-host-ccache-${{ steps.commit.outputs.sha }}
+          restore-keys: macos-host-ccache-
+
+      - name: Build the host and MeleeUnlocked.app
+        run: |
+          brew install ccache
+          ccache --zero-stats
+          bash tools/ci/build-macos.sh host "$RUNNER_TEMP/game"
+          ccache --show-stats
+
+      - name: Sign, zip and check
+        id: bundle
+        run: bash tools/ci/build-macos.sh bundle
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.bundle.outputs.zip }}
+        run: |
+          gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name) \(.size)"'
