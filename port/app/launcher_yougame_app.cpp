@@ -88,6 +88,7 @@ struct Inbox {
   std::condition_variable cv;
   std::map<int64_t, json> answers;
   bool arrived = false, eof = false;
+  bool signed_in = false, sign_in_failed = false;   // the app's signedIn / signInFailed pushes
 };
 
 }  // namespace
@@ -224,7 +225,7 @@ int start_hook(bool staging) {
 int start_get_progress(int* percent) { return yg_start_get_progress(percent); }
 #endif
 
-Answer ask(bool staging, const std::string& version, int timeout_ms, std::string* sign_in) {
+Answer ask(bool staging, const std::string& version, int timeout_ms, std::string* sign_in, int sign_in_wait_ms) {
   Answer out;
   channel::Candidate where;
   std::string why;
@@ -244,7 +245,19 @@ Answer ask(bool staging, const std::string& version, int timeout_ms, std::string
         box->cv.notify_all();
         return;
       }
-      if (action != channel::LineAction::Answer) return;   // other pushes are the game's, not the launcher's
+      if (action == channel::LineAction::Push) {
+        // Only the sign-in pushes are the launcher's; other pushes are the game's.
+        const json p = json::parse(line.substr(3), nullptr, false);
+        const json t = p.is_object() && p.count("push") && p["push"].is_object() && p["push"].count("type") ? p["push"]["type"] : json();
+        if (!t.is_string()) return;
+        std::lock_guard<std::mutex> lock(box->m);
+        if (t == "signedIn") box->signed_in = true;
+        else if (t == "signInFailed") box->sign_in_failed = true;
+        else return;
+        box->cv.notify_all();
+        return;
+      }
+      if (action != channel::LineAction::Answer) return;
       json j = json::parse(line.substr(3), nullptr, false);
       if (!j.is_object()) return;
       const int64_t id = j["re"].get<int64_t>();
@@ -256,7 +269,7 @@ Answer ask(bool staging, const std::string& version, int timeout_ms, std::string
     box->eof = true;
     box->cv.notify_all();
   });
-  const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   int64_t next_id = 1;
   // One request and its answer; json() when none came (closed, too long, or past the overall time).
   auto request = [&](json body, int ms) -> json {
@@ -316,6 +329,14 @@ Answer ask(bool staging, const std::string& version, int timeout_ms, std::string
     if (r.is_object() && r.value("ok", false)) {
       const json res = r.count("result") && r["result"].is_object() ? r["result"] : json::object();
       *sign_in = res.count("where") && res["where"].is_string() ? res["where"].get<std::string>() : "browser";
+      if (sign_in_wait_ms > 0) {
+        // Kept open: the app's sign-in (its overlay, or the browser hand-back) belongs to this connection.
+        std::unique_lock<std::mutex> lock(box->m);
+        box->cv.wait_for(lock, std::chrono::milliseconds(sign_in_wait_ms),
+                         [&] { return box->signed_in || box->sign_in_failed || box->eof; });
+        *sign_in += box->signed_in ? "; signed in" : box->sign_in_failed ? "; failed" : box->eof ? "; closed" : "; timed out";
+        end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+      }
     } else if (c == "busy") {
       *sign_in = "busy " + std::to_string((unsigned long long)channel::retry_after_ms(r));
     } else {

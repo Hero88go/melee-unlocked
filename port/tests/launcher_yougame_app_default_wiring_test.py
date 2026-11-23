@@ -91,13 +91,28 @@ class LauncherUsesYouGameApp(unittest.TestCase):
         running = thread[thread.index("if (hook == launcher::yougame::AppHook::kRunning) {"):]
         signed_out = running[running.index("if (app == launcher::yougame::AppSignIn::kSignedOut) {"):]
         signed_out = signed_out[:signed_out.index("// The app did not answer")]
-        self.assertIn("launcher::yougame::ask_app_sign_in(version)", signed_out)
+        self.assertIn("launcher::yougame::ask_app_sign_in(version, 300000)", signed_out)
+        # The status line says "finish signing in" before the ask, which now waits on its one connection.
+        self.assertLess(signed_out.index("g_yg_app_sign_in = true;"), signed_out.index("ask_app_sign_in(version, 300000)"))
         self.assertNotIn("open_target()", signed_out)
         self.assertIn("sign_in_app(false, version, &step)", signed_out)
         self.assertIn("g_yg_app_sign_in = true;", signed_out)
         self.assertLess(signed_out.rindex("return;"), len(signed_out))
         self.assertNotIn("install_web_runtime", signed_out)
         self.assertIn('L"YouGame: finish signing in to YouGame..."', self.launcher)
+
+    def test_the_sign_in_connection_stays_open_for_the_apps_push(self):
+        # The app ends a sign-in whose asking connection closed: ask() keeps the same connection open after an
+        # accepted signIn until the signedIn or signInFailed push (or the wait runs out), and only then closes.
+        app = (ROOT / "port" / "app" / "launcher_yougame_app.cpp").read_text(encoding="utf-8-sig")
+        ask = app[app.index("Answer ask(bool staging"):]
+        ask = ask[:ask.index("\n}\n")]
+        after = ask[ask.index('request({{"type", "signIn"}}, 8000)'):]
+        self.assertIn("if (sign_in_wait_ms > 0) {", after)
+        self.assertIn("box->signed_in || box->sign_in_failed || box->eof", after)
+        self.assertLess(after.index("box->cv.wait_for("), after.index("conn->close();"))
+        self.assertIn('if (t == "signedIn") box->signed_in = true;', ask)
+        self.assertIn('else if (t == "signInFailed") box->sign_in_failed = true;', ask)
 
     def test_connect_asks_the_hook_before_the_browser_sign_in(self):
         thread = body(self.launcher, "void yougame_sign_in_thread(bool use_app) {")

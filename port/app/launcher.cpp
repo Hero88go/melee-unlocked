@@ -1359,17 +1359,19 @@ void yougame_sign_in_thread(bool use_app) {
           // YouGame's sign-in page in the browser, where the player approves this game), and Connect takes the account
           // once the app has one. Never the launcher's own sign-in window here; up to 5 minutes, then Connect ends as
           // it was (Connect again asks again). "busy" asks again after its retryAfter, showing nothing more.
-          std::string how = launcher::yougame::ask_app_sign_in(version);
-          for (int tries = 0; how.rfind("busy ", 0) == 0 && tries < 3; ++tries) {
-            Sleep((DWORD)std::min<unsigned long long>(60000ULL, std::max<unsigned long long>(1000ULL, std::stoull(how.substr(5)))));
-            how = launcher::yougame::ask_app_sign_in(version);
-          }
-          log_line("yougame: Connect: the YouGame app is signed out: asked its sign-in (%s)", how.empty() ? "no answer" : how.c_str());
+          // One connection asks and stays open until the player finishes (the app ends a sign-in whose
+          // connection closed), up to 5 minutes; then one hello takes the account.
           g_yg_app_sign_in = true;
           if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
+          std::string how = launcher::yougame::ask_app_sign_in(version, 300000);
+          for (int tries = 0; how.rfind("busy ", 0) == 0 && tries < 3; ++tries) {
+            Sleep((DWORD)std::min<unsigned long long>(60000ULL, std::max<unsigned long long>(1000ULL, std::stoull(how.substr(5)))));
+            how = launcher::yougame::ask_app_sign_in(version, 300000);
+          }
+          log_line("yougame: Connect: the YouGame app is signed out: asked its sign-in (%s)", how.empty() ? "no answer" : how.c_str());
           auto signed_in = launcher::yougame::AppSignIn::kSignedOut;
-          for (int waited = 0; waited < 300000 && signed_in != launcher::yougame::AppSignIn::kSignedIn; waited += 3000) {
-            Sleep(3000);
+          for (int tries = 0; tries < 3 && signed_in != launcher::yougame::AppSignIn::kSignedIn; ++tries) {
+            if (tries) Sleep(3000);
             std::string step;
             signed_in = launcher::yougame::sign_in_app(false, version, &step);
           }

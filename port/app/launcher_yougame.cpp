@@ -755,11 +755,11 @@ bool resume_web(std::string* why) {
   return true;
 }
 
-std::string ask_app_sign_in(const std::string& version) {
+std::string ask_app_sign_in(const std::string& version, int wait_ms) {
   bool staging;
   { std::lock_guard<std::mutex> lock(g_mutex); staging = g_env.id == "staging"; }
   std::string how;
-  app::ask(staging, version, 12000, &how);
+  app::ask(staging, version, 12000, &how, wait_ms);
   return how;
 }
 
