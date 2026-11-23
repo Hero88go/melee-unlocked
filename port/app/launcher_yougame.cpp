@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "launcher_yougame.h"
 #include "launcher_yougame_app.h"
-#include "launcher_yougame_web.h"
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -23,10 +22,14 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <random>
 #include <stdexcept>
 #include <thread>
+#ifndef _WIN32
+#include <unistd.h>   // gethostname
+#endif
 
 #ifdef _WIN32
 #pragma comment(lib, "ws2_32.lib")
@@ -47,16 +50,17 @@ const Env kProduction{"production", "https://yougame.co"};
 const Env kStaging{"staging", "https://staging.yougame.co"};
 
 struct Session {
-  // Signed in on YouGame's own page in the launcher's browser view (launcher_yougame_web.h): the view
-  // holds the session and makes the requests. The launcher keeps no password, token or cookie: only who
-  // it is (the account's id, name and connect code).
-  bool web = false;
+  // Signed in by code (YouGame's game sign-in, sign_in_code): the game's client id it was made with, the
+  // refresh token (kept in launcher.ini, sealed) and the access token (memory only) with when it ends.
+  bool token = false;
+  std::string client, refresh, access;
+  int64_t access_until = 0;   // seconds since the epoch
   // Signed in through the YouGame app (sign_in_app): who the app's player is, as the app said. The session
   // is the app's; this launcher can make no request with it (the game asks the app itself).
   bool app = false;
   std::string user_id, name, code;
 };
-std::wstring g_web_base;   // the browser view's folder; each YouGame site has its own under it
+std::map<std::string, std::string> g_clients;   // the game's sign-in client id per environment, as YouGame said
 // launcher.ini yougame_app: 1 this launcher connected through the YouGame app (it then starts the app quietly
 // when it starts), 0 Disconnect from an account the app gave, -1 neither.
 int g_app_choice = -1;
@@ -152,7 +156,7 @@ std::string unprotect(const std::string& text) {
 
 // ---- HTTP client (WinHTTP)
 
-struct Reply { int status = 0; std::string body; };
+struct Reply { int status = 0; std::string body; int retry_after = 0; };   // retry_after: seconds, 0 when not said
 
 Reply http(const std::string& method, const std::string& url, const std::vector<std::string>& headers,
            const std::string& body, int timeout_ms = 15000) {
@@ -189,6 +193,13 @@ Reply http(const std::string& method, const std::string& url, const std::vector<
       DWORD status = 0, size = sizeof status;
       WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
       r.status = (int)status;
+#ifdef WINHTTP_QUERY_RETRY_AFTER
+      DWORD retry = 0;
+      size = sizeof retry;
+      if (WinHttpQueryHeaders(req, WINHTTP_QUERY_RETRY_AFTER | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &retry, &size,
+                              WINHTTP_NO_HEADER_INDEX))
+        r.retry_after = (int)std::min<DWORD>(retry, 3600);
+#endif
       char buf[8192];
       DWORD got = 0;
       while (WinHttpReadData(req, buf, sizeof buf, &got) && got) {
@@ -226,46 +237,160 @@ std::string string_or_empty(const json& j, const char* key) {
 // ---- the account
 
 std::function<void()> g_on_change;   // launcher.cpp: save launcher.ini
-std::atomic<bool> g_expired{false};   // YouGame said the browser view's session ended: the launcher asks for a new sign-in
-bool g_old_session_line = false;      // launcher.ini still held a session of the removed password sign-in: saved again without it
+std::atomic<bool> g_expired{false};   // YouGame ended the saved sign-in: the launcher asks for a new one
+// launcher.ini still held a session of an earlier sign-in (the password sign-in's tokens, or the browser view's
+// site session): not used, and saved again without it; the player signs in again by code.
+bool g_old_session_line = false;
 void changed() { if (g_on_change) g_on_change(); }
 
-void use_web_folder() {
-  std::wstring folder;
-  { std::lock_guard<std::mutex> lock(g_mutex); if (!g_web_base.empty()) folder = g_web_base + L"\\" + wide(g_env.id); }
-  web::set_folder(folder);
+std::function<void()> g_save_now;    // launcher.cpp: write launcher.ini now (a new refresh token)
+void save_now() {
+  if (g_save_now) g_save_now();
+  else changed();
 }
 
-// A request made by a page of YouGame's site in the launcher's browser view, with that page's session.
-Reply web_site(const Env& e, const std::string& method, const std::string& path, const std::string& body) {
-  use_web_folder();
-  web::Reply r = web::request(e.site, method, path, body);
-  // 401 right after the view opened can be the site's page still renewing its session: once more.
-  if (r.status == 401) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-    r = web::request(e.site, method, path, body);
-  }
-  if (r.status == 0) throw std::runtime_error("|YouGame is not answering. Check your connection.");
-  if (r.status == 401) {
-    // The site says this browser view is signed out (signed out on the site, or the session ended).
-    bool was;
-    { std::lock_guard<std::mutex> lock(g_mutex); was = g_session.web; if (was) g_session = Session{}; }
-    if (was) { g_expired = true; changed(); }
-    throw std::runtime_error("signed_out|Connect YouGame in the launcher to play YouGame modes.");
-  }
-  return Reply{r.status, r.body};
+[[noreturn]] void throw_signed_out() {
+  throw std::runtime_error("signed_out|Connect YouGame in the launcher to play YouGame modes.");
 }
 
-Reply site(const std::string& method, const std::string& path, const std::string& body) {
-  Session s;
-  Env e;
+// ---- YouGame's game sign-in (OAuth 2.0 device flow, RFC 8628; sdk.md "sign-in by code")
+// Every request is the launcher's own (WinHTTP: no Origin or Sec-Fetch-Site header, as YouGame requires of a
+// native program). Never logged: the device code, the access token or the refresh token.
+
+std::string form(const std::string& v) {
+  static const char* hex = "0123456789ABCDEF";
+  std::string out;
+  for (unsigned char c : v) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out += (char)c;
+    else { out += '%'; out += hex[c >> 4]; out += hex[c & 15]; }
+  }
+  return out;
+}
+
+Reply post_form(const std::string& url, const std::string& body) {
+  return http("POST", url, {"Content-Type: application/x-www-form-urlencoded", "Accept: application/json"}, body, 15000);
+}
+
+bool valid_client_id(const std::string& id) {
+  return !id.empty() && id.size() <= 64 && id.find_first_not_of("0123456789abcdefABCDEF-") == std::string::npos;
+}
+
+// The game's client id on this YouGame site: launcher.ini's, else YouGame's answer for melee-unlocked (then
+// kept in launcher.ini). refetch: ask again (YouGame refused the kept one).
+std::string client_id(const Env& e, bool refetch) {
+  if (!refetch) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto it = g_clients.find(e.id);
+    if (it != g_clients.end() && valid_client_id(it->second)) return it->second;
+  }
+  Reply r;
+  try {
+    r = http("GET", e.site + "/oauth/game-client?game=" + kSlug, {"Accept: application/json"}, "", 10000);
+  } catch (const std::exception&) {
+    throw std::runtime_error("|YouGame is not answering. Check your connection.");
+  }
+  const std::string id = string_or_empty(parse_or_empty(r.body), "client_id");
+  if (r.status != 200 || !valid_client_id(id))
+    throw std::runtime_error("|YouGame does not offer sign-in for Melee Unlocked here yet.");
+  { std::lock_guard<std::mutex> lock(g_mutex); g_clients[e.id] = id; }
+  changed();
+  return id;
+}
+
+void revoke(const Env& e, const std::string& client, const std::string& refresh) {
+  if (client.empty() || refresh.empty()) return;
+  try { post_form(e.site + "/oauth/revoke", "token=" + form(refresh) + "&client_id=" + form(client)); } catch (const std::exception&) {}
+}
+
+// YouGame ended the saved sign-in: it goes, and the launcher asks for a new one (take_expired).
+void drop_session(const std::string& refresh) {
+  bool was;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    s = g_session;
-    e = effective_env(g_env);
+    was = g_session.token && g_session.refresh == refresh;
+    if (was) g_session = Session{};
   }
-  if (!s.web) throw std::runtime_error("signed_out|Connect YouGame in the launcher to play YouGame modes.");
-  return web_site(e, method, path, body);
+  if (was) { g_expired = true; changed(); }
+}
+
+std::mutex g_refresh_mutex;   // one refresh at a time
+
+// An access token for the saved sign-in: the one held while it has over a minute left (and is not `refused`, a
+// token YouGame just answered 401 to), else a refresh. Both tokens are new then: the new refresh token is in
+// launcher.ini (save_now) before the new access token is used. Throws "signed_out|..." when there is no sign-in
+// or YouGame ended it (invalid_grant: dropped), "|..." when YouGame did not answer.
+std::string access_token(const std::string& refused = {}) {
+  std::lock_guard<std::mutex> one(g_refresh_mutex);
+  Session s;
+  Env e;
+  { std::lock_guard<std::mutex> lock(g_mutex); s = g_session; e = effective_env(g_env); }
+  if (!s.token || s.refresh.empty()) throw_signed_out();
+  if (!s.access.empty() && s.access != refused && s.access_until > now_s() + 60) return s.access;
+  const std::string body = "grant_type=refresh_token&refresh_token=" + form(s.refresh) + "&client_id=" + form(s.client);
+  Reply r;
+  bool retried_lost = false;
+  for (int busy = 0;;) {
+    try {
+      r = post_form(e.site + "/oauth/token", body);
+    } catch (const std::exception&) {
+      // A lost answer: once more with the same refresh token (YouGame gives the same new pair within 60 s).
+      if (retried_lost) throw std::runtime_error("|YouGame is not answering. Check your connection.");
+      retried_lost = true;
+      continue;
+    }
+    if ((r.status == 429 || r.status == 503) && busy++ < 2) {   // keep the token; wait as YouGame says (briefly: requests wait on this)
+      std::this_thread::sleep_for(std::chrono::seconds(std::clamp(r.retry_after, 1, 10)));
+      continue;
+    }
+    break;
+  }
+  const json j = parse_or_empty(r.body);
+  const std::string access = string_or_empty(j, "access_token"), refresh = string_or_empty(j, "refresh_token");
+  if (r.status == 200 && !access.empty() && !refresh.empty()) {
+    const int64_t lasts = j.count("expires_in") && j["expires_in"].is_number_integer() ? j["expires_in"].get<int64_t>() : 3600;
+    bool still;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      still = g_session.token && g_session.refresh == s.refresh;
+      if (still) {
+        g_session.refresh = refresh;
+        g_session.access = access;
+        g_session.access_until = now_s() + std::max<int64_t>(lasts, 60);
+      }
+    }
+    if (!still) { revoke(e, s.client, refresh); throw_signed_out(); }   // signed out meanwhile: the new pair ends too
+    save_now();
+    return access;
+  }
+  const std::string error = string_or_empty(j, "error");
+  if (r.status == 400 && error == "invalid_grant") { drop_session(s.refresh); throw_signed_out(); }
+  // The client id is no longer YouGame's: the sign-in goes, and the next one asks /oauth/game-client again.
+  if (r.status == 401 || (r.status == 400 && error == "invalid_client")) {
+    { std::lock_guard<std::mutex> lock(g_mutex); g_clients.erase(e.id); }
+    drop_session(s.refresh);
+    throw_signed_out();
+  }
+  throw std::runtime_error("|YouGame is not answering. Check your connection.");
+}
+
+// A request to YouGame with the launcher's sign-in (Authorization: Bearer). A 401 refreshes once and asks again.
+Reply site(const std::string& method, const std::string& path, const std::string& body) {
+  Env e;
+  bool token;
+  { std::lock_guard<std::mutex> lock(g_mutex); token = g_session.token; e = effective_env(g_env); }
+  if (!token) throw_signed_out();
+  const auto ask = [&](const std::string& access) {
+    std::vector<std::string> headers{"Authorization: Bearer " + access, "Accept: application/json"};
+    if (!body.empty()) headers.push_back("Content-Type: application/json");
+    return http(method, e.site + path, headers, body, 20000);
+  };
+  std::string access = access_token();
+  Reply r = ask(access);
+  if (r.status == 401) {
+    access = access_token(access);
+    r = ask(access);
+  }
+  return r;
 }
 
 // {"code": the connect code, "account": the account's id (the site's own page gets both)}
@@ -328,7 +453,7 @@ Backend real_backend() {
     if (!target.restart) return std::string("That version cannot be started from here.");
     return handler ? handler(target, mode) : std::string("This launcher cannot switch versions.");
   };
-  // The bridge asks YouGame with the launcher's own (web) session only: an account the YouGame app gave can make
+  // The bridge asks YouGame with the launcher's own sign-in (by code) only: an account the YouGame app gave can make
   // no request here, so the game hears "not signed in" and says to connect in the launcher.
   b.account = [] { Account a = account(); if (a.app) a.signed_in = false; return a; };
   b.open_connect = [] {
@@ -458,13 +583,25 @@ bool load_line(const std::string& line) {
     g_app_choice = line.substr(12) == "0" ? 0 : line.substr(12) == "1" ? 1 : -1;
     return true;
   }
+  if (line.rfind("yougame_client_", 0) == 0) {   // yougame_client_<env>=<the game's client id there>
+    const size_t eq = line.find('=');
+    const std::string id = eq == std::string::npos ? std::string() : line.substr(eq + 1);
+    const std::string which = eq == std::string::npos ? std::string() : line.substr(15, eq - 15);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if ((which == "production" || which == "staging") && valid_client_id(id)) g_clients[which] = id;
+    return true;
+  }
   if (line.rfind("yougame_session=", 0) == 0) {
     const json j = parse_or_empty(unprotect(line.substr(16)));
     std::lock_guard<std::mutex> lock(g_mutex);
-    // Only a browser-view sign-in is a session. A line saved by the removed password sign-in (its tokens)
-    // is not used and is not written back: the next save of launcher.ini drops it.
-    if (j.is_object() && j.value("web", false) && j.value("env", "") == g_env.id) {
-      g_session.web = true;
+    // Only a sign-in by code is a session. A line saved by an earlier sign-in (the password sign-in's tokens, the
+    // browser view's site session) is not used and is not written back: the next save of launcher.ini drops it.
+    if (j.is_object() && j.value("kind", "") == "code" && j.value("env", "") == g_env.id &&
+        valid_client_id(j.value("client", "")) && !j.value("refresh", "").empty()) {
+      g_session = Session{};
+      g_session.token = true;
+      g_session.client = j.value("client", "");
+      g_session.refresh = j.value("refresh", "");
       g_session.user_id = j.value("user", "");
       g_session.name = j.value("name", "");
       g_session.code = j.value("code", "");
@@ -482,10 +619,12 @@ std::string ini_lines() {
   if (g_env.id != "production" || g_env_named) out += "yougame_env=" + g_env.id + "\n";   // a named site stays named
   if (g_extension) out += "yougame_extension=1\n";
   if (g_app_choice >= 0) out += "yougame_app=" + std::to_string(g_app_choice) + "\n";
+  for (const auto& [which, id] : g_clients) out += "yougame_client_" + which + "=" + id + "\n";
   // An account the YouGame app gave is not kept: the launcher asks the app again when it starts.
-  if (g_session.web) {
-    // The browser view holds the session: only who it is goes here.
-    const json j{{"env", g_env.id}, {"web", true}, {"user", g_session.user_id}, {"name", g_session.name}, {"code", g_session.code}};
+  if (g_session.token) {
+    // The refresh token and who it is, sealed (DPAPI); the access token stays in memory.
+    const json j{{"env", g_env.id}, {"kind", "code"}, {"client", g_session.client}, {"refresh", g_session.refresh},
+                 {"user", g_session.user_id}, {"name", g_session.name}, {"code", g_session.code}};
     const std::string sealed = protect(j.dump());
     if (!sealed.empty()) out += "yougame_session=" + sealed + "\n";
   }
@@ -495,8 +634,8 @@ std::string ini_lines() {
 Account account() {
   std::lock_guard<std::mutex> lock(g_mutex);
   Account a;
-  a.signed_in = g_session.web || g_session.app;
-  a.app = g_session.app && !g_session.web;
+  a.signed_in = g_session.token || g_session.app;
+  a.app = g_session.app && !g_session.token;
   a.code = g_session.code;
   // The name opponents see: the account's own, else the tag of its connect code.
   a.name = !g_session.name.empty() ? g_session.name
@@ -504,57 +643,221 @@ Account account() {
   return a;
 }
 
-void set_web_folder(const std::wstring& base) {
-  { std::lock_guard<std::mutex> lock(g_mutex); g_web_base = base; }
-  use_web_folder();
-}
-
-bool web_sign_in_available() { return web::supported(); }
-bool install_web_runtime(std::string* why) { return web::install_runtime(why); }
-
 bool take_expired() { return g_expired.exchange(false); }
 
-bool sign_in_web(void* owner_window, std::string* error, const std::string& test_script, bool again,
-                 const std::wstring& title) {
+namespace {
+std::atomic<int> g_code_run{0};   // the sign-in by code that may go on; cancel_sign_in_code moves it on
+
+// "Melee Unlocked on <this computer's name>", at most 40 bytes (YouGame's device_label).
+std::string device_label() {
+  std::string pc;
+#ifdef _WIN32
+  wchar_t name[MAX_COMPUTERNAME_LENGTH + 1] = {};
+  DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
+  if (GetComputerNameW(name, &size) && size) {
+    pc.resize(WideCharToMultiByte(CP_UTF8, 0, name, (int)size, nullptr, 0, nullptr, nullptr));
+    WideCharToMultiByte(CP_UTF8, 0, name, (int)size, pc.data(), (int)pc.size(), nullptr, nullptr);
+  }
+#else
+  char name[256] = {};
+  if (gethostname(name, sizeof name - 1) == 0) pc = name;
+  pc = pc.substr(0, pc.find('.'));
+#endif
+  std::string label = "Melee Unlocked";
+  if (pc.empty()) return label;
+  label += " on ";
+  size_t room = 40 - label.size();
+  if (pc.size() > room) {
+    while (room > 0 && ((unsigned char)pc[room] & 0xC0) == 0x80) --room;   // never half a UTF-8 character
+    pc.resize(room);
+  }
+  return label + pc;
+}
+
+// Test runs: YOUGAME_TEST_CODE_SIGNIN names an absolute folder; each code goes to sign-in-code.json there.
+std::filesystem::path test_code_file() {
+#ifdef _WIN32
+  const wchar_t* dir = _wgetenv(L"YOUGAME_TEST_CODE_SIGNIN");
+#else
+  const char* dir = std::getenv("YOUGAME_TEST_CODE_SIGNIN");
+#endif
+  if (!dir || !*dir) return {};
+  const std::filesystem::path folder(dir);
+  if (!folder.is_absolute()) return {};
+  return folder / "sign-in-code.json";
+}
+void write_test_code(const std::filesystem::path& file, const std::string& link, const std::string& code) {
+  if (file.empty()) return;
+  std::error_code ec;
+  std::filesystem::create_directories(file.parent_path(), ec);
+  std::filesystem::path tmp = file;
+  tmp += ".tmp";
+  { std::ofstream out(tmp, std::ios::binary | std::ios::trunc); out << json{{"link", link}, {"code", code}}.dump(); }
+  std::filesystem::rename(tmp, file, ec);
+}
+void drop_test_code(const std::filesystem::path& file, const std::string& code) {
+  if (file.empty() || code.empty()) return;
+  std::string held;
+  { std::ifstream in(file, std::ios::binary); held.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()); }
+  if (string_or_empty(parse_or_empty(held), "code") != code) return;   // a newer run's code stays
+  std::error_code ec;
+  std::filesystem::remove(file, ec);
+}
+
+std::string error_text(const std::exception& e) {
+  const std::string w = e.what();
+  const size_t bar = w.find('|');
+  return bar == std::string::npos ? w : w.substr(bar + 1);
+}
+}  // namespace
+
+void cancel_sign_in_code() { ++g_code_run; }
+
+CodeSignIn sign_in_code(const std::function<void(const std::string& code, const std::string& link)>& on_code,
+                        std::string* why) {
+  std::string local;
+  if (!why) why = &local;
+  why->clear();
+  const int run = ++g_code_run;
+  const auto live = [&] { return g_code_run.load() == run; };
+  // Waits `ms`, false when this sign-in was cancelled meanwhile.
+  const auto wait = [&](int64_t ms) {
+    for (int64_t waited = 0; waited < ms; waited += 250) {
+      if (!live()) return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    return live();
+  };
   Env e;
   { std::lock_guard<std::mutex> lock(g_mutex); e = effective_env(g_env); }
-  use_web_folder();
   g_expired = false;
-  // Signed in is what the site's own page is told: the connect code route answers it.
-  if (!web::sign_in(owner_window, e.site, "/api/multiplayer/code", error, test_script,
-                    !title.empty() ? title : again ? L"Your YouGame sign-in ended. Sign in again" : L"Sign in to YouGame")) return false;
+  const std::filesystem::path test_file = test_code_file();
+  std::string shown;   // the code this run showed (and wrote for a test)
+  struct Tidy { std::function<void()> f; ~Tidy() { f(); } } tidy{[&] { drop_test_code(test_file, shown); }};
+  std::string client;
   try {
-    const web::Reply r = web::request(e.site, "GET", "/api/multiplayer/code", "");
-    const json j = parse_or_empty(r.body);
-    if (r.status != 200 || !j.count("code") || !j["code"].is_string()) {
-      if (error) *error = "YouGame did not sign you in. Try again.";
-      return false;
-    }
-    Session s;
-    s.web = true;
-    s.code = j["code"];
-    s.user_id = j.value("account", std::string());
-    s.name = string_or_empty(j, "name");
-    { std::lock_guard<std::mutex> lock(g_mutex); g_session = s; }
-    changed();
-    return true;
-  } catch (const std::exception&) {
-    if (error) *error = "YouGame did not sign you in. Try again.";
-    return false;
+    client = client_id(e, false);
+  } catch (const std::exception& x) {
+    *why = error_text(x);
+    return CodeSignIn::kFailed;
   }
+  const std::string label = device_label();
+  bool refetched = false;
+  // An expired code is replaced by a new one, in the same box, a few times (about half an hour in all).
+  for (int round = 0; round < 3;) {
+    Reply start;
+    try {
+      start = post_form(e.site + "/oauth/device_authorization", "client_id=" + form(client) + "&scope=player&device_label=" + form(label));
+    } catch (const std::exception&) {
+      *why = "YouGame is not answering. Check your connection.";
+      return CodeSignIn::kFailed;
+    }
+    if (!live()) return CodeSignIn::kCancelled;
+    if (start.status == 401 && !refetched) {   // the client id launcher.ini kept is no longer YouGame's: ask again
+      refetched = true;
+      try { client = client_id(e, true); } catch (const std::exception& x) { *why = error_text(x); return CodeSignIn::kFailed; }
+      continue;
+    }
+    const json j = parse_or_empty(start.body);
+    const std::string device = string_or_empty(j, "device_code"), code = string_or_empty(j, "user_code");
+    if (start.status != 200 || device.empty() || code.empty() || code.size() > 16) {
+      *why = start.status == 429 ? "YouGame has had too many sign-ins from this network. Try again in a few minutes."
+           : start.status == 401 ? "YouGame does not offer sign-in for Melee Unlocked right now."
+           : "YouGame could not start a sign-in. Try again.";
+      return CodeSignIn::kFailed;
+    }
+    // Where to enter it: YouGame's own page on this site, never another address.
+    std::string link = string_or_empty(j, "verification_uri");
+    if (link.rfind(e.site + "/", 0) != 0 || link.size() > 120) link = e.site + "/link";
+    const int64_t lasts = j.count("expires_in") && j["expires_in"].is_number_integer() ? std::clamp<int64_t>(j["expires_in"].get<int64_t>(), 60, 1800) : 600;
+    int64_t interval = j.count("interval") && j["interval"].is_number_integer() ? std::clamp<int64_t>(j["interval"].get<int64_t>(), 1, 60) : 5;
+    drop_test_code(test_file, shown);
+    shown = code;
+    if (on_code) on_code(code, link);
+    write_test_code(test_file, link, code);
+    const auto ends = std::chrono::steady_clock::now() + std::chrono::seconds(lasts);
+    const std::string poll = "grant_type=" + form("urn:ietf:params:oauth:grant-type:device_code") + "&device_code=" + form(device) +
+                             "&client_id=" + form(client);
+    int64_t extra = 0;   // a busy YouGame's retry-after, once
+    bool again = false;  // the code ran out (or YouGame no longer knows it): a new one
+    for (;;) {
+      if (!wait((interval + extra) * 1000)) return CodeSignIn::kCancelled;
+      extra = 0;
+      if (std::chrono::steady_clock::now() >= ends) { again = true; break; }
+      Reply r;
+      try { r = post_form(e.site + "/oauth/token", poll); } catch (const std::exception&) { continue; }   // no answer: keep polling
+      const json t = parse_or_empty(r.body);
+      if (!live()) {   // cancelled while YouGame answered: a sign-in it gave just now ends there too
+        if (r.status == 200) revoke(e, client, string_or_empty(t, "refresh_token"));
+        return CodeSignIn::kCancelled;
+      }
+      const std::string error = string_or_empty(t, "error");
+      if (r.status == 200) {
+        const std::string access = string_or_empty(t, "access_token"), refresh = string_or_empty(t, "refresh_token");
+        if (access.empty() || refresh.empty()) { *why = "YouGame could not finish the sign-in. Try again."; return CodeSignIn::kFailed; }
+        const int64_t valid = t.count("expires_in") && t["expires_in"].is_number_integer() ? t["expires_in"].get<int64_t>() : 3600;
+        Session s;
+        s.token = true;
+        s.client = client;
+        s.refresh = refresh;
+        s.access = access;
+        s.access_until = now_s() + std::max<int64_t>(valid, 60);
+        bool same_site;
+        {
+          std::lock_guard<std::mutex> lock(g_mutex);
+          same_site = g_env.id == e.id;
+          if (same_site) g_session = s;
+        }
+        if (!same_site) {   // the launcher moved to the other YouGame meanwhile: this sign-in is not kept
+          revoke(e, client, refresh);
+          *why = "YouGame changed meanwhile. Press Connect again.";
+          return CodeSignIn::kFailed;
+        }
+        save_now();
+        // Who it is: the account's connect code, id and gamer tag (a later request asks again when this fails).
+        try {
+          const json identity = fetch_identity();
+          std::lock_guard<std::mutex> lock(g_mutex);
+          if (g_session.token && g_session.refresh == refresh) {
+            g_session.code = identity["code"];
+            g_session.user_id = string_or_empty(identity, "account");
+            g_session.name = string_or_empty(identity, "name");
+          }
+        } catch (const std::exception&) {
+        }
+        changed();
+        return CodeSignIn::kSignedIn;
+      }
+      if (r.status == 503 || r.status == 429) { extra = std::clamp(r.retry_after, 1, 60); continue; }
+      if (r.status >= 500) continue;   // a passing server error: keep polling until the code runs out
+      if (error == "authorization_pending") continue;
+      if (error == "slow_down") {
+        const int64_t said = t.count("interval") && t["interval"].is_number_integer() ? t["interval"].get<int64_t>() : 0;
+        interval = std::min<int64_t>(said > interval ? said : interval + 5, 120);
+        continue;
+      }
+      if (error == "access_denied") { *why = "The sign-in was declined on YouGame. Press Connect to try again."; return CodeSignIn::kDenied; }
+      if (error == "expired_token" || error == "invalid_grant") { again = true; break; }
+      *why = r.status == 401 ? "YouGame does not offer sign-in for Melee Unlocked right now." : "YouGame could not finish the sign-in. Try again.";
+      return CodeSignIn::kFailed;
+    }
+    if (again) ++round;
+  }
+  *why = "The sign-in code ran out. Press Connect to get a new one.";
+  return CodeSignIn::kExpired;
 }
 
 void warm() {
-  { std::lock_guard<std::mutex> lock(g_mutex); if (!g_session.web) return; }
-  use_web_folder();
+  { std::lock_guard<std::mutex> lock(g_mutex); if (!g_session.token) return; }
   std::thread([] {
     try {
-      // The site's own answer for this session: the connect code (it also says when the session ended).
+      // YouGame's answer for this sign-in: the connect code (a refresh first when the access token is old; it
+      // also says when YouGame ended the sign-in).
       const json identity = fetch_identity();
       bool differs;
       {
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (!g_session.web) return;
+        if (!g_session.token) return;
         const std::string code = identity["code"];
         differs = g_session.code != code;
         g_session.code = code;
@@ -634,45 +937,6 @@ bool adopt_staging_app() {
 bool app_declined() { std::lock_guard<std::mutex> lock(g_mutex); return g_app_choice == 0; }
 bool app_used_before() { std::lock_guard<std::mutex> lock(g_mutex); return g_app_choice == 1; }
 
-bool resume_web(std::string* why) {
-  std::string local;
-  if (!why) why = &local;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_session.web || g_session.app) { *why = "already connected"; return false; }
-  }
-  use_web_folder();
-  if (!web::supported()) { *why = "Microsoft Edge WebView2 is not available on this computer"; return false; }
-  if (!web::remembered()) { *why = "no saved sign-in in the launcher's browser view (Connect signs in)"; return false; }
-  Env e;
-  { std::lock_guard<std::mutex> lock(g_mutex); e = effective_env(g_env); }
-  // The site's own answer for the view's saved session (as warm() asks it): 200 with a code is signed in.
-  const web::Reply r = web::request(e.site, "GET", "/api/multiplayer/code", "");
-  const json j = parse_or_empty(r.body);
-  if (r.status != 200 || !j.is_object() || !j.count("code") || !j["code"].is_string()) {
-    // The answer's first line only (an error page can be long); never the session itself.
-    std::string body = r.body.substr(0, r.body.find('\n')).substr(0, 160);
-    *why = r.status == 0 ? "YouGame did not answer (no connection, or no answer within the time limit" +
-                               (body.empty() ? std::string(")") : ": " + body + ")")
-         : r.status == 401 || r.status == 403 ? "YouGame answered " + std::to_string(r.status) +
-                                                    ": the saved sign-in has ended (Connect signs in again)"
-         : r.status == 200 ? "YouGame answered 200 without an account code"
-         : "YouGame answered " + std::to_string(r.status) + (body.empty() ? std::string() : ": " + body);
-    return false;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_session.web || g_session.app) return true;
-    g_session = Session{};
-    g_session.web = true;
-    g_session.code = j["code"];
-    g_session.user_id = j.value("account", std::string());
-    g_session.name = string_or_empty(j, "name");
-  }
-  changed();
-  return true;
-}
-
 AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail) {
   // Every step goes into *detail ("; " between), for the launcher's log.
   std::string steps;
@@ -705,7 +969,7 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
       s.code = a.code;
       {
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_session.web || g_env.id != e.id) { step("signed in on this launcher meanwhile"); return AppSignIn::kSignedIn; }
+        if (g_session.token || g_env.id != e.id) { step("signed in on this launcher meanwhile"); return AppSignIn::kSignedIn; }
         g_session = s;
         g_app_choice = 1;   // the launcher starts the app quietly next time, to take this account again
       }
@@ -723,25 +987,26 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
 }
 
 void sign_out() {
-  bool web_session, app_session;
+  Session was;
+  Env e;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    web_session = g_session.web;
-    app_session = g_session.app && !g_session.web;
+    was = g_session;
+    e = effective_env(g_env);
     // An account the app gave: the launcher stops taking it by itself (Connect takes it again).
-    if (app_session) g_app_choice = 0;
+    if (g_session.app && !g_session.token) g_app_choice = 0;
     g_session = Session{};
   }
   changed();
-  if (app_session) return;   // the app keeps its own sign-in; this launcher held nothing of it
-  // The browser view's session goes with its folder (only when this launcher has one).
-  use_web_folder();
-  if (web_session || web::remembered()) web::sign_out();
+  // The app keeps its own sign-in (this launcher held nothing of it); a sign-in by code ends on YouGame too.
+  if (was.token) revoke(e, was.client, was.refresh);
 }
+
+void set_save_now(std::function<void()> callback) { g_save_now = std::move(callback); }
 
 void set_on_session_change(std::function<void()> callback) {
   g_on_change = std::move(callback);
-  // launcher.ini is written again at once when it still held the removed password sign-in's session.
+  // launcher.ini is written again at once when it still held an earlier sign-in's session (dropped).
   bool old;
   { std::lock_guard<std::mutex> lock(g_mutex); old = g_old_session_line; g_old_session_line = false; }
   if (old) changed();

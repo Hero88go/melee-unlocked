@@ -24,8 +24,10 @@ class MatchStateWiring(unittest.TestCase):
             # 122.6: both from YouGame claude/v2 (3c9a9d020: staging's start installer, the mini app; e367c288d: a game
             # started before the app finds it on its own).
             # 122.19: then YouGame claude/v2 4198ed40e (PR 2506: the offer says sign-in comes after the install).
-            'yougame_start.h': '324ccc7bcfa3958152f0b18d3c81525ebd196bf5b71380e47bc1f77a170ebb0f',
-            'yougame.h': '58d758cafd6e0a4b0b1633cf652f3534227bbf66bbcad9b6839535155e62684a',
+            # Sign-in by code: both from YouGame claude/v2 2698b0cc5 (last changed in 6ef19458e: the yg_box sign-in
+            # box), each with a first line naming that commit.
+            'yougame_start.h': 'ace190851dac63b064926c18298d4fab16ff10990ebaa9ddc5c6a0757b5ab52d',
+            'yougame.h': '7add9b53e13396ea6a11d9427de15b22f354d43e2398ae1b9abd2e561e4bdbaf',
         }.items():
             self.assertEqual(hashlib.sha256((ROOT / 'port/third_party/yougame_start' / name).read_bytes()).hexdigest(), digest)
 

@@ -53,7 +53,7 @@
 #include "launcher_lobby.h"
 #include "launcher_lobby_p2p.h"
 #include "launcher_yougame.h"
-#include "launcher_yougame_web.h"   // raise_sign_in: Connect pressed while the sign-in window is open
+#include "yougame_start/yougame_start.h"   // yg_box: the box that shows the sign-in code
 #include "launcher_theme.h"
 #include "launcher_replay_data.h"
 #include "launcher_trace_view.h"
@@ -89,14 +89,16 @@ inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* captio
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_LANGUAGE, ID_MODS, ID_SEND_LOGS, ID_TIMER = 1, ID_TIMER_STANDBY = 2 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_LANGUAGE, ID_MODS, ID_SEND_LOGS, ID_TIMER = 1, ID_TIMER_STANDBY = 2, ID_TIMER_YG_BOX = 3 };
 HWND g_lang_btn = nullptr;
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
 const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
 const UINT WM_APP_YOUGAME = WM_APP + 52;
-const UINT WM_APP_YOUGAME_WEB = WM_APP + 53;   // YouGame's sign-in window is done: wParam signed in, lParam heap std::string* why not
+const UINT WM_APP_YOUGAME_WEB = WM_APP + 53;   // Connect's sign-in is done: wParam signed in, lParam heap std::string* why not
+const UINT WM_APP_YOUGAME_CODE = WM_APP + 56;   // a sign-in code to show: lParam heap std::pair<std::string, std::string>* (code, link)
+const UINT WM_APP_YOUGAME_SAVE = WM_APP + 57;   // launcher.ini is written now (a new YouGame refresh token), sent and waited on
 const UINT WM_APP_YOUGAME_CONNECT = WM_APP + 54;   // test runs only (MELEE_LAUNCHER_TEST_YG_CONNECT_MS): YouGame's Connect pressed
 const UINT WM_APP_YOUGAME_OPEN_CONNECT = WM_APP + 55;   // the game's YouGame row asked for Connect (muOpenConnect)
 const UINT WM_APP_GAME_DISC = WM_APP + 61;   // lParam: heap std::string*, the 1.02 disc unpacked from an RVZ/WIA   // the YouGame session changed: save launcher.ini, repaint
@@ -940,11 +942,26 @@ void paint_rail(HDC dc) {
 // The YouGame line on the Play page: the account, then Connect or Disconnect, then Open YouGame (the
 // installed YouGame app at Melee Unlocked's page, or the site's page without the app). The two links' rectangles are kept for clicks.
 RECT g_yg_link[3] = {};   // Connect/Disconnect, Open YouGame, the extension checkbox
-std::atomic<bool> g_yg_connecting{false};   // Connect is asking the YouGame app or showing the sign-in window
-std::atomic<bool> g_yg_installing{false};   // Connect is installing Microsoft's WebView2 for the sign-in window (~1 min)
+std::atomic<bool> g_yg_connecting{false};   // Connect is asking the YouGame app or waiting on a sign-in code
+// The sign-in code Connect shows (YouGame's sign-in by code): in the YouGame box over the launcher, or, where
+// that box cannot be drawn, in this status line. Window thread only.
+std::string g_yg_code, g_yg_code_link;
+bool g_yg_box = false;   // the box with the code is up (ID_TIMER_YG_BOX polls it)
+// The status line while not connected: the code to enter when the box is not up, else connecting or not.
+std::wstring yougame_status_text() {
+  if (!g_yg_code.empty() && !g_yg_box) {
+    std::string at = g_yg_code_link;
+    if (at.rfind("https://", 0) == 0) at = at.substr(8);
+    std::wstring line = launcher::lang::txw(L"YouGame: go to {link} and enter {code}");
+    for (const auto& [key, value] : {std::pair<std::wstring, std::string>{L"{link}", at}, {L"{code}", g_yg_code}})
+      if (const size_t i = line.find(key); i != std::wstring::npos) line.replace(i, key.size(), widen(value));
+    return line;
+  }
+  return launcher::lang::txw(g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+}
 std::atomic<bool> g_yg_start_check{false};   // the launcher's own check at start runs (it holds g_yg_connecting)
 bool g_yg_connect_queued = false;            // Connect pressed meanwhile: it runs once that check is done
-uint64_t g_yg_closed_at = 0;                // GetTickCount64 when the sign-in window last closed
+uint64_t g_yg_closed_at = 0;                // GetTickCount64 when Connect's sign-in last ended
 bool g_yg_hot = false;
 void paint_yougame_line(HDC dc) {
 #ifdef MELEE_YOUGAME_COMING_SOON
@@ -966,7 +983,7 @@ void paint_yougame_line(HDC dc) {
     // The account, then its two links; the account name gives way (an ellipsis) before a link would.
     const PlayLayout l = play_layout();
     const std::wstring account = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
-                                             : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+                                             : yougame_status_text();
     // The YouGame app's account while YouGame does not list this build: Connect (the launcher's own sign-in,
     // which the game needs to play this build) instead of Disconnect.
     const bool app_needs_web = a.app && !launcher::yougame::listed_current();
@@ -1015,7 +1032,7 @@ void paint_yougame_line(HDC dc) {
     return;
   }
   std::wstring base = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
-                                  : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+                                  : yougame_status_text();
   dot(dc, CX, 287, a.signed_in ? C_OK : C_FAINT);
   const RECT line = LR(CX + 15, 284, CW - 15, 17);
   HGDIOBJ old = SelectObject(dc, g_font);
@@ -1279,37 +1296,24 @@ std::string yougame_restart_older(const launcher::yougame::Allowed& older, const
   g_yg_restart_mode = mode;
   return std::string();
 }
-bool g_yg_again = false;     // the sign-in window opens because YouGame ended the earlier sign-in
 bool g_yg_reopen = false;    // ...once the game that is running has closed
 // This build's version as the YouGame app's channel hears it in a hello (as set_build names it).
 std::string yougame_build_version() {
   return g_active_version.empty() ? std::string(MELEE_PORT_VERSION) : g_active_version.substr(0, g_active_version.find('-'));
 }
 // Connect's work, off the window thread (the caller set g_yg_connecting; this clears it and posts
-// WM_APP_YOUGAME_WEB). 1: the launcher's own saved sign-in, asked through the hidden view. 2 (use_app): the
-// YouGame app's account, the app started quietly when installed and not running; enough on its own only while
-// YouGame lists this build (the app refuses searches for a build it does not list). 3: YouGame's sign-in page
-// in the launcher's window, titled with why when the app's account was not enough.
+// WM_APP_YOUGAME_WEB). A sign-in the launcher saved is already in use (launcher.ini, checked at start), so Connect
+// asks: 1 (use_app): the YouGame app's account, the app started quietly when installed and not running; enough on
+// its own only while YouGame lists this build (the app refuses searches for a build it does not list). 2: YouGame's
+// sign-in by code: the launcher shows a short code and a link (the YouGame box over the launcher, or the status
+// line), the player enters it on YouGame in any browser, and the launcher keeps the sign-in from then on.
 void yougame_sign_in_thread(bool use_app) {
-  const std::string no_webview = narrow(launcher::lang::txw(L"Signing in to YouGame needs Microsoft Edge WebView2, which this computer does not have. Install it from Microsoft (it is free), then press Connect again."));
-  const std::wstring unlisted = launcher::lang::txw(L"YouGame has not listed this version yet: sign in here once to play it now.");
-  std::thread([use_app_asked = use_app, again = g_yg_again, version = yougame_build_version(), no_webview, unlisted] {
-    std::string resume_why;
-    if (launcher::yougame::resume_web(&resume_why)) {
-      log_line("yougame: Connect: the launcher's own saved sign-in answered signed in");
-      g_yg_connecting = false;
-      PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string());
-      return;
-    }
-    log_line("yougame: Connect: no saved sign-in to use (%s)", resume_why.c_str());
-    std::wstring title;
-    // Owner 11-19: while YouGame does not list this build nothing of the YouGame app runs: it is never started
-    // or asked (a running app overlays any Melee Unlocked window); the launcher's own sign-in is the way.
+  std::thread([use_app_asked = use_app, version = yougame_build_version()] {
+    const bool listed = launcher::yougame::listed_current();
     // The YouGame app's account when the app is signed in (owner 11-20, later: "it should detect I have YouGame
     // logged in"). While YouGame does not list this build the app is only asked when already running, never
     // started (a running app overlays any Melee Unlocked window); Play then asks for the launcher's own sign-in
     // once (yougame_sign_in_for_play). An account the app already gave goes on to the launcher's own sign-in.
-    const bool listed = launcher::yougame::listed_current();
     if (use_app_asked && !launcher::yougame::account().app) {
       std::string detail;
       const auto app = launcher::yougame::sign_in_app(listed, version, &detail);
@@ -1321,78 +1325,102 @@ void yougame_sign_in_thread(bool use_app) {
         return;
       }
     }
-    if (launcher::yougame::account().app && !listed) title = unlisted;
-    // YouGame's own sign-in page, in the launcher's browser view. The player signs in there once, and the
-    // launcher asks YouGame through that page from then on (remembered: it connects by itself at every start).
+    // YouGame's sign-in by code. Only the code and its link are logged, never anything the launcher keeps.
     std::string why;
-    bool ok = false;
-    // No WebView2 on this computer (a Windows 10 without it): install Microsoft's runtime first, then sign in.
-    if (!launcher::yougame::web_sign_in_available()) {
-      log_line("yougame: Connect: Microsoft Edge WebView2 is missing: installing Microsoft's runtime");
-      // The silent install takes about a minute: the status line says so rather than a bare "connecting...".
-      g_yg_installing = true;
-      if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
-      std::string step;
-      if (launcher::yougame::install_web_runtime(&step)) log_line("yougame: Connect: WebView2 installed");
-      else log_line("yougame: Connect: WebView2 install failed: %s", step.c_str());
-      g_yg_installing = false;
-      if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
-    }
-    if (launcher::yougame::web_sign_in_available()) ok = launcher::yougame::sign_in_web(g_main, &why, {}, again, title);
-    else why = no_webview;
+    const auto result = launcher::yougame::sign_in_code(
+        [](const std::string& code, const std::string& link) {
+          log_line("yougame: Connect: sign-in code %s at %s", code.c_str(), link.c_str());
+          PostMessageW(g_main, WM_APP_YOUGAME_CODE, 0, (LPARAM)new std::pair<std::string, std::string>(code, link));
+        },
+        &why);
+    const bool ok = result == launcher::yougame::CodeSignIn::kSignedIn;
+    if (result == launcher::yougame::CodeSignIn::kCancelled) why.clear();
     g_yg_connecting = false;
     PostMessageW(g_main, WM_APP_YOUGAME_WEB, ok, (LPARAM)new std::string(why));
   }).detach();
 }
+// Connect pressed while a sign-in code is already up: the box shows it again (the player closed it with Back).
+void yougame_show_code_box();
 void yougame_connect() {
   // Signed in through the YouGame app while YouGame does not list this build: Connect opens the launcher's own
   // sign-in (the game cannot search with the app's account); Disconnect otherwise.
   if (launcher::yougame::account().app && !launcher::yougame::listed_current() && !vanilla_active()) {
     if (GetTickCount64() - g_yg_closed_at < 1500) return;
-    if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else launcher::yougame::web::raise_sign_in(); return; }
+    if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else yougame_show_code_box(); return; }
     yougame_sign_in_thread(false);
     return;
   }
   if (launcher::yougame::account().signed_in) {
     if (MessageBoxW(g_main, launcher::lang::txw(L"Disconnect your YouGame account from this launcher?").c_str(), L"YouGame",
                     MB_YESNO | MB_ICONQUESTION) == IDYES)
-      std::thread([] { launcher::yougame::sign_out(); }).detach();   // the browser view's folder goes too
+      std::thread([] { launcher::yougame::sign_out(); }).detach();   // YouGame is told too (the sign-in is revoked)
     return;
   }
-  // A click that waited behind the sign-in window's close (a slow close, a double click on its X) never
-  // opens it again.
+  // A click that came right behind the sign-in's end (a double click) never starts another.
   if (GetTickCount64() - g_yg_closed_at < 1500) return;
-  // Already open: its window comes to the front (posted to its own thread; this one never waits on it).
-  if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else launcher::yougame::web::raise_sign_in(); return; }
+  // A code already up: the box shows it again.
+  if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else yougame_show_code_box(); return; }
   if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);   // "YouGame: connecting..."
-  // The launcher's window stays enabled and responsive throughout: everything below runs on its own thread,
-  // and the sign-in window is never owned by this one (launcher_yougame_web.h).
+  // The launcher's window stays enabled and responsive throughout: everything below runs on its own thread.
   yougame_sign_in_thread(true);   // a signed-in YouGame app first (asked; started only when YouGame lists this build)
 }
 // The game's YouGame row was pressed while the launcher is not signed in to YouGame (muOpenConnect, posted from the
-// bridge's thread): Connect's own sign-in starts, or its window comes to the front when it is already open. Unlike
+// bridge's thread): Connect's own sign-in starts, or its code shows again when one is already up. Unlike
 // the Connect button it never offers Disconnect: a launcher that is signed in has nothing to do here.
 void yougame_open_connect_from_game() {
   const launcher::yougame::Account a = launcher::yougame::account();
   if (vanilla_active() || (a.signed_in && !a.app)) { log_line("yougame: the game asked for Connect; already signed in"); return; }
   log_line("yougame: the game asked for Connect (a YouGame row, not signed in)");
   if (GetTickCount64() - g_yg_closed_at < 1500) return;
-  if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else launcher::yougame::web::raise_sign_in(); return; }
+  if (g_yg_connecting.exchange(true)) { if (g_yg_start_check) g_yg_connect_queued = true; else yougame_show_code_box(); return; }
   if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);   // "YouGame: connecting..."
   yougame_sign_in_thread(false);
 }
 // Play with an account the YouGame app gave while YouGame does not list this build: the app's searches would be
-// refused, so the game plays through the launcher's bridge, which needs the launcher's own sign-in. Its window
-// opens once per run, saying why (it finishes by itself when the browser view is still signed in); the game
-// starts when it closes, signed in or not. True when it opened (start_game waits for it).
+// refused, so the game plays through the launcher's bridge, which needs the launcher's own sign-in. Its code
+// shows once per run; the game starts when that sign-in ends, signed in or not (Back on the box ends it). True
+// when it started (start_game waits for it).
 bool g_yg_play_after = false, g_yg_play_asked = false;
 bool yougame_sign_in_for_play() {
   if (vanilla_active() || g_yg_play_asked || !launcher::yougame::account().app || launcher::yougame::listed_current()) return false;
-  if (!launcher::yougame::web_sign_in_available() || g_yg_connecting.exchange(true)) return false;
+  if (g_yg_connecting.exchange(true)) return false;
   g_yg_play_asked = g_yg_play_after = true;
   log_line("yougame: Play: YouGame does not list this build yet; the launcher's own sign-in opens once so the game can play through the launcher");
   yougame_sign_in_thread(false);
   return true;
+}
+// The sign-in code in the YouGame box over the launcher's window (the plugin draws it in YouGame's look). Where
+// the box cannot be drawn (not Windows, or an answer the plugin refuses) the status line shows the code instead.
+void yougame_show_code_box() {
+  if (g_yg_code.empty()) return;
+  yg_box_options o{};
+  o.screen = YG_BOX_SIGN_IN;
+  o.window = g_main;
+  o.game = "melee-unlocked";
+  o.staging = launcher::yougame::env().id == "staging" ? 1 : 0;
+  o.name = "Melee Unlocked";
+  o.code = g_yg_code.c_str();
+  o.link = g_yg_code_link.c_str();
+  g_yg_box = yg_box_show(&o) == YG_BOX_SHOWN;
+  if (g_yg_box) SetTimer(g_main, ID_TIMER_YG_BOX, 150, nullptr);
+  else log_line("yougame: the sign-in box is not available here; the status line shows the code");
+  if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
+}
+// The box's answer: Back ends this sign-in (the player can press Connect for a new code). A box that went with
+// no answer leaves the code in the status line.
+void yougame_poll_code_box() {
+  if (!g_yg_box) { KillTimer(g_main, ID_TIMER_YG_BOX); return; }
+  const int answer = yg_box_poll();
+  if (answer == YG_BOX_SHOWN) return;
+  KillTimer(g_main, ID_TIMER_YG_BOX);
+  g_yg_box = false;
+  if (answer == YG_BOX_BACK) {
+    log_line("yougame: Back on the sign-in box: the sign-in by code stops");
+    launcher::yougame::cancel_sign_in_code();
+    g_yg_code.clear();   // a Connect meanwhile never shows this code again
+    g_yg_code_link.clear();
+  }
+  if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
 }
 #include "launcher_mods.inl"
 
@@ -2016,7 +2044,7 @@ void launch_game_now() {
     SetEnvironmentVariableW(L"YOUGAME_TOKEN", widen(launcher::yougame::new_launch_token()).c_str());
     // The hybrid is not the launcher-only mode: MELEE_YOUGAME_LAUNCHER would keep the game off the app's channel.
     SetEnvironmentVariableW(hybrid ? L"MELEE_YOUGAME_MATCH_BRIDGE" : L"MELEE_YOUGAME_LAUNCHER", L"1");
-    launcher::yougame::warm();   // the browser view is open and its session checked before the game's first search
+    launcher::yougame::warm();   // the saved sign-in is checked with YouGame before the game's first search
   }
   PROCESS_INFORMATION pi{};
   const DWORD error = launcher::start_process(widen(exe), widen(cmd), widen(cwd), 0, pi);
@@ -2385,7 +2413,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       ShowWindow(g_slippi_btn, g_slippi_missing && !vanilla_active() ? SW_SHOW : SW_HIDE);
       // YouGame: the bridge the game's YouGame rows ask (launcher_yougame.h), up for the whole run.
       launcher::yougame::set_on_session_change([] { PostMessageW(g_main, WM_APP_YOUGAME, 0, 0); });
-      launcher::yougame::set_web_folder(widen(g_dir) + L"\\YouGameWeb");   // the sign-in page's browser view keeps its session here
+      // A new refresh token is in launcher.ini before it is used: written on this thread, the caller waiting.
+      launcher::yougame::set_save_now([] { SendMessageTimeoutW(g_main, WM_APP_YOUGAME_SAVE, 0, 0, SMTO_NORMAL, 5000, nullptr); });
+      // The old sign-in window's browser folder (before sign-in by code) is not used any more.
+      std::thread([folder = widen(g_dir) + L"\\YouGameWeb"] {
+        std::error_code ec;
+        if (std::filesystem::is_directory(folder, ec)) std::filesystem::remove_all(folder, ec);
+      }).detach();
 #ifndef MELEE_YOUGAME_COMING_SOON
       if (std::string why; !launcher::yougame::start_bridge(&why)) log_line("yougame: the launcher's bridge did not start (%s)", why.c_str());
       // Which builds YouGame allows: when it is on an older release, get that one beside this
@@ -2403,10 +2437,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             host::updater::install_release(older.version, false, g_dir);
         }).detach();
       launcher::yougame::warm();   // a saved sign-in is checked with YouGame now: one that ended asks for a new one at once
-      // Connected by itself, no button and no window (owner 11-19): (a) the launcher's own sign-in its browser
-      // view kept, asked through the hidden view; (b) else the YouGame app's account when the app runs and is
+      // Connected by itself, no button and no window (owner 11-19): (a) the launcher's own sign-in saved in
+      // launcher.ini (already in use, so this check never runs); (b) else the YouGame app's account when the app runs and is
       // signed in; (c) else, when this launcher connected through the app before, the installed app started
-      // quietly (tray only) and its account taken once its channel answers. Never the sign-in window: that
+      // quietly (tray only) and its account taken once its channel answers. Never a sign-in code: that
       // stays on Connect. Not after the player chose Disconnect for the app's account. Off this thread; the row
       // reads "connecting..." meanwhile.
       if (!vanilla_active() && !launcher::yougame::account().signed_in && !g_yg_connecting.exchange(true)) {
@@ -2414,21 +2448,17 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 0) InvalidateRect(hwnd, nullptr, FALSE);
         std::thread([version = yougame_build_version()] {
           std::string how;
-          // The launcher's own saved sign-in, else the YouGame app's account when the app is already running and
+          // No saved sign-in: the YouGame app's account when the app is already running and
           // signed in (owner 11-20, later: "it should detect I have YouGame logged in"). The app is asked, never
           // started; listed or not, the row shows the account (Play asks for the launcher's own sign-in once when
           // YouGame does not list this build, yougame_sign_in_for_play).
-          std::string why;
           const ULONGLONG asked = GetTickCount64();
-          if (launcher::yougame::resume_web(&why)) how = "the launcher's own saved sign-in answered signed in";
-          else {
-            std::string detail;
-            const bool declined = launcher::yougame::app_declined();
-            if (declined) detail = "not asked: Disconnect was chosen for its account";
-            if (!declined && launcher::yougame::sign_in_app(false, version, &detail) == launcher::yougame::AppSignIn::kSignedIn)
-              how = "the YouGame app's account (" + detail + ")";
-            else how = "not connected: " + why + "; YouGame app: " + detail;
-          }
+          std::string detail;
+          const bool declined = launcher::yougame::app_declined();
+          if (declined) detail = "not asked: Disconnect was chosen for its account";
+          if (!declined && launcher::yougame::sign_in_app(false, version, &detail) == launcher::yougame::AppSignIn::kSignedIn)
+            how = "the YouGame app's account (" + detail + ")";
+          else how = "not connected: no saved sign-in; YouGame app: " + detail;
           how += " (" + std::to_string((GetTickCount64() - asked) / 1000) + " s)";
           log_line("yougame: at start: %s", how.c_str());
           g_yg_connecting = false;
@@ -2710,12 +2740,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         const launcher::yougame::Account a = launcher::yougame::account();
         if (!a.signed_in || (a.app && !launcher::yougame::listed_current())) yougame_connect();
       }
-      // YouGame ended the saved sign-in (signed out on the site, or the session ran out): its sign-in page
-      // opens again, saying so. Never over a running game: then it opens when the game has closed.
+      // YouGame ended the saved sign-in (signed out on the site, or the sign-in was revoked): Connect's sign-in
+      // starts again with a new code. Never over a running game: then it starts when the game has closed.
       if (launcher::yougame::take_expired()) {
         log_line("yougame: the saved sign-in ended; asking for a new one%s", g_playing ? " when the game closes" : "");
         if (g_playing) g_yg_reopen = true;
-        else { g_yg_again = true; yougame_connect(); g_yg_again = false; }
+        else yougame_connect();
       }
       return 0;
     case WM_APP_YOUGAME_CONNECT:
@@ -2724,13 +2754,25 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_YOUGAME_OPEN_CONNECT:
       yougame_open_connect_from_game();
       return 0;
+    case WM_APP_YOUGAME_CODE: {
+      std::unique_ptr<std::pair<std::string, std::string>> code((std::pair<std::string, std::string>*)lp);
+      g_yg_code = code->first;
+      g_yg_code_link = code->second;
+      yougame_show_code_box();
+      return 0;
+    }
+    case WM_APP_YOUGAME_SAVE:
+      save_ini();
+      return 0;
     case WM_APP_YOUGAME_WEB: {
       std::unique_ptr<std::string> why((std::string*)lp);
       g_yg_closed_at = GetTickCount64();
-      if (*why != "app") SetForegroundWindow(hwnd);   // back from the sign-in window
+      if (g_yg_box) { KillTimer(hwnd, ID_TIMER_YG_BOX); yg_box_close(); g_yg_box = false; }
+      g_yg_code.clear();
+      g_yg_code_link.clear();
       if (!wp && !why->empty()) MessageBoxW(hwnd, widen(*why).c_str(), L"YouGame", MB_OK | MB_ICONINFORMATION);
       if (*why == "app") log_line("yougame: connected with the account signed in to the YouGame app");
-      else log_line("yougame: sign-in window closed (%s)", wp ? "signed in" : why->empty() ? "closed by the player" : why->c_str());
+      else log_line("yougame: sign-in by code ended (%s)", wp ? "signed in" : why->empty() ? "cancelled" : why->c_str());
       if (g_tab == 0) InvalidateRect(hwnd, nullptr, FALSE);
       // Play opened it (yougame_sign_in_for_play): the game starts now, signed in or not.
       if (g_yg_play_after) { g_yg_play_after = false; start_game(); }
@@ -2738,7 +2780,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_APP_GAME_DONE:
       g_playing = false;
-      if (g_yg_reopen && !launcher::yougame::account().signed_in) { g_yg_reopen = false; g_yg_again = true; yougame_connect(); g_yg_again = false; }
+      if (g_yg_reopen && !launcher::yougame::account().signed_in) { g_yg_reopen = false; yougame_connect(); }
       g_yg_reopen = false;
       // The game closed to play a Gecko code only the Static Recomp runs (host::request_engine_switch):
       // that engine is picked, as a click on its GAME BUILD segment would, and started now.
@@ -2798,6 +2840,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_TIMER: {
       if (wp == ID_TIMER_STANDBY) { KillTimer(hwnd, ID_TIMER_STANDBY); settings_standby_start(); return 0; }
+      if (wp == ID_TIMER_YG_BOX) { yougame_poll_code_box(); return 0; }
       // The lobby answers requests from here too (a banner), also before its page was opened, and
       // hears about a changed Game Build, setup or Mods folder within two seconds.
       launcher::lobby::tick_ui();
@@ -2982,6 +3025,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
       launcher::lobby::shutdown();
       KillTimer(hwnd, ID_TIMER); settings_standby_stop(); host::updater::shutdown();
+      if (g_yg_box) { KillTimer(hwnd, ID_TIMER_YG_BOX); yg_box_close(); g_yg_box = false; }
+      launcher::yougame::cancel_sign_in_code();
       if (g_dog) DeleteObject(g_dog);
       if (g_wordmark) DeleteObject(g_wordmark);
       PostQuitMessage(0);
