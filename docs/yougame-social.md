@@ -16,11 +16,11 @@ result as JSON in `result_json`, read with `yg_json_*`.
 
 | `type` | Body | Answer | Sign-in |
 |---|---|---|---|
-| `socialCounts` | none | `{online, inMatch, waiting:{"<mode>:<queue>": n}}` for this game; refreshed about every 20 s, so poll no faster | not needed |
-| `socialRooms` | none | `{rooms:[{queue, players, size}]}`: live casual and ranked rooms with someone seated, busiest first (friends rooms are private and never listed) | not needed |
+| `socialCounts` | none | `{online, inMatch, inRooms, waiting:{"<mode>:<queue>": n}}` for this game (`inRooms`: players in a live room); refreshed about every 20 s, so poll no faster | not needed |
+| `socialRooms` | none | `{rooms:[{code, mode, queue, players, size}]}`: the game's public lobbies with someone seated, busiest first (private friends rooms are never listed). Join one by its `code` (below) | not needed |
 | `socialPlayers` | `{"friends":true}` for friends only | `{players:[{username, name, status, friend, rating}]}`, friends first, at most 100; `status` is `online` or `in_match`; `friend` is `you`, `friends`, `requested`, `incoming` or `none`; `rating` is the best ranked rating in this game or null | needed |
 | `friendsList` | none | `{friends:[{username, name, online, here, playing}], incoming:[…], outgoing:[…]}` | needed |
-| `friendAction` | `{"action":"add","username":"ada"}` (`add`, `accept`, `decline`, `cancel`) | `{state}` (`requested` or `friends`) | needed |
+| `friendAction` | `{"action":"add","username":"ada"}` (`add`, `accept`, `decline`, `cancel`) | `{state}` (`requested` or `friends`). YouGame asks the player yes/no in its own sheet first; a no fails with code `cancelled` | needed |
 
 ```c
 static void on_counts(void *user, const yg_result *r) {
@@ -33,6 +33,11 @@ yg_call("socialPlayers", "{\"friends\":true}", 0, on_players, NULL);
 ```
 
 ## Notes
+
+- Joining a listed public lobby: the web SDK's `joinLobby({ mode, queue, room: code, players: size })` (see the
+  sdk.md reference). YouGame checks the code before the player leaves the room they are in.
+- The friend actions only ask: the player confirms in YouGame. Outside the YouGame app they fail with
+  `not_available` until the app build that supports them.
 
 - The signed-in calls fail with code `sign_in` for a signed-out player. Offer YouGame's sign-in
   there rather than an error.
