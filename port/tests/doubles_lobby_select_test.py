@@ -382,7 +382,7 @@ class TwoPortraits(unittest.TestCase):
                 rows, rest = rows + 1, rest[cut:].lstrip(' ')
             self.assertLessEqual(rows, 2, line)
         lines += errors
-        for exact in ('Version mismatch', 'Lobby closed. Press B to go back', 'Try again', 'Searching for opponents',
+        for exact in ('Version mismatch', 'Lobby closed. Press B to leave', 'Try again', 'Searching for opponents',
                       'Press START to search', 'Select your character', 'Character selected', 'Match found',
                       'Waiting for players', 'Search stopped', 'Partner: find online', 'Inviting a friend',
                       'Partner: Player 2', 'Partner: CPU'):
@@ -825,7 +825,7 @@ int main(void)
     check(&v, MU_LOBBY_HINT_NOT_READY, 0, 0, "",
           LINES("Character selected", 2, "Waiting for players", 1, "Partner: find online", 0), "Tab changes partner", "");
     /* The problems, in red: the lines are cleared (Slippi's). */
-    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Press B to go back");
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Press B to leave");
     check(&v, MU_LOBBY_HINT_MISMATCH, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");
     check(&v, MU_LOBBY_HINT_TEAM_MISMATCH, 1, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");
     check(&v, MU_LOBBY_HINT_UNSUPPORTED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");

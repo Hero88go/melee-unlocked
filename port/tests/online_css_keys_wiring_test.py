@@ -131,18 +131,18 @@ int main(void)
 {
     MuF4Panel p;
     memset(&p, 0, sizeof p);
-    strcpy(p.line[1], "Press START to search"); strcpy(p.error, "Lobby closed. Press B to go back");
+    strcpy(p.line[1], "Press START to search"); strcpy(p.error, "Lobby closed. Press B to leave");
     p.gray = "Press B to cancel";
     mu_f4_panel_keys(&p, "X", "Enter");   /* the keyboard's default B and START */
     CHECK(strcmp(p.line[1], "Press Enter to search") == 0);
-    CHECK(strcmp(p.error, "Lobby closed. Press X to go back") == 0);
+    CHECK(strcmp(p.error, "Lobby closed. Press X to leave") == 0);
     CHECK(strcmp(p.gray, "Press X to cancel") == 0);
     memset(&p, 0, sizeof p);   /* a controller: no labels, the GameCube names stay */
     strcpy(p.line[1], "Press START to invite"); p.gray = "Press B to cancel";
-    strcpy(p.error, "Lobby closed. Press B to go back");
+    strcpy(p.error, "Lobby closed. Press B to leave");
     mu_f4_panel_keys(&p, "", "");
     CHECK(strcmp(p.line[1], "Press START to invite") == 0 && strcmp(p.gray, "Press B to cancel") == 0);
-    CHECK(strcmp(p.error, "Lobby closed. Press B to go back") == 0);
+    CHECK(strcmp(p.error, "Lobby closed. Press B to leave") == 0);
     memset(&p, 0, sizeof p);   /* a name too long for the line keeps the old word, never overruns */
     strcpy(p.line[1], "Press START to search"); p.gray = "";
     mu_f4_panel_keys(&p, "B", "Right Shift Key");
@@ -268,7 +268,7 @@ class ClosedHomeBackTest(unittest.TestCase):
         self.assertIn("mnCharSel_804D6CF6 = 2;", exit_)
         self.assertIn("if (!mu_f4.leaving && mnCharSel_804D6CF6 == 0 && mnCharSel_804A0BC0[mine] &&", frame)
         text = body(f4, "static void mu_f4_panel_text(")
-        self.assertIn('strcpy(p->error, "Lobby closed. Press B to go back");', text)
+        self.assertIn('strcpy(p->error, "Lobby closed. Press B to leave");', text)
         self.assertNotIn("Hold B to exit", f4)
         decide = body(read("sourceport/game/shim/mu_slippi_menu.c"), "static int lobby_css_decide(GameModeState* state)")
         self.assertIn("if (css->pending_scene_change == 2) {", decide)

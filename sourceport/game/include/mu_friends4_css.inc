@@ -1627,7 +1627,7 @@ static void mu_f4_panel_text(const MuLobbyView* v, unsigned hint, int noted, int
         strcpy(p->error, "Version mismatch");
         return;
     case MU_LOBBY_HINT_CLOSED:
-        strcpy(p->error, "Lobby closed. Press B to go back");   /* mu_f4_closed_back */
+        strcpy(p->error, "Lobby closed. Press B to leave");   /* mu_f4_closed_back */
         return;
     case MU_LOBBY_HINT_TAKEN:
     case MU_LOBBY_HINT_CHANGED:
@@ -2161,7 +2161,7 @@ static void mu_f4_sync_mode(CSSData* css, int mine)
     }
 }
 
-/* "Lobby closed. Press B to go back": a B press, or A with the hand on BACK, leaves for the Online menu
+/* "Lobby closed. Press B to leave": a B press, or A with the hand on BACK, leaves for the Online menu
  * (lobby_css_decide). Melee's own exits don't do it there: B only leaves after a long hold, and A on BACK
  * only counts with an empty hand, while the closed lobby leaves this player's coin in the hand. 1 = leave. */
 static int mu_f4_closed_back(const MuLobbyView* v, u32 trigger, float x, float y)
