@@ -54,6 +54,19 @@ class DoublesRowOpensTheHome(unittest.TestCase):
         # Still only in a menu that has the Doubles row.
         self.assertGreater(self.menu.rfind('#ifdef MELEE_DOUBLES', 0, at), self.menu.rfind('#endif', 0, at))
 
+    def test_launcher_row_sends_the_pick_first(self):
+        # A game started on its own beside the YouGame app (split layout, the app's channel up): the app
+        # layout's branch must not take the press, or value 16 reaches the host without the YouGame pick and
+        # is dropped (yougame::session() is false), so the row did nothing.
+        app = self.menu.index('selected_option == MU_SLP_OPT_DOUBLES) {')
+        head = self.menu[self.menu.rindex('} else if', 0, app):app]
+        self.assertIn('ranked_supported && !slippi_submenu', head)
+        self.assertNotIn('friends_visible', head)
+        launcher = self.menu.index('selected_option == MU_SLP_OPT_DOUBLES) {', app + 1)
+        press = self.menu[launcher:self.menu.index('} else if', launcher)]
+        self.assertLess(press.index('yougame_query(yg_pick, NULL, 0);'),
+                        press.index('mu_slippi_cmd(CMD_YOUGAME_FRIENDS_MENU, &open_doubles, 1, NULL, 0, NULL);'))
+
     def test_value_16_arms_the_doubles_profile(self):
         self.assertIn('if (payload[0] == 16) {', self.online)
         menu16 = self.online[self.online.index('if (payload[0] == 16) {'):]
