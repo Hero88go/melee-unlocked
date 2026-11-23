@@ -941,6 +941,7 @@ void paint_rail(HDC dc) {
 // installed YouGame app at Melee Unlocked's page, or the site's page without the app). The two links' rectangles are kept for clicks.
 RECT g_yg_link[3] = {};   // Connect/Disconnect, Open YouGame, the extension checkbox
 std::atomic<bool> g_yg_connecting{false};   // Connect is asking the YouGame app or showing the sign-in window
+std::atomic<bool> g_yg_app_sign_in{false};   // Connect opened the signed-out YouGame app and waits for its sign-in
 std::atomic<bool> g_yg_installing{false};   // Connect is installing Microsoft's WebView2 for the sign-in window (~1 min)
 std::atomic<bool> g_yg_start_check{false};   // the launcher's own check at start runs (it holds g_yg_connecting)
 bool g_yg_connect_queued = false;            // Connect pressed meanwhile: it runs once that check is done
@@ -966,7 +967,7 @@ void paint_yougame_line(HDC dc) {
     // The account, then its two links; the account name gives way (an ellipsis) before a link would.
     const PlayLayout l = play_layout();
     const std::wstring account = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
-                                             : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : launcher::yougame::app_hook_phase() == 1 ? L"YouGame: installing the YouGame app..." : launcher::yougame::app_hook_phase() == 2 ? L"YouGame: starting the YouGame app..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+                                             : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : g_yg_app_sign_in ? L"YouGame: sign in in the YouGame app..." : launcher::yougame::app_hook_phase() == 1 ? L"YouGame: installing the YouGame app..." : launcher::yougame::app_hook_phase() == 2 ? L"YouGame: starting the YouGame app..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
     // The YouGame app's account while YouGame does not list this build: Connect (the launcher's own sign-in,
     // which the game needs to play this build) instead of Disconnect.
     const bool app_needs_web = a.app && !launcher::yougame::listed_current();
@@ -1015,7 +1016,7 @@ void paint_yougame_line(HDC dc) {
     return;
   }
   std::wstring base = a.signed_in ? L"YouGame: " + widen(a.name) + (a.code.empty() ? L"" : L" (" + widen(a.code) + L")")
-                                  : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : launcher::yougame::app_hook_phase() == 1 ? L"YouGame: installing the YouGame app..." : launcher::yougame::app_hook_phase() == 2 ? L"YouGame: starting the YouGame app..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
+                                  : launcher::lang::txw(g_yg_installing ? L"YouGame: installing the sign-in window..." : g_yg_app_sign_in ? L"YouGame: sign in in the YouGame app..." : launcher::yougame::app_hook_phase() == 1 ? L"YouGame: installing the YouGame app..." : launcher::yougame::app_hook_phase() == 2 ? L"YouGame: starting the YouGame app..." : g_yg_connecting ? L"YouGame: connecting..." : L"YouGame: not connected");
   dot(dc, CX, 287, a.signed_in ? C_OK : C_FAINT);
   const RECT line = LR(CX + 15, 284, CW - 15, 17);
   HGDIOBJ old = SelectObject(dc, g_font);
@@ -1353,7 +1354,32 @@ void yougame_sign_in_thread(bool use_app) {
           PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
           return;
         }
-        // The app is signed out (or did not answer): the launcher's own sign-in, so Connect still connects.
+        if (app == launcher::yougame::AppSignIn::kSignedOut) {
+          // The YouGame app is running but signed out: its own window signs the player in (the app's link, as Open
+          // YouGame opens it), and Connect takes the account once it has one. Never the launcher's own sign-in window
+          // here; up to 5 minutes, then Connect ends as it was (Connect again asks again).
+          ShellExecuteW(nullptr, L"open", widen(launcher::yougame::open_target()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+          log_line("yougame: Connect: the YouGame app is signed out: its window was opened for its sign-in");
+          g_yg_app_sign_in = true;
+          if (g_tab == 0) InvalidateRect(g_main, nullptr, FALSE);
+          auto signed_in = launcher::yougame::AppSignIn::kSignedOut;
+          for (int waited = 0; waited < 300000 && signed_in != launcher::yougame::AppSignIn::kSignedIn; waited += 3000) {
+            Sleep(3000);
+            std::string step;
+            signed_in = launcher::yougame::sign_in_app(false, version, &step);
+          }
+          g_yg_app_sign_in = false;
+          g_yg_connecting = false;
+          if (signed_in == launcher::yougame::AppSignIn::kSignedIn) {
+            log_line("yougame: Connect: signed in through the YouGame app");
+            PostMessageW(g_main, WM_APP_YOUGAME_WEB, 1, (LPARAM)new std::string("app"));
+          } else {
+            log_line("yougame: Connect: no sign-in in the YouGame app in 5 minutes: Connect ended");
+            PostMessageW(g_main, WM_APP_YOUGAME_WEB, 0, (LPARAM)new std::string("hook"));
+          }
+          return;
+        }
+        // The app did not answer: the launcher's own sign-in, so Connect still connects.
       }
     }
     if (use_app_asked && !app_asked && !launcher::yougame::account().app) {

@@ -84,6 +84,20 @@ class LauncherUsesYouGameApp(unittest.TestCase):
         self.assertIn('std::getenv("MELEE_LAUNCHER_TEST") && !std::getenv("MELEE_LAUNCHER_TEST_YOUGAME_APP")', available)
         self.assertIn("return !app::elevated();", available)
 
+    def test_a_signed_out_app_signs_in_in_its_own_window(self):
+        # After the hook, a running but signed-out YouGame app opens its own window for sign-in and Connect takes the
+        # account once it has one: never the launcher's own sign-in window (or its WebView2 install) on that path.
+        thread = body(self.launcher, "void yougame_sign_in_thread(bool use_app) {")
+        running = thread[thread.index("if (hook == launcher::yougame::AppHook::kRunning) {"):]
+        signed_out = running[running.index("if (app == launcher::yougame::AppSignIn::kSignedOut) {"):]
+        signed_out = signed_out[:signed_out.index("// The app did not answer")]
+        self.assertIn("launcher::yougame::open_target()", signed_out)
+        self.assertIn("sign_in_app(false, version, &step)", signed_out)
+        self.assertIn("g_yg_app_sign_in = true;", signed_out)
+        self.assertLess(signed_out.rindex("return;"), len(signed_out))
+        self.assertNotIn("install_web_runtime", signed_out)
+        self.assertIn('L"YouGame: sign in in the YouGame app..."', self.launcher)
+
     def test_connect_asks_the_hook_before_the_browser_sign_in(self):
         thread = body(self.launcher, "void yougame_sign_in_thread(bool use_app) {")
         hook = thread.index("launcher::yougame::ask_app_hook(&detail)")
