@@ -5,7 +5,12 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / 'build-mac-full'
 DEFAULT_GAME_LIBRARY = ROOT / 'build-mac-input' / 'melee_game.so'
 GAME_LIBRARY = Path(os.environ.get('MELEE_GAME_LIBRARY', str(DEFAULT_GAME_LIBRARY))).resolve()
-SDL = ROOT.parent / 'deps/sdl2'
+# Prebuilt dependencies (deps/sdl2, deps/tools/bin) beside the checkout; MELEE_MAC_DEPS points elsewhere.
+DEPS = Path(os.environ.get('MELEE_MAC_DEPS', str(ROOT.parent / 'deps'))).resolve()
+SDL = DEPS / 'sdl2'
+# Optional compiler launcher (e.g. ccache), as CMAKE_<LANG>_COMPILER_LAUNCHER; MELEE_MAC_JOBS compile jobs (default 2).
+LAUNCHER = shlex.split(os.environ.get('MELEE_COMPILER_LAUNCHER', ''))
+JOBS = max(1, int(os.environ.get('MELEE_MAC_JOBS', '2')))
 
 def squad_env():
     return os.environ.get('MELEE_SQUAD_STRIKE', 'OFF').upper() in ('ON', '1', 'TRUE')
@@ -154,15 +159,15 @@ def main():
         if not fresh:
             memory_gate()
             print('Compile',source,flush=True)
-            subprocess.run(['/usr/bin/clang' if source.suffix == '.c' else '/usr/bin/clang++',*opts,
+            subprocess.run([*LAUNCHER, '/usr/bin/clang' if source.suffix == '.c' else '/usr/bin/clang++',*opts,
                             '-MMD','-MF',str(dep),'-c',str(source),'-o',str(obj)],check=True)
             stamp.write_text(fingerprint)
         return str(obj)
-    # Keep failures bounded: submit two jobs at a time; do not continue a large batch after errors.
+    # Keep failures bounded: submit JOBS (default two) at a time; do not continue a large batch after errors.
     paths = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        for i in range(0,len(sources),2):
-            paths += list(pool.map(compile_one,sources[i:i+2]))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=JOBS) as pool:
+        for i in range(0,len(sources),JOBS):
+            paths += list(pool.map(compile_one,sources[i:i+JOBS]))
     memory_gate()
     app_objects = [p for p in paths if Path(p).name.startswith('port_app_')]
     library = BUILD/'libfull_host.a'

@@ -1,6 +1,6 @@
 """Unsigned M3 app; package existing inputs only, never fetch/build game or dependencies."""
 from pathlib import Path
-from build_full import GAME_LIBRARY, build_dir
+from build_full import DEPS, GAME_LIBRARY, build_dir
 import argparse, hashlib, json, os, plistlib, runpy, shutil, subprocess, sys
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT/'build-mac-full'
@@ -51,14 +51,14 @@ def main():
     contents = APP/'Contents'
     res = contents/'Resources'
     copy(BUILD/'MeleeUnlocked', contents/'MacOS/MeleeUnlocked')
-    copy(ROOT.parent/'deps/sdl2/lib/libSDL2-2.0.0.dylib', contents/'Frameworks/libSDL2-2.0.0.dylib')
+    copy(DEPS/'sdl2/lib/libSDL2-2.0.0.dylib', contents/'Frameworks/libSDL2-2.0.0.dylib')
     copy(GAME_LIBRARY,res/'melee_game.so')
     if (ROOT/'spike/shader-seed').is_dir():
         copy(ROOT/'spike/shader-seed',res/'shader-seed')
     copy(GAME_LIBRARY.with_suffix('.snapexcl'),res/'melee_game.snapexcl')
     for tool in ['glslangValidator','spirv-cross']:
         # copy2 follows the glslang symlink (equivalent to cp -L).
-        copy(ROOT.parent/'deps/tools/bin'/tool,res/'bin'/tool)
+        copy(DEPS/'tools/bin'/tool,res/'bin'/tool)
     # Linux release's runtime asset list, mapped to Resources. All mutable state lives in --user-dir.
     for src, dst in [('port/slippi_sys','Sys'), ('port/slippi_sys_playback','SysPlayback'),
                      ('port/slippi_sys_general','slippi_sys_general'),('lang','lang')]:
