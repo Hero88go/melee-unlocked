@@ -1,4 +1,4 @@
-/* Vendored from YouGame engines/native/yougame_start.h, claude/v2 2698b0cc5 (last changed there in 6ef19458e). */
+/* Vendored from YouGame engines/native/yougame_start.h, claude/v2 a12476507 (last changed there in 914f57c59). */
 /*
  * yougame_start.h - the YouGame start hook. One call when your game starts.
  *
@@ -217,7 +217,7 @@ int yg_start_get_progress(int *percent);
 #define YG_BOX_UNAVAILABLE (-1) /* not drawn: this system, bad options, or no window to draw over */
 #define YG_BOX_NONE 0           /* no box and no answer waiting (also after yg_box_close) */
 #define YG_BOX_SHOWN 1          /* the box is over the game, no answer yet: the game ignores its own input */
-#define YG_BOX_BACK 2           /* Back to game: the pill, Esc, Shift+Tab or the pad's B */
+#define YG_BOX_BACK 2           /* Back (to game): the pill, Esc, Shift+Tab or the pad's B */
 #define YG_BOX_GETTING 3        /* Get YouGame: installing in the background; the plugin shows the progress
                                    as notices, and yg_start_get_progress reads it */
 #define YG_BOX_OFFERED 4        /* the download page opened in the browser */
@@ -231,6 +231,7 @@ typedef struct yg_box_options {
   const char *name; /* optional: the game's name, as yg_start_options.name */
   const char *code; /* Sign in: the code to enter, 1 to 16 letters, digits, '-' or spaces */
   const char *link; /* Sign in: where to enter it, an https link on yougame.co or staging.yougame.co */
+  int no_game;      /* 1 = no game is behind the box (a launcher, say): its Back pill says "Back", not "Back to game" */
 } yg_box_options;
 
 /* Shows the box over the game's window, or replaces the one shown (a new sign-in code, say). It
@@ -3756,7 +3757,10 @@ static int yg__start_get_begin(int staging, const char *game) {
 #define YG__BOX_NOTICE_MS 6000UL
 #define YG__BOX_FADE_MS 400UL
 #define YG__BOX_BACK_WORDS "Back to game"
+#define YG__BOX_BACK_ALONE "Back" /* no game behind the box (yg_box_options.no_game) */
 #define YG__BOX_BACK_KEY "Shift+Tab"
+/* The Back pill's words: back to the game, or just back where nothing is behind the box. */
+static const char *yg__box_back_words(int no_game) { return no_game ? YG__BOX_BACK_ALONE : YG__BOX_BACK_WORDS; }
 
 /* The box's type: size in CSS px and weight. 700 asks the system for the font's real bold face. */
 #define YG__BOX_T_BRAND 0   /* "YouGame" in the header */
@@ -4083,7 +4087,7 @@ static int yg__box_get_line(int stage, int pct, char *out, size_t cap) {
 typedef struct yg__box_req {
   long seq; /* every show and close counts one */
   int want; /* the box should be up */
-  int screen, staging;
+  int screen, staging, no_game;
   void *window;
   char game[81], name[YG__START_NAME_MAX + 1], code[YG__BOX_CODE_MAX + 1], link[YG__BOX_LINK_MAX + 1];
   long pressing;   /* the request whose main button is being answered (0: none) */
@@ -4257,6 +4261,7 @@ int yg_box_show(const yg_box_options *o) {
   yg__box_answer_now = YG_BOX_NONE;
   yg__box_s.screen = o->screen;
   yg__box_s.staging = o->staging ? 1 : 0;
+  yg__box_s.no_game = o->no_game ? 1 : 0;
   yg__box_s.window = win;
   yg__box_copy(yg__box_s.game, o->screen == YG_BOX_SIGN_IN ? NULL : o->game, sizeof yg__box_s.game);
   yg__box_copy(yg__box_s.name, name, sizeof yg__box_s.name);
@@ -4474,7 +4479,7 @@ static int yg__box_layout_now(yg__box_ui *u) {
   m.body_h = yg__start_measure(dc, u->f[YG__BOX_T_BODY], u->words.body, col, NULL);
   if (u->words.code[0]) m.code_h = yg__start_measure(dc, u->f[YG__BOX_T_CODE], u->words.code, 0, NULL);
   yg__start_measure(dc, u->f[YG__BOX_T_BUTTON], u->words.main_label, 0, &m.main_w);
-  yg__start_measure(dc, u->f[YG__BOX_T_BACK], YG__BOX_BACK_WORDS, 0, &m.back_w);
+  yg__start_measure(dc, u->f[YG__BOX_T_BACK], yg__box_back_words(u->req.no_game), 0, &m.back_w);
   yg__start_measure(dc, u->f[YG__BOX_T_BACK], YG__BOX_BACK_KEY, 0, &m.key_w);
   DeleteDC(dc);
   yg__box_lay(u->s, u->cw, &m, &u->L);
@@ -4560,7 +4565,7 @@ static void yg__box_draw(const yg__box_ui *u, HDC dc, DWORD *bits) {
   GdiFlush();
   yg__box_words_at(dc, u->f[YG__BOX_T_BRAND], "YouGame", &L->brand, YG__BOX_C_TEXT,
                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-  yg__box_words_at(dc, u->f[YG__BOX_T_BACK], YG__BOX_BACK_WORDS, &L->back_words, YG__BOX_C_TEXT,
+  yg__box_words_at(dc, u->f[YG__BOX_T_BACK], yg__box_back_words(u->req.no_game), &L->back_words, YG__BOX_C_TEXT,
                    DT_SINGLELINE | DT_VCENTER | DT_LEFT);
   yg__box_words_at(dc, u->f[YG__BOX_T_BACK], YG__BOX_BACK_KEY, &L->back_key, YG__BOX_C_SECOND,
                    DT_SINGLELINE | DT_VCENTER | DT_LEFT);

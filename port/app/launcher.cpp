@@ -1402,6 +1402,7 @@ void yougame_show_code_box() {
   o.name = "Melee Unlocked";
   o.code = g_yg_code.c_str();
   o.link = g_yg_code_link.c_str();
+  o.no_game = 1;   // over the launcher, before the game runs: the pill says "Back", not "Back to game"
   g_yg_box = yg_box_show(&o) == YG_BOX_SHOWN;
   if (g_yg_box) SetTimer(g_main, ID_TIMER_YG_BOX, 150, nullptr);
   else log_line("yougame: the sign-in box is not available here; the status line shows the code");

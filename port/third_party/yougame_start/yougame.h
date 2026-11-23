@@ -1,4 +1,4 @@
-/* Vendored from YouGame engines/native/yougame.h, claude/v2 2698b0cc5 (last changed there in 6ef19458e). */
+/* Vendored from YouGame engines/native/yougame.h, claude/v2 a12476507 (last changed there in 3376be0e1). */
 /* yougame.h: the YouGame plugin for any native game, in one C header (v0.1.0).
  *
  * Scores, the leaderboard, saves, the player's name, YouGame's feedback sheet and its play menu for
@@ -413,11 +413,14 @@ extern "C" {
 #define YG__PROBE_COOLDOWN 5.0      /* contract section 1.3 */
 /* When a look finds no app (the game started first, then the player installed or opened YouGame)
  * or the app ends a connection (an update restarting it, the player quitting and opening it
- * again), the game looks again on its own, every 5 s for 5 minutes, so it connects without waiting
- * for its next call. After that it looks on calls only, and the next call that finds nothing starts
- * another 5 minutes. */
+ * again), the game looks again on its own, every 5 s for 5 minutes, then every 30 s for as long as it
+ * runs, so it connects without waiting for its next call (a player who opens or signs in to YouGame
+ * much later is still found). A call still looks at once (at most once every 5 s). */
 #define YG__RELOOK_EVERY 5.0
 #define YG__RELOOK_FOR 300.0
+#define YG__RELOOK_SLOW 30.0
+/* Set by the looking thread once it has logged a channel that is not this user's. */
+static int yg__said_foreign = 0;
 /* Player pending (contract section 4; desktop/src/local-channel.ts "PLAYER PENDING"): after a hello
  * answered playerPending, hello is asked again about 2 s and about 6 s later, unless the player came
  * first (in an answer or the playerArrived push). */
@@ -443,6 +446,7 @@ static int (*yg__test_open_url)(const char *url) = NULL;
 static double yg__test_local_hello_timeout = 0.0;
 static double yg__test_probe_cooldown = -1.0;
 static double yg__test_relook_every = -1.0; /* replaces YG__RELOOK_EVERY when set */
+static double yg__test_relook_slow = -1.0; /* replaces YG__RELOOK_SLOW when set */
 static size_t yg__test_outbox_max = 0;
 static double yg__test_player_retry[2] = {0.0, 0.0}; /* replaces YG__PLAYER_RETRY_1 and _2 when set */
 #endif
@@ -1936,7 +1940,11 @@ static int yg__conn_open(int staging, yg__conn *c) {
     return 0;
   }
   if (!yg__pipe_is_ours(pipe, ours)) {
-    yg__post(YG__EV_LOG, 0, 0, NULL, "YouGame: a local channel answered from a program that is not this user's; ignored");
+    /* Said once per run: the game keeps looking for its own app, so this would repeat. */
+    if (!yg__said_foreign) {
+      yg__said_foreign = 1;
+      yg__post(YG__EV_LOG, 0, 0, NULL, "YouGame: a local channel answered from a program that is not this user's; ignored");
+    }
     CloseHandle(pipe);
     free(ours);
     return 0;
@@ -2099,7 +2107,11 @@ static int yg__connect_path(const char *path, uid_t uid, yg__conn *c) {
     return 0;
   }
   if (!yg__peer_is_ours(fd, uid)) {
-    yg__post(YG__EV_LOG, 0, 0, NULL, "YouGame: a local channel answered from a program that is not this user's; ignored");
+    /* Said once per run: the game keeps looking for its own app, so this would repeat. */
+    if (!yg__said_foreign) {
+      yg__said_foreign = 1;
+      yg__post(YG__EV_LOG, 0, 0, NULL, "YouGame: a local channel answered from a program that is not this user's; ignored");
+    }
     close(fd);
     return 0;
   }
@@ -3366,6 +3378,8 @@ static void yg__handle_event(yg__event *e) {
           if (e->ok && !yg__g.relook) {
             yg__g.relook = 1;
             yg__g.relook_until = yg__now() + YG__RELOOK_FOR;
+          } else if (!e->ok) {
+            yg__g.relook = 0;
           }
           yg__fail_with("notAvailable", "not available", 0);
         }
@@ -3613,19 +3627,18 @@ void yg_shutdown(void) {
 }
 
 /* Started on its own, and a look found nothing or the app ended the connection: look again every
- * YG__RELOOK_EVERY s until it answers or YG__RELOOK_FOR s have passed (then the next call looks). */
+ * YG__RELOOK_EVERY s for YG__RELOOK_FOR s, then every YG__RELOOK_SLOW s until it answers. A look is
+ * one try at the app's local channel, so the slow pace costs nothing a player would notice. */
 static void yg__relook_tick(void) {
-  double every = YG__RELOOK_EVERY, now;
+  double every = YG__RELOOK_EVERY, slow = YG__RELOOK_SLOW, now;
 #ifdef YOUGAME_TESTING
   if (yg__test_relook_every >= 0) every = yg__test_relook_every;
+  if (yg__test_relook_slow >= 0) slow = yg__test_relook_slow;
 #endif
   if (!yg__g.relook || yg__g.transport != YG_TRANSPORT_LOCAL || yg__g.local_state != YG__IDLE || yg__g.closed)
     return;
   now = yg__now();
-  if (now > yg__g.relook_until) {
-    yg__g.relook = 0;
-    return;
-  }
+  if (now > yg__g.relook_until) every = slow;
   if (now - yg__g.last_probe_at >= every) yg__start_probe();
 }
 
