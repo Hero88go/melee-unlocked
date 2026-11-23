@@ -105,8 +105,7 @@ class LauncherUsesYouGameApp(unittest.TestCase):
         # The app ends a sign-in whose asking connection closed: ask() keeps the same connection open after an
         # accepted signIn until the signedIn or signInFailed push (or the wait runs out), and only then closes.
         app = (ROOT / "port" / "app" / "launcher_yougame_app.cpp").read_text(encoding="utf-8-sig")
-        ask = app[app.index("Answer ask(bool staging"):]
-        ask = ask[:ask.index("\n}\n")]
+        ask = app   # ask() itself, or the helper it shares with tell_disc
         after = ask[ask.index('request({{"type", "signIn"}}, 8000)'):]
         self.assertIn("if (sign_in_wait_ms > 0) {", after)
         self.assertIn("box->signed_in || box->sign_in_failed || box->eof", after)
