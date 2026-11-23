@@ -1325,11 +1325,12 @@ void yougame_sign_in_thread(bool use_app) {
         return;
       }
     }
-    // YouGame's sign-in by code. Only the code and its link are logged, never anything the launcher keeps.
+    // YouGame's sign-in by code. Only its link is logged: the code signs in whoever enters it until it expires, and
+    // players attach these logs.
     std::string why;
     const auto result = launcher::yougame::sign_in_code(
         [](const std::string& code, const std::string& link) {
-          log_line("yougame: Connect: sign-in code %s at %s", code.c_str(), link.c_str());
+          log_line("yougame: Connect: sign-in code shown, entered at %s", link.c_str());
           PostMessageW(g_main, WM_APP_YOUGAME_CODE, 0, (LPARAM)new std::pair<std::string, std::string>(code, link));
         },
         &why);
@@ -2759,6 +2760,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_yg_code = code->first;
       g_yg_code_link = code->second;
       yougame_show_code_box();
+      // The browser opens on the link by itself, so the player only types the code (Open in browser opens it again).
+      if ((INT_PTR)ShellExecuteW(nullptr, L"open", widen(g_yg_code_link).c_str(), nullptr, nullptr, SW_SHOWNORMAL) <= 32)
+        log_line("yougame: Connect: the browser did not open; the box's Open in browser can");
       return 0;
     }
     case WM_APP_YOUGAME_SAVE:

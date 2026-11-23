@@ -129,6 +129,17 @@ class LauncherCodeSignIn(unittest.TestCase):
         self.assertIn('j.value("kind", "") == "code"', load)
         self.assertIn("g_old_session_line = true;", load)
 
+    def test_sign_in_code_is_never_logged(self):
+        # The code signs in whoever enters it until it expires, and players attach the launcher's logs.
+        for text in (self.launcher, self.yg):
+            for line in re.findall(r"log(?:_line)?\([^;]*;", text):
+                self.assertNotRegex(line, r"\bcode\.c_str\(\)|g_yg_code\.c_str\(\)|user_code", line)
+
+    def test_code_opens_the_browser_by_itself(self):
+        handler = self.launcher[self.launcher.index("case WM_APP_YOUGAME_CODE:"):]
+        handler = handler[:handler.index("return 0;")]
+        self.assertIn("ShellExecuteW(nullptr, L\"open\", widen(g_yg_code_link)", handler)
+
     def test_vendored_headers_name_their_youGame_commit(self):
         for name in ("yougame_start.h", "yougame.h"):
             first = read("port/third_party/yougame_start/" + name).splitlines()[0]
