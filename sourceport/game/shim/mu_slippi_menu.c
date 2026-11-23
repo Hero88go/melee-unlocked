@@ -1856,8 +1856,9 @@ void mu_lobby_pads(PADStatus* status)
         lobby.cancel_held = b;
         memset(&mine, 0, sizeof mine);
     } else if (lobby.view_ok && (lobby.view.mode & MU_LOBBY_M_DOUBLES) && (lobby.view.flags & MU_LOBBY_F_HOST) &&
-               (lobby.view.flags & MU_LOBBY_F_INVITING)) {
-        /* Doubles: the host's B takes the invite back (the friend list closes) and the door stays on Invite. */
+               (lobby.view.flags & MU_LOBBY_F_INVITING) && lobby.view.block_hint != MU_LOBBY_HINT_CLOSED) {
+        /* Doubles: the host's B takes the invite back (the friend list closes) and the door stays on Invite.
+         * Not once the lobby closed: it refuses the cancel, and B is the way back (mu_f4_closed_back). */
         const int b = (mine.button & PAD_BUTTON_B) != 0;
         if (b && !lobby.cancel_held) {
             unsigned char cancel = MU_LOBBY_OP_CANCEL;

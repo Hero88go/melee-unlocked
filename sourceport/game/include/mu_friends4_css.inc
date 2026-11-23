@@ -1627,7 +1627,7 @@ static void mu_f4_panel_text(const MuLobbyView* v, unsigned hint, int noted, int
         strcpy(p->error, "Version mismatch");
         return;
     case MU_LOBBY_HINT_CLOSED:
-        strcpy(p->error, "Lobby closed. Hold B to exit");
+        strcpy(p->error, "Lobby closed. Press B to go back");   /* mu_f4_closed_back */
         return;
     case MU_LOBBY_HINT_TAKEN:
     case MU_LOBBY_HINT_CHANGED:
@@ -1776,6 +1776,7 @@ static void mu_f4_panel_keys(MuF4Panel* p, const char* b_key, const char* start_
     if (start_key && start_key[0] && strlen(start_key) < 16) sprintf(press_start, "Press %s", start_key);
     mu_f4_key_word(p->line[1], sizeof p->line[1], "Press START", press_start);
     mu_f4_key_word(p->error, sizeof p->error, "Hold B", hold_b);
+    mu_f4_key_word(p->error, sizeof p->error, "Press B", press_b);
     if (p->gray && p->gray[0]) {
         n = strlen(p->gray);
         if (n < sizeof p->gray_text) {
@@ -2160,6 +2161,15 @@ static void mu_f4_sync_mode(CSSData* css, int mine)
     }
 }
 
+/* "Lobby closed. Press B to go back": a B press, or A with the hand on BACK, leaves for the Online menu
+ * (lobby_css_decide). Melee's own exits don't do it there: B only leaves after a long hold, and A on BACK
+ * only counts with an empty hand, while the closed lobby leaves this player's coin in the hand. 1 = leave. */
+static int mu_f4_closed_back(const MuLobbyView* v, u32 trigger, float x, float y)
+{
+    if (!v || v->block_hint != MU_LOBBY_HINT_CLOSED) return 0;
+    return (trigger & HSD_PAD_B) || ((trigger & HSD_PAD_A) && x > 17.3f && y > 22.0f);   /* Melee's BACK area */
+}
+
 /* Once a frame (mu_css_state_frame, after the doubles frame), and at the end of OnEnter. */
 static void mu_friends4_css_frame(void)
 {
@@ -2204,6 +2214,13 @@ static void mu_friends4_css_frame(void)
         gm_801A4B60();
     }
     mine = mu_f4_mine();
+    if (!mu_f4.leaving && mnCharSel_804D6CF6 == 0 && mnCharSel_804A0BC0[mine] &&
+        mu_f4_closed_back(mu_f4.view_ok ? &mu_f4.view : NULL, HSD_PadCopyStatus[mine].trigger,
+                          mnCharSel_804A0BC0[mine]->xC, mnCharSel_804A0BC0[mine]->x10)) {
+        OSReport("friends lobby: closed, back to the Online menu\n");
+        mu_f4.leaving = 1;
+        mnCharSel_804D6CF6 = 2;   /* the select's own B exit: OnFrame ends the scene, OnExit hands on the 2 */
+    }
     mu_f4_log_a(mine);
     mu_f4_sync_mode(css, mine);
     mu_f4_bounds(mine);

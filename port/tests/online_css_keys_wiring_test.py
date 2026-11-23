@@ -35,6 +35,35 @@ def body(source, name):
     return source[at:end]
 
 
+CLOSED_BACK_TEST = r"""
+#include <stdio.h>
+#include <string.h>
+typedef unsigned int u32;
+#define HSD_PAD_A 0x100u
+#define HSD_PAD_B 0x200u
+#define HSD_PAD_START 0x1000u
+#define MU_LOBBY_HINT_CLOSED 18
+typedef struct { unsigned char block_hint; } MuLobbyView;
+#define CHECK(x) do { if (!(x)) { printf("FAIL %d %s\n", __LINE__, #x); return 1; } } while (0)
+@FUNC@
+int main(void)
+{
+    MuLobbyView closed, open;
+    memset(&closed, 0, sizeof closed); closed.block_hint = MU_LOBBY_HINT_CLOSED;
+    memset(&open, 0, sizeof open);
+    CHECK(mu_f4_closed_back(&closed, HSD_PAD_B, -31.0f, -2.5f));          /* a B press, the hand anywhere */
+    CHECK(mu_f4_closed_back(&closed, HSD_PAD_A, 20.0f, 24.0f));           /* A on BACK, coin in hand or not */
+    CHECK(!mu_f4_closed_back(&closed, HSD_PAD_A, 0.0f, 10.0f));           /* A elsewhere stays Melee's */
+    CHECK(!mu_f4_closed_back(&closed, HSD_PAD_START, 20.0f, 24.0f));
+    CHECK(!mu_f4_closed_back(&closed, 0, 20.0f, 24.0f));                  /* only a press, never a held button */
+    CHECK(!mu_f4_closed_back(&open, HSD_PAD_B, 20.0f, 24.0f));            /* an open lobby keeps Melee's B */
+    CHECK(!mu_f4_closed_back(NULL, HSD_PAD_B, 20.0f, 24.0f));
+    printf("ok\n");
+    return 0;
+}
+"""
+
+
 class KeyboardPromptTest(unittest.TestCase):
     def setUp(self):
         self.css = read("sourceport/game/shim/mu_slippi_css.c")
@@ -102,16 +131,18 @@ int main(void)
 {
     MuF4Panel p;
     memset(&p, 0, sizeof p);
-    strcpy(p.line[1], "Press START to search"); strcpy(p.error, "Lobby closed. Hold B to exit");
+    strcpy(p.line[1], "Press START to search"); strcpy(p.error, "Lobby closed. Press B to go back");
     p.gray = "Press B to cancel";
     mu_f4_panel_keys(&p, "X", "Enter");   /* the keyboard's default B and START */
     CHECK(strcmp(p.line[1], "Press Enter to search") == 0);
-    CHECK(strcmp(p.error, "Lobby closed. Hold X to exit") == 0);
+    CHECK(strcmp(p.error, "Lobby closed. Press X to go back") == 0);
     CHECK(strcmp(p.gray, "Press X to cancel") == 0);
     memset(&p, 0, sizeof p);   /* a controller: no labels, the GameCube names stay */
     strcpy(p.line[1], "Press START to invite"); p.gray = "Press B to cancel";
+    strcpy(p.error, "Lobby closed. Press B to go back");
     mu_f4_panel_keys(&p, "", "");
     CHECK(strcmp(p.line[1], "Press START to invite") == 0 && strcmp(p.gray, "Press B to cancel") == 0);
+    CHECK(strcmp(p.error, "Lobby closed. Press B to go back") == 0);
     memset(&p, 0, sizeof p);   /* a name too long for the line keeps the old word, never overruns */
     strcpy(p.line[1], "Press START to search"); p.gray = "";
     mu_f4_panel_keys(&p, "B", "Right Shift Key");
@@ -206,6 +237,47 @@ class ClosedHomeBackTest(unittest.TestCase):
     def test_unit_test_pins_it(self):
         test = read("port/tests/yougame_lobby_screen_test.cpp")
         self.assertIn("nor keep a closed Doubles home searching", test)
+
+    def test_closed_back_leaves_on_b_or_a_on_back(self):
+        # 11-22: on "Lobby closed" nothing left the select. Melee's B exit is a long hold and its BACK only
+        # takes A with an empty hand, and the closed lobby leaves the coin in the hand. A B press, or A on
+        # BACK, now leaves (the select's own exit value 2: lobby_css_decide sends it to the Online menu).
+        f4 = read("sourceport/game/include/mu_friends4_css.inc")
+        at = f4.index("static int mu_f4_closed_back(")
+        func = f4[at:f4.index("\n}\n", at) + 3]
+        source = CLOSED_BACK_TEST.replace("@FUNC@", func)
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "t.c"
+            src.write_text(source)
+            exe = Path(tmp) / "t"
+            build = subprocess.run(["cc", "-std=c99", "-Wall", "-Werror", str(src), "-o", str(exe)],
+                                   capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_closed_back_is_wired_into_the_frame(self):
+        f4 = read("sourceport/game/include/mu_friends4_css.inc")
+        frame = body(f4, "static void mu_friends4_css_frame(void)")
+        call = frame.index("mu_f4_closed_back(mu_f4.view_ok ? &mu_f4.view : NULL, HSD_PadCopyStatus[mine].trigger,")
+        self.assertLess(frame.index("mine = mu_f4_mine();"), call)
+        self.assertLess(frame.index("if (v) mu_f4.view = *v;"), call)
+        exit_ = frame[call:frame.index("mu_f4_log_a(mine);")]
+        self.assertIn("mnCharSel_804A0BC0[mine]->xC, mnCharSel_804A0BC0[mine]->x10", exit_)
+        self.assertIn("mnCharSel_804D6CF6 = 2;", exit_)
+        self.assertIn("if (!mu_f4.leaving && mnCharSel_804D6CF6 == 0 && mnCharSel_804A0BC0[mine] &&", frame)
+        text = body(f4, "static void mu_f4_panel_text(")
+        self.assertIn('strcpy(p->error, "Lobby closed. Press B to go back");', text)
+        self.assertNotIn("Hold B to exit", f4)
+        decide = body(read("sourceport/game/shim/mu_slippi_menu.c"), "static int lobby_css_decide(GameModeState* state)")
+        self.assertIn("if (css->pending_scene_change == 2) {", decide)
+        self.assertIn("gm_ChangeGameModeAfterCurrentScene(GM_MENU);", decide)
+
+    def test_closed_inviting_lobby_keeps_b(self):
+        # A closed lobby refuses CANCEL, so the inviting branch would mask B until the picker timed out.
+        pads = body(read("sourceport/game/shim/mu_slippi_menu.c"), "void mu_lobby_pads(PADStatus* status)")
+        self.assertIn("(lobby.view.flags & MU_LOBBY_F_INVITING) && lobby.view.block_hint != MU_LOBBY_HINT_CLOSED) {", pads)
 
 
 if __name__ == "__main__":
