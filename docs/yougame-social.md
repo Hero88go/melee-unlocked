@@ -34,8 +34,9 @@ yg_call("socialPlayers", "{\"friends\":true}", 0, on_players, NULL);
 
 ## Notes
 
-- Joining a listed public lobby: the web SDK's `joinLobby({ mode, queue, room: code, players: size })` (see the
-  sdk.md reference). YouGame checks the code before the player leaves the room they are in.
+- Joining a listed public lobby: the same `mpTicket` the game already sends, with the row's lobby in it:
+  `yg_call("mpTicket", "{\"room\":\"<code>\",\"players\":<size>,\"mode\":\"<mode>\",\"queue\":\"<queue>\"}", ...)`.
+  YouGame checks the code before the player leaves the room they are in.
 - The friend actions only ask: the player confirms in YouGame. Outside the YouGame app they fail with
   `not_available` until the app build that supports them.
 
