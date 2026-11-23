@@ -1996,6 +1996,14 @@ void launch_game_now() {
       : std::string("YouGame: the game uses the launcher's bridge (extension off: no YouGame app).");
 #endif
   if (!yougame_decision.empty()) log_line("%s", yougame_decision.c_str());
+#ifndef MELEE_YOUGAME_COMING_SOON
+  // The player's own disc to the running YouGame app, so YouGame can check their copy: on this launcher's bridge the
+  // game is not on the app's channel and never tells it (with the extension on, the game does). Its own thread.
+  if (!vanilla_active() && !hybrid && !yougame_bridge.empty() && !g_iso.empty())
+    std::thread([iso = g_iso, version = yougame_build_version()] {
+      log_line("yougame: disc %s", launcher::yougame::report_disc(version, iso).c_str());
+    }).detach();
+#endif
   // Test runs only (MELEE_LAUNCHER_TEST): extra game arguments (hidden, local peering instead of
   // Slippi's servers) and the exact command line written to a file for the lobby gate to check,
   // with the YouGame line above under it.

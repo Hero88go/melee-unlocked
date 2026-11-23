@@ -2599,6 +2599,7 @@ static int melee_main(int argc, char** argv) {
 #endif
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
+  yougame::disc_opened(o.mod_base_iso.empty() ? o.iso : o.mod_base_iso);   // the player's own copy, to the YouGame app
   // The window, and with it the YouGame app's caps line (a toplevel window's caps carry its handle),
   // before the slow startup work: Sys generation, the retail-disc check, the card and the disc prefetch.
   // On a PC with 0.6 GB free they took about 90 s (11-15, pc4), past the 30 s the app gives a first run

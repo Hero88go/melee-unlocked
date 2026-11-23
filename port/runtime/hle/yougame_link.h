@@ -99,6 +99,10 @@ void withdraw_ask(const char* why);
 void start_hook_at_boot(bool automated);
 const char* first_row_text();
 bool channel_connected();
+// The disc this game opened (main, once host::disc_open succeeded; the vanilla disc when a mod disc
+// plays over it), told to the YouGame app over the local channel once per connection after hello, so
+// the app can check the player's own copy. Never for a game the app started (it gave that game the disc).
+void disc_opened(const std::string& path);
 // Sign in by code (yougame_signin.h, contract section 8): the local channel is up and its app is signed
 // out, so the YouGame rows offer sign-in instead of staying locked (the menu's Coming soon bit: picking a
 // row opens the panel and the menu carries on into that row once the player is in). sign_in_open on

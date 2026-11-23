@@ -2,6 +2,7 @@
 #include "launcher_yougame.h"
 #include "launcher_yougame_app.h"
 #include "launcher_yougame_web.h"
+#include "yougame_disc.h"
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -671,6 +672,20 @@ bool resume_web(std::string* why) {
   }
   changed();
   return true;
+}
+
+std::string report_disc(const std::string& version, const std::string& path) {
+  if (std::getenv("MELEE_LAUNCHER_TEST") && !std::getenv("MELEE_LAUNCHER_TEST_YOUGAME_APP")) return "not reported (test run)";
+  std::error_code ec;
+  const std::filesystem::path abs = std::filesystem::absolute(std::filesystem::u8path(path), ec);
+  const std::string full = ec ? std::string() : abs.u8string();
+  if (!::yougame::disc::plain_image(full)) return "not reported (not an .iso or .gcm)";
+  if (!::yougame::disc::path_ok(full)) return "not reported (path)";
+  Env e;
+  { std::lock_guard<std::mutex> lock(g_mutex); e = g_env; }
+  const bool staging = e.id == "staging";
+  if (!app::running(staging)) return "not reported (no YouGame app running)";
+  return app::tell_disc(staging, version, full);
 }
 
 AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail) {
