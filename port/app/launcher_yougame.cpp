@@ -654,11 +654,26 @@ AppHook ask_app_hook(std::string* detail) {
   const std::string name = staging ? "YouGame Staging" : "YouGame";
   const auto t0 = std::chrono::steady_clock::now();
   const int r = app::start_hook(staging);
+  // An app the hook just started (or just installed and started) can take a while to open its channel, the first
+  // start after an install most of all. Connect asks the app over that channel next, so it waits for it here
+  // rather than finding no app and going on to the launcher's own sign-in window.
+  auto channel_up = [&]() {
+    for (int waited = 0; waited < 45000; waited += 250) {
+      if (app::running(staging)) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    return app::running(staging);
+  };
   const std::string took = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
                                       std::chrono::steady_clock::now() - t0).count()) + " ms)";
   switch (r) {
     case YG_START_RUNNING: say("YouGame's start hook: the " + name + " app is running" + took); return AppHook::kRunning;
-    case YG_START_OPENED: say("YouGame's start hook: the " + name + " app was started quietly (tray)" + took); return AppHook::kRunning;
+    case YG_START_OPENED: {
+      const bool up = channel_up();
+      say("YouGame's start hook: the " + name + " app was started quietly (tray)" + took +
+          (up ? "; its channel is up" : "; its channel did not come up"));
+      return AppHook::kRunning;
+    }
     case YG_START_UPDATING: say("YouGame's start hook: the " + name + " app is installing an update" + took); return AppHook::kRunning;
     case YG_START_OFFERED: say("YouGame's start hook: its window was shown, Get YouGame pressed (download page opened)" + took); return AppHook::kChose;
     case YG_START_GETTING: {
@@ -676,7 +691,12 @@ AppHook ask_app_hook(std::string* detail) {
       }
       const std::string got = " (" + std::to_string((long long)std::chrono::duration_cast<std::chrono::milliseconds>(
                                          std::chrono::steady_clock::now() - t0).count()) + " ms)";
-      if (state == YG_START_GET_READY) { say("YouGame's start hook: Get YouGame pressed; the " + name + " app was installed and started in the tray" + got); return AppHook::kRunning; }
+      if (state == YG_START_GET_READY) {
+        const bool up = channel_up();
+        say("YouGame's start hook: Get YouGame pressed; the " + name + " app was installed and started in the tray" + got +
+            (up ? "; its channel is up" : "; its channel did not come up"));
+        return AppHook::kRunning;
+      }
       say(std::string("YouGame's start hook: Get YouGame pressed; ") +
           (state == YG_START_GET_FAILED ? "the install failed (the download page was opened)" : "the install is still running") + got);
       return AppHook::kChose;

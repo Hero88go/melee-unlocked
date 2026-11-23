@@ -61,7 +61,7 @@ class LauncherUsesYouGameApp(unittest.TestCase):
                                ("YG_START_UPDATING", "kRunning"), ("YG_START_OFFERED", "kChose"),
                                ("YG_START_DECLINED", "kChose")):
             line = ask[ask.index("case " + result + ":"):]
-            line = line[:line.index("\n")]
+            line = line[:min(i for i in (line.find("\n    case ", 1), line.find("\n    default:")) if i > 0)]
             self.assertIn("return AppHook::" + answer + ";", line, result)
         # Get YouGame: the hook installs the YouGame app in the background; installed and started, its account is
         # taken (kRunning); a failed or unfinished install ends Connect (kChose).
@@ -70,6 +70,14 @@ class LauncherUsesYouGameApp(unittest.TestCase):
         self.assertIn("if (state == YG_START_GET_READY) {", getting)
         self.assertIn("return AppHook::kRunning;", getting)
         self.assertIn("return AppHook::kChose;", getting)
+        # An app the hook just started opens its channel a little later: Connect waits for it before asking the app,
+        # so a fresh install hands off to the app, never to the launcher's own sign-in window.
+        wait = body(ask, "auto channel_up = [&]() {")
+        self.assertIn("app::running(staging)", wait)
+        ready = getting[getting.index("if (state == YG_START_GET_READY) {"):]
+        self.assertLess(ready.index("channel_up()"), ready.index("return AppHook::kRunning;"))
+        opened = ask[ask.index("case YG_START_OPENED:"):ask.index("case YG_START_UPDATING:")]
+        self.assertLess(opened.index("channel_up()"), opened.index("return AppHook::kRunning;"))
         self.assertIn("default:", ask)
         self.assertIn("return AppHook::kUnavailable;", ask.split("default:", 1)[1])
         available = body(self.yougame, "bool app_hook_available() {")
