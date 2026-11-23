@@ -46,7 +46,7 @@ void sign_out();
 enum class AppSignIn { kSignedIn, kSignedOut, kNoApp, kNoAnswer };
 AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* detail);
 // The disc this launcher starts the game with (its own copy: the vanilla disc, also under a mod), told to the running
-// YouGame app (YouGame Online or the full app) for this environment, so YouGame can check the player's own copy. For
+// YouGame app for this environment, so YouGame can check the player's own copy. For
 // a start on this launcher's bridge, where the game is not on the app's channel and so never tells it itself
 // (yougame_link.cpp disc_opened). Never starts the app. Blocking (seconds): never on the window thread. Returns
 // what happened, for the launcher's log.
