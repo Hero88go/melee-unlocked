@@ -20,7 +20,7 @@ result as JSON in `result_json`, read with `yg_json_*`.
 | `socialRooms` | none | `{rooms:[{code, mode, queue, players, size}]}`: the game's public lobbies with someone seated, busiest first (private friends rooms are never listed). Join one by its `code` (below) | not needed |
 | `socialPlayers` | `{"friends":true}` for friends only | `{players:[{username, name, status, friend, rating}]}`, friends first, at most 100; `status` is `online` or `in_match`; `friend` is `you`, `friends`, `requested`, `incoming` or `none`; `rating` is the best ranked rating in this game or null | needed |
 | `friendsList` | none | `{friends:[{username, name, online, here, playing}], incoming:[…], outgoing:[…]}` | needed |
-| `friendAction` | `{"action":"add","username":"ada"}` (`add`, `accept`, `decline`, `cancel`) | `{state}` (`requested` or `friends`). YouGame asks the player yes/no in its own sheet first; a no fails with code `cancelled` | needed |
+| `friendAction` | `{"action":"add","username":"ada"}` (`add`, `accept`, `decline`, `cancel`) | `{state}` (`requested` or `friends`). YouGame asks the player yes/no in its own sheet first. A no fails with code `cancelled` (then `busy` for about 30 s), `pending` means the yes is still finishing, and `busy` means a sheet is already open | needed |
 
 ```c
 static void on_counts(void *user, const yg_result *r) {
