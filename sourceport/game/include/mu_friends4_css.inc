@@ -1706,7 +1706,7 @@ static void mu_f4_panel_text(const MuLobbyView* v, unsigned hint, int noted, int
     /* The tab, while it turns (mu_friends4_partner_cycle's locks, roughly: not on a friend). */
     if (!p->gray[0] && host && partner->kind != MU_LOBBY_KIND_HUMAN && !(v->flags & MU_LOBBY_F_STARTED) &&
         !(v->mode & MU_LOBBY_M_SEARCHING))
-        p->gray = "Tab changes partner";
+        p->gray = "A on the door's tab changes it";
 }
 
 /* One subtext, written only when its words or colour change. */
