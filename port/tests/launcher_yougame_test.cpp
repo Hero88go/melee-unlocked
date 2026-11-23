@@ -55,19 +55,14 @@ json call(Fake& f, const HttpRequest& r, int* status = nullptr) {
 }
 }  // namespace
 
-// --serve-web FOLDER VERSION EXE DLL [SCRIPT]: the real bridge over the launcher's browser view, on
-// YouGame staging. FOLDER holds the view's session and session.ini (what the launcher keeps in
-// launcher.ini): a session saved there is used as it is, as a launcher started again does; otherwise
-// YouGame's sign-in page opens (run it on a desktop nobody sees) and SCRIPT, a file, types a test
-// account into it. Prints "BRIDGE <url> <token> <name> <code>", then answers until stdin closes.
-int serve_web(int argc, char** argv) {
-  if (argc < 6) return 2;
-  auto wide = [](const char* s) { std::wstring w; for (; *s; ++s) w += (wchar_t)(unsigned char)*s; return w; };
-  const std::string folder = argv[2], ini = folder + "/session.ini";
-  set_web_folder(wide(argv[2]));
-  set_on_session_change([ini] {
-    if (FILE* f = std::fopen(ini.c_str(), "wb")) { const std::string lines = ini_lines(); std::fwrite(lines.data(), 1, lines.size(), f); std::fclose(f); }
-  });
+// --serve-code FOLDER VERSION EXE DLL: the real bridge after YouGame's sign-in by code, on the site launcher.ini
+// names (staging for these runs: FOLDER/session.ini holds yougame_env=staging). FOLDER/session.ini is what the
+// launcher keeps in launcher.ini: a sign-in saved there is used as it is, as a launcher started again does;
+// otherwise a code is asked for and printed ("CODE <code> <link>"), and with YOUGAME_TEST_CODE_SIGNIN set
+// (an absolute folder) also written to sign-in-code.json there, for a test to enter with a test account.
+// Then prints "BRIDGE <url> <token> <name> <code>" and answers until stdin closes.
+namespace {
+void load_ini(const std::string& ini) {
   if (FILE* f = std::fopen(ini.c_str(), "rb")) {
     char line[8192];
     while (std::fgets(line, sizeof line, f)) {
@@ -77,15 +72,27 @@ int serve_web(int argc, char** argv) {
     }
     std::fclose(f);
   }
+}
+void save_ini(const std::string& ini) {
+  if (FILE* f = std::fopen(ini.c_str(), "wb")) { const std::string lines = ini_lines(); std::fwrite(lines.data(), 1, lines.size(), f); std::fclose(f); }
+}
+}  // namespace
+int serve_code(int argc, char** argv) {
+  if (argc < 6) return 2;
+  auto wide = [](const char* s) { std::wstring w; for (; *s; ++s) w += (wchar_t)(unsigned char)*s; return w; };
+  const std::string ini = std::string(argv[2]) + "/session.ini";
+  load_ini(ini);
+  set_on_session_change([ini] { save_ini(ini); });
+  set_save_now([ini] { save_ini(ini); });
   std::string why;
   if (account().signed_in) {
     std::printf("REMEMBERED %s\n", account().code.c_str());
   } else {
-    std::string script;
-    if (argc > 6)
-      if (FILE* f = std::fopen(argv[6], "rb")) { char buf[4096]; size_t n; while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) script.append(buf, n); std::fclose(f); }
-    if (!web_sign_in_available()) { std::printf("SIGNIN FAILED no browser view on this computer\n"); return 3; }
-    if (!sign_in_web(nullptr, &why, script)) { std::printf("SIGNIN FAILED %s\n", why.c_str()); return 3; }
+    const CodeSignIn r = sign_in_code([](const std::string& code, const std::string& link) {
+      std::printf("CODE %s %s\n", code.c_str(), link.c_str());
+      std::fflush(stdout);
+    }, &why);
+    if (r != CodeSignIn::kSignedIn) { std::printf("SIGNIN FAILED %s\n", why.c_str()); return 3; }
     std::printf("SIGNED IN %s\n", account().code.c_str());
   }
   std::fflush(stdout);
@@ -101,7 +108,7 @@ int serve_web(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-  if (argc > 1 && std::string(argv[1]) == "--serve-web") return serve_web(argc, argv);
+  if (argc > 1 && std::string(argv[1]) == "--serve-code") return serve_code(argc, argv);
   // --ask-app staging|production VERSION: asks the running YouGame app over its channel, as Connect does
   // (never opens it). Prints the state and which parts of the account came back, not the account itself.
   if (argc > 3 && std::string(argv[1]) == "--ask-app") {
@@ -114,10 +121,12 @@ int main(int argc, char** argv) {
                 a.name.empty() ? "no" : "yes", a.code.empty() ? "no" : "yes", a.why.c_str());
     return a.state == app::Answer::kSignedIn ? 0 : 5;
   }
-  if (argc > 2 && std::string(argv[1]) == "--sign-out-web") {   // the launcher's Disconnect: the folder goes
-    auto wide = [](const char* s) { std::wstring w; for (; *s; ++s) w += (wchar_t)(unsigned char)*s; return w; };
-    set_web_folder(wide(argv[2]));
+  if (argc > 2 && std::string(argv[1]) == "--sign-out") {   // the launcher's Disconnect: revoked on YouGame, gone from FOLDER
+    const std::string ini = std::string(argv[2]) + "/session.ini";
+    load_ini(ini);
     sign_out();
+    save_ini(ini);
+    std::printf("SIGNED OUT %s\n", ini_lines().find("yougame_session") == std::string::npos ? "yes" : "no");
     return 0;
   }
   // The listing reads (native_build, pool) never reach a real site from these tests: nothing answers here.
@@ -185,6 +194,34 @@ int main(int argc, char** argv) {
     CHECK(load_line("yougame_app=x") && !app_declined() && !app_used_before());
     CHECK(ini_lines().find("yougame_app") == std::string::npos);
     CHECK(!account().signed_in && ini_lines().find("yougame_session") == std::string::npos);
+    // A session line from the earlier sign-in (the browser view's site session) is not used and not written back.
+    CHECK(load_line("yougame_session=p:eyJ3ZWIiOnRydWV9") && !account().signed_in);
+    CHECK(ini_lines().find("yougame_session") == std::string::npos);
+    // The client id YouGame gives for each site is kept; an id that is not one is not.
+    CHECK(load_line("yougame_client_staging=880b2eeb-cbba-4b73-8e53-eae3f6964031"));
+    CHECK(ini_lines().find("yougame_client_staging=880b2eeb-cbba-4b73-8e53-eae3f6964031\n") != std::string::npos);
+    CHECK(load_line("yougame_client_production=not a client id") &&
+          ini_lines().find("yougame_client_production") == std::string::npos);
+#ifndef _WIN32
+    // A sign-in by code round-trips, sealed (here the text fallback: "p:" and base64), never in the clear.
+    {
+      const std::string plain = R"({"env":"production","kind":"code","client":"880b2eeb-cbba-4b73-8e53-eae3f6964031","refresh":"r-test","user":"u-1","name":"Tester","code":"TEST#123"})";
+      static const char* abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      std::string b64;
+      for (size_t i = 0; i < plain.size(); i += 3) {
+        const uint32_t n = ((uint32_t)(unsigned char)plain[i] << 16) | (i + 1 < plain.size() ? (uint32_t)(unsigned char)plain[i + 1] << 8 : 0) |
+                           (i + 2 < plain.size() ? (uint32_t)(unsigned char)plain[i + 2] : 0);
+        b64 += abc[(n >> 18) & 63]; b64 += abc[(n >> 12) & 63];
+        b64 += i + 1 < plain.size() ? abc[(n >> 6) & 63] : '='; b64 += i + 2 < plain.size() ? abc[n & 63] : '=';
+      }
+      CHECK(load_line("yougame_session=p:" + b64));
+      CHECK(account().signed_in && !account().app && account().code == "TEST#123");
+      const std::string lines = ini_lines();
+      CHECK(lines.find("yougame_session=p:") != std::string::npos && lines.find("r-test") == std::string::npos);
+      sign_out();   // revoked at the test stand-in site, which nothing answers
+      CHECK(!account().signed_in);
+    }
+#endif
   }
   // The YouGame site: production by default; launcher.ini yougame_env=staging is the only way to staging, and
   // production writes no yougame_env line until launcher.ini names a site.

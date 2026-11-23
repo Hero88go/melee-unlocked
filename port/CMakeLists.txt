@@ -42,19 +42,17 @@ endfunction()
 # When a setting of the runtime or of melee_source changes below, change it here as well.
 # The launchers read Dolphin RVZ/WIA disc images through this (port/app/disc_rvz.cpp).
 include("${CMAKE_CURRENT_SOURCE_DIR}/app/disc_rvz.cmake")
-# YouGame's own sign-in page in the launcher's browser view (app/launcher_yougame_web.cpp): Microsoft
-# Edge WebView2, its SDK header and static loader in third_party/webview2 (BSD-style, LICENSE.txt there).
+# YouGame in the launcher (app/launcher_yougame.cpp): the installed YouGame app as the launcher's sign-in
+# (app/launcher_yougame_app.cpp, the app's own local channel with the game's transport and checks,
+# runtime/hle/yougame_channel.cpp), and YouGame's plugin box that shows the sign-in code over the launcher's
+# window (app/launcher_yougame_box.cpp, third_party/yougame_start/yougame_start.h).
 # Every target that compiles app/launcher_yougame.cpp takes this.
-# Also the installed YouGame app as the launcher's sign-in (app/launcher_yougame_app.cpp): the app's own local
-# channel, with the game's transport and checks (runtime/hle/yougame_channel.cpp).
-function(melee_yougame_web target)
-  target_sources(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/app/launcher_yougame_web.cpp"
-    "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/app/launcher_yougame_app.cpp"
+function(melee_yougame_launcher target)
+  target_sources(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/app/launcher_yougame_app.cpp"
+    "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/app/launcher_yougame_box.cpp"
     "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/runtime/hle/yougame_channel.cpp")
-  target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/third_party/webview2/include"
-    "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/third_party" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/runtime/hle")
-  target_link_libraries(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/third_party/webview2/x64/WebView2LoaderStatic.lib"
-    ole32 shlwapi version advapi32 user32)
+  target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/third_party" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/runtime/hle")
+  target_link_libraries(${target} PRIVATE ole32 shlwapi version advapi32 user32 gdi32 winhttp shell32 crypt32)
 endfunction()
 option(MELEE_NO_SLIPPI "Build only melee_source, without the Slippi layer" OFF)
 if(MELEE_NO_SLIPPI)
@@ -309,7 +307,7 @@ ${melee_dxc_err}")
     third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
     runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
   set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
-  melee_yougame_web(melee_unlocked)
+  melee_yougame_launcher(melee_unlocked)
   target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party third_party/dht third_party/monocypher)
   target_compile_features(melee_unlocked PRIVATE cxx_std_17)
   target_compile_options(melee_unlocked PRIVATE /EHsc)
@@ -508,7 +506,7 @@ add_test(NAME port_online_rows COMMAND port_online_rows_test)
 set_tests_properties(port_online_rows PROPERTIES TIMEOUT 10)
 # The launcher's YouGame bridge: parsing, checks and answers, with a stand-in for YouGame's site.
 add_executable(port_launcher_yougame_test tests/launcher_yougame_test.cpp app/launcher_yougame.cpp)
-melee_yougame_web(port_launcher_yougame_test)
+melee_yougame_launcher(port_launcher_yougame_test)
 target_include_directories(port_launcher_yougame_test PRIVATE app third_party)
 target_compile_features(port_launcher_yougame_test PRIVATE cxx_std_17)
 target_compile_options(port_launcher_yougame_test PRIVATE /EHsc)
@@ -580,6 +578,7 @@ add_test(NAME port_yougame_app_button_wiring COMMAND "${Python3_EXECUTABLE}" -B 
 add_test(NAME port_build106_fixes_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/build106_fixes_wiring_test.py")
 add_test(NAME port_standalone_update_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/standalone_update_wiring_test.py")
 add_test(NAME port_yougame_open_connect_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/yougame_open_connect_wiring_test.py")
+add_test(NAME port_launcher_code_signin_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/launcher_code_signin_wiring_test.py")
 add_test(NAME port_launcher_recomp_missing_wiring COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/launcher_recomp_missing_wiring_test.py")
 add_executable(port_pipeline_cache_store_test tests/pipeline_cache_store_test.cpp)
 target_include_directories(port_pipeline_cache_store_test PRIVATE runtime/gx)
@@ -1187,7 +1186,7 @@ add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mo
   third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
   runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
-melee_yougame_web(melee_unlocked)
+melee_yougame_launcher(melee_unlocked)
 add_executable(port_launcher_replay_data_test tests/launcher_replay_data_test.cpp app/launcher_replay_data.cpp)
 target_include_directories(port_launcher_replay_data_test PRIVATE app third_party)
 target_compile_features(port_launcher_replay_data_test PRIVATE cxx_std_17)

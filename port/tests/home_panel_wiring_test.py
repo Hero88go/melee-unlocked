@@ -156,7 +156,8 @@ class HomeWiring(unittest.TestCase):
 class VendoredStartHook(unittest.TestCase):
     def test_offer_says_sign_in_comes_after_install(self):
         start = read("port/third_party/yougame_start/yougame_start.h")
-        self.assertIn("You sign in \"\n                     \"or make an account after it installs.", start)
+        # YouGame 2698b0cc5: the Play online offer is one line; the needs-YouGame window names sign-in.
+        self.assertIn('"Online play needs the YouGame app."', start)
         self.assertIn("Get it, sign in or make an account, then start", start)
 
 

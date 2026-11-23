@@ -663,7 +663,7 @@ void yougame_line() {
   ImGui::TextColored(a.signed_in ? ImVec4(0.75f, 0.8f, 1, 1) : ImVec4(0.6f, 0.62f, 0.7f, 1), "%s", text.c_str());
   ImGui::SameLine();
   if (a.signed_in) {
-    if (ImGui::SmallButton("Disconnect##yg")) launcher::yougame::sign_out();
+    if (ImGui::SmallButton("Disconnect##yg")) std::thread([] { launcher::yougame::sign_out(); }).detach();   // YouGame is told too
   } else if (ImGui::SmallButton("Connect##yg") && !g_yg_busy.exchange(true)) {
     // Linux signs in through the YouGame app (its channel in the session's runtime folder): the launcher
     // takes the account the app is signed in with, starting the app in its tray when it is installed.

@@ -1,9 +1,9 @@
-// YouGame in the launcher: the player's YouGame account (signed in on YouGame's own page in a browser view
-// the launcher owns, launcher_yougame_web.h; the only sign-in there is), and the loopback bridge the game's YouGame
-// rows use (YOUGAME_BRIDGE + YOUGAME_TOKEN + MELEE_YOUGAME_LAUNCHER=1). The YouGame app is never
-// started: the launcher answers the game's few requests itself and passes tickets from YouGame's
-// site through unchanged. Requests: hello, mpCode, mpTicket, mpRank; mpFriend is answered here;
-// muOpenConnect opens the launcher's own Connect window (set_open_connect).
+// YouGame in the launcher: the player's YouGame account, and the loopback bridge the game's YouGame rows use
+// (YOUGAME_BRIDGE + YOUGAME_TOKEN + MELEE_YOUGAME_LAUNCHER=1). Connect takes, in this order, the sign-in saved in
+// launcher.ini, the account of a running YouGame app (launcher_yougame_app.h), else YouGame's public game
+// sign-in by code (OAuth 2.0 device flow, the game's own client id, scope "player"): the player enters a short
+// code at yougame.co/link and the launcher gets a token for them. Requests: hello, mpCode, mpTicket, mpRank;
+// mpFriend is answered here; muOpenConnect opens the launcher's own Connect (set_open_connect).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
@@ -22,8 +22,9 @@ struct Env {
 const Env& env();
 void set_env(const std::string& id);   // switching signs out
 
-// launcher.ini: the environment and who is signed in (the account's id, name and connect code, protected for
-// this Windows user). No password, token or cookie is ever kept: the session itself lives in the browser view.
+// launcher.ini: the environment, the game's sign-in client id per environment (read from YouGame), and the
+// sign-in: the refresh token with who it is (the account's id, name and connect code), sealed for this Windows
+// user (DPAPI; Linux keeps it as text in a launcher.ini only its owner reads). No password or cookie is kept.
 bool load_line(const std::string& line);   // true when the line was this module's
 std::string ini_lines();
 // "YouGame extension": the game uses the YouGame app's channel instead of connecting itself. Off by default.
@@ -66,32 +67,30 @@ std::string extension_app_missing();
 bool adopt_staging_app();
 // This launcher's YouGame app is running (never the other environment's). Pipe check only.
 bool app_running();
-// The launcher starting: its browser view's folder holds a session (a sign-in made before) that launcher.ini
-// does not name. Asks the site through the hidden view, as warm() does (never a window); true when it answered
-// signed in (account() is that account then). Blocking: never on the window thread. *why (when given) says
-// why not, for the launcher's log: no WebView2, no saved sign-in, or YouGame's answer (0: no answer in time).
-bool resume_web(std::string* why = nullptr);
-// YouGame's own sign-in page in a browser view this launcher owns (launcher_yougame_web.h). The player
-// signs in there once; the view keeps the session in its folder, and every YouGame request goes
-// through a page of the site in that view. Windows; elsewhere web_sign_in_available() is false.
-void set_web_folder(const std::wstring& base);   // before anything else; each YouGame site gets a folder under it
-bool web_sign_in_available();
-// No WebView2: installs Microsoft's runtime (launcher_yougame_web.h install_runtime). Blocking.
-bool install_web_runtime(std::string* why);
-// Blocking (call off the window thread): shows the page, returns once the site reports the player
-// signed in (true) or the window was closed (false, *error empty). test_script: hidden test runs only.
-// again: the window's title says the earlier sign-in ended. title: the window's title instead (why it opens).
-bool sign_in_web(void* owner_window, std::string* error, const std::string& test_script = {}, bool again = false,
-                 const std::wstring& title = {});
-// True once after YouGame said the saved sign-in ended (signed out on the site, or the session ran out): the
-// launcher then shows the sign-in page again. The session-change callback fires when this becomes true.
+// YouGame's game sign-in by code. Blocking (minutes: the player has 10 minutes per code, and an expired code is
+// replaced by a new one a few times); never on the window thread. on_code(code, link, open) is called (on this thread)
+// each time YouGame hands out a code: link is where to enter it (https://yougame.co/link), open the same page
+// with the code already in it (verification_uri_complete) for the browser. open carries the code: never log it. Test runs only:
+// YOUGAME_TEST_CODE_SIGNIN, an absolute folder, gets sign-in-code.json {"link","code"} for each code, so an
+// automated test can approve it. kSignedIn: account() is the player. *why (when given): the player's words when
+// it ended otherwise (empty when cancelled). Neither the device code nor any token is ever logged.
+enum class CodeSignIn { kSignedIn, kDenied, kExpired, kCancelled, kFailed };
+CodeSignIn sign_in_code(const std::function<void(const std::string& code, const std::string& link, const std::string& open)>& on_code,
+                        std::string* why);
+// Ends a sign_in_code that is waiting (Back on the sign-in box): it returns kCancelled. Any thread.
+void cancel_sign_in_code();
+// True once after YouGame said the saved sign-in ended (the player ended it on YouGame, or it ran out): the
+// launcher then asks for a new sign-in. The session-change callback fires when this becomes true.
 bool take_expired();
-// A game is about to start: opens the browser view and checks its session with YouGame (off this thread),
-// so the game's first search does not wait for the view. Nothing without a web sign-in.
+// A game is about to start: checks the saved sign-in with YouGame (off this thread; a fresh access token and the
+// account's connect code), so the game's first search does not wait for it. Nothing without a sign-in by code.
 void warm();
 // Called (from any thread) when the saved session changed: signed in or out, a refreshed token,
 // a connect code. The launcher saves launcher.ini then.
 void set_on_session_change(std::function<void()> callback);
+// Called (from any thread) when YouGame handed out a new refresh token: it returns once launcher.ini holds it, so
+// the new token is never used before it is saved (the old one stops working). Unset: set_on_session_change's.
+void set_save_now(std::function<void()> callback);
 
 // The Melee Unlocked page on the YouGame site (Open YouGame).
 std::string game_page();

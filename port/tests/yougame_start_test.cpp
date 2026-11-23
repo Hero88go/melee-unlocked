@@ -14,7 +14,6 @@ static unsigned clock_ms;
 static int yg__start_running(int) { return running; }
 static int yg__start_installed(int) { return installed; }
 static int yg__start_app_find(int, yg__start_app*) { return installed; }
-static int yg__start_mini_find(int, yg__start_app*) { return 0; }   // no mini app in the seam tests
 static int yg__start_app_named(yg__start_app*, int) { return 1; }
 static int yg__start_app_version(yg__start_app*, unsigned have[3]) { std::memcpy(have, version, sizeof version); return 1; }
 static int yg__start_app_signed(yg__start_app*) { return signed_ok; }
