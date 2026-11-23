@@ -49,7 +49,7 @@ static struct {
                                      * other kind at the next frame is the host's own switch press */
     unsigned char partner_sent[4];
     unsigned char sent[4];          /* this player's last HOVER/PICK/UNPICK request, sent[0] 0xFF: none,
-                                     * MU_F4_IDLE: off the icons after a hover (nothing went out) */
+                                     * MU_F4_IDLE: nothing out (off the icons, any hover taken back) */
     unsigned char seat_sent[4][2];  /* the host's last SEAT {kind, level} per door */
     unsigned char cpu_sent[4][3];   /* the host's last CPU_PICK {ch, color, team} per door */
     MuLobbyRules rules_sent, rules_drawn;
@@ -812,8 +812,13 @@ static void mu_f4_local(CSSData* css, int mine)
         /* A pick taken back up: UNPICK, only ever after a PICK; the hover follows on the next frame. */
         req[0] = MU_LOBBY_OP_UNPICK;
         size = 1;
+    } else if (req[0] == MU_F4_IDLE && sent[0] == MU_LOBBY_OP_HOVER) {
+        /* Off the icons after a hover: UNPICK clears the hover too, so the others' view of this door empties
+         * as this player's own does (a room without hover clearing ignores it). */
+        req[0] = MU_LOBBY_OP_UNPICK;
+        size = 1;
     } else if (req[0] == MU_F4_IDLE) {
-        /* Off the icons after a hover, or nothing yet: nothing to take back, nothing goes out. */
+        /* Nothing out, or the hover already taken back: nothing goes out. */
         sent[0] = MU_F4_IDLE;
         return;
     }

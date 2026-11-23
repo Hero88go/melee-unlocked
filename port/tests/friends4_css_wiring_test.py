@@ -346,19 +346,23 @@ class ReviewFixes(unittest.TestCase):
         doors = body(self.inc, 'static void mu_f4_doors(CSSData* css, int mine)')
         self.assertIn('if (--mu_f4.hold[i] == 0) mu_f4.sig[i] = 0;', doors)
 
-    def test_unpick_only_after_a_pick(self):
+    def test_unpick_only_after_a_pick_or_a_hover(self):
         local = body(self.inc, 'static void mu_f4_local(CSSData* css, int mine)')
         self.assertIn('if (mu_f4.view.flags & MU_LOBBY_F_STARTED) return;', local)
         self.assertLess(local.index('MU_LOBBY_F_STARTED'), local.index('mu_f4_send(req, size)'))
         head = '} else if (sent[0] == MU_LOBBY_OP_PICK) {'
         unpick = local[local.index(head) + len(head):]
         self.assertIn('req[0] = MU_LOBBY_OP_UNPICK;', unpick[:unpick.index('}')])
+        # Off the icons after a hover: UNPICK takes the hover back, so the others' view of the door empties too.
+        head = '} else if (req[0] == MU_F4_IDLE && sent[0] == MU_LOBBY_OP_HOVER) {'
+        unhover = local[local.index(head) + len(head):]
+        self.assertIn('req[0] = MU_LOBBY_OP_UNPICK;', unhover[:unhover.index('}')])
         head = '} else if (req[0] == MU_F4_IDLE) {'
         idle = local[local.index(head) + len(head):]
         idle = idle[:idle.index('}')]
         self.assertIn('sent[0] = MU_F4_IDLE;', idle)
-        self.assertIn('return;', idle)                         # off the icons after a hover: nothing
-        self.assertEqual(local.count('MU_LOBBY_OP_UNPICK'), 1)  # the only UNPICK is the one after a PICK
+        self.assertIn('return;', idle)                         # nothing out, or the hover already taken back
+        self.assertEqual(local.count('MU_LOBBY_OP_UNPICK'), 2)  # after a PICK, and after a HOVER
         # A new visit (back from the stage select) whose pick the room has sends nothing.
         self.assertIn('if (sent[0] == 0xFF && (me->flags & MU_LOBBY_S_PICKED) &&', local)
 
