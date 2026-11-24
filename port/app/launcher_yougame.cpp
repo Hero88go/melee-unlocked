@@ -876,11 +876,17 @@ std::vector<ListedBuild> listed_builds(const std::string& page) {
 // The native_build a ticket names, as the YouGame app's page names it: YouGame's record of this release for
 // this platform, so app players and launcher players on one release meet in one queue. Never another
 // build's record: a release YouGame does not list yet names none and meets launcher players only. "" then.
+// The record whose version is exactly this one wins, wherever it sits on the page. A test build of the release
+// ("1.0.8-test.<commit>") is another build with its own pool: it never stands in for the release, and the
+// release never for it (a test build's copy names its own version, so it matches exactly).
 std::string native_build_from_listing(const std::string& page, const std::string& version, const char* platform) {
-  std::string found;
-  for (const ListedBuild& r : listed_builds(page))   // the page lists oldest first: keep the newest
-    if (r.platform == platform && (r.version == version || r.version.rfind(version + "-", 0) == 0)) found = r.id;
-  return found;
+  std::string exact, build_of;
+  for (const ListedBuild& r : listed_builds(page)) {   // the page lists oldest first: keep the newest
+    if (r.platform != platform) continue;
+    if (r.version == version) exact = r.id;
+    else if (r.version.rfind(version + "-", 0) == 0 && r.version.rfind(version + "-test.", 0) != 0) build_of = r.id;
+  }
+  return exact.empty() ? build_of : exact;
 }
 std::string listed_build_id(const std::string& version) {
   static std::mutex m;

@@ -159,6 +159,14 @@ int main(int argc, char** argv) {
     CHECK(native_build_from_listing(page + rec(b, "0.9.990", "windows"), "0.9.990", "windows") == b);
     CHECK(native_build_from_listing(page + rec(b, "0.9.990-online-test.123.1", "windows"), "0.9.990", "windows") == b);
     CHECK(native_build_from_listing("", "0.9.990", "windows") == "");
+    // A test build of the release is its own build: never the release's record, in either order on the page.
+    const char* test_w = "880b2eeb-0d00-4a00-8000-0000000e0777";
+    const std::string release = rec(b, "1.0.8", "windows"), test = rec(test_w, "1.0.8-test.4900950", "windows");
+    CHECK(native_build_from_listing(release + test, "1.0.8", "windows") == b);
+    CHECK(native_build_from_listing(test + release, "1.0.8", "windows") == b);
+    CHECK(native_build_from_listing(test, "1.0.8", "windows") == "");                       // release not listed yet
+    CHECK(native_build_from_listing(release + test, "1.0.8-test.4900950", "windows") == test_w);
+    CHECK(native_build_from_listing(test + release, "1.0.8-test.4900950", "windows") == test_w);
   }
   // The YouGame app's hello answer, read as the game reads it (launcher_yougame_app.h): signed in with a
   // player id, pending while the app loads its player, signed out otherwise, refused when not ok.
