@@ -78,15 +78,25 @@ inline uint64_t no_show_deadline(bool vanilla, bool queued, int mode, bool frien
 inline bool no_show_expired(uint64_t deadline, bool arrived, uint64_t now) {
   return deadline && !arrived && now >= deadline;
 }
+// What a search says when YouGame kept answering "busy" for the whole retry window: short enough for the
+// Doubles panel's note (47 letters).
+inline constexpr const char* kBusyGaveUp = "YouGame is busy. Try again in a minute.";
 class BusyRetry {
  public:
-  // Three retries after the initial request, shared by every ticket in this search. "busy" is the
-  // site's; "notHere" is the local channel host's (no page to ask yet, retryAfter 2).
+  // A passing refusal is asked again, shared by every ticket in this search: "busy" is the site's, "notHere" the
+  // local channel host's (no page to ask yet, retryAfter 2), and any HTTP 503 (a lookup the site has not finished).
+  // The waits back off 2, 4, then 8 s (the answer's own retryAfter when it is longer), until about a minute has
+  // gone by; then gave_up() and the search ends with kBusyGaveUp.
+  static constexpr int kMaxBackoff = 8, kWindow = 60;
+  static bool transient(const nlohmann::json& answer) {
+    if (!answer.is_object() || answer.value("ok", false)) return false;
+    const auto code = answer.find("code");
+    if (code != answer.end() && code->is_string() && (*code == "busy" || *code == "notHere")) return true;
+    const auto status = answer.find("status");
+    return status != answer.end() && status->is_number_integer() && *status == 503;
+  }
   int delay(const nlohmann::json& answer) {
-    const auto code = answer.is_object() ? answer.find("code") : answer.end();
-    if (!answer.is_object() || answer.value("ok", false) || code == answer.end() ||
-        !code->is_string() || (*code != "busy" && *code != "notHere") || tries_ == 3) return 0;
-    ++tries_;
+    if (!transient(answer)) return 0;
     const auto read = [](const nlohmann::json& value) -> int {
       if (value.is_number_integer() && value >= 1 && value <= 86400) return value.get<int>();
       if (value.is_string()) {
@@ -102,11 +112,18 @@ class BusyRetry {
       if (headers.count("Retry-After")) seconds = read(headers["Retry-After"]);
       else if (headers.count("retry-after")) seconds = read(headers["retry-after"]);
     }
-    return seconds > 0 ? seconds : 5;
+    seconds = std::max(seconds, std::min(2 << std::min(tries_, 2), kMaxBackoff));
+    if (gave_up_ || waited_ + seconds > kWindow) { gave_up_ = true; return 0; }
+    ++tries_;
+    waited_ += seconds;
+    return seconds;
   }
   int tries() const { return tries_; }
+  int waited() const { return waited_; }
+  bool gave_up() const { return gave_up_; }
  private:
-  int tries_ = 0;
+  int tries_ = 0, waited_ = 0;
+  bool gave_up_ = false;
 };
 template<class Clock, class Pause, class Cancel>
 bool wait(uint64_t ms, Clock clock, Pause pause, Cancel cancelled) {

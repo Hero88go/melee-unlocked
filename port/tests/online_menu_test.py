@@ -439,6 +439,7 @@ namespace agent_lock = slippi::agent_lock;
 #include "yougame_slippi_link.h"
 static unsigned long long time_ms() { return 123; }
 static bool active, granted, login, compatible = true, cancelled;
+static bool launcher_session;   // a YouGame row picked under the launcher, without the app
 static std::function<void()> on_account_read;
 // slippi_account.h reaches the real policy through test_env.h; drive its flag.
 static bool& vanilla = host::gameplay::vanilla_only_session;
@@ -465,7 +466,7 @@ namespace host { void log(const char*, ...) {} }
 namespace display { enum class Provider { Unknown, YouGame, Slippi }; }
 namespace yougame {
 bool active() { return ::active; }
-bool session() { return active(); }   // no launcher in these fixtures: the app's session
+bool session() { return active() || ::launcher_session; }   // the app's session, or the launcher's YouGame row
 bool friends_flow() { return active(); }   // no local channel in these fixtures
 int menu_service() { return -1; }      // no row picked through the launcher's pages
 void slippi_link(bool, const std::string&) {}

@@ -752,29 +752,39 @@ int main(void)
     v.mode = MU_LOBBY_M_DOUBLES; v.my_seat = MU_LOBBY_NONE;
     check(NULL, MU_LOBBY_HINT_OPENING, 0, 0, "", LINES("Waiting for players", 1, "", 0, "", 0), "", "");
     check(&v, MU_LOBBY_HINT_OPENING, 0, 0, "", LINES("Waiting for players", 1, "", 0, "", 0), "", "");
+    /* The home never opened (its ticket was refused): the reason the view carries, not "Waiting for players". */
+    v.flags = MU_LOBBY_F_ARMED; v.block_hint = MU_LOBBY_HINT_CLOSED;
+    strcpy(v.note, "This copy of Melee is out of date.");
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "This copy of Melee is out of date.");
+    check(&v, MU_LOBBY_HINT_REFUSED, 1, 0, "", LINES("", 0, "", 0, "", 0), "", "This copy of Melee is out of date.");
+    v.note[0] = 0;
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Hold B to exit");
+    v.flags = 0;   /* not armed yet: still opening */
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("Waiting for players", 1, "", 0, "", 0), "", "");
+    v.block_hint = 0;
     v.flags = MU_LOBBY_F_ARMED | MU_LOBBY_F_KNOWN | MU_LOBBY_F_HOST; v.my_seat = 0;
     v.seats[0].kind = MU_LOBBY_KIND_HUMAN; v.seats[1].kind = MU_LOBBY_KIND_OPEN;
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_FIND, "",
-          LINES("Select your character", 1, "Press START to search", 1, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Select your character", 1, "Press START to search", 1, "Partner: find online", 0), "P2's tab changes partner", "");
     v.seats[0].flags = MU_LOBBY_S_PICKED;
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_FIND, "",
-          LINES("Character selected", 2, "Press START to search", 1, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to search", 1, "Partner: find online", 0), "P2's tab changes partner", "");
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_INVITE, "",
-          LINES("Character selected", 2, "Press START to invite", 1, "Partner: invite a friend", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to invite", 1, "Partner: invite a friend", 0), "P2's tab changes partner", "");
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_P2, "",   /* Player 2 sitting down */
-          LINES("Character selected", 2, "Waiting for players", 1, "Partner: Player 2", 1), "Tab changes partner", "");
+          LINES("Character selected", 2, "Waiting for players", 1, "Partner: Player 2", 1), "P2's tab changes partner", "");
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_CPU, "",
-          LINES("Character selected", 2, "Waiting for players", 1, "Partner: CPU", 1), "Tab changes partner", "");
+          LINES("Character selected", 2, "Waiting for players", 1, "Partner: CPU", 1), "P2's tab changes partner", "");
     v.flags |= MU_LOBBY_F_INVITING;
     check(&v, MU_LOBBY_HINT_START_PARTNER, 0, MU_LOBBY_WANT_INVITE, "",
           LINES("Character selected", 2, "Waiting for players", 1, "Inviting a friend", 1), "Press B to cancel", "");
     v.flags &= ~MU_LOBBY_F_INVITING;
     v.seats[1].kind = MU_LOBBY_KIND_CPU;
     check(&v, MU_LOBBY_HINT_START_SEARCH, 0, MU_LOBBY_WANT_CPU, "",
-          LINES("Character selected", 2, "Press START to search", 1, "Partner: CPU", 2), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to search", 1, "Partner: CPU", 2), "P2's tab changes partner", "");
     v.seats[1].kind = MU_LOBBY_KIND_LOCAL;
     check(&v, MU_LOBBY_HINT_START_SEARCH, 0, MU_LOBBY_WANT_P2, "",
-          LINES("Character selected", 2, "Press START to search", 1, "Partner: Player 2", 2), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to search", 1, "Partner: Player 2", 2), "P2's tab changes partner", "");
     v.seats[1].kind = MU_LOBBY_KIND_HUMAN; strcpy(v.seats[1].name, "Fox (main)");
     check(&v, MU_LOBBY_HINT_START_SEARCH, 0, MU_LOBBY_WANT_FIND, "",   /* a friend: the tab is locked */
           LINES("Character selected", 2, "Press START to search", 1, "Partner: Fox  main ", 2), "", "");
@@ -787,7 +797,7 @@ int main(void)
     v.seats[1].kind = MU_LOBBY_KIND_OPEN; v.seats[0].flags = 0;
     /* Everyone needs to pick a fighter: the fighter's line says it. */
     check(&v, MU_LOBBY_HINT_PICK, 0, MU_LOBBY_WANT_FIND, "",
-          LINES("Select your character", 1, "", 0, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Select your character", 1, "", 0, "Partner: find online", 0), "P2's tab changes partner", "");
     /* Searching (the guest's B cancels too: shim/mu_slippi_menu.c). */
     v.mode |= MU_LOBBY_M_SEARCHING; v.seats[0].flags = MU_LOBBY_S_PICKED;
     check(&v, MU_LOBBY_HINT_SEARCHING, 0, MU_LOBBY_WANT_FIND, "",
@@ -797,23 +807,23 @@ int main(void)
     v.mode &= ~MU_LOBBY_M_SEARCHING;
     /* A match is being set up. */
     check(&v, MU_LOBBY_HINT_STARTING, 0, 0, "", LINES("Character selected", 2, "Match found", 2, "Partner: find online", 0),
-          "Tab changes partner", "");
+          "P2's tab changes partner", "");
     v.flags |= MU_LOBBY_F_STARTED;
     check(&v, MU_LOBBY_HINT_NONE, 0, 0, "", LINES("Character selected", 2, "Match found", 2, "Partner: find online", 0), "", "");
     v.flags &= ~MU_LOBBY_F_STARTED;
     /* Search stopped: its own words for the note's 2 s, then START is offered again. */
     check(&v, MU_LOBBY_HINT_SEARCH_STOPPED, 1, MU_LOBBY_WANT_FIND, "",
-          LINES("Character selected", 2, "Search stopped", 0, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Search stopped", 0, "Partner: find online", 0), "P2's tab changes partner", "");
     check(&v, MU_LOBBY_HINT_SEARCH_STOPPED, 0, MU_LOBBY_WANT_FIND, "",
-          LINES("Character selected", 2, "Press START to search", 1, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to search", 1, "Partner: find online", 0), "P2's tab changes partner", "");
     /* Rules refusals: the error sound only, the steady lines stay. */
     check(&v, MU_LOBBY_HINT_FIXED_RULES, 1, MU_LOBBY_WANT_FIND, "",
-          LINES("Character selected", 2, "Press START to search", 1, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to search", 1, "Partner: find online", 0), "P2's tab changes partner", "");
     check(&v, MU_LOBBY_HINT_UNRANKED_ONLY, 1, MU_LOBBY_WANT_INVITE, "",
-          LINES("Character selected", 2, "Press START to invite", 1, "Partner: invite a friend", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Press START to invite", 1, "Partner: invite a friend", 0), "P2's tab changes partner", "");
     /* Waiting for every game, a player reconnecting. */
     check(&v, MU_LOBBY_HINT_NOT_READY, 0, 0, "",
-          LINES("Character selected", 2, "Waiting for players", 1, "Partner: find online", 0), "Tab changes partner", "");
+          LINES("Character selected", 2, "Waiting for players", 1, "Partner: find online", 0), "P2's tab changes partner", "");
     /* The problems, in red: the lines are cleared (Slippi's). */
     check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Hold B to exit");
     check(&v, MU_LOBBY_HINT_MISMATCH, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");
@@ -839,7 +849,7 @@ int main(void)
     assert(!strcmp(sub_words[MU_F4_ST_HEADER], "Doubles") && !strcmp(sub_words[1], "Select your character"));
     assert(!strcmp(sub_words[2], mu_f4_spin_str[0]) && sub_color[2].b == 0xFF && sub_color[2].g == 0xBC);
     assert(!strcmp(sub_words[3], "Press START to search") && !strcmp(sub_words[5], "Partner: find online") && sub_words[6][0] == 0);
-    assert(!strcmp(sub_words[MU_F4_ST_GRAY], "Tab changes partner") && sub_color[MU_F4_ST_GRAY].r == 0x8E);
+    assert(!strcmp(sub_words[MU_F4_ST_GRAY], "P2's tab changes partner") && sub_color[MU_F4_ST_GRAY].r == 0x8E);
     assert(mu_f4.panel_draws == 7);
     draws = mu_f4.panel_draws;
     for (j = 1; j < MU_F4_SPIN_FRAMES; ++j) mu_f4_panel(&v, 1, MU_LOBBY_HINT_START_PARTNER, 0, "", 0);

@@ -59,30 +59,40 @@ void generation_guard() {
 void busy_retry() {
   const json busy = {{"ok", false}, {"code", "busy"}, {"retry", true}};
   search_policy::BusyRetry retries;
-  CHECK(retries.delay(busy) == 5);
+  CHECK(retries.delay(busy) == 2);   // backs off 2, 4, then 8 s
   auto header = busy; header["headers"] = {{"Retry-After", "7"}};
-  CHECK(retries.delay(header) == 7);
+  CHECK(retries.delay(header) == 7);   // the answer's own wait when it is longer
   header["retryAfter"] = 2;
-  CHECK(retries.delay(header) == 2);
-  CHECK(retries.delay(busy) == 0 && retries.tries() == 3);
+  CHECK(retries.delay(header) == 8);
+  CHECK(retries.delay(busy) == 8 && retries.tries() == 4 && retries.waited() == 25);
+  while (retries.delay(busy)) {}
+  CHECK(retries.gave_up() && retries.waited() <= search_policy::BusyRetry::kWindow && retries.waited() > 50);
+  CHECK(retries.delay(busy) == 0);   // given up for the rest of this search
   search_policy::BusyRetry malformed;
   CHECK(malformed.delay(json()) == 0);
   CHECK(malformed.delay({{"ok", false}, {"code", 7}}) == 0);
   search_policy::BusyRetry fresh;
   CHECK(fresh.delay({{"ok", true}, {"code", "busy"}}) == 0);
   CHECK(fresh.delay({{"ok", false}, {"code", "signed_out"}}) == 0);
+  CHECK(!fresh.gave_up());
   header = busy; header["retryAfter"] = "invalid";
-  CHECK(fresh.delay(header) == 5);
+  CHECK(fresh.delay(header) == 2);
   header["retryAfter"] = -1;
-  CHECK(fresh.delay(header) == 5);
+  CHECK(fresh.delay(header) == 4);
   header["retryAfter"] = 0;
-  CHECK(fresh.delay(header) == 5);
-  // The local channel host's "no page yet" answer retries the same way, on its own retryAfter.
+  CHECK(fresh.delay(header) == 8);
+  // An answer longer than the window is not waited for.
+  search_policy::BusyRetry long_wait;
+  CHECK(long_wait.delay({{"ok", false}, {"code", "busy"}, {"retryAfter", 120}}) == 0 && long_wait.gave_up());
+  // The local channel host's "no page yet" answer retries the same way, and so does any HTTP 503.
   search_policy::BusyRetry local;
   CHECK(local.delay({{"ok", false}, {"code", "notHere"}, {"retryAfter", 2}}) == 2 && local.tries() == 1);
   CHECK(local.delay({{"ok", false}, {"code", "unknown_build"}}) == 0 && local.tries() == 1);
   CHECK(local.delay({{"ok", false}, {"code", "old_build"}}) == 0 && local.tries() == 1);
   CHECK(local.delay({{"ok", false}, {"code", "notYet"}}) == 0);
+  CHECK(local.delay({{"ok", false}, {"status", 503}, {"error", "Lookup pending"}}) == 4 && local.tries() == 2);
+  CHECK(local.delay({{"ok", false}, {"status", 409}, {"code", "old_build"}}) == 0 && !local.gave_up());
+  CHECK(std::string(search_policy::kBusyGaveUp).size() <= 47);   // the Doubles panel's note
   ++groups;
 }
 void cancel_busy_wait() {

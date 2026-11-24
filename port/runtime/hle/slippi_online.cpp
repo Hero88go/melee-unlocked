@@ -3319,6 +3319,10 @@ static bool lobby_command(const uint8_t* p, uint32_t n, std::vector<uint8_t>& q)
     flags.closed = lobby.closed || failed;
     flags.arm = g_lobby_arm;
     flags.note = lobby.note;
+    // A Doubles home whose search ended before its room opened (a refused ticket, out of date, YouGame busy):
+    // its panel says why instead of "Waiting for players".
+    if (lobby.armed && flags.closed && flags.note.empty() && lobby.profile == lb::Profile::Doubles)
+      flags.note = !g_forced_error.empty() ? g_forced_error : g_matchmaking ? g_matchmaking->GetErrorMessage() : std::string();
     flags.note_seq = lobby.note_seq;
     const MuLobbyView v = lb::screen_view(cv, flags);
     q.resize(MU_LOBBY_VIEW_SIZE);

@@ -1612,6 +1612,12 @@ static void mu_f4_panel_text(const MuLobbyView* v, unsigned hint, int noted, int
     memset(p, 0, sizeof *p);
     p->gray = "";
     if (!v || !(v->flags & MU_LOBBY_F_KNOWN) || v->my_seat >= MU_LOBBY_DOUBLES_SEATS) {
+        /* The home never opened (its ticket was refused): why, not a wait that will never end. */
+        if (v && (v->flags & MU_LOBBY_F_ARMED) && v->block_hint == MU_LOBBY_HINT_CLOSED) {
+            if (v->note[0]) mu_f4_panel_copy(p->error, sizeof p->error, v->note);
+            else strcpy(p->error, "Lobby closed. Hold B to exit");
+            return;
+        }
         strcpy(p->line[0], "Waiting for players");   /* the room's state hasn't arrived yet */
         p->spin[0] = 1;
         return;
@@ -1706,7 +1712,7 @@ static void mu_f4_panel_text(const MuLobbyView* v, unsigned hint, int noted, int
     /* The tab, while it turns (mu_friends4_partner_cycle's locks, roughly: not on a friend). */
     if (!p->gray[0] && host && partner->kind != MU_LOBBY_KIND_HUMAN && !(v->flags & MU_LOBBY_F_STARTED) &&
         !(v->mode & MU_LOBBY_M_SEARCHING))
-        p->gray = "Tab changes partner";
+        p->gray = "P2's tab changes partner";
 }
 
 /* One subtext, written only when its words or colour change. */

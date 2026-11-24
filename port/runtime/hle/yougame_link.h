@@ -131,8 +131,8 @@ bool extension_waiting();
 // 2 Unranked on both (YouGame and Slippi); -1 before any pick. Read by the app's routing.
 void set_menu_service(int service);
 int menu_service();
-// Launcher only: YouGame is on another (older) release than this build. Asks the launcher again
-// (a local answer, under 2 s). Empty when this build is allowed or nothing is known.
+// Launcher only: YouGame is on another (older) release than this build, as the launcher last said. Never waits:
+// the launcher is asked again off this thread for the next read. Empty when this build is allowed or nothing is known.
 std::string behind_version_now(bool* can_restart = nullptr);   // can_restart: the launcher can start that release
 // Asks the launcher to start that release once this game closes, in `mode` ("ranked" or "direct").
 bool restart_older(const std::string& mode, std::string* error);
