@@ -430,8 +430,18 @@ class Events {
       // Old page pushes carry only a room code. A new invite notice grants one new
       // acceptance, including a retry of a still-live retired room. Never let that
       // old room displace a pending invite or another active session.
-      if (retired_.count(code) && (!fresh_invite_ || !pending_.empty() || !current_room_.empty() ||
+      // A push that carries the id of an invite the player accepted ({type:"join", room, invite})
+      // is that acceptance itself: an id not seen before may rejoin a room the player left, while
+      // a repeat of the same id (a page reload, a resend) never pulls them back in.
+      const auto invite_id = text(value, "invite", 64);
+      const bool idle = pending_.empty() && current_room_.empty();
+      const bool accepted = !invite_id.empty() && !seen_invites_.count(invite_id) && idle;
+      if (retired_.count(code) && !accepted && (!fresh_invite_ || !idle ||
           (!invite_room_.empty() && invite_room_ != code))) return false;
+      if (!invite_id.empty()) {
+        if (seen_invites_.size() >= 256) seen_invites_.clear();
+        seen_invites_.insert(invite_id);
+      }
       retired_.erase(code); fresh_invite_ = false; invite_room_.clear();
       pending_ = code;
       // The invite's room size when the page says (a 1v1 friend room 2, the Friends lobby 4); 0 unknown,
@@ -705,6 +715,7 @@ class Events {
   bool online_menu_ = false, friend_entry_ = false, version_notice_ = false, version_logged_ = false;
   bool hello_seen_ = false, host_requested_ = false, picker_open_ = false;
   std::set<std::string> retired_; // Retired room pushes need a fresh invite acceptance.
+  std::set<std::string> seen_invites_; // Invite ids a join push already used (one join per accepted invite).
   bool fresh_invite_ = false;
   std::string invite_room_, pending_, toast_, current_room_, picker_error_;
   int pending_players_ = 0, join_players_ = 0;

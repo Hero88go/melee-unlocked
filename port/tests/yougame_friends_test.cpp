@@ -167,6 +167,19 @@ int main() {
   CHECK(own.push({{"type","notice"},{"kind","invite"},{"from","Friend"},{"text","Play again"},{"room","Ab12"}},12));
   CHECK(own.push({{"type","join"},{"room","Ab12"}},13));
   CHECK(own.take_join(true) == "Ab12");
+  // A join push carrying an accepted invite's id is the acceptance itself: a new id rejoins a
+  // room the player left; the same id again, a bare join, or a pending invite never does.
+  own.current_room("Ab12"); own.current_room({});                 // played Ab12, then left it
+  CHECK(!own.push({{"type","join"},{"room","Ab12"}},13));         // bare: still dropped
+  CHECK(own.push({{"type","join"},{"room","Ab12"},{"invite","inv-1"}},13));
+  CHECK(own.take_join(true) == "Ab12");
+  own.current_room("Ab12"); own.current_room({});                 // left again
+  CHECK(!own.push({{"type","join"},{"room","Ab12"},{"invite","inv-1"}},13)); // same id: no rejoin
+  CHECK(own.push({{"type","join"},{"room","Queued"}},13));
+  CHECK(!own.push({{"type","join"},{"room","Ab12"},{"invite","inv-2"}},13)); // never displaces a queued join
+  CHECK(own.take_join(true) == "Queued");
+  CHECK(own.push({{"type","join"},{"room","Ab12"},{"invite","inv-2"}},13));  // idle: the new id rejoins
+  CHECK(own.take_join(true) == "Ab12");
   // The invite's room size (a hint for the first try): 4, or the Friends lobby's compatibility key; none
   // said is 0. The room decides (room_kind below).
   CHECK(own.push({{"type","join"},{"room","Size4Room"},{"players",4}},14));
