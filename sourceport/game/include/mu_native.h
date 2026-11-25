@@ -294,6 +294,10 @@ int mu_option2_offline(unsigned int bit);   /* a plain second-word option is in 
 struct Fighter;
 void mu_controls_match_start(void);
 int mu_control(const struct Fighter* fp, unsigned int bit);
+void mu_controls_pad(struct Fighter* fp);       /* Fighter_procInput: Start + D-pad toggles */
+int mu_controls_pause_combo(int pad);           /* gmvs.c: that Start is a toggle, not a pause */
+int mu_controls_lcancel_off(int slot);          /* the host's automatic L-cancel, turned off mid-match */
+void mu_controls_hud_init(void);                /* ifStatus_802F665C: the toggle's line */
 /* "Freeze Pokemon Stadium (offline only)" (Game tab, Stages): Slippi's Frozen Pokemon
  * Stadium, offline. Never in playback: there the replay's own isFrozenPS counts. */
 int mu_stadium_frozen_option(void);

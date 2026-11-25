@@ -1483,6 +1483,7 @@ void mu_slippi_css_text_init(void)
     void* ud;
     HSD_Text* t;
     int i;
+    int credit = 0;
 
     /* Mode 2 adds the "Connect Code" rows; a peer-to-peer session has no code to show. */
     user_display_init(mu_slippi_state()->mode == MU_SLP_MODE_DIRECT && !mu_online_p2p_menus() ? 2 : 1);
@@ -1518,8 +1519,10 @@ void mu_slippi_css_text_init(void)
 #if MU_SQUAD
     /* Based on Squad Strike by Chris (x9x9x9x9x9), https://github.com/x9x9x9x9x9/squad-strike v1.0.0, used with the author's permission (11-03-2026) */
     /* Direct too: a friend room may turn squads on after this screen opened (gmSquad_OnlineFriendJoin). */
-    if (gmSquad_OnlineChosen() || mu_slippi_state()->mode == MU_SLP_MODE_DIRECT)
-        create_subtext(t, &color_gray, 0.28f, 70.0f, 118.0f);   /* the credit: left-aligned with the header, under the status lines */
+    if (gmSquad_OnlineChosen() || mu_slippi_state()->mode == MU_SLP_MODE_DIRECT) {
+        create_subtext(t, &color_gray, 0.28f, 70.0f, 121.0f);   /* the credit: left-aligned with the header, under the status lines */
+        credit = 1;
+    }
 #endif
     if (mu_slippi_state()->mode == MU_SLP_MODE_RANKED && (mu_slippi_ranked_available() || mu_slippi_yougame_pick())) {
         for (i = 0; i < 5; i++) {
@@ -1528,8 +1531,8 @@ void mu_slippi_css_text_init(void)
     }
     st_opp_picks = create_subtext(t, &color_white, 0.35f, -130.0f, -240.0f);  /* their picks */
     /* Tap jump off and tilt stick: what the match plays, or who asks (controls_lines). */
-    st_controls = create_subtext(t, &color_gray, 0.35f, 70.0f,
-                                 mu_slippi_state()->mode == MU_SLP_MODE_RANKED ? 118.0f : 172.5f);
+    /* In the gap under the status lines, above "Hold Z": the panel's border runs under the D-pad line. */
+    st_controls = create_subtext(t, &color_gray, 0.35f, 70.0f, credit ? 110.0f : 116.0f);
 }
 
 /* ---- chat (mu_slippi_chat.c): the CSS data table as SlippiCSS.dat reads it ---- */

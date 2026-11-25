@@ -217,7 +217,9 @@ void forget_all() {
 uint32_t match_word() {
   if (!engine_supported() || host::gameplay::vanilla_only()) return 0;
   if (slippi::online::session_mode() >= 0) return g_frozen.load(std::memory_order_relaxed);
-  const unsigned bits = own_bits() & MU_CONTROL_GAME_BITS;
+  // Offline the automatic L-cancel bit rides along too, so Start + D-pad Right can turn it off in a match.
+  unsigned bits = own_bits() & MU_CONTROL_GAME_BITS;
+  if (lcancel::automatic_enabled()) bits |= MU_CONTROL_AUTO_LCANCEL;
   return bits * 0x01010101u;
 }
 

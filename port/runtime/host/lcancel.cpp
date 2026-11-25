@@ -472,7 +472,9 @@ void apply(host::PadState pads[4], bool allow_automatic) {
     // this read), so presses start with it and not only once the aerial is seen.
     bool emitted_on;
     bool changed = false;
-    if (!auto_allowed) {
+    // Start + D-pad Right in the match turned this player's press off (the game keeps that, mu_controls.c).
+    const bool turned_off = fighter.slot >= 0 && fighter.slot < 4 && view.auto_off[fighter.slot] != 0;
+    if (!auto_allowed || turned_off) {
       st.converted = 0; st.predict = 0; st.was_active = false;
       emitted_on = effective_lr(pad, cal);
     } else {

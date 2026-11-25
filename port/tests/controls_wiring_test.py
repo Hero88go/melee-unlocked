@@ -69,7 +69,15 @@ class DecompSites(unittest.TestCase):
         for path in ('src/melee/ft/ft_0DF1.c', FT + 'ftCo_KneeBend.c', FT + 'ftCo_Damage.c', FT + 'ftCo_EscapeAir.c',
                      FT + 'ftCo_Guard.c', FT + 'ftCo_CaptureWait.c', FT + 'ftCo_CaptureWaitKirby.c',
                      'src/melee/ft/kinds/ftPeach/ftpeachfloat.c', 'src/melee/ft/fighter.c'):
-            self.assertNotIn('mu_control', added(path), path)
+            self.assertNotIn('mu_control(', added(path), path)
+
+    def test_mid_match_toggle_reads_the_shared_input(self):
+        # Start + D-pad: one call in Fighter_procInput, after the pad or the replay's input is in place,
+        # and the pause checks skip that Start; nothing else in fighter.c or gmvs.c changes for it.
+        fighter = added('src/melee/ft/fighter.c')
+        self.assertEqual(fighter.count('mu_controls_pad(fp);'), 1)
+        self.assertLess(fighter.index('mu_replay_input(fp);'), fighter.index('mu_controls_pad(fp);'))
+        self.assertEqual(added('src/melee/gm/gmvs.c').count('mu_controls_pause_combo('), 2)
 
     def test_every_site_is_native_only(self):
         sites = 0

@@ -31,6 +31,7 @@ typedef struct MuLcancelView {
     MuLcancelS32 lcancel_window;                           /* ftCommonData xE4 */
     MuLcancelFighter port[4];
     float z_analog;                                        /* ftCommonData z_press_analog_value */
+    MuLcancelS32 auto_off[4];   /* per slot: the agreed automatic L-cancel turned off mid-match (Start + D-pad Right) */
 } MuLcancelView;
 
 #endif
