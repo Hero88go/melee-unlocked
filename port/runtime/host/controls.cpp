@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -78,6 +79,8 @@ struct Peer {
   uint8_t answered_seq = 0;
   bool answer_sent = false;
   bool answer_value = false;
+  uint64_t since = 0;         // locked in: when the question (or the own-options yes) began to wait
+  bool own_pending = false;   // an own-options yes held for "Press Y for defaults"
 };
 struct Session {
   bool active = false;
@@ -94,6 +97,11 @@ struct Session {
   std::vector<std::vector<uint8_t>> outgoing;
 };
 Session g;
+
+uint64_t steady_ms() {
+  return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+uint64_t (*g_clock)() = steady_ms;
 
 std::atomic<uint32_t> g_frozen{0};
 std::atomic<int> g_frozen_mode{-1};
@@ -137,13 +145,21 @@ void evaluate_locked(Peer& p) {
   r.allowed |= p.session.allowed;
   r.declined = (r.declined | p.session.declined) & ~r.allowed;
   switch (policy::auto_answer(bits, g.offered, r, false)) {
-    case policy::Auto::Yes: p.mine = Answer::Yes; send_answer_locked(p, true); return;
-    case policy::Auto::YesOwn: p.mine = Answer::YesOwn; send_answer_locked(p, true); return;
-    case policy::Auto::No: p.mine = Answer::No; send_answer_locked(p, false); return;
+    case policy::Auto::Yes: p.mine = Answer::Yes; p.own_pending = false; send_answer_locked(p, true); return;
+    case policy::Auto::YesOwn:
+      if (p.mine == Answer::YesOwn && (p.own_pending || p.answer_sent)) return;   // already on its way
+      p.mine = Answer::YesOwn;
+      // Locked in: the yes waits kOwnSeconds for "Press Y for defaults" (tick sends it). Not locked in:
+      // at once; the player can still say "defaults" until the lock-in.
+      if (g.ready) { p.own_pending = true; p.since = g_clock(); }
+      else send_answer_locked(p, true);
+      return;
+    case policy::Auto::No: p.mine = Answer::No; p.own_pending = false; send_answer_locked(p, false); return;
+    case policy::Auto::NoUnused: p.mine = Answer::NoUnused; p.own_pending = false; send_answer_locked(p, false); return;
     case policy::Auto::Ask:
-      // Locked in already: nobody is there to ask before the match, so the answer is no (this match).
-      if (g.ready) { p.mine = Answer::NoLocked; send_answer_locked(p, false); }
-      else p.mine = Answer::Ask;
+      // Asked on the character select. Locked in, the match waits up to kAskSeconds for the answer.
+      if (p.mine != Answer::Ask) { p.mine = Answer::Ask; p.since = g_clock(); }
+      p.own_pending = false;
       return;
   }
 }
@@ -272,8 +288,19 @@ void receive(const uint8_t* data, size_t size) {
 
 void tick() {
   std::lock_guard<std::mutex> lk(g_mutex);
-  if (!g.active || g.ready) return;
-  offer_locked();
+  if (!g.active || g.in_match) return;
+  if (!g.ready) { offer_locked(); return; }
+  const uint64_t now = g_clock();
+  for (auto& p : g.peers) {
+    if (p.mine == Answer::Ask && now - p.since >= (uint64_t)kAskSeconds * 1000) {
+      host::log("controls: no answer to P%d's options in %d s: default controls this match", p.who.port + 1, kAskSeconds);
+      p.mine = Answer::NoLocked;
+      send_answer_locked(p, false);
+    } else if (p.own_pending && now - p.since >= (uint64_t)kOwnSeconds * 1000) {
+      p.own_pending = false;
+      send_answer_locked(p, true);
+    }
+  }
 }
 
 std::vector<std::vector<uint8_t>> before_selection(bool ready) {
@@ -282,12 +309,17 @@ std::vector<std::vector<uint8_t>> before_selection(bool ready) {
   if (!ready) {
     g.ready = false;
     offer_locked();
-    // Back from a lock-in: the questions answered no only because of it are asked again.
-    for (auto& p : g.peers) if (p.mine == Answer::NoLocked) { p.mine = Answer::None; evaluate_locked(p); }
+    // Back from a lock-in: a held own-options yes goes now, and the questions answered no only because
+    // they ran out of time are asked again.
+    for (auto& p : g.peers) {
+      if (p.own_pending) { p.own_pending = false; send_answer_locked(p, true); }
+      if (p.mine == Answer::NoLocked) { p.mine = Answer::None; evaluate_locked(p); }
+    }
   } else if (!g.ready) {
     offer_locked();
     g.ready = true;
-    for (auto& p : g.peers) if (p.mine == Answer::Ask) evaluate_locked(p);
+    // Locked in with a question open: its time to answer starts now (tick answers no when it runs out).
+    for (auto& p : g.peers) if (p.mine == Answer::Ask) p.since = g_clock();
   }
   std::vector<std::vector<uint8_t>> out;
   out.swap(g.outgoing);
@@ -338,6 +370,51 @@ void match_ended() {
   for (auto& p : g.peers) if (p.mine == Answer::NoThisMatch) { p.mine = Answer::None; evaluate_locked(p); }
 }
 
+CssLine css_line() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  CssLine line;
+  if (!g.active || g.in_match) return line;
+  const uint64_t now = g_clock();
+  line.mine = policy::main_bits(g.offered);
+  auto left = [&](uint64_t since, int seconds) {
+    const uint64_t gone = now - since, total = (uint64_t)seconds * 1000;
+    return gone >= total ? 0 : (int)((total - gone + 999) / 1000);
+  };
+  for (const auto& p : g.peers)
+    if (p.mine == Answer::Ask) {
+      line.state = Css::Asked;
+      line.port = p.who.port;
+      line.theirs = policy::main_bits(g.state.bits[p.who.port]);
+      line.seconds = g.ready ? left(p.since, kAskSeconds) : 0;
+      return line;
+    }
+  for (const auto& p : g.peers)
+    if (p.mine == Answer::YesOwn && (p.own_pending || !g.ready)) {
+      line.state = Css::AllowedOwn;
+      line.port = p.who.port;
+      line.theirs = policy::main_bits(g.state.bits[p.who.port]);
+      line.seconds = p.own_pending ? left(p.since, kOwnSeconds) : 0;
+      return line;
+    }
+  bool anyone = line.mine != 0;
+  for (const auto& p : g.peers) anyone |= g.state.have_offer[p.who.port] && policy::main_bits(g.state.bits[p.who.port]);
+  if (!anyone) return line;
+  if (!wire::settled(g.state)) {
+    line.state = Css::Waiting;
+    if (!g.peers.empty()) line.port = g.peers[0].who.port;
+    return line;
+  }
+  const uint32_t word = wire::decide(g.state);
+  line.state = word ? Css::Agreed : Css::Defaults;
+  for (int i = 0; i < wire::kPorts; ++i) line.theirs |= policy::main_bits(mu_controls_slot(word, i));
+  return line;
+}
+
+void set_test_clock(uint64_t (*now_ms)()) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  g_clock = now_ms ? now_ms : steady_ms;
+}
+
 // ---------------------------------------------------------------- the character select and panel
 View view() {
   std::lock_guard<std::mutex> lk(g_mutex);
@@ -375,17 +452,21 @@ void answer(int port, bool allow) {
   }
   p->session = policy::remember(p->session, bits, allow);
   host::log("controls: %s P%d's %s (remembered)", allow ? "allowed" : "declined", port + 1, describe(bits).c_str());
-  // Locked in, or in the match: what decides this match is already sent and must stay as it is on
-  // every machine; the answer counts from the next match.
-  if (g.ready || g.in_match) return;
+  // In the match, or locked in with an answer already sent: what decides this match must stay as it is
+  // on every machine, so the answer counts from the next match. An open question is answered now, locked
+  // in or not: nothing has been sent for it, and the match is waiting for exactly this.
+  if (g.in_match || (g.ready && p->mine != Answer::Ask)) return;
   p->mine = allow ? Answer::Yes : Answer::No;
+  p->own_pending = false;
   send_answer_locked(*p, allow);
 }
 
 void decline_this_match(int port) {
   std::lock_guard<std::mutex> lk(g_mutex);
   Peer* p = g.active ? peer_locked(port) : nullptr;
-  if (!p || g.ready || g.in_match) return;
+  // Before the lock-in at any time; locked in only while an own-options yes is still held back.
+  if (!p || g.in_match || (g.ready && !(p->mine == Answer::YesOwn && p->own_pending))) return;
+  p->own_pending = false;
   p->mine = Answer::NoThisMatch;
   send_answer_locked(*p, false);
 }

@@ -20,6 +20,8 @@ namespace {
 int g_mode = -1;
 bool g_auto = false;
 std::vector<std::string> g_logs;
+uint64_t fake_now = 0;
+uint64_t fake_clock() { return fake_now; }
 }  // namespace
 namespace host {
 void log(const char* fmt, ...) {
@@ -188,26 +190,99 @@ int main() {
   }
   ++groups;
 
-  // 8. Locking in with a question open answers no for this match, ahead of the selection; an answer
-  //    while locked in is remembered but never sent; back from the lock-in it counts.
-  set(false, false);
+  // 8. Locked in with a question open (owner 11-25: Unranked asks before game 1): nothing goes out, the
+  //    match waits with a countdown, the answer given while locked in is sent and counts for this match;
+  //    a second answer while locked in is only remembered.
+  set_test_clock(fake_clock);
+  set(true, false);
   {
     Remote r;
     session_begin(0, opponent("id:late"), 1, true, false);
     r.take(take_outgoing());
     r.offer(TS);
     CHECK(view().peers[0].mine == Answer::Ask);
+    fake_now = 1000;
     auto sent = r.take(before_selection(true));
-    CHECK(sent.size() == 1 && sent[0].kind == wire::kAnswer && !sent[0].yes);
-    CHECK(view().peers[0].mine == Answer::NoLocked && view().ready);
+    CHECK(sent.empty());
+    CHECK(css_line().state == Css::Asked && css_line().seconds == kAskSeconds && css_line().theirs == TS);
+    fake_now += 3000;
+    tick();
+    CHECK(take_outgoing().empty() && css_line().seconds == kAskSeconds - 3 && !settled());
     answer(1, true);
-    CHECK(take_outgoing().empty());
+    sent = r.take(take_outgoing());
+    CHECK(sent.size() == 1 && sent[0].yes);
     CHECK(remembered_count() == 2);
-    sent = r.take(before_selection(false));
-    CHECK(sent.size() == 1 && sent[0].yes && view().peers[0].mine == Answer::Yes);
-    CHECK(wire::decide(r.s) == view().word && view().word == (TS << 8));
+    r.answer(true);
+    CHECK(settled() && view().word == (TJ | (TS << 8)) && wire::decide(r.s) == view().word);
+    CHECK(css_line().state == Css::Agreed && css_line().theirs == (TJ | TS));
+    answer(1, false);
+    CHECK(take_outgoing().empty());
     session_end();
   }
+  ++groups;
+
+  // 8b. Unanswered for kAskSeconds: no for this match only (not remembered), default controls.
+  {
+    Remote r;
+    session_begin(0, opponent("id:slow"), 1, true, true);   // met already locked in, as in Unranked
+    r.take(take_outgoing());
+    r.offer(TS);
+    CHECK(css_line().state == Css::Asked && css_line().seconds == kAskSeconds);
+    fake_now += (uint64_t)kAskSeconds * 1000;
+    tick();
+    auto sent = r.take(take_outgoing());
+    CHECK(sent.size() == 1 && !sent[0].yes && view().peers[0].mine == Answer::NoLocked);
+    r.answer(true);
+    CHECK(settled() && view().word == 0 && wire::decide(r.s) == 0 && css_line().state == Css::Defaults);
+    CHECK(remembered_count() == 2);
+    session_end();
+  }
+  ++groups;
+
+  // 8c. Own options, locked in: the yes waits kOwnSeconds for "Press Y for default controls", then goes;
+  //     pressed in that time, it is no for this match.
+  set(false, true);
+  {
+    Remote r;
+    session_begin(0, opponent("id:own2"), 1, true, true);
+    r.take(take_outgoing());
+    r.offer(TS);
+    CHECK(take_outgoing().empty() && css_line().state == Css::AllowedOwn && css_line().seconds == kOwnSeconds);
+    CHECK(!settled());
+    fake_now += (uint64_t)kOwnSeconds * 1000;
+    tick();
+    auto sent = r.take(take_outgoing());
+    CHECK(sent.size() == 1 && sent[0].yes);
+    session_end();
+  }
+  {
+    Remote r;
+    session_begin(0, opponent("id:own3"), 1, true, true);
+    r.take(take_outgoing());
+    r.offer(TS);
+    decline_this_match(1);
+    auto sent = r.take(take_outgoing());
+    CHECK(sent.size() == 1 && !sent[0].yes && view().peers[0].mine == Answer::NoThisMatch);
+    r.answer(true);
+    CHECK(settled() && view().word == 0 && css_line().state == Css::Defaults);
+    session_end();
+  }
+  ++groups;
+
+  // 8d. A player with none of the options on is never asked and never waits (owner 11-25).
+  set(false, false);
+  {
+    Remote r;
+    session_begin(0, opponent("id:plain"), 1, true, true);
+    r.take(take_outgoing());
+    r.offer(TS);
+    auto sent = r.take(take_outgoing());
+    CHECK(sent.size() == 1 && !sent[0].yes && view().peers[0].mine == Answer::NoUnused);
+    CHECK(settled() && view().word == 0 && css_line().state == Css::Defaults);
+    CHECK(remembered_count() == 2);
+    session_end();
+  }
+  set_test_clock(nullptr);
   ++groups;
 
   // 9. A changed setting is a new offer while not locked in, and waits while locked in.

@@ -480,6 +480,23 @@ static void squad_start_refused(void)
 /* HandleInputsOnCSS at fn_80262F44's `mnCharSel_804D6CF2 == 0 && START` test (only called when
  * mnCharSel_804D6CF2 == 0). Returns 1 when both players are ready: the caller continues into the
  * vanilla START path. */
+/* Tap jump off and tilt stick (controls_lines, below): the host's line, and the answer command. */
+#define CMD_CONTROLS 0xC9
+enum { CTL_NONE, CTL_ASKED, CTL_ALLOWED_OWN, CTL_WAITING, CTL_AGREED, CTL_DEFAULTS };
+static u8 ctl_line[8];
+static int st_controls = -1;
+
+static void controls_send(u8 action, u8 port)
+{
+    u8 q[2];
+    unsigned int got = 0;
+    q[0] = action;
+    q[1] = port;
+    if (mu_slippi_cmd(CMD_CONTROLS, q, 2, ctl_line, sizeof ctl_line, &got) != 0 || got != sizeof ctl_line) {
+        memset(ctl_line, 0, sizeof ctl_line);
+    }
+}
+
 int mu_slippi_css_inputs(unsigned int trigger)
 {
     MuSlippiMenuState* st = mu_slippi_state();
@@ -533,6 +550,24 @@ int mu_slippi_css_inputs(unsigned int trigger)
         u8 action = 1;
         mu_slippi_cmd(0xE7, &action, 1, NULL, 0, NULL);
         return 0;
+    }
+
+    /* Tap jump off and tilt stick: X allows the opponent's options, Y declines them, or Y asks for the
+     * default controls this match when they were allowed by this player's own (controls_lines). X and Y
+     * do nothing else on a connected character select; Z with them stays Z's. */
+    if (m->connection_state == MU_SLP_MM_CONNECTION_SUCCESS && (trigger & (HSD_PAD_X | HSD_PAD_Y)) &&
+        !(trigger & HSD_PAD_Z)) {
+        if (ctl_line[0] == CTL_ASKED) {
+            const int allow = (trigger & HSD_PAD_X) != 0;
+            controls_send(allow ? 1 : 2, ctl_line[1]);
+            lbAudioAx_80024030(allow ? 1 : 0);
+            return 0;
+        }
+        if (ctl_line[0] == CTL_ALLOWED_OWN && (trigger & HSD_PAD_Y)) {
+            controls_send(3, ctl_line[1]);
+            lbAudioAx_80024030(0);
+            return 0;
+        }
     }
 
     switch (m->connection_state) {
@@ -1028,6 +1063,77 @@ static void opponent_picks_line(const MuMatchState* m, char* out, size_t size)
     }
 }
 
+/* Tap jump off and tilt stick (port/runtime/host/controls.h) on the online character select, as one more
+ * step of Slippi's checklist: the host's line comes back from command 0xC9 every frame (state, the
+ * opponent's port, seconds left, their options, this player's), and X / Y answer it. */
+
+/* The font has no ASCII ? ( ): they are written as its Shift-JIS pairs (81 48, 81 69, 81 6A), as the + is.
+ * "Tilt stick", "Tap jump off and Tilt stick", "Tap jump off, Tilt stick and Auto L-cancel" */
+static int controls_names(unsigned bits, char* out, int size)
+{
+    const char* names[3];
+    int k = 0, i;
+    if (bits & MU_CONTROL_TAPJUMP_OFF) names[k++] = "Tap jump off";
+    if (bits & MU_CONTROL_TILT_STICK) names[k++] = "Tilt stick";
+    if (bits & MU_CONTROL_AUTO_LCANCEL) names[k++] = "Auto L-cancel";
+    out[0] = 0;
+    for (i = 0; i < k; i++) {
+        snprintf(out + strlen(out), size - (int) strlen(out), "%s%s",
+                 i == 0 ? "" : i == k - 1 ? " and " : ", ", names[i]);
+    }
+    return k;
+}
+
+/* Overrides the checklist's third line (and its spinner) and the D-pad hint while there is something to
+ * answer, and fills the controls line under them. Connected only; the error state shows its own lines. */
+static void controls_lines(u8 conn, const char* opp_name, const char* x_key, const char* y_key)
+{
+    char names[64], line[96];
+    int k;
+    if (conn != MU_SLP_MM_CONNECTION_SUCCESS) {
+        memset(ctl_line, 0, sizeof ctl_line);
+        if (st_controls >= 0) set_text(st_controls, "");
+        return;
+    }
+    controls_send(0, 0);
+    if (st_controls < 0) return;
+    k = controls_names(ctl_line[3], names, sizeof names);
+    switch (ctl_line[0]) {
+    case CTL_ASKED:
+        snprintf(line, sizeof line, k == 1 ? "Allow their %s\x81\x48" : "Allow their options\x81\x48", names);
+        set_text(ST_LINE3, line);
+        dt.spinner[2] = 1;
+        snprintf(line, sizeof line, "%s: %s", opp_name[0] ? opp_name : "Opponent", names);
+        set_text(st_controls, line);
+        if (ctl_line[2]) snprintf(line, sizeof line, "Press %s to allow, %s to decline \x81\x69%d\x81\x6A", x_key, y_key, ctl_line[2]);
+        else snprintf(line, sizeof line, "Press %s to allow, %s to decline", x_key, y_key);
+        set_text(ST_PRESS_D, line);
+        break;
+    case CTL_ALLOWED_OWN:
+        snprintf(line, sizeof line, k == 1 ? "Their %s: allowed" : "Their options: allowed", names);
+        set_text(ST_LINE3, line);
+        dt.spinner[2] = 2;
+        set_text(st_controls, k == 1 ? "You use it too" : "You use them too");
+        if (ctl_line[2]) snprintf(line, sizeof line, "Press %s for default controls \x81\x69%d\x81\x6A", y_key, ctl_line[2]);
+        else snprintf(line, sizeof line, "Press %s for default controls", y_key);
+        set_text(ST_PRESS_D, line);
+        break;
+    case CTL_WAITING:
+        set_text(st_controls, "Control options: waiting for an answer");
+        break;
+    case CTL_AGREED:
+        snprintf(line, sizeof line, "Options on: %s", names);
+        set_text(st_controls, line);
+        break;
+    case CTL_DEFAULTS:
+        set_text(st_controls, "Default controls this match");
+        break;
+    default:
+        set_text(st_controls, "");
+        break;
+    }
+}
+
 static void text_think(HSD_GObj* gobj)
 {
     MuSlippiMenuState* st = mu_slippi_state();
@@ -1038,7 +1144,7 @@ static void text_think(HSD_GObj* gobj)
     int updating;
     char rank_lines[6][128] = { { 0 } };
     /* The keys the prompts name: the bound key for a keyboard player, else the GameCube button. */
-    char z_key[16] = "Z", b_key[16] = "B", start_key[16] = "START", prompt[64];
+    char z_key[16] = "Z", b_key[16] = "B", start_key[16] = "START", x_key[16] = "X", y_key[16] = "Y", prompt[64];
     const char* s;
     int idx, i;
     u8 conn = m->connection_state;
@@ -1059,6 +1165,8 @@ static void text_think(HSD_GObj* gobj)
         mu_host_button_label(*ctrl_port, HSD_PAD_Z, z_key, sizeof z_key);
         mu_host_button_label(*ctrl_port, HSD_PAD_B, b_key, sizeof b_key);
         mu_host_button_label(*ctrl_port, HSD_PAD_START, start_key, sizeof start_key);
+        mu_host_button_label(*ctrl_port, HSD_PAD_X, x_key, sizeof x_key);
+        mu_host_button_label(*ctrl_port, HSD_PAD_Y, y_key, sizeof y_key);
     }
     if (doubles_teams() && conn == MU_SLP_MM_CONNECTION_SUCCESS) {
         dt.doubles_connected = 1;
@@ -1345,6 +1453,7 @@ static void text_think(HSD_GObj* gobj)
     }
 
 spinners:
+    controls_lines(conn, opp_name, x_key, y_key);
     for (i = 0, idx = ST_SPIN1; i < 3; i++, idx += 2) {
         if (dt.spinner[i] == 1) {
             GXColor c = spinner_wait_color;
@@ -1418,6 +1527,9 @@ void mu_slippi_css_text_init(void)
         }
     }
     st_opp_picks = create_subtext(t, &color_white, 0.35f, -130.0f, -240.0f);  /* their picks */
+    /* Tap jump off and tilt stick: what the match plays, or who asks (controls_lines). */
+    st_controls = create_subtext(t, &color_gray, 0.35f, 70.0f,
+                                 mu_slippi_state()->mode == MU_SLP_MODE_RANKED ? 118.0f : 172.5f);
 }
 
 /* ---- chat (mu_slippi_chat.c): the CSS data table as SlippiCSS.dat reads it ---- */

@@ -2368,6 +2368,7 @@ constexpr uint8_t CMD_VS_PRO = 0xC8;   // VS Mode: the pro each port's CPU plays
 constexpr uint8_t CMD_FRAME_EVENT = 0xE8;   // replay frame data for the coach (shim/mu_framedata.c, host/replay_coach.h)
 constexpr uint8_t CMD_REPLAY_DEFENSE = 0xE9;   // a takeover's opponents once the game leaves the replay (shim/mu_replay_defend.c)
 constexpr uint8_t CMD_ZELDA_AS_SHEIK = 0xDE;  // a human's Zelda starts as Sheik (shim/mu_slippi_css.c): offline only; upstream 0xE6, CMD_YOUGAME_FRIENDS_MENU in this build
+constexpr uint8_t CMD_CONTROLS = 0xC9;   // tap jump off and tilt stick: the character select's line and its answers (controls.h)
 constexpr uint8_t CMD_CSS_FRAME = 0xDA;  // every character select frame (shim/mu_slippi_css.c): the easter egg; upstream 0xEC, MU_SQUAD_COMMAND in this build
 constexpr uint8_t CMD_ARENA_HAND = 0xDB;  // the online CSS hand (shim/mu_slippi_css.c): an arena room's side panels; upstream 0xEF, CMD_YOUGAME_MENU in this build
 constexpr uint8_t CMD_ARENA_PICK = 0xDC;  // the online CSS pick (shim/mu_slippi_sss.c): an arena room's portraits; upstream 0xEE, MU_MAKER_COMMAND in this build
@@ -3020,6 +3021,16 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           return true;
         }
         if (c == CMD_CSS_FRAME) slippi::online::gecko_pump();   // Gecko codes for the match (gecko_session.h)
+        if (c == CMD_CONTROLS && n == 2) {
+          // Tap jump off and tilt stick on the online character select (shim/mu_slippi_css.c): p[0] 0 asks for
+          // the checklist line, 1 allows port p[1]'s options, 2 declines them, 3 asks for defaults this match.
+          if (p[0] == 1 || p[0] == 2) controls::answer(p[1], p[0] == 1);
+          else if (p[0] == 3) controls::decline_this_match(p[1]);
+          const controls::CssLine line = controls::css_line();
+          reply = {(uint8_t)line.state, (uint8_t)(line.port < 0 ? 0xFF : line.port), (uint8_t)line.seconds,
+                   (uint8_t)line.theirs, (uint8_t)line.mine, 0, 0, 0};
+          return true;
+        }
         if (c == CMD_CSS_FRAME && n == 0) { walter_egg::set_camera(nullptr); reply.push_back(walter_egg::css_frame()); return true; }
         if (c == CMD_CSS_FRAME && n == 13 * sizeof(float)) {   // with the menu camera (shim mu_menu_camera): the C-stick's turn
           float camera[13];

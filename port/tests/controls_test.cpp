@@ -86,14 +86,17 @@ int main() {
     policy::Remembered none;
     CHECK(policy::auto_answer(0, 0, none, false) == policy::Auto::Yes);
     CHECK(policy::auto_answer(DA, 0, none, false) == policy::Auto::Yes);                // a sub-choice alone asks nothing
-    CHECK(policy::auto_answer(TS, 0, none, false) == policy::Auto::Ask);
+    CHECK(policy::auto_answer(TS, 0, none, false) == policy::Auto::NoUnused);           // no options of its own: never asked
+    CHECK(policy::auto_answer(TS, TJ, none, false) == policy::Auto::Ask);                // both use options: asked
+    CHECK(policy::auto_answer(TS, MU_CONTROL_AUTO_LCANCEL, none, false) == policy::Auto::Ask);
     CHECK(policy::auto_answer(TS | DA, TS, none, false) == policy::Auto::YesOwn);       // own tilt stick covers theirs
     CHECK(policy::auto_answer(TS | TJ, TS, none, false) == policy::Auto::Ask);          // tap jump off is not covered
     CHECK(policy::auto_answer(TS, TS, none, true) == policy::Auto::No);
     policy::Remembered yes = policy::remember(none, TS | IT, true);
     CHECK(yes.allowed == TS && yes.declined == 0);
     CHECK(policy::auto_answer(TS, 0, yes, false) == policy::Auto::Yes);
-    CHECK(policy::auto_answer(TS | TJ, 0, yes, false) == policy::Auto::Ask);            // something new: asked
+    CHECK(policy::auto_answer(TS | TJ, LC, yes, false) == policy::Auto::Ask);           // something new: asked
+    CHECK(policy::auto_answer(TS | TJ, 0, yes, false) == policy::Auto::NoUnused);       // ... unless this player uses nothing
     policy::Remembered no = policy::remember(yes, TS | TJ, false);
     CHECK(no.allowed == TS && no.declined == TJ);                                       // the old yes stays
     CHECK(policy::auto_answer(TS | TJ, 0, no, false) == policy::Auto::No);

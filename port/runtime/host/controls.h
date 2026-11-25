@@ -87,7 +87,11 @@ void match_started();
 void match_ended();
 
 // ---- the character select and the settings panel
-enum class Answer { None, Ask, Yes, YesOwn, No, NoLocked, NoThisMatch };
+enum class Answer { None, Ask, Yes, YesOwn, No, NoUnused, NoLocked, NoThisMatch };
+// The short pause before a match (owner 11-25), only when both sides use the options: a question asked of
+// a locked-in player waits this long for an answer (then it is no, this match only), and an own-options
+// yes waits this long for "Press Y for defaults" before it is sent.
+constexpr int kAskSeconds = 8, kOwnSeconds = 3;
 struct PeerView {
   int port = -1;
   std::string name;
@@ -108,6 +112,18 @@ View view();
 void answer(int port, bool allow);
 // The own-options notice's button, and the settings panel's: no for this match only.
 void decline_this_match(int port);
+// The online character select's checklist line (sourceport/game/shim/mu_slippi_css.c, command 0xC9).
+enum class Css : uint8_t { None, Asked, AllowedOwn, Waiting, Agreed, Defaults };
+struct CssLine {
+  Css state = Css::None;
+  int port = -1;         // the opponent it is about
+  int seconds = 0;       // left to answer (Asked) or to say "defaults" (AllowedOwn); 0 none
+  unsigned theirs = 0;   // their main options (Asked, AllowedOwn), everyone's (Agreed)
+  unsigned mine = 0;     // this player's main options
+};
+CssLine css_line();
+// Tests only: the clock the pause is measured on (milliseconds); null restores the steady clock.
+void set_test_clock(uint64_t (*now_ms)());
 // "Tap jump off, Tilt stick (dash attack, light throws), Auto L-cancel"; "default controls" for 0.
 std::string describe(unsigned bits);
 

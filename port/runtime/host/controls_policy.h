@@ -50,8 +50,10 @@ constexpr unsigned main_bits(unsigned bits) {
 
 // How this player answers an offer before asking anyone (owner: "your own options on counts as
 // yes, with a notice and a way to turn it off for the match"; remembered answers are never asked
-// twice). Ask means the character select asks.
-enum class Auto { Yes, YesOwn, No, Ask };
+// twice). Ask means the character select asks. A player who has none of the options on is never
+// asked and never waits (owner 11-25: "it only needs a short pause if both players have either option
+// enabled"): that is a no, and the match plays the default controls.
+enum class Auto { Yes, YesOwn, No, NoUnused, Ask };
 struct Remembered { unsigned allowed = 0, declined = 0; };
 constexpr Auto auto_answer(unsigned offered, unsigned own_offered, Remembered remembered, bool not_this_match) {
   const unsigned want = main_bits(offered);
@@ -60,6 +62,7 @@ constexpr Auto auto_answer(unsigned offered, unsigned own_offered, Remembered re
   if ((want & ~remembered.allowed) == 0) return Auto::Yes;
   if (want & remembered.declined) return Auto::No;
   if ((want & ~main_bits(own_offered)) == 0) return Auto::YesOwn;
+  if (main_bits(own_offered) == 0) return Auto::NoUnused;
   return Auto::Ask;
 }
 

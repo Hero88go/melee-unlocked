@@ -5140,75 +5140,6 @@ static void draw_gecko_offer_panel() {
   ImGui::End();
 }
 
-// Tap jump off and tilt stick (controls.h) on the online character select: an opponent's options this
-// player has not answered (Allow / Decline, remembered for that opponent), a short notice when they were
-// allowed because this player uses the same ones (with "Not this match"), and one line saying what the
-// match plays. The game has the controller here (and Slippi's chat has the D-pad), so the buttons take
-// the mouse; the same answers are in Settings > Game, which a controller can reach.
-static void draw_controls_panel() {
-  const controls::View v = controls::view();
-  if (!v.active || slippi::online::is_online_match() || !slippi::online::in_online_menus()) return;
-  static std::map<int, std::pair<unsigned, double>> own_seen;   // port -> (bits, when the notice appeared)
-  const double now = ImGui::GetTime();
-  const ImVec2 display = ImGui::GetIO().DisplaySize;
-  std::vector<const controls::PeerView*> asking, own;
-  for (const auto& peer : v.peers) {
-    if (peer.mine == controls::Answer::Ask) asking.push_back(&peer);
-    if (peer.mine == controls::Answer::YesOwn) {
-      auto& seen = own_seen[peer.port];
-      if (seen.first != peer.bits) seen = {peer.bits, now};
-      if (now - seen.second < 10.0) own.push_back(&peer);
-    }
-  }
-  const std::string chord = host::settings_shortcut::chord_name(host::settings_shortcut::kSettingsChord);
-  if (!asking.empty() || !own.empty()) {
-    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.30f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(std::min(560.0f, display.x - 40.0f), 0.0f), ImGuiCond_Always);
-    ImGui::Begin("Control options##online_controls", nullptr,
-                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoFocusOnAppearing);
-    for (const auto* peer : asking) {
-      ImGui::PushID(peer->port);
-      const std::string who = peer->name.empty() ? "Your opponent" : peer->name;
-      ImGui::TextWrapped("%s wants to play with: %s.", who.c_str(), controls::describe(peer->bits).c_str());
-      ImGui::TextWrapped("Allow it? Your answer is remembered for this opponent.");
-      if (ImGui::Button("Allow")) controls::answer(peer->port, true);
-      ImGui::SameLine();
-      if (ImGui::Button("Decline")) controls::answer(peer->port, false);
-      ImGui::PopID();
-      ImGui::Separator();
-    }
-    if (!asking.empty())
-      ImGui::TextDisabled("Controller: Settings (%s) > Game. Locking in without answering keeps the default controls.", chord.c_str());
-    for (const auto* peer : own) {
-      ImGui::PushID(1000 + peer->port);
-      const std::string who = peer->name.empty() ? "Your opponent" : peer->name;
-      ImGui::TextWrapped("%s plays with %s. Allowed because you use it too.", who.c_str(), controls::describe(peer->bits).c_str());
-      if (ImGui::Button("Not this match")) controls::decline_this_match(peer->port);
-      ImGui::PopID();
-    }
-    ImGui::End();
-  }
-  // What the match will play, as it stands now.
-  bool anything = v.mine != 0;
-  for (const auto& peer : v.peers) anything |= peer.bits != 0;
-  if (!anything) return;
-  std::string line;
-  if (v.word) {
-    line = "Control options this match:";
-    for (int port = 0; port < 4; ++port)
-      if (const unsigned bits = mu_controls_slot(v.word, port))
-        line += " P" + std::to_string(port + 1) + " " + controls::describe(bits) + ".";
-  } else {
-    line = "Default controls this match unless everyone agrees.";
-  }
-  ImDrawList* dl = ImGui::GetForegroundDrawList();
-  const ImVec2 size = ImGui::CalcTextSize(line.c_str());
-  const ImVec2 at(display.x * 0.5f - size.x * 0.5f, display.y - size.y - 14.0f);
-  dl->AddRectFilled(ImVec2(at.x - 10, at.y - 4), ImVec2(at.x + size.x + 10, at.y + size.y + 4), IM_COL32(10, 12, 24, 210), 6.0f);
-  dl->AddText(at, IM_COL32(235, 240, 250, 255), line.c_str());
-}
-
 static void draw_arena_panel(RenderOptions& options, const host::PadState* pads, const host::PadState& followed, bool have_followed) {
   // The local player's controller: any port can drive the online select's hand (a controller in
   // port 2 moves it while port 1 reads as connected and idle, as with an adapter), so the panel
@@ -12868,7 +12799,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #ifndef MELEE_NO_SLIPPI
   if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active()) draw_arena_panel(options, pads, pad, have_pad);
   if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active()) draw_gecko_offer_panel();
-  if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active()) draw_controls_panel();
 #endif
   if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active() && walter_egg::active()) {
     const ImVec2 screen = ImGui::GetIO().DisplaySize;

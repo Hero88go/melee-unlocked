@@ -99,6 +99,8 @@ int mu_slippi_yougame_pick() { return 0; }   // the app: never a launcher YouGam
 void mu_slippi_yougame_restart_older() { std::abort(); }
 // The Arena test hook in the CSS (MELEE_TEST_ARENA_PRESS_START): never set here.
 int test_skip_code_entry; const char* mu_test_getenv(const char*) { return nullptr; } void OSReport(const char*, ...) {}
+// Tap jump off and tilt stick: X / Y answer only on a connected select, never while searching or in an error.
+enum { CTL_NONE, CTL_ASKED, CTL_ALLOWED_OWN }; u8 ctl_line[8]; void controls_send(u8, u8) { std::abort(); }
 int mu_slippi_cmd(unsigned cmd,const void* p,unsigned,void*,unsigned,unsigned*) {
  if(cmd!=0xE7 || *(const u8*)p!=1)std::abort();++requests;return 0;
 }

@@ -1889,7 +1889,7 @@ bool controls_expected() {
 }
 // When the exchange began waiting to settle with both sides ready (0: not waiting).
 uint64_t g_controls_wait_since = 0;
-constexpr uint64_t kControlsSettleMs = 10000;
+constexpr uint64_t kControlsSettleMs = 20000;   // longer than the answer window (controls::kAskSeconds) and the own-options hold
 
 // Tap jump off and tilt stick (controls.h): which offer each in-game port plays with. Without a Friends
 // lobby setup each person's machine plays its own port. With one, a person's seat plays its own
