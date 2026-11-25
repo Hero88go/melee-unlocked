@@ -2626,6 +2626,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 6);
       else if (key == "lcancel_success_flash") saved_lcancel_success = std::clamp(std::stoi(value), 0, 2);
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
+      else if (key == "melee103") { controls::Settings c = controls::settings(); c.melee103 = std::atoi(value.c_str()) != 0; controls::set_settings(c); }
       else if (key == "tapjumpoff" || key == "tiltstick" || key == "tiltdash" || key == "tiltitem") {
         controls::Settings c = controls::settings();
         const bool on = value == "1";
@@ -5397,6 +5398,7 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\ntiltstick " << (controls::settings().tilt_stick ? 1 : 0)
        << "\ntiltdash " << (controls::settings().tilt_dash_attack ? 1 : 0)
        << "\ntiltitem " << (controls::settings().tilt_item_tilt_throw ? 1 : 0)
+       << "\nmelee103 " << (controls::settings().melee103 ? 1 : 0)
        << "\npalstockicons " << (gecko::option_pal_stock_icons ? 1 : 0)
        << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
        << "\nscreenshake " << gecko::option_screen_shake_percent
@@ -5834,7 +5836,7 @@ static void game_mods_panel(const RenderOptions& options) {
     if (settings_widgets::SmallButton("Open official page")) mods::open_official_page(kind);
     ImGui::PopID();
   };
-  if (!have_te) missing(mods::Kind::Te, "20XX Tournament Edition");
+  if (!have_te) missing(mods::Kind::Te, "20XX TE Training Pack");
   if (!have_tmce) missing(mods::Kind::TmCe, "Training Mode CE");
   for (const auto& line : view.result.notes) ImGui::TextWrapped("%s", line.c_str());
   for (const auto& line : view.choice_notes) ImGui::TextWrapped("%s", line.c_str());
@@ -9843,7 +9845,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             ImGui::TextWrapped("Put your Training Mode CE disc in Mods, turn it on above and restart.");
           ImGui::Spacing();
           ImGui::Separator();
-          ImGui::TextUnformatted("20XX Tournament Edition");
+          ImGui::TextUnformatted("20XX TE Training Pack");
           if (!mod_status.te_owned) {
             ImGui::TextWrapped("Put your 20XX TE save (.gci) in Mods and turn it on above "
                                "to use its native features here.");
@@ -11235,6 +11237,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("The C-stick while holding an item. Smash throw: as in Melee.\n"
                           "Light throw: the gentle throw A gives, toward the C-stick.");
       ImGui::EndDisabled();
+      if (settings_toggle("20XX Melee 1.03", &c.melee103)) changed_controls = true;
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("20XX Melee 1.03's controller fix ruleset by Hax$ and Altimor, as its netplay\n"
+                          "disc plays it: 1.0 cardinals, smash DI, dashback, shield drop, crouch and\n"
+                          "tumble fixes. It replaces UCF for the match. Online it needs every player's\n"
+                          "OK (YouGame Unranked, Friends, Doubles); never Ranked or Slippi.\n"
+                          "In memory of Hax$.");
       ImGui::EndDisabled();
       if (changed_controls) {
         controls::set_settings(c);

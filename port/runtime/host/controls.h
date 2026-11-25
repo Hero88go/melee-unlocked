@@ -26,6 +26,7 @@ struct Settings {
   bool tilt_stick = false;
   bool tilt_dash_attack = true;        // tilt stick in a dash: dash attack (as Ultimate), else forward smash
   bool tilt_item_tilt_throw = false;   // tilt stick with an item: light throw, else Melee's smash throw
+  bool melee103 = false;               // 20XX Melee 1.03 ruleset (saved as melee103)
 };
 Settings settings();
 void set_settings(const Settings& s);
@@ -60,6 +61,7 @@ struct Player {
   int port = -1;
   std::string key;    // what answers are remembered under (account id, else connect code, else name)
   std::string name;   // shown on the character select
+  bool melee103 = false;   // its build plays 20XX Melee 1.03 (MU_BUILD_CAPS4_20XX103): offered only if every peer does
 };
 // A connection where an exchange runs (controls_policy::exchange, every peer announced it).
 // ready: this player is already locked in (the exchange can start after the lock-in).

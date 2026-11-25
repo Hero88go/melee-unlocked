@@ -116,11 +116,15 @@ unsigned own_bits_locked() {
   if (s.tilt_stick) bits |= MU_CONTROL_TILT_STICK;
   if (s.tilt_dash_attack) bits |= MU_CONTROL_TILT_DASH_ATTACK;
   if (s.tilt_item_tilt_throw) bits |= MU_CONTROL_TILT_ITEM_TILT_THROW;
+  if (s.melee103) bits |= MU_CONTROL_20XX103;
   return mu_controls_normalize(bits);
 }
 
 unsigned own_offer_locked() {
-  return policy::offer_bits(own_bits_locked(), lcancel::automatic_enabled() && !host::gameplay::vanilla_only(), g.mode, g.yougame);
+  unsigned bits = policy::offer_bits(own_bits_locked(), lcancel::automatic_enabled() && !host::gameplay::vanilla_only(), g.mode, g.yougame);
+  for (const auto& p : g.peers)
+    if (!p.who.melee103) bits &= ~MU_CONTROL_20XX103;   // a build without 20XX would play the match without it
+  return bits;
 }
 
 void send_answer_locked(Peer& p, bool yes) {
@@ -486,6 +490,7 @@ std::string describe(unsigned bits) {
     add(tilt.c_str());
   }
   if (bits & MU_CONTROL_AUTO_LCANCEL) add("Auto L-cancel");
+  if (bits & MU_CONTROL_20XX103) add("20XX Melee 1.03");
   return out.empty() ? std::string("default controls") : out;
 }
 

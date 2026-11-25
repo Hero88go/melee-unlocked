@@ -2821,6 +2821,7 @@ void controls_pump() {
       if (!rb.controls || !rb.setup_hash || rb.port > 3) { capable = false; continue; }
       controls::Player player;
       player.port = rb.port;
+      player.melee103 = rb.melee103;
       for (const auto& u : info) {
         if (u.port != rb.port + 1) continue;
         player.key = !u.uid.empty() ? "id:" + u.uid : !u.connect_code.empty() ? "code:" + u.connect_code : std::string();

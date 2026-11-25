@@ -9,6 +9,8 @@
 //  - never in a Slippi match (Unranked, Direct, Teams, Party), whoever is on the other side;
 //  - automatic L-cancel: as before in Direct (Slippi Direct and YouGame Friends) and offline, and
 //    now also in YouGame Unranked when the opponent agrees.
+//  - 20XX Melee 1.03 (owner 11-25): one ruleset, agreed like the others, in the same YouGame modes
+//    (Unranked, Friends, lobby and Doubles, Arena rooms) and offline; never Ranked, never Slippi.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "../abi/mu_controls.h"
@@ -21,7 +23,7 @@ constexpr unsigned allowed_bits(int mode, bool yougame) {
   if (mode < 0) return MU_CONTROL_GAME_BITS;
   if (!yougame) return 0u;
   switch (mode) {
-    case 0: return MU_CONTROL_TILT_STICK | MU_CONTROL_TILT_DASH_ATTACK | MU_CONTROL_TILT_ITEM_TILT_THROW;
+    case 0: return MU_CONTROL_TILT_STICK | MU_CONTROL_TILT_DASH_ATTACK | MU_CONTROL_TILT_ITEM_TILT_THROW;   // no 20XX
     case 1: case 2: case 3: return MU_CONTROL_GAME_BITS;
     default: return 0u;   // Party is only ever Slippi's
   }
@@ -45,7 +47,7 @@ inline unsigned offer_bits(unsigned own_game_bits, bool own_auto_lcancel, int mo
 
 // The choices that need an answer: the sub-choices of tilt stick ride with it.
 constexpr unsigned main_bits(unsigned bits) {
-  return bits & (MU_CONTROL_TAPJUMP_OFF | MU_CONTROL_TILT_STICK | MU_CONTROL_AUTO_LCANCEL);
+  return bits & (MU_CONTROL_TAPJUMP_OFF | MU_CONTROL_TILT_STICK | MU_CONTROL_AUTO_LCANCEL | MU_CONTROL_20XX103);
 }
 
 // How this player answers an offer before asking anyone (owner: "your own options on counts as

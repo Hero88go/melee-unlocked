@@ -223,3 +223,15 @@ void mu_controls_hud_init(void)
     proc = GObj_Create(14, 15, 0);
     HSD_GObj_SetupProc(proc, ctl_think, 0);
 }
+
+/* 20XX Melee 1.03's ruleset (shim/mu_20xx103.c): on for the whole match when any slot carries the
+ * bit. Offline that is this PC's choice for everyone; online the word only has it when every player
+ * agreed. A TM-CE exercise has no word (mu_controls_match_start). */
+int mu_20xx103_on(void)
+{
+    int slot;
+    if (mu_controls_word == 0) return 0;
+    for (slot = 0; slot < 4; slot++)
+        if (mu_controls_slot(mu_controls_word, slot) & MU_CONTROL_20XX103) return 1;
+    return 0;
+}

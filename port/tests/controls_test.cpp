@@ -72,7 +72,38 @@ int main() {
 
   // 4. Normalizing and the per-slot word.
   CHECK(mu_controls_normalize(DA | IT) == 0);
-  CHECK(mu_controls_normalize(TS | DA | IT | 0xE0) == (TS | DA | IT));
+  CHECK(mu_controls_normalize(TS | DA | IT | 0xC0) == (TS | DA | IT));
+  CHECK(mu_controls_normalize(MU_CONTROL_20XX103 | 0xC0) == MU_CONTROL_20XX103);
+  ++groups;
+
+  // 4b. 20XX Melee 1.03 (owner 11-25): offline and the YouGame consent modes, never Ranked or Slippi;
+  // it is one of the choices that need an answer, and own-on answers yes like the others.
+  {
+    const unsigned M = MU_CONTROL_20XX103;
+    CHECK(policy::allowed_bits(-1, false) & M);
+    CHECK((policy::allowed_bits(0, true) & M) == 0);
+    for (int mode = 1; mode <= 3; ++mode) CHECK(policy::allowed_bits(mode, true) & M);
+    for (int mode = 0; mode <= 4; ++mode) CHECK((policy::allowed_bits(mode, false) & M) == 0);
+    CHECK((policy::allowed_bits(4, true) & M) == 0);
+    CHECK(policy::main_bits(M | DA) == M);
+    CHECK(policy::offer_bits(M | TS, false, 1, true) == (M | TS));
+    CHECK(policy::offer_bits(M | TS, false, 0, true) == TS);
+    CHECK(policy::auto_answer(M, M, {}, false) == policy::Auto::YesOwn);
+    CHECK(policy::auto_answer(M, TS, {}, false) == policy::Auto::Ask);
+    CHECK(policy::auto_answer(M, 0, {}, false) == policy::Auto::NoUnused);
+    // The wire asks for an answer to 20XX like the others: nobody plays it without every OK.
+    auto s = players({0, 1});
+    offer(s, 0, 1, M);
+    offer(s, 1, 1, 0);
+    CHECK(!wire::settled(s) && wire::decide(s) == 0);
+    answer(s, 1, 0, 1, false);
+    CHECK(wire::settled(s) && wire::decide(s) == 0);
+    auto y = players({0, 1});
+    offer(y, 0, 1, M);
+    offer(y, 1, 1, 0);
+    answer(y, 1, 0, 1, true);
+    CHECK(wire::settled(y) && mu_controls_slot(wire::decide(y), 0) == M);
+  }
   unsigned word = 0;
   word = mu_controls_with_slot(word, 0, TJ);
   word = mu_controls_with_slot(word, 3, TS | DA);

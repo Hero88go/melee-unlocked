@@ -51,7 +51,7 @@ std::vector<CatalogMod> default_catalog() {
   "mods": [
     {
       "id": "te",
-      "name": "20XX Tournament Edition",
+      "name": "20XX TE Training Pack",
       "credits": "By Dan Salvato and contributors",
       "license": "MPL-2.0",
       "page": "https://github.com/dansalvato/20XXTE/releases/tag/v2d-rev4",

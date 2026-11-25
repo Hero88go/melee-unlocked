@@ -1071,11 +1071,12 @@ static void opponent_picks_line(const MuMatchState* m, char* out, size_t size)
  * "Tilt stick", "Tap jump off and Tilt stick", "Tap jump off, Tilt stick and Auto L-cancel" */
 static int controls_names(unsigned bits, char* out, int size)
 {
-    const char* names[3];
+    const char* names[4];
     int k = 0, i;
     if (bits & MU_CONTROL_TAPJUMP_OFF) names[k++] = "Tap jump off";
     if (bits & MU_CONTROL_TILT_STICK) names[k++] = "Tilt stick";
     if (bits & MU_CONTROL_AUTO_LCANCEL) names[k++] = "Auto L-cancel";
+    if (bits & MU_CONTROL_20XX103) names[k++] = "20XX Melee 1" "\x81\x44" "03";   /* full-width period: the font draws ASCII "." like a comma */
     out[0] = 0;
     for (i = 0; i < k; i++) {
         snprintf(out + strlen(out), size - (int) strlen(out), "%s%s",
