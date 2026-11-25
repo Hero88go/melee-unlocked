@@ -424,11 +424,11 @@ const void* mu_ak_cpu_list(mu_u32 raw)
     const mu_u32 offset = raw & 0x3FFFFFFFu;
 
     if (raw == 0 || (raw & 0x80000000u) != 0) {
-        return (const void*) (mu_uptr) raw;
+        return (const void*) MU_WIDEN(raw);
     }
     /* Not a game address: the console reads RAM at the offset while it is inside its 24 MB, and
      * 0 past it. */
-    return offset < 0x01800000u ? (const void*) (mu_uptr) (0x80000000u + offset) : (const void*) zeros;
+    return offset < 0x01800000u ? (const void*) MU_WIDEN(0x80000000u + offset) : (const void*) zeros;
 }
 
 int mu_ak_mex_internal(int kind)

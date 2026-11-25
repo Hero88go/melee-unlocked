@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The hardened runtime's one exception the game needs: elf_loader.cpp maps melee_game.so (a
+	     Linux ELF, sealed in the bundle's resources) into anonymous memory and makes its code pages
+	     executable with mprotect. Nothing else is relaxed; library validation stays on. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

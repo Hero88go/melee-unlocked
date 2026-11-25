@@ -8,6 +8,7 @@ describe the same match, lets them play it on the loopback interface and compare
     python tools/p2p_pair.py --lag-ms 40 --jitter-ms 5 --loss 1
     python tools/p2p_pair.py --chars 2/0:9/1 --stage 32 --seed 1234abcd --frames 6000
     python tools/p2p_pair.py --games 3                         # three games over one connection
+    python tools/p2p_pair.py --exe A --exe-p2 B                # two different builds, one per slot
 
 Slot 0 listens on --base-port and slot 1 on the next port. With any of --lag-ms, --jitter-ms,
 --loss, --reorder or --dup, each game dials tools/net_fault_proxy.py instead (two more ports), which
@@ -147,6 +148,7 @@ def parse_result(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=DEFAULT_EXE, help="the no-Slippi melee_source.exe (default %(default)s)")
+    ap.add_argument("--exe-p2", help="a different build for P2 (slot 1), to check two builds stay in sync (default: --exe)")
     ap.add_argument("--iso")
     ap.add_argument("--frames", type=int, default=0, help="retraces each instance runs before it exits (default 6000 per game)")
     ap.add_argument("--games", type=int, default=1, help="games played over the one connection (default %(default)s)")
@@ -176,11 +178,14 @@ def main():
         args.frames = 6000 * args.games
 
     iso = require_iso(args.iso)
-    exe = Path(args.exe)
-    if not exe.is_absolute():
-        exe = ROOT / exe
-    if not exe.is_file():
-        sys.exit(f"missing {exe}")
+    exes = []
+    for path in (args.exe, args.exe_p2 or args.exe):
+        exe = Path(path)
+        if not exe.is_absolute():
+            exe = ROOT / exe
+        if not exe.is_file():
+            sys.exit(f"missing {exe}")
+        exes.append(exe)
     script = None
     if not args.no_script:
         script = Path(args.script)
@@ -223,7 +228,7 @@ def main():
                 stale.unlink()
             except OSError:
                 pass
-        cmd = [str(exe), "--iso", str(iso), "--hidden", "--volume", "0", "--no-music", "--frames", str(args.frames),
+        cmd = [str(exes[i]), "--iso", str(iso), "--hidden", "--volume", "0", "--no-music", "--frames", str(args.frames),
                "--card-dir", str(d / "card"), "--settings-path", str(d / "settings.ini"), "--log-file", str(d / "port.log"),
                "--p2p-port", str(game_ports[i]), "--p2p-peer", f"127.0.0.1:{dial[i]}", "--p2p-slot", str(i),
                "--p2p-chars", args.chars, "--p2p-stage", args.stage, "--p2p-seed", args.seed, "--p2p-delay", str(args.delay),
@@ -235,7 +240,7 @@ def main():
         cmd += (args.extra_p1 if i == 0 else args.extra_p2).split()
         cmd += args.extra
         log = open(d / "log.txt", "w")
-        p = subprocess.Popen(cmd, cwd=exe.parent, stdout=log, stderr=subprocess.STDOUT, env=env)
+        p = subprocess.Popen(cmd, cwd=exes[i].parent, stdout=log, stderr=subprocess.STDOUT, env=env)
         procs.append((p, log))
         print(f"P{i + 1} pid {p.pid} slot {i} UDP {game_ports[i]} -> 127.0.0.1:{dial[i]}")
         if i == 0:

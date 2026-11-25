@@ -18,7 +18,16 @@
 #include <cerrno>
 #include <climits>
 #include <unistd.h>
+#if defined(__x86_64__)
 #include <x86intrin.h>
+#else
+// AArch64 (the Apple silicon Mac): the virtual counter stands in for the TSC. Like an invariant TSC it
+// ticks at a fixed rate, which the callers measure against the monotonic clock themselves.
+inline unsigned long long __rdtsc() { unsigned long long v; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v)); return v; }
+// x86intrin.h's rotates (the count wraps at 32, as there).
+inline unsigned int _rotl(unsigned int v, int s) { return __builtin_rotateleft32(v, (unsigned int)s); }
+inline unsigned int _rotr(unsigned int v, int s) { return __builtin_rotateright32(v, (unsigned int)s); }
+#endif
 
 #define WINAPI
 #define CALLBACK
@@ -220,7 +229,11 @@ inline LONG InterlockedDecrement(volatile LONG* v) { return __atomic_sub_fetch(v
 inline LONG InterlockedExchange(volatile LONG* v, LONG x) { return __atomic_exchange_n(v, x, __ATOMIC_SEQ_CST); }
 inline LONG InterlockedCompareExchange(volatile LONG* v, LONG x, LONG cmp) {
   __atomic_compare_exchange_n(v, &cmp, x, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); return cmp; }
+#if defined(__x86_64__)
 inline void YieldProcessor() { _mm_pause(); }
+#else
+inline void YieldProcessor() { __asm__ volatile("isb"); }   // a short wait; Apple's cores ignore "yield"
+#endif
 inline void MemoryBarrier() { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
 
 // ---- modules ----

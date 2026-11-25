@@ -1,7 +1,9 @@
-"""Unsigned M3 app; package existing inputs only, never fetch/build game or dependencies."""
+"""The app bundle, signed ad hoc for this Mac; package existing inputs only, never fetch/build game or
+dependencies. port/mac/sign_app.py signs it for other Macs."""
 from pathlib import Path
-from build_full import GAME_LIBRARY, build_dir
-import argparse, hashlib, json, os, plistlib, runpy, shutil, subprocess, sys
+from build_full import GAME_LIBRARY, arch_env, build_dir
+import sign_app
+import argparse, hashlib, json, os, plistlib, re, runpy, shutil, struct, subprocess, sys
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT/'build-mac-full'
 APP = BUILD/'MeleeUnlocked.app'
@@ -16,6 +18,36 @@ def copy(src, dst):
         shutil.copytree(src, dst, symlinks=False, ignore=shutil.ignore_patterns('.git*', 'README.md'))
     else:
         shutil.copy2(src, dst, follow_symlinks=True)
+
+def bundle_executable(src, dst):
+    """The host binary, keeping only rpaths inside the bundle: the build's own rpath to ../deps finds SDL
+    for the unbundled binary, and would name this machine's folders in every shipped copy."""
+    copy(src, dst)
+    listing = subprocess.run(['/usr/bin/otool', '-l', str(dst)], check=True, capture_output=True, text=True).stdout.split('\n')
+    for i, line in enumerate(listing):
+        if line.strip() == 'cmd LC_RPATH':
+            path = re.fullmatch(r'\s*path (.*) \(offset \d+\)', listing[i + 2]).group(1)
+            if not path.startswith('@'):
+                subprocess.run(['/usr/bin/install_name_tool', '-delete_rpath', path, str(dst)], check=True,
+                               stderr=subprocess.DEVNULL)
+
+def app_icon(dst):
+    """MeleeUnlocked.icns from the Windows icon's largest picture, on the macOS icon grid (make_icon.swift)."""
+    ico = (ROOT/'port/app/melee_unlocked.ico').read_bytes()
+    entries = [struct.unpack_from('<BBBBHHII', ico, 6 + 16 * i) for i in range(struct.unpack_from('<H', ico, 4)[0])]
+    *_, size, offset = max(entries, key=lambda e: e[0] or 256)
+    picture = ico[offset:offset + size]
+    if not picture.startswith(b'\x89PNG'):
+        raise SystemExit('port/app/melee_unlocked.ico: the largest picture is not a PNG')
+    cached = BUILD/'icon'/(hashlib.sha256(ico + (ROOT/'port/mac/make_icon.swift').read_bytes()).hexdigest()[:16] + '.icns')
+    if not cached.is_file():
+        shutil.rmtree(BUILD/'icon', ignore_errors=True)
+        (BUILD/'icon').mkdir(parents=True)
+        (BUILD/'icon/picture.png').write_bytes(picture)
+        subprocess.run(['swift', str(ROOT/'port/mac/make_icon.swift'), str(BUILD/'icon/picture.png'),
+                        str(BUILD/'icon/MeleeUnlocked.iconset')], check=True)
+        subprocess.run(['iconutil', '-c', 'icns', str(BUILD/'icon/MeleeUnlocked.iconset'), '-o', str(cached)], check=True)
+    copy(cached, dst)
 
 def main():
     global BUILD, APP
@@ -50,7 +82,8 @@ def main():
         shutil.rmtree(APP)
     contents = APP/'Contents'
     res = contents/'Resources'
-    copy(BUILD/'MeleeUnlocked', contents/'MacOS/MeleeUnlocked')
+    bundle_executable(BUILD/'MeleeUnlocked', contents/'MacOS/MeleeUnlocked')
+    app_icon(res/'MeleeUnlocked.icns')
     copy(ROOT.parent/'deps/sdl2/lib/libSDL2-2.0.0.dylib', contents/'Frameworks/libSDL2-2.0.0.dylib')
     copy(GAME_LIBRARY,res/'melee_game.so')
     if (ROOT/'spike/shader-seed').is_dir():
@@ -100,15 +133,20 @@ def main():
                 raise SystemExit('Unsupported source in Linux release license list')
             for pair in node.iter.elts:
                 copy(rooted_path(pair.elts[0]), res/'licenses'/ast.literal_eval(pair.elts[1]))
-    (res/'EXPERIMENTAL.txt').write_text('M7 0.9.56 full macOS host spike; unsigned. See port/mac/README.md for measured limitations.\n')
+    (res/'EXPERIMENTAL.txt').write_text('macOS build. See port/mac/README.md for measured limitations.\n')
     staging = 'STAGING ONLY: STAGING AGENT-TEST BUILD. NOT FOR PRODUCTION\n\n' if artifact_hook else ''
-    (res/'README.txt').write_text(staging + 'Melee Unlocked macOS experimental build; unsigned.\n', encoding='utf-8')
+    (res/'README.txt').write_text(staging + 'Melee Unlocked macOS experimental build.\n', encoding='utf-8')
     (res/'build-manifest.json').write_text(json.dumps(built, indent=2)+'\n')
     version = (ROOT/'VERSION').read_text().strip()
     info = dict(CFBundleIdentifier='co.yougame.meleeunlocked', CFBundleName='Melee Unlocked',
                 CFBundleDisplayName='Melee Unlocked - Experimental', CFBundleExecutable='MeleeUnlocked',
                 CFBundlePackageType='APPL',CFBundleShortVersionString=version, CFBundleVersion=version,
-                LSMinimumSystemVersion='15.0',LSArchitecturePriority=['x86_64'],
+                CFBundleIconFile='MeleeUnlocked',CFBundleInfoDictionaryVersion='6.0',
+                LSMinimumSystemVersion='15.0',LSArchitecturePriority=[arch_env()],
+                # The games category and LSSupportsGameMode let macOS turn on Game Mode when the
+                # window is full screen: the game gets CPU and GPU priority and controllers and
+                # AirPods get lower Bluetooth latency.
+                LSApplicationCategoryType='public.app-category.games',LSSupportsGameMode=True,
                 NSHighResolutionCapable=True,NSPrincipalClass='NSApplication')
     with (contents/'Info.plist').open('wb') as f:
         plistlib.dump(info,f)
@@ -116,6 +154,8 @@ def main():
     shipped = sorted(str(p.relative_to(APP)) for p in APP.rglob('*') if p.name in disc_derived)
     assert not shipped, f'Bundle carries disc-derived Sys files: {shipped}'
     subprocess.run(['/usr/bin/otool','-L',str(contents/'MacOS/MeleeUnlocked')],check=True)
-    print('Unsigned bundle:',APP)
+    # Signed as a whole, so its resources are sealed, and without the hardened runtime, so lldb attaches.
+    sign_app.sign(APP, '-', runtime=False)
+    print('Bundle, signed ad hoc for this Mac:',APP)
 if __name__ == '__main__':
     main()

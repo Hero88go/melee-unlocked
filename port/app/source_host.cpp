@@ -198,17 +198,25 @@ yougame::console::Pads console_hardware() {
   return pads;
 }
 
-constexpr uintptr_t MEM1_BASE = 0x80000000u;
+// The console's addresses. On Apple silicon the whole low 4 GB is off limits to a native process, so
+// they sit at a 4 GB-aligned base there (port/mac/elf_loader.cpp, sourceport/game/include/mu_window.h);
+// everywhere else, Rosetta included, the base is 0.
+#if defined(__APPLE__) && defined(__aarch64__)
+const uintptr_t CONSOLE_BASE = mac_elf::window_base();
+#else
+constexpr uintptr_t CONSOLE_BASE = 0;
+#endif
+const uintptr_t MEM1_BASE = CONSOLE_BASE + 0x80000000u;
 constexpr uint32_t MEM1_SIZE = 40u << 20;   // the console's 24 MB, grown for 8-byte pointers; the game image follows
-constexpr uintptr_t LOCKED_CACHE_BASE = 0xE0000000u;
+const uintptr_t LOCKED_CACHE_BASE = CONSOLE_BASE + 0xE0000000u;
 constexpr uint32_t LOCKED_CACHE_SIZE = 16u << 10;
 // Right after MEM1, so the game's own statics (the font atlas, static textures) have a physical
 // address the GX texture and display-list registers can hold: 26 bits, the first 64 MB.
-constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
+const uintptr_t GAME_IMAGE_BASE = CONSOLE_BASE + 0x82800000u;
 // The end of what GX can address: the game image must fit below it. The range itself is held from
 // startup by g_game_image_reservation (below); in the YouGame sandbox, with bottom-up ASLR on, the
 // process's early allocations (the GPU driver's among them) otherwise land anywhere in the low 4 GB.
-constexpr uintptr_t GAME_IMAGE_HOLD_END = 0x84000000u;
+const uintptr_t GAME_IMAGE_HOLD_END = CONSOLE_BASE + 0x84000000u;
 
 // The game library must load at GAME_IMAGE_BASE. Everything the host does before loading it (mod
 // scans, cosmetics, the music pack index) allocates, and a heap block placed there moved the library
@@ -3139,7 +3147,7 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           static bool tried = false;
           if (!tried && maker::loaded()) {
             tried = true;
-            constexpr uintptr_t base = MEM1_BASE + (64u << 20);
+            const uintptr_t base = MEM1_BASE + (64u << 20);
             if (VirtualAlloc((void*)base, 32u << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) == (void*)base) {
               cache_size = 32u << 20;
               host::ram_size = (64u << 20) + cache_size;
@@ -5672,6 +5680,13 @@ MuHostApi make_host() {
   h.music_volume = h_music_volume;
   h.replay_start = h_replay_start; h.replay_frame = h_replay_frame;
   h.replay_stock_steal = h_replay_stock_steal; h.replay_event = h_replay_event;
+#if defined(__APPLE__) && defined(__aarch64__)
+  // The game passes these a byte the AArch64 Linux way, which leaves the register's upper bits
+  // unspecified; Apple's convention has the caller extend it, and clang's code relies on that. These
+  // take the whole register and keep the byte.
+  h.replay_event = reinterpret_cast<decltype(h.replay_event)>(
+      +[](uint32_t command, const uint8_t* payload, uint32_t size) { h_replay_event(uint8_t(command), payload, size); });
+#endif
   h.replay_finished = h_replay_finished;
   const char* draw_audit = std::getenv("MELEE_NATIVE_DRAW_AUDIT");
   const bool audit_enabled = draw_audit && std::strcmp(draw_audit, "1") == 0;
@@ -5680,6 +5695,13 @@ MuHostApi make_host() {
   h.native_draw_identity = h_native_draw_identity;
   h.mod_flags = h_mod_flags;
   h.slippi_command = h_slippi_command;
+#if defined(__APPLE__) && defined(__aarch64__)
+  h.slippi_command = reinterpret_cast<decltype(h.slippi_command)>(
+      +[](uint32_t command, const uint8_t* payload, uint32_t payload_size, uint8_t* response, uint32_t response_capacity,
+          uint32_t* response_size) {
+        return h_slippi_command(uint8_t(command), payload, payload_size, response, response_capacity, response_size);
+      });
+#endif
   h.resim_phase = h_resim_phase;
   h.online_test_match = h_online_test_match;
   h.game_options2 = h_game_options2;
@@ -5729,7 +5751,7 @@ void on_game_signal(int sig, siginfo_t* si, void* uc_void) {
     // that point into the game, as the Windows leaf fallback reads them).
     const uint64_t* sp = (const uint64_t*)uc->uc_mcontext.gregs[REG_RSP];
 #else
-    const uint64_t* sp = (const uint64_t*)uc->uc_mcontext->__ss.__rsp;
+    const uint64_t* sp = (const uint64_t*)mac_or_linux_sp(uc);
 #endif
     for (int i = 0, shown = 0; i < 512 && shown < 24; ++i) {
       const uint64_t v = sp[i];

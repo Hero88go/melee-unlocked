@@ -99,6 +99,8 @@ std::string pro_dir() {
 bool cpu_has_avx() {
 #ifdef _WIN32
   return IsProcessorFeaturePresent(PF_AVX_INSTRUCTIONS_AVAILABLE) != FALSE;
+#elif defined(__aarch64__)
+  return true;   // AArch64's vector unit (NEON) is always there
 #else
   return __builtin_cpu_supports("avx");
 #endif

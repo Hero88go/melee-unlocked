@@ -1,6 +1,12 @@
-// Rosetta on macOS 15 implements AVX2/FMA even when CPUID does not advertise them.
+// Rosetta on macOS 15 implements AVX2/FMA even when CPUID does not advertise them. The native
+// Apple silicon build needs nothing beyond the base AArch64 instruction set.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#if defined(__aarch64__)
+namespace mac_host {
+inline bool cpu_ok() { return true; }
+}
+#else
 #include <cpuid.h>
 #include <sys/sysctl.h>
 namespace mac_host {
@@ -21,3 +27,4 @@ inline bool cpu_ok() {
   __cpuid_count(7, 0, a, b, c, d); return b & (1u << 5);
 }
 }
+#endif

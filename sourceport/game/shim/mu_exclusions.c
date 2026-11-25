@@ -83,7 +83,7 @@ uint32_t mu_snapshot_ranges(MuStateRegion* out, uint32_t capacity)
         ranges[count].address = lo;
         ranges[count].size = (uint32_t) ((uintptr_t) hi - (uintptr_t) lo);
     } else {
-        ranges[count].address = (void*) (uintptr_t) 0x80000000u;
+        ranges[count].address = (void*) MU_WIDEN(0x80000000u);
         ranges[count].size = mu_host->mem1_size();
     }
     count++;

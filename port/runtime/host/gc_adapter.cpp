@@ -1,5 +1,7 @@
 #include "test_env.h"
-#ifdef __APPLE__
+// macOS reads the adapter through libusb, as Slippi Dolphin does, when the build links libusb
+// (MELEE_MAC_GC_ADAPTER, port/mac/build_full.py); otherwise only through the YouGame app's mirror.
+#if defined(__APPLE__) && !defined(MELEE_MAC_GC_ADAPTER)
 #include "host.h"
 #include "gc_adapter_mirror_mac.h"
 namespace host {
@@ -656,7 +658,7 @@ bool open_libusb() {
   }
   int rc = libusb_open(adapter, &g_dev);
   libusb_free_device_list(list, 1);
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
   // Linux: no access to the device node means the udev rule that gives the logged-in player the
   // adapter is not installed (or the adapter was plugged in before it was).
   if (rc == LIBUSB_ERROR_ACCESS) {
@@ -676,6 +678,16 @@ bool open_libusb() {
 #endif
   if (rc != 0) {
     g_dev = nullptr;
+#ifdef __APPLE__
+    set_problem(std::string("Your GameCube adapter is plugged in but the game cannot open it. Close Slippi Dolphin or any other "
+                            "program using it, and check that GCAdapterDriver is enabled in System Settings.")
+                + kFrame1Note + " It is picked up without a restart.");
+    if (!g_logged_missing) {
+      log("gc adapter: found but cannot open (%s)", libusb_error_name(rc));
+      g_logged_missing = true;
+    }
+    return false;
+#endif
     // Access denied with a driver in place means another program has the adapter open: Windows gives
     // it to one program at a time. Steam takes GameCube adapters for its own controller support.
     if (rc == LIBUSB_ERROR_ACCESS)
@@ -704,9 +716,11 @@ bool open_libusb() {
     }
     return false;
   }
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
   // The kernel's HID driver is let go first, as Dolphin does: the request below went to an adapter
   // the kernel still held (LIBUSB_ERROR_IO), and claiming detaches it only afterwards.
+  // macOS is left alone, also as Dolphin does: the driver there is GCAdapterDriver, which is what lets
+  // the interface be claimed, and detaching needs root (when it would take the adapter from that driver).
   if (libusb_kernel_driver_active(g_dev, g_iface) == 1) {
     const int detached = libusb_detach_kernel_driver(g_dev, g_iface);
     g_detached_kernel = detached == 0;
@@ -727,8 +741,15 @@ bool open_libusb() {
   rc = libusb_claim_interface(g_dev, g_iface);
 #endif
   if (rc != 0) {
+#ifdef __APPLE__
+    // Without GCAdapterDriver, macOS's own HID driver holds the interface and the claim fails the same way.
+    set_problem(std::string("Your GameCube adapter is in use by another program, such as Slippi Dolphin, so the game cannot read it. "
+                            "Close that program. If nothing else is open, install GCAdapterDriver and enable it in System Settings.")
+                + kFrame1Note + " It is picked up without a restart.");
+#else
     set_problem(std::string("Your GameCube adapter is in use by another program, such as Dolphin, so the game cannot read it. Close that program.")
                 + kFrame1Note + " It is picked up without a restart.");
+#endif
     if (!g_logged_missing) {
 #ifdef MELEE_NO_SLIPPI
       log("gc adapter: cannot claim the adapter (%s): another program (Dolphin?) is using it. Close it and try again.", libusb_error_name(rc));

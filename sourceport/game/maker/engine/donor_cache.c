@@ -58,7 +58,7 @@ void Bam_LbHeapRoom(int heap, unsigned* total, unsigned* largest)
     u32 start, end;
     *total = *largest = 0;
     if (!r || r->status != 0 /* LbHeapStatus_Create */ || r->type == 0) return;
-    h = (HeapHandle*) r->handle;
+    h = (HeapHandle*) MU_WIDEN(r->handle);
     if (!h || (u32) h == 0xFFFFFFFFU || (u32) h < 0x80000000U) return;
     start = h->lo;
     for (it = h->first;; it = it->next) {
@@ -73,7 +73,7 @@ void Bam_LbHeapRoom(int heap, unsigned* total, unsigned* largest)
 }
 
 /* lbMemory's pool of block records, shared by all its heaps (0x83). */
-#define LBMEM_FREE_LIST (*(MemEntry**) 0x80431EDC)
+#define LBMEM_FREE_LIST (*(MemEntry**) MU_WIDEN(0x80431EDC))
 int BamCache_FreeRecords(void);
 static int free_records(void) { return BamCache_FreeRecords(); }
 int BamCache_FreeRecords(void)
@@ -86,7 +86,7 @@ int BamCache_FreeRecords(void)
 }
 
 /* Preloader idle: no file queued or loading, no compaction running. */
-#define PRELOAD_CACHE ((u8*) 0x80432078)
+#define PRELOAD_CACHE ((u8*) MU_WIDEN(0x80432078))
 static int preloader_idle(void)
 {
     int i;
@@ -170,7 +170,7 @@ static void release_all(void)
         if (a->rec->lo != a->base)
             BAM_LOG("cache arena heap=%d moved %08x -> %08x\n", a->heap, (unsigned) a->base,
                      (unsigned) a->rec->lo);
-        lbHeap_80015CA8(a->heap, (void*) a->rec->lo);
+        lbHeap_80015CA8(a->heap, (void*) MU_WIDEN(a->rec->lo));
         BAM_LOG("cache arena heap=%d used %u of %u KB, released\n", a->heap,
                  (a->lo - a->base) / 1024, a->size / 1024);
         memset(a, 0, sizeof(*a));
@@ -245,7 +245,7 @@ void* BamCache_Alloc(int ram, u32 size)
     if (a->hi - a->lo < size) return NULL;
     p = a->lo;
     a->lo += size;
-    return (void*) (uintptr_t) p;
+    return (void*) MU_WIDEN(p);
 }
 
 /* Temporary main-RAM space (top of the AllM block), dropped by TempReset. */
@@ -258,7 +258,7 @@ void* BamCache_TempAlloc(u32 size)
     size = (size + 31) & ~31U;
     if (a->hi - a->lo < size) return NULL;
     a->hi -= size;
-    return (void*) (uintptr_t) a->hi;
+    return (void*) MU_WIDEN(a->hi);
 }
 
 void BamCache_TempReset(void)

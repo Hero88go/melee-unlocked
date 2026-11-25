@@ -1,6 +1,7 @@
 // Full host bundle defaults and output isolation. Caller-supplied paths take precedence.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "disc_choice.h"
 #include "platform_paths.h"
 #include <cstdlib>
 #include <string>
@@ -9,6 +10,15 @@ namespace mac_host {
 inline std::vector<std::string> full_launch_arguments(int argc, char** argv) {
   namespace fs = std::filesystem;
   std::vector<std::string> args(argv, argv + argc);
+  const char* xdg_data = std::getenv("XDG_DATA_HOME");
+  const char* home = std::getenv("HOME");
+  const fs::path data = xdg_data && *xdg_data ? fs::path(xdg_data) : fs::path(home && *home ? home : ".") / ".local/share";
+  // Opened from Finder: the disc from last time, or the player chooses one (disc_choice.h).
+  if (started_from_finder(args)) {
+    const fs::path iso = finder_disc(data);
+    if (iso.empty()) std::exit(0);   // the player quit at the panel
+    args = {args[0], "--iso", iso.string()};
+  }
   const std::vector<std::string> paths = {"--iso", "--settings-path", "--sys-dir", "--user-dir", "--replay-dir",
       "--card-dir", "--log-file", "--shader-cache", "--script", "--state-digest", "--state-trace", "--replay",
       "--p2p-identity", "--p2p-result", "--capture", "--capture-frames"};
@@ -22,12 +32,7 @@ inline std::vector<std::string> full_launch_arguments(int argc, char** argv) {
   if (!std::getenv("MELEE_SHADER_SEED") && fs::is_directory(seed))
     setenv("MELEE_SHADER_SEED", seed.c_str(), 0);
   fs::path user = value("--user-dir");
-  if (user.empty()) {
-    const char* data = std::getenv("XDG_DATA_HOME");
-    const char* home = std::getenv("HOME");
-    user = data && *data ? fs::path(data) : fs::path(home && *home ? home : ".") / ".local/share";
-    user = fs::absolute(user / "melee-unlocked/User/Slippi");
-  }
+  if (user.empty()) user = fs::absolute(data / "melee-unlocked/User/Slippi");
   auto default_path = [&](const std::string& flag, const fs::path& path) {
     if (value(flag).empty()) { args.push_back(flag); args.push_back(path.string()); }
   };

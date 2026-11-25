@@ -8,6 +8,9 @@
 namespace mac_elf {
 // Called by an early constructor, before host allocations. Never overwrites mappings.
 bool reserve_window(std::string* error);
+// Where the console window sits: 0 under Rosetta, a 4 GB-aligned block on Apple silicon. A console
+// address A is at window_base() + A in this process (sourceport/game/include/mu_window.h).
+uintptr_t window_base();
 bool activate_mem1(std::string* error);
 void deactivate_mem1();
 class Image {

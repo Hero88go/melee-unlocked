@@ -103,7 +103,7 @@ static void sv_enter_stage_state(HSD_GObj* g, const MotionState* state, Fighter_
     fp->x3E4_fighterCmdScript.u = DP(row->xC);
     fp->x3E4_fighterCmdScript.timer = 0.0f;
     ftCo_8009E7B4(fp, NULL);
-    fp->x590 = (FigaTree*) (mu_uptr) (u32) row->x4;
+    fp->x590 = (FigaTree*) MU_WIDEN(row->x4);
     ftAnim_8006EBE8(g, anim_start, anim_speed, anim_blend);
     ftAnim_8006E9B4(g);
     if (anim_start == 0.0f) {

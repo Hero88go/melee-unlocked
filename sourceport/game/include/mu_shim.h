@@ -24,15 +24,15 @@ void mu_post(MuEventFn fn, void* a, intptr_t b);
 void mu_poll(void);
 
 /* The console's physical addresses: the game hands some hardware a pointer with the cached-segment
- * bit taken off (OSCachedToPhysical). Everything the game owns sits below 4 GB, so adding the bit
- * back in 32-bit arithmetic recovers the pointer exactly, wherever it lives. */
-static inline void* mu_phys_ptr(unsigned int phys) { return (void*) (uintptr_t) (unsigned int) (phys + 0x80000000u); }
+ * bit taken off (OSCachedToPhysical). Everything the game owns sits in the console window, so adding
+ * the bit back in 32-bit arithmetic recovers the pointer exactly, wherever it lives (mu_window.h). */
+static inline void* mu_phys_ptr(unsigned int phys) { return (void*) MU_WIDEN(phys + 0x80000000u); }
 /* Hardware that took either form (ARAM DMA, audio DMA). The game's memory is the image at
  * 0x82800000 (right after MEM1 at 0x80000000), under 64 MB together, so a value below 0x40000000 or at
  * 0xC0000000 and up can only be one of them with the segment bit taken off. */
 static inline void* mu_mem_ptr(unsigned int addr)
 {
-    return (addr < 0x40000000u || addr >= 0xC0000000u) ? mu_phys_ptr(addr) : (void*) (uintptr_t) addr;
+    return (addr < 0x40000000u || addr >= 0xC0000000u) ? mu_phys_ptr(addr) : (void*) MU_WIDEN(addr);
 }
 
 #endif

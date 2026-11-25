@@ -665,6 +665,19 @@ void syscall(Context& c, uint8_t* m) {
   // Melee only uses sc for cache maintenance from OS code; nothing to do.
 }
 
+#if defined(__aarch64__)
+// The same on AArch64's FPCR: the rounding mode is RMode (bits 23:22) and FZ (bit 24) flushes
+// subnormal inputs and results, as FTZ and DAZ do together.
+void update_mxcsr(Context& c) {
+  uint64_t fpcr;
+  __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+  fpcr &= ~((3ull << 22) | (1ull << 24));
+  static const uint64_t arm_rmode[4] = {0, 3ull << 22, 1ull << 22, 2ull << 22};  // nearest, zero, +inf, -inf
+  fpcr |= arm_rmode[c.fpscr & 3];
+  if (c.fpscr & 4) fpcr |= 1ull << 24;
+  __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
+}
+#else
 void update_mxcsr(Context& c) {
   unsigned csr = _mm_getcsr() & ~(0x6000u | 0x8000u | 0x0040u);
   unsigned rn = c.fpscr & 3;                      // PPC RN: 0 nearest,1 zero,2 +inf,3 -inf
@@ -673,6 +686,7 @@ void update_mxcsr(Context& c) {
   if (c.fpscr & 4) csr |= 0x8000u | 0x0040u;      // NI -> FTZ | DAZ, as Jit64 does
   _mm_setcsr(csr);
 }
+#endif
 
 void dcbz(Context& c, uint8_t* m, uint32_t ea) {
   ea &= ~31u;

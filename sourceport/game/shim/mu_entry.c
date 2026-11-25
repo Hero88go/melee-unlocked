@@ -257,7 +257,7 @@ unsigned int mu_music_volume(void)
  * snapshot's check before it follows a fighter pointer, as the recompiled build's reader does. */
 int mu_is_game_memory(const void* p, unsigned long size)
 {
-    const uintptr_t lo = 0x80000000u, hi = lo + (mu_host ? mu_host->mem1_size() : 0);
+    const uintptr_t lo = MU_WIDEN(0x80000000u), hi = lo + (mu_host ? mu_host->mem1_size() : 0);
     const uintptr_t a = (uintptr_t) p;
     return a >= lo && a < hi && size <= hi - a;
 }
@@ -292,7 +292,7 @@ extern char __data_start__[], __data_end__[], __bss_start__[], __bss_end__[];
 static uint32_t mu_state_regions(MuStateRegion* out, uint32_t capacity)
 {
     MuStateRegion regions[3] = {
-        {(void*) 0x80000000u, mu_host->mem1_size()},
+        {(void*) MU_WIDEN(0x80000000u), mu_host->mem1_size()},
         {__data_start__, (uint32_t) (__data_end__ - __data_start__)},
         {__bss_start__, (uint32_t) (__bss_end__ - __bss_start__)},
     };

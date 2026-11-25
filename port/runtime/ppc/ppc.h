@@ -7,11 +7,15 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#if !defined(__aarch64__)
 #include <immintrin.h>
+#endif
 #ifdef _MSC_VER
 #include <intrin.h>
 #else
+#if !defined(__aarch64__)
 #include <x86intrin.h>
+#endif
 #ifndef MU_BYTESWAP_DEFINED
 #define MU_BYTESWAP_DEFINED
 inline uint16_t _byteswap_ushort(uint16_t v) { return __builtin_bswap16(v); }

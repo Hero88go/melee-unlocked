@@ -14,7 +14,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#if !defined(__aarch64__)
 #include <immintrin.h>
+#endif
 
 namespace ppc {
 
@@ -51,10 +53,19 @@ inline double f25(double d) {
   i = (i & 0xFFFFFFFFF8000000ull) + (i & 0x8000000ull);
   std::memcpy(&d, &i, 8); return d;
 }
+#if defined(__aarch64__)
+// One rounding each, as FMA3 does, with the operands negated as the x86 instructions do so zero signs
+// match too (port/runtime/ppc/ppc.h): fmadd, fnmsub, fnmadd and fmsub d.
+inline double fmadd(double a, double c, double b) { return __builtin_fma(a, c, b); }
+inline double fmsub(double a, double c, double b) { return __builtin_fma(a, c, -b); }
+inline double fnmadd(double a, double c, double b) { return __builtin_fma(-a, c, -b); }   // VFNMSUB
+inline double fnmsub(double a, double c, double b) { return __builtin_fma(-a, c, b); }    // VFNMADD
+#else
 inline double fmadd(double a, double c, double b) { return _mm_cvtsd_f64(_mm_fmadd_sd(_mm_set_sd(a), _mm_set_sd(c), _mm_set_sd(b))); }
 inline double fmsub(double a, double c, double b) { return _mm_cvtsd_f64(_mm_fmsub_sd(_mm_set_sd(a), _mm_set_sd(c), _mm_set_sd(b))); }
 inline double fnmadd(double a, double c, double b) { return _mm_cvtsd_f64(_mm_fnmsub_sd(_mm_set_sd(a), _mm_set_sd(c), _mm_set_sd(b))); }
 inline double fnmsub(double a, double c, double b) { return _mm_cvtsd_f64(_mm_fnmadd_sd(_mm_set_sd(a), _mm_set_sd(c), _mm_set_sd(b))); }
+#endif
 inline double bits_to_double(uint64_t u) { double d; std::memcpy(&d, &u, 8); return d; }
 inline uint64_t double_to_bits(double d) { uint64_t u; std::memcpy(&u, &d, 8); return u; }
 inline double float_bits_to_double(uint32_t u) { float f; std::memcpy(&f, &u, 4); return (double)f; }

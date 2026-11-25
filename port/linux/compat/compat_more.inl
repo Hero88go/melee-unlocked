@@ -181,7 +181,9 @@ BOOL CancelWaitableTimer(HANDLE timer) {
 
 // ---- stack and thread time ----
 #include <execinfo.h>
+#if defined(__x86_64__)
 #include <x86intrin.h>
+#endif
 void* NtCurrentTeb() {
   thread_local NT_TIB tib{};
 #ifdef __APPLE__

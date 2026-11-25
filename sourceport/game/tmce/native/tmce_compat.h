@@ -22,7 +22,7 @@ extern char mu_mx_ifStatus_HudInfo[] __asm__("ifStatus_HudInfo");
 /* A disc pointer slot written from host code: the address fits in 32 bits natively (MEM1, the image). */
 #define MEX_DP_SET(slot, ptr) ((slot) = (unsigned int)(uintptr_t)(ptr))
 /* Element i of a disc array of pointer slots (big-endian words) */
-#define MEX_DP_AT(base, i) ((void *)(uintptr_t)__builtin_bswap32(((const unsigned int *)(base))[i]))
+#define MEX_DP_AT(base, i) ((void *)MU_WIDEN(__builtin_bswap32(((const unsigned int *)(base))[i])))
 /* TM-CE's own structs read straight out of its .dat files */
 #define MEX_DISC_STRUCT __attribute__((scalar_storage_order("big-endian")))
 

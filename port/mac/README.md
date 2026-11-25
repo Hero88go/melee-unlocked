@@ -1,3 +1,193 @@
+## Building from a clone
+
+Apple silicon or Intel, macOS 15 or later, Xcode's command line tools, cmake, git
+and curl, plus a retail NTSC 1.02 disc:
+
+```sh
+port/mac/build_deps.sh                               # once: fills ../deps beside the repository
+port/mac/build_all.sh --arch arm64 path/to/melee.iso # native Apple silicon app
+port/mac/build_all.sh path/to/melee.iso              # x86-64 app, runs under Rosetta
+open build-mac-full-arm64-squad/MeleeUnlocked.app    # or double-click it; asks for the disc once
+```
+
+`build_deps.sh` builds SDL2, glslang, SPIRV-Cross and static libusb (all universal)
+and downloads messense's GCC 15.2 cross compilers for x86-64 and AArch64 Linux
+(`linux-cross.cmake`). `build_all.sh` prepares `sourceport/extern/melee` (the
+released `melee-native.patch`, then `melee-native-mac.patch`). When either
+patch has changed since, as after merging a new upstream version,
+`prepare_native_sources.py` rewrites only the files whose patched text changed.
+It records each preparation as `refs/mu/prepared` in the submodule, and a tree
+with edits of its own stops with instructions instead. `build_all.sh` then builds
+`melee_game.so` with the matching compiler and `-fno-stack-protector` (the loader
+refuses stack-canary code) and with Doubles and Squad Strike on as in the Linux
+release, recompiles the headers from the disc, then runs
+`build_full.py --arch <arch> --squad-strike --doubles`. The apps are
+`build-mac-full-arm64-squad/MeleeUnlocked.app` and
+`build-mac-full-squad/MeleeUnlocked.app`; later runs rebuild only what changed.
+The official Linux game is built with GCC 14 and these with GCC 15.2.
+`release_parity.py` loads that release's own `melee_game.so` in the x86-64 host,
+in a copy whose stack canaries are fixed at 0. It compares the game state on every
+parity script against both Mac apps (see "Checking sync" below). The Windows
+build and real matchmaking are not yet verified.
+
+### The native Apple silicon build
+
+The game stays a Linux ELF that `elf_loader.cpp` maps itself, now also for
+AArch64, so both Mac builds share the x86-64 build's memory layout. The game keeps
+console addresses in 32-bit words (disc pointer slots, `MU_Z` words), all inside
+the window 0x7f000000..0x84000000 (MEM1, then the image at 0x82800000). A native
+arm64 process never maps its low 4 GB, so the loader places that window at the
+first free 4 GB-aligned base instead and the game widens each word against it
+(`sourceport/game/include/mu_window.h`): a word holds the same number on both
+architectures, and B is 0 on x86-64, whose code is unchanged.
+
+- AArch64 game flags:
+  - `-ffixed-x18`: Apple's platform register.
+  - `-fsigned-char`: as on x86-64.
+  - `-mno-outline-atomics`: so there is no `getauxval` import.
+  - `-fdata-sections -fno-section-anchors`: for the compiler launcher
+    `aarch64_like_x86.py`.
+- `aarch64_like_x86.py` does two things:
+  - It gives every static object of 32 bytes or more the 32-byte alignment that
+    x86-64 GCC gives it. The game's DMA buffers rely on that alignment.
+  - It converts floats to unsigned integers the way x86-64 and the console do,
+    keeping the low bits of the signed result. AArch64's `fcvtzu` turns a negative
+    value into 0, so Nana ignored Popo's stick held left or down. The launcher
+    compiles each unit to assembly and replaces every `fcvtzu`.
+- AArch64 Linux and Apple pass variadic arguments differently; the loader
+  bridges the game's printf-family imports (`elf_loader_test.cpp` with
+  `elf_abi_probe.c` checks it on both architectures), and the host takes the two
+  byte-sized API arguments as whole registers.
+- A word widened without the base points into the unmapped low 4 GB and stops
+  at once, with the faulting console address. A narrow int-to-pointer cast
+  shows up as `-Wint-to-pointer-cast` when the game is built without `-w`.
+- A word that becomes a pointer-sized integer key (`HSD_IDKey`) gives no such
+  sign. Unwidened, the ID lookup misses. The animation loader's lookup of a
+  path joint did that: it loaded a detached copy of the joint, so Randall on
+  Yoshi's Story moved without the stage's scale and online games there desynced
+  against x86-64.
+- Under the Hardened Runtime (needed for notarization) the loader's mapped code
+  needs `com.apple.security.cs.allow-unsigned-executable-memory`. Local builds
+  are not hardened; see "Signing for other Macs".
+- The app's Info.plist puts it in the games category with `LSSupportsGameMode`,
+  so macOS turns on Game Mode when it is full screen, and names the app's own
+  architecture in `LSArchitecturePriority`.
+
+Checked 2026-11-23 on an M5 with macOS 27, against upstream's 1.0.14 Linux
+release, and again after merging 1.0.19 (2026-11-24) and 1.0.27 (2026-11-25),
+each against its own release, with the same results:
+- The headless parity scripts (`--fast --vanilla-game --vanilla-only`) give
+  identical state digests for that release's library and both Mac builds.
+- Rollback matches between the x86-64 and arm64 apps over loopback
+  (`tools/p2p_pair.py --exe-p2`) agree on every checksum, including with lag,
+  jitter and packet loss:
+  - Ice Climbers vs Kirby on Pokémon Stadium
+  - Peach vs Link on Fountain of Dreams
+  - Mr. Game & Watch vs Pikachu, Fox vs Marth, and Ice Climbers vs Jigglypuff
+    on Yoshi's Story
+  - Samus vs Ganondorf on Battlefield
+  - Yoshi vs Mewtwo on Dream Land
+  - Falco vs Sheik on Final Destination
+- The native game step takes about two thirds of the time it takes under Rosetta.
+
+### Checking sync
+
+Give every run throwaway `HOME` and `XDG_*` folders and `--user-dir`, so that no
+test signs in to the Slippi account in your home folder.
+
+```sh
+python3 port/mac/release_parity.py --iso path/to/melee.iso   # vs upstream's Linux release
+python3 tools/p2p_pair.py --iso path/to/melee.iso \
+  --exe build-mac-full-squad/MeleeUnlocked.app/Contents/MacOS/MeleeUnlocked \
+  --exe-p2 build-mac-full-arm64-squad/MeleeUnlocked.app/Contents/MacOS/MeleeUnlocked \
+  --chars 14/0:4/0 --stage 3 --lag-ms 30 --jitter-ms 10 --loss 2 \
+  --extra-p1 "--user-dir /tmp/a" --extra-p2 "--user-dir /tmp/b"
+```
+
+`tools/p2p_pair.py --games` above 1 stops after game 1 on every build,
+upstream's release library included: the bot script presses nothing on the
+post-game screen.
+
+`release_parity.py` downloads the Linux release named by `VERSION`. The Mac
+loader refuses stack-protector code, so the script patches a copy of the
+release's library for the test: each canary load becomes `mov $0` and each
+check becomes `test`. The canary takes no part in the game's arithmetic.
+
+The GameCube adapter (Wii U mode) is opened through libusb, as Slippi Dolphin
+does. Like Dolphin, it needs [GCAdapterDriver](https://github.com/secretkeysio/GCAdapterDriver)
+installed and enabled; close Dolphin first, since one program holds the adapter at a time.
+
+### Opening the app from Finder
+
+Finder starts the app with no arguments. The app then uses the disc chosen last
+time, or shows an open panel that takes only a Melee NTSC 1.02 disc image and
+explains what it needs when the player cancels, as a no-argument start on
+Windows does (`standalone_launch_win.h`). The choice is kept in
+`~/.local/share/melee-unlocked/last-iso` (`disc_choice.h`,
+`disc_choice_mac.mm`). Any argument at all skips this. The
+panel starts AppKit through SDL, as the game window does a moment later.
+
+A disc in Downloads, Documents or Desktop makes macOS ask once whether
+"MeleeUnlocked" may access that folder. A start from Terminal uses Terminal's
+access instead. The answer belongs to the app's signature: an ad hoc app asks
+again after every rebuild, and a Developer ID app keeps the answer across
+updates.
+
+To test a start from Finder without touching your own profile, use `open`
+with throwaway folders. `open` gives the app no arguments, just as Finder does:
+
+```sh
+open -n --env HOME=$T/home --env XDG_DATA_HOME=$T/data --env XDG_CONFIG_HOME=$T/config \
+  --env XDG_CACHE_HOME=$T/cache --env XDG_STATE_HOME=$T/state --env MELEE_NO_GC_ADAPTER=1 \
+  build-mac-full-arm64-squad/MeleeUnlocked.app
+```
+
+With `$T/data/melee-unlocked/last-iso` naming a disc, the game starts on it.
+Without that file, the open panel comes up in front. If the disc sits in a
+protected folder, the first start waits on the privacy prompt, so use a clone
+outside them for tests (`cp -c disc.iso $T/`). While the panel is open, SIGTERM
+is not handled (SDL turns it into a quit event), so stop the app with `kill -9`.
+
+### Signing for other Macs
+
+`package_full.py` signs every app it makes ad hoc, without the hardened runtime,
+so lldb can attach. It also removes the build's rpath to `../deps` from the
+bundled binary, and draws `MeleeUnlocked.icns` from upstream's Windows icon
+(`make_icon.swift`). `sign_app.py` signs a finished app for other Macs:
+
+```sh
+python3 port/mac/sign_app.py build-mac-full-arm64-squad/MeleeUnlocked.app   # ad hoc, hardened
+python3 port/mac/sign_app.py <app> --identity "Developer ID Application: Name (TEAMID)" \
+  --notarize PROFILE --dmg dist/MeleeUnlocked.dmg
+```
+
+- The SDL library and the shader tools are signed first, then the app, all with
+  the hardened runtime and a secure timestamp.
+- The app's one entitlement is `com.apple.security.cs.allow-unsigned-executable-memory`
+  (`MeleeUnlocked.entitlements`). `elf_loader.cpp` maps `melee_game.so` into
+  anonymous memory and makes its code executable with `mprotect`. Without the
+  entitlement macOS kills the hardened app as the game starts (checked: exit 137).
+- `melee_game.so` is a Linux ELF, not Mach-O. It stays a resource, so the app's
+  signature seals it like any other file.
+- Library validation stays on with a Developer ID, because the app and its
+  libraries share a team. An ad hoc signature has no team, so the app could not
+  load its own SDL. `sign_app.py` turns library validation off for ad hoc
+  signatures only.
+- A Vulkan loader the player installed would fail library validation. The Vulkan
+  renderer needs MoltenVK bundled and signed with the app.
+- A hardened, ad hoc signed arm64 app runs the 600-frame smoke test, and its
+  signature still verifies afterwards: nothing writes inside the bundle.
+
+Players can double-click an app downloaded from the internet only when it has a
+Developer ID Application certificate (Apple Developer Program) and Apple has
+notarized it. Apple Development certificates are not accepted for this. To set
+up notarization once, store the credentials, using an app-specific password from
+account.apple.com:
+`xcrun notarytool store-credentials PROFILE --apple-id <id> --team-id <TEAMID>`.
+`--notarize` then submits the app, staples the ticket to it, and does the same
+for the disk image. An ad hoc app copied to another Mac opens only after the
+player allows it under System Settings > Privacy & Security.
+
 ## Staging agent-test variant
 
 `python3 -B port/mac/build_full.py --agent-test-hook` enables the staging-only
@@ -387,8 +577,10 @@ picture before swap. `MELEE_TEST_SURFACE` enables the far-corner surface probe.
 - Media decoding is deliberately stubbed on Apple: no FFmpeg video backgrounds,
   decoded border pictures or compressed music-pack playback. Game AX audio is
   compiled in; DSP coefficients resolve from the bundle.
-- Raw HID and libusb GameCube adapter support are unavailable; SDL controllers
-  and keyboard are compiled in. No macOS privacy grants or input-monitoring APIs
+- The GameCube adapter is read through libusb when `../deps/libusb` exists
+  (see "Building from a clone" above); otherwise only through the YouGame app.
+  Raw HID pads are unavailable; SDL controllers and keyboard are compiled in.
+  No macOS privacy grants or input-monitoring APIs
   are added. Steam/process discovery is unavailable. The Mac routing table uses `sysctl`;
   NAT-PMP/UPnP and actual Internet matchmaking remain unvalidated.
 - The existing spike ELF loader patches exactly 5,928 Linux TLS canary sites.

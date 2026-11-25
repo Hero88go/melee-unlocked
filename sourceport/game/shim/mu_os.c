@@ -479,8 +479,8 @@ void OSSetProgressiveMode(u32 mode) { mu_host->set_progressive_mode((int32_t) mo
 void OSInit(void)
 {
     /* Low memory (the first 64 KB) holds the disc header and what the host puts there for the game. */
-    OSSetArenaLo((void*) (uintptr_t) 0x80010000u);
-    OSSetArenaHi((void*) (uintptr_t) (0x80000000u + mu_host->mem1_size()));
+    OSSetArenaLo((void*) MU_WIDEN(0x80010000u));
+    OSSetArenaHi((void*) MU_WIDEN(0x80000000u + mu_host->mem1_size()));
     OSInitAlarm();
     mu_interrupt_level = 1;
 }

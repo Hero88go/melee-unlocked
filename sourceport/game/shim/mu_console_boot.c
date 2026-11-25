@@ -1,6 +1,6 @@
 /* Load the agreed session card without entering the memory-card scene. */
-#if !defined(__x86_64__) && !defined(_M_X64)
-#error "CSS origin scene continuation requires x86-64 GCC/Clang builtin setjmp/longjmp; port both ends together"
+#if !defined(__x86_64__) && !defined(_M_X64) && !defined(__aarch64__)
+#error "CSS origin scene continuation requires GCC/Clang builtin setjmp/longjmp on x86-64 or AArch64; port both ends together"
 #endif
 #include <mu_native.h>
 #include <melee/gm/gmmain_lib.h>

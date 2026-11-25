@@ -11,7 +11,7 @@ s32 DVDGetDriveStatus(void) { mu_poll(); return mu_host->disc_status(); }
 s32 DVDConvertPathToEntrynum(const char* path) { return mu_host->disc_entrynum(path); }
 
 /* The disc header the console's boot loader copied to the start of MEM1; the host does the same. */
-struct DVDDiskID* DVDGetCurrentDiskID(void) { return (struct DVDDiskID*) (uintptr_t) 0x80000000u; }
+struct DVDDiskID* DVDGetCurrentDiskID(void) { return (struct DVDDiskID*) MU_WIDEN(0x80000000u); }
 
 BOOL DVDFastOpen(s32 entrynum, DVDFileInfo* fileInfo)
 {

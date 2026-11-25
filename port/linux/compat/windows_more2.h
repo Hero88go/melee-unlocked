@@ -43,6 +43,7 @@ USHORT RtlCaptureStackBackTrace(ULONG skip, ULONG count, void** frames, ULONG* h
 BOOL QueryThreadCycleTime(HANDLE thread, ULONG64* cycles);
 
 // MSVC's CPU feature intrinsics.
+#if defined(__x86_64__)
 #include <cpuid.h>
 #undef __cpuid
 inline void __cpuid(int r[4], int leaf) { __cpuid_count((unsigned)leaf, 0u, r[0], r[1], r[2], r[3]); }
@@ -51,6 +52,12 @@ inline unsigned long long linux_xgetbv(unsigned index) {
   __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(index));
   return ((unsigned long long)hi << 32) | lo;
 }
+#else
+// AArch64 has no CPUID: every x86 feature reads as absent (the callers check the Mac's own way first).
+inline void __cpuid(int r[4], int) { r[0] = r[1] = r[2] = r[3] = 0; }
+inline void __cpuidex(int r[4], int, int) { r[0] = r[1] = r[2] = r[3] = 0; }
+inline unsigned long long linux_xgetbv(unsigned) { return 0; }
+#endif
 #ifdef __APPLE__
 #ifdef _xgetbv
 #undef _xgetbv
