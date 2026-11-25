@@ -67406,7 +67406,7 @@ index e65f3a4d0..2a6c81085 100644
          RETURN_IF(ftCo_800C3B10(gobj));                                       \
          RETURN_IF(checkItemThrowInput(gobj));                                 \
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.c
-index f24ae71cd..8850abeaf 100644
+index f24ae71cd..eefb62da5 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.c
 @@ -1,3 +1,6 @@
@@ -67428,7 +67428,23 @@ index f24ae71cd..8850abeaf 100644
      case Ft_Kind_Kirby:
          ftKb_SpecialN_800F1F68(gobj);
          return;
-@@ -92,7 +99,11 @@ void ftCo_AttackDash_IASA(Fighter_GObj* gobj)
+@@ -68,6 +75,15 @@ static void doEnter(Fighter_GObj* gobj)
+     fp->mv.co.attackdash.x0 = 0;
+ }
+ 
++#ifdef MU_NATIVE
++/* Tilt stick in a dash, dash attack chosen (mu_controls.h, from ftCo_AttackS4.c): the dash attack,
++ * entered as an A press enters it (Kirby's own included). */
++void ftCo_AttackDash_EnterTiltStick(Fighter_GObj* gobj)
++{
++    decideFighter(gobj);
++}
++#endif
++
+ void ftCo_AttackDash_Anim(Fighter_GObj* gobj)
+ {
+     if (!ftAnim_IsFramesRemaining(gobj)) {
+@@ -92,7 +108,11 @@ void ftCo_AttackDash_IASA(Fighter_GObj* gobj)
  void ftCo_AttackDash_Phys(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -67440,8 +67456,22 @@ index f24ae71cd..8850abeaf 100644
                  fp->facing_dir);
  }
  
+diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.h b/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.h
+index 385a8f2b3..e8e0182ea 100644
+--- a/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.h
++++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackDash.h
+@@ -7,6 +7,9 @@
+ 
+ /* 08B3E4 */ bool ftCo_AttackDash_CheckInput(Fighter_GObj* gobj);
+ /* 08B548 */ void ftCo_AttackDash_Anim(Fighter_GObj* gobj);
++#ifdef MU_NATIVE
++void ftCo_AttackDash_EnterTiltStick(Fighter_GObj* gobj);
++#endif
+ /* 08B584 */ void ftCo_AttackDash_SetMv0(Fighter_GObj* gobj);
+ /* 08B5AC */ void ftCo_AttackDash_IASA(Fighter_GObj* gobj);
+ /* 08B600 */ void ftCo_AttackDash_Phys(Fighter_GObj* gobj);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.c
-index 3a258834a..bcad40978 100644
+index 3a258834a..b46ae06b6 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.c
 @@ -1,3 +1,6 @@
@@ -67451,7 +67481,7 @@ index 3a258834a..bcad40978 100644
  #include "ftCo_AttackHi3.h"
  
  #include <Runtime/platform.h>
-@@ -38,6 +41,9 @@ bool ftCo_AttackHi3_CheckInput(Fighter_GObj* gobj)
+@@ -38,12 +41,23 @@ bool ftCo_AttackHi3_CheckInput(Fighter_GObj* gobj)
  void doEnter(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -67461,8 +67491,36 @@ index 3a258834a..bcad40978 100644
      fp->allow_interrupt = false;
      Fighter_ChangeMotionState(gobj, ftCo_MS_AttackHi3, Ft_MF_None, 0, 1, 0,
                                NULL);
+     ftAnim_8006EBA4(gobj);
+ }
+ 
++#ifdef MU_NATIVE
++/* Tilt stick (mu_controls.h, from ftCo_AttackHi4.c): the up tilt from the C-stick. */
++void ftCo_AttackHi3_EnterTiltStick(Fighter_GObj* gobj)
++{
++    doEnter(gobj);
++}
++#endif
++
+ void ftCo_AttackHi3_Anim(Fighter_GObj* arg0)
+ {
+     if (!ftAnim_IsFramesRemaining(arg0)) {
+diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.h b/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.h
+index 8bbd454c2..14fe5f0d9 100644
+--- a/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.h
++++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackHi3.h
+@@ -7,6 +7,9 @@
+ 
+ /* 08B980 */ bool ftCo_AttackHi3_CheckInput(Fighter_GObj* gobj);
+ /* 08BA98 */ void ftCo_AttackHi3_Anim(Fighter_GObj* gobj);
++#ifdef MU_NATIVE
++void ftCo_AttackHi3_EnterTiltStick(Fighter_GObj* gobj);
++#endif
+ /* 08BAD4 */ void ftCo_AttackHi3_IASA(Fighter_GObj* gobj);
+ /* 08BB04 */ void ftCo_AttackHi3_Phys(Fighter_GObj* gobj);
+ /* 08BB24 */ void ftCo_AttackHi3_Coll(Fighter_GObj* gobj);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackHi4.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackHi4.c
-index a226110ce..dc910aed6 100644
+index a226110ce..945434c25 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackHi4.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackHi4.c
 @@ -1,3 +1,6 @@
@@ -67472,7 +67530,17 @@ index a226110ce..dc910aed6 100644
  #include "ftCo_AttackHi4.h"
  
  #include <Runtime/platform.h>
-@@ -23,7 +26,7 @@ static bool checkLStick(Fighter* fp)
+@@ -16,6 +19,9 @@
+ #include <melee/ft/ftanim.h>
+ #include <melee/ft/kinds/ftNess/ftnessattackhi4.h>
+ #include <melee/ft/types.h>
++#ifdef MU_NATIVE
++#include "ftCo_AttackHi3.h"
++#endif
+ 
+ /* 08CA38 */ void doEnter(Fighter_GObj* gobj);
+ 
+@@ -23,7 +29,7 @@ static bool checkLStick(Fighter* fp)
  {
      if (fp->input.pressed_buttons & HSD_PAD_A &&
          fp->input.lstick[0].y >= p_ftCommonData->xCC &&
@@ -67481,7 +67549,28 @@ index a226110ce..dc910aed6 100644
      {
          return true;
      } else {
-@@ -40,7 +43,17 @@ bool ftCo_AttackHi4_CheckInput(Fighter_GObj* gobj)
+@@ -34,13 +40,38 @@ static bool checkLStick(Fighter* fp)
+ bool ftCo_AttackHi4_CheckInput(Fighter_GObj* gobj)
+ {
+     Fighter* fp = GET_FIGHTER(gobj);
++#ifdef MU_NATIVE
++    /* Tilt stick (mu_controls.h): the C-stick up alone does the up tilt, in exactly the states that
++     * check for the up tilt too. With an item: Melee's smash throw up, or the light one when chosen.
++     * The control stick's up smash (up + A) is untouched, and so is the jump squat's
++     * (ftCo_AttackHi4_CheckInputNoD0, which has no tilt to give). */
++    if (!checkLStick(fp) && ftCo_800DF2D8(fp) && mu_control(fp, MU_CONTROL_TILT_STICK)) {
++        if (fp->item_gobj != NULL && (ftCo_80094E54(fp) || ftCo_800DF30C(fp))) {
++            ftCo_800957F4(gobj, mu_control(fp, MU_CONTROL_TILT_ITEM_TILT_THROW) ? ftCo_MS_LightThrowHi
++                                                                                : ftCo_MS_LightThrowHi4);
++            return true;
++        }
++        ftCo_AttackHi3_EnterTiltStick(gobj);
++        return true;
++    }
++#endif
+     if (checkLStick(fp) || ftCo_800DF2D8(fp)) {
+         if (fp->item_gobj != NULL && (ftCo_80094E54(fp) || ftCo_800DF30C(fp)))
+         {
              ftCo_800957F4(gobj, ftCo_MS_LightThrowHi4);
              return true;
          }
@@ -67499,7 +67588,7 @@ index a226110ce..dc910aed6 100644
          case Ft_Kind_Ness:
              ftNs_AttackHi4_Enter(gobj);
              break;
-@@ -73,7 +86,17 @@ bool ftCo_AttackHi4_CheckInputNoD0(HSD_GObj* gobj)
+@@ -73,7 +104,17 @@ bool ftCo_AttackHi4_CheckInputNoD0(HSD_GObj* gobj)
              ftCo_800957F4(gobj, ftCo_MS_LightThrowHi4);
              return true;
          }
@@ -67518,7 +67607,7 @@ index a226110ce..dc910aed6 100644
              ftNs_AttackHi4_Enter(gobj);
              break;
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.c
-index d7581b0f6..11630d778 100644
+index d7581b0f6..97248ae81 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.c
 @@ -1,3 +1,6 @@
@@ -67540,8 +67629,56 @@ index d7581b0f6..11630d778 100644
      case Ft_Kind_GameWatch:
          ftGw_AttackLw3_Enter(gobj);
          return;
+@@ -90,6 +97,33 @@ static void doEnter(Fighter_GObj* gobj)
+     }
+ }
+ 
++#ifdef MU_NATIVE
++/* Tilt stick (mu_controls.h, from ftCo_AttackLw4.c): the down tilt from the C-stick, entered as
++ * decideFighter enters it (Game & Watch's own included), without the item pickup doEnter tries
++ * first: Melee's C-stick never picks an item up. */
++void ftCo_AttackLw3_EnterTiltStick(Fighter_GObj* gobj)
++{
++    Fighter* fp = GET_FIGHTER(gobj);
++#if MU_ROGUE  /* rogueMelee + Melee Maker */
++    switch (Bam_NormalBegin(gobj, BAM_NORMAL_DTILT)) {
++#else
++    switch (fp->kind) {
++#endif
++    case Ft_Kind_GameWatch:
++        ftGw_AttackLw3_Enter(gobj);
++        return;
++    default:
++        break;
++    }
++    fp->cmd_vars[cmd_unk0_bool] = false;
++    fp->allow_interrupt = false;
++    fp->mv.co.attacklw3.x0 = 0;
++    fp->x21EC = callUnk;
++    Fighter_ChangeMotionState(gobj, ftCo_MS_AttackLw3, Ft_MF_SkipAttackCount, 0, 1, 0, NULL);
++    ftAnim_8006EBA4(gobj);
++}
++#endif
++
+ /// @todo This is fake.
+ static void wrapper(Fighter_GObj* gobj)
+ {
+diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.h b/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.h
+index 19f3c6bf8..661edd4d0 100644
+--- a/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.h
++++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackLw3.h
+@@ -7,6 +7,9 @@
+ 
+ /* 08BB44 */ bool ftCo_AttackLw3_CheckInput(Fighter_GObj* gobj);
+ /* 08BCFC */ void ftCo_AttackLw3_Anim(Fighter_GObj* gobj);
++#ifdef MU_NATIVE
++void ftCo_AttackLw3_EnterTiltStick(Fighter_GObj* gobj);
++#endif
+ /* 08BD80 */ void ftCo_AttackLw3_IASA(Fighter_GObj* gobj);
+ /* 08BF84 */ void ftCo_AttackLw3_Phys(Fighter_GObj* gobj);
+ /* 08BFA4 */ void ftCo_AttackLw3_Coll(Fighter_GObj* gobj);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackLw4.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackLw4.c
-index 6141def1e..983d60495 100644
+index 6141def1e..677ab8ef9 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackLw4.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackLw4.c
 @@ -1,3 +1,6 @@
@@ -67551,7 +67688,17 @@ index 6141def1e..983d60495 100644
  #include "ftCo_AttackLw4.h"
  
  #include <Runtime/platform.h>
-@@ -23,7 +26,7 @@ static bool checkLStick(Fighter* fp)
+@@ -17,13 +20,17 @@
+ #include <melee/ft/kinds/ftNess/ftnessattacklw4.h>
+ #include <melee/ft/types.h>
+ 
++#ifdef MU_NATIVE
++#include "ftCo_AttackLw3.h"
++#endif
++
+ /* 08CC5C */ static void doEnter(Fighter_GObj* gobj);
+ 
+ static bool checkLStick(Fighter* fp)
  {
      if (fp->input.pressed_buttons & HSD_PAD_A &&
          fp->input.lstick[0].y <= p_ftCommonData->xD4 &&
@@ -67560,7 +67707,27 @@ index 6141def1e..983d60495 100644
      {
          return true;
      }
-@@ -39,7 +42,17 @@ bool ftCo_AttackLw4_CheckInput(Fighter_GObj* gobj)
+@@ -33,13 +40,37 @@ static bool checkLStick(Fighter* fp)
+ bool ftCo_AttackLw4_CheckInput(Fighter_GObj* gobj)
+ {
+     Fighter* fp = GET_FIGHTER(gobj);
++#ifdef MU_NATIVE
++    /* Tilt stick (mu_controls.h): the C-stick down alone does the down tilt, in exactly the states
++     * that check for the down tilt too. With an item: Melee's smash throw down, or the light one when
++     * chosen. The control stick's down smash (down + A) is untouched. */
++    if (!checkLStick(fp) && ftCo_800DF3A8(fp) && mu_control(fp, MU_CONTROL_TILT_STICK)) {
++        if (fp->item_gobj != NULL && (ftCo_80094E54(fp) || ftCo_800DF3DC(fp))) {
++            ftCo_800957F4(gobj, mu_control(fp, MU_CONTROL_TILT_ITEM_TILT_THROW) ? ftCo_MS_LightThrowLw
++                                                                                : ftCo_MS_LightThrowLw4);
++            return true;
++        }
++        ftCo_AttackLw3_EnterTiltStick(gobj);
++        return true;
++    }
++#endif
+     if (checkLStick(fp) || ftCo_800DF3A8(fp)) {
+         if (fp->item_gobj != NULL && (ftCo_80094E54(fp) || ftCo_800DF3DC(fp)))
+         {
              ftCo_800957F4(gobj, ftCo_MS_LightThrowLw4);
              return true;
          }
@@ -67579,7 +67746,7 @@ index 6141def1e..983d60495 100644
              ftNs_AttackLw4_Enter(gobj);
              break;
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.c
-index 574422e02..a0b16fd90 100644
+index 574422e02..fd849f14b 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.c
 @@ -1,3 +1,6 @@
@@ -67599,8 +67766,65 @@ index 574422e02..a0b16fd90 100644
      if (!ftpickupitem_80094790(gobj)) {
          FtMotionId msid;
          float stick_angle = ftCo_GetLStickAngle(fp);
+@@ -85,6 +91,42 @@ static void decideAngle(Fighter_GObj* gobj)
+     }
+ }
+ 
++#ifdef MU_NATIVE
++/* Tilt stick (mu_controls.h, from ftCo_AttackS4.c): the forward tilt from the C-stick, angled by the
++ * C-stick exactly as decideAngle angles it by the control stick. No item pickup first, unlike
++ * decideAngle: Melee's C-stick never picks an item up. */
++void ftCo_AttackS3_EnterTiltStick(Fighter_GObj* gobj, float stick_angle)
++{
++    Fighter* fp = GET_FIGHTER(gobj);
++    FtMotionId msid;
++#if MU_ROGUE  /* rogueMelee + Melee Maker */
++    Bam_NormalBegin(gobj, BAM_NORMAL_FTILT);
++#endif
++    if (stick_angle > p_ftCommonData->x9C_radians &&
++        ftData_80085FD4(fp, ftCo_MS_AttackS3S)->x8 != 0)
++    {
++        msid = ftCo_MS_AttackS3Hi;
++    } else if (stick_angle > p_ftCommonData->xA0_radians &&
++               ftData_80085FD4(fp, ftCo_MS_AttackS3LwS)->x8 != 0)
++    {
++        msid = ftCo_MS_AttackS3HiS;
++    } else if (stick_angle < p_ftCommonData->xA8_radians &&
++               ftData_80085FD4(fp, ftCo_MS_AttackLw3)->x8 != 0)
++    {
++        msid = ftCo_MS_AttackS3Lw;
++    } else if (stick_angle < p_ftCommonData->xA4_radians &&
++               ftData_80085FD4(fp, ftCo_MS_AttackHi3)->x8 != 0)
++    {
++        msid = ftCo_MS_AttackS3LwS;
++    } else {
++        msid = ftCo_MS_AttackS3S;
++    }
++    fp->allow_interrupt = false;
++    Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0, 1, 0, NULL);
++    ftAnim_8006EBA4(gobj);
++}
++#endif
++
+ void ftCo_AttackS3_Anim(Fighter_GObj* gobj)
+ {
+     if (!ftAnim_IsFramesRemaining(gobj)) {
+diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.h b/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.h
+index b0aa3677a..bd8d714a7 100644
+--- a/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.h
++++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackS3.h
+@@ -7,6 +7,9 @@
+ 
+ /* 08B658 */ bool ftCo_AttackS3_CheckInput(Fighter_GObj* gobj);
+ /* 08B8D4 */ void ftCo_AttackS3_Anim(Fighter_GObj* gobj);
++#ifdef MU_NATIVE
++void ftCo_AttackS3_EnterTiltStick(Fighter_GObj* gobj, float stick_angle);
++#endif
+ /* 08B910 */ void ftCo_AttackS3_IASA(Fighter_GObj* gobj);
+ /* 08B940 */ void ftCo_AttackS3_Phys(Fighter_GObj* gobj);
+ /* 08B960 */ void ftCo_AttackS3_Coll(Fighter_GObj* gobj);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AttackS4.c b/src/melee/ft/kinds/ftCommon/ftCo_AttackS4.c
-index 65e5ae546..b6dc09c6c 100644
+index 65e5ae546..9d59bfbd9 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AttackS4.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AttackS4.c
 @@ -1,3 +1,6 @@
@@ -67610,7 +67834,17 @@ index 65e5ae546..b6dc09c6c 100644
  #include "ftCo_AttackS4.h"
  
  #include <Runtime/platform.h>
-@@ -54,7 +57,7 @@ static bool checkLStick(Fighter* fp)
+@@ -30,6 +33,9 @@
+ #include <melee/ft/ft_0DF1.h>
+ #include <melee/ft/ftanim.h>
+ #include <melee/ft/ftattacks4combo.h>
++#ifdef MU_NATIVE
++#include "ftCo_AttackDash.h"
++#endif
+ #include <melee/ft/ftcommon.h>
+ #include <melee/ft/ftdata.h>
+ #include <melee/ft/ftswing.h>
+@@ -54,13 +60,53 @@ static bool checkLStick(Fighter* fp)
      if (fp->input.pressed_buttons & HSD_PAD_A &&
          ABS(fp->input.lstick[0].x) >=
              p_ftCommonData->dash_smash_stick_threshold &&
@@ -67619,7 +67853,84 @@ index 65e5ae546..b6dc09c6c 100644
      {
          return true;
      }
-@@ -146,7 +149,17 @@ void decideFighter(HSD_GObj* gobj, float stick_x_sign, float stick_angle)
+     return false;
+ }
+ 
++#ifdef MU_NATIVE
++/* Tilt stick (mu_controls.h): the C-stick sideways does the forward tilt. Every state that checks for
++ * a forward smash here (ftCo_Wait_IASA, Walk, Squat, Turn, Landing, a jab...) checks for the forward
++ * tilt too, so the C-stick only ever does what A could have done in that state. Facing follows the
++ * C-stick, as the smash's does: backward is a turnaround tilt. With an item: Melee's smash throw (or
++ * swing, or shot), or the light throw when that was chosen. */
++static bool tiltStickS3(Fighter_GObj* gobj, float stick_x_sign, float stick_angle)
++{
++    Fighter* fp = GET_FIGHTER(gobj);
++    if (fp->item_gobj != NULL) {
++        if (!mu_control(fp, MU_CONTROL_TILT_ITEM_TILT_THROW)) {
++            if (checkItemThrow(gobj, stick_x_sign)) {
++                return true;
++            }
++        } else if (fp->input.held_buttons[0] & HSD_PAD_LR || it_8026B30C(fp->item_gobj) == 0 ||
++                   ftCo_800DF21C(fp))
++        {
++            /* As ftCo_AttackS3_CheckInput throws: forward, after turning to the C-stick. */
++            fp->facing_dir = stick_x_sign;
++            ftCo_800957F4(gobj, ftCo_MS_LightThrowF);
++            return true;
++        } else {
++            switch (it_8026B30C(fp->item_gobj)) {
++            case 2:
++                fp->facing_dir = stick_x_sign;
++                ftCo_Attack_800CCF58(gobj, 1);
++                return true;
++            case 3:
++                fp->facing_dir = stick_x_sign;
++                ftCo_Attack_800CDD14(gobj);
++                return true;
++            }
++        }
++    }
++    fp->facing_dir = stick_x_sign;
++    ftCo_AttackS3_EnterTiltStick(gobj, stick_angle);
++    return true;
++}
++#endif
++
+ bool ftCo_AttackS4_CheckInput(Fighter_GObj* gobj)
+ {
+     float stick_x_sign, stick_angle;
+@@ -71,6 +117,11 @@ bool ftCo_AttackS4_CheckInput(Fighter_GObj* gobj)
+     } else if (ftCo_800DF1C8(fp)) {
+         stick_x_sign = fp->input.cstick[0].x >= 0 ? (float) +1 : -1;
+         stick_angle = ftCo_GetCStickAngle(fp);
++#ifdef MU_NATIVE
++        if (mu_control(fp, MU_CONTROL_TILT_STICK)) {
++            return tiltStickS3(gobj, stick_x_sign, stick_angle);
++        }
++#endif
+     } else {
+         return false;
+     }
+@@ -104,6 +155,18 @@ bool ftCo_AttackS4_8008C114(Fighter_GObj* gobj)
+     } else if (ftCo_800DF1C8(fp)) {
+         stick_x_sign = fp->input.cstick[0].x >= 0 ? (float) +1 : -1;
+         stick_angle = ftCo_GetCStickAngle(fp);
++#ifdef MU_NATIVE
++        /* Tilt stick in a dash's first frames, dash attack chosen (mu_controls.h): the C-stick forward
++         * with empty hands is the dash attack, as in Ultimate. Backward, with an item, or with the
++         * forward smash chosen, it stays Melee's forward smash. */
++        if (mu_control(fp, MU_CONTROL_TILT_STICK) && mu_control(fp, MU_CONTROL_TILT_DASH_ATTACK) &&
++            fp->item_gobj == NULL && stick_x_sign * fp->facing_dir > 0)
++        {
++            ftCo_AttackDash_EnterTiltStick(gobj);
++            ftCo_AttackDash_SetMv0(gobj);
++            return true;
++        }
++#endif
+     } else {
+         return false;
+     }
+@@ -146,7 +209,17 @@ void decideFighter(HSD_GObj* gobj, float stick_x_sign, float stick_angle)
  {
      Fighter* fp = GET_FIGHTER(gobj);
      fp->facing_dir = stick_x_sign;
@@ -70737,10 +71048,10 @@ index 899f7bf6c..5e643c91a 100644
  void ftCo_LightThrowAir_Phys(Fighter_GObj* gobj)
  {
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_Jump.c b/src/melee/ft/kinds/ftCommon/ftCo_Jump.c
-index 6c147f0e7..f56a25bd7 100644
+index 6c147f0e7..f05a899a8 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_Jump.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_Jump.c
-@@ -27,11 +27,15 @@
+@@ -27,11 +27,22 @@
  #include <melee/ft/kinds/ftPeach/ftpeachfloat.h>
  #include <melee/ft/types.h>
  
@@ -70751,22 +71062,39 @@ index 6c147f0e7..f56a25bd7 100644
  ftCo_JumpInput ftCo_Jump_GetInput(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
++#ifdef MU_NATIVE
++    /* Tap jump off (mu_controls.h): the stick never starts a jump; X and Y below still do. */
++    if (!mu_control(fp, MU_CONTROL_TAPJUMP_OFF) &&
++        (fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold) &&
++        (fp->active_timer.lstick.y < p_ftCommonData->tap_jump_window))
++#else
      if ((fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold) &&
 -        (fp->x671_timer_lstick_tilt_y < p_ftCommonData->tap_jump_window))
 +        (fp->active_timer.lstick.y < p_ftCommonData->tap_jump_window))
++#endif
      {
          return JumpInput_LStick;
      }
-@@ -69,7 +73,7 @@ bool fn_800CAF78(Fighter_GObj* gobj)
+@@ -67,9 +78,17 @@ bool fn_800CAF78(Fighter_GObj* gobj)
+         return ftCo_800C5A50(gobj);
+     }
  
++#ifdef MU_NATIVE
++    /* Tap jump off (mu_controls.h): out of a dash or run too, only X and Y jump. */
++    if (!mu_control(fp, MU_CONTROL_TAPJUMP_OFF) &&
++        (fp->input.lstick[0].y >=
++         p_ftCommonData->relaxed_tap_jump_threshold) &&
++        (fp->active_timer.lstick.y < p_ftCommonData->tap_jump_window))
++#else
      if ((fp->input.lstick[0].y >=
           p_ftCommonData->relaxed_tap_jump_threshold) &&
 -        (fp->x671_timer_lstick_tilt_y < p_ftCommonData->tap_jump_window))
 +        (fp->active_timer.lstick.y < p_ftCommonData->tap_jump_window))
++#endif
      {
          ftCo_KneeBend_Enter(gobj, JumpInput_LStick);
          return true;
-@@ -140,9 +144,9 @@ void ftCo_800CB110(Fighter_GObj* gobj, bool arg1, f32 jump_mul)
+@@ -140,9 +159,9 @@ void ftCo_800CB110(Fighter_GObj* gobj, bool arg1, f32 jump_mul)
          fp->self_vel.x = h_vel;
      }
  
@@ -70778,7 +71106,7 @@ index 6c147f0e7..f56a25bd7 100644
                      SFX_PAN_MID);
          if (fp->x197C != NULL) {
              ft_PlaySFX(fp, 0x11A, SFX_VOLUME_MAX, SFX_PAN_MID);
-@@ -175,16 +179,31 @@ void ftCo_Jump_IASA(Fighter_GObj* gobj)
+@@ -175,16 +194,31 @@ void ftCo_Jump_IASA(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
  
@@ -70811,7 +71139,7 @@ index 6c147f0e7..f56a25bd7 100644
      RETURN_IF(ftPe_8011BAD8(gobj));
  }
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_JumpAerial.c b/src/melee/ft/kinds/ftCommon/ftCo_JumpAerial.c
-index 2e5d12c1f..0717e62b8 100644
+index 2e5d12c1f..ba8220254 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_JumpAerial.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_JumpAerial.c
 @@ -1,3 +1,6 @@
@@ -70832,16 +71160,31 @@ index 2e5d12c1f..0717e62b8 100644
  /* 0CC3C4 */ static void ftYs_JumpAerial_Anim_Cb(Fighter_GObj* gobj);
  /* 0CC654 */ static void ftNs_JumpAerial_Phys_Cb(Fighter_GObj* gobj);
  
-@@ -47,7 +54,7 @@ bool ft_did_jump(Fighter* fp, bool arg1)
+@@ -45,11 +52,22 @@ void ft_800CB6EC(Fighter* fp, s32 arg1)
+ 
+ bool ft_did_jump(Fighter* fp, bool arg1)
  {
++#ifdef MU_NATIVE
++    /* Tap jump off (mu_controls.h): in the air only X and Y take a jump (also the multi-jumpers',
++     * ftCo_JumpAerialF1.c). */
++    if (fp->x1968_jumpsUsed < fp->co_attrs.max_jumps &&
++        ((!mu_control(fp, MU_CONTROL_TAPJUMP_OFF) &&
++          fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold &&
++          fp->active_timer.lstick.y < p_ftCommonData->tap_jump_window) ||
++         fp->input.pressed_buttons & HSD_PAD_XY) &&
++        !(arg1 && (fp->x68A < p_ftCommonData->x1C)))
++#else
      if (fp->x1968_jumpsUsed < fp->co_attrs.max_jumps &&
          ((fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold &&
 -          fp->x671_timer_lstick_tilt_y < p_ftCommonData->tap_jump_window) ||
 +          fp->active_timer.lstick.y < p_ftCommonData->tap_jump_window) ||
           fp->input.pressed_buttons & HSD_PAD_XY) &&
          !(arg1 && (fp->x68A < p_ftCommonData->x1C)))
++#endif
      {
-@@ -100,6 +107,12 @@ bool ftCo_JumpAerial_CheckInput(Fighter_GObj* gobj, bool arg1)
+         return true;
+     }
+@@ -100,6 +118,12 @@ bool ftCo_JumpAerial_CheckInput(Fighter_GObj* gobj, bool arg1)
              ft_800D2E7C(gobj, &v);
              return true;
          }
@@ -70854,7 +71197,7 @@ index 2e5d12c1f..0717e62b8 100644
          switch (fp->kind) {
          case Ft_Kind_Ness:
              ftNs_JumpAerial_Enter(gobj);
-@@ -147,11 +160,11 @@ void ftCo_800CBAC4(Fighter_GObj* gobj, FtMotionId msid, Vec3* vel, bool arg3)
+@@ -147,11 +171,11 @@ void ftCo_800CBAC4(Fighter_GObj* gobj, FtMotionId msid, Vec3* vel, bool arg3)
      fp->x2221_b7 = true;
      ft_SetVec(&fp->self_vel, vel);
      if (arg3) {
@@ -70868,7 +71211,7 @@ index 2e5d12c1f..0717e62b8 100644
      ft_JumpAerial_Sound(fp, fp->kind);
  }
  
-@@ -178,6 +191,12 @@ void ftCo_JumpAerial_Enter_Basic(Fighter_GObj* gobj)
+@@ -178,6 +202,12 @@ void ftCo_JumpAerial_Enter_Basic(Fighter_GObj* gobj)
  
  void ftNs_JumpAerial_Enter(Fighter_GObj* gobj)
  {
@@ -70881,7 +71224,7 @@ index 2e5d12c1f..0717e62b8 100644
      ftCo_DatAttrs* co_attrs_r31;
      Fighter* fp = GET_FIGHTER(gobj);
      Vec3 vel = { 0.0F, 0.0F, 0.0F };
-@@ -199,6 +218,12 @@ void ftNs_JumpAerial_Enter(Fighter_GObj* gobj)
+@@ -199,6 +229,12 @@ void ftNs_JumpAerial_Enter(Fighter_GObj* gobj)
  
  void ftYs_JumpAerial_Enter(Fighter_GObj* gobj)
  {
@@ -70894,7 +71237,7 @@ index 2e5d12c1f..0717e62b8 100644
      // mv.co.jumpaerial.x0 could also be mv.ys.jumpaerial.x0
      Fighter* fp = GET_FIGHTER(gobj);
      ftYoshiAttributes* ys_attrs = fp->dat_attrs;
-@@ -227,6 +252,12 @@ void ftYs_JumpAerial_Enter(Fighter_GObj* gobj)
+@@ -227,6 +263,12 @@ void ftYs_JumpAerial_Enter(Fighter_GObj* gobj)
  
  void ftPe_JumpAerial_Enter(Fighter_GObj* gobj)
  {
@@ -70907,7 +71250,7 @@ index 2e5d12c1f..0717e62b8 100644
      ftCo_DatAttrs* co_attrs;
      Fighter* fp_r31 = GET_FIGHTER(gobj);
      FtMotionId msid;
-@@ -249,6 +280,12 @@ void ftPe_JumpAerial_Enter(Fighter_GObj* gobj)
+@@ -249,6 +291,12 @@ void ftPe_JumpAerial_Enter(Fighter_GObj* gobj)
  
  void ftMt_JumpAerial_Enter(Fighter_GObj* gobj)
  {
@@ -70920,7 +71263,7 @@ index 2e5d12c1f..0717e62b8 100644
      ftCo_DatAttrs* co_attrs;
      Fighter* fp_r31 = GET_FIGHTER(gobj);
      FtMotionId msid;
-@@ -288,12 +325,22 @@ void ftYs_JumpAerial_Anim_Cb(Fighter_GObj* gobj)
+@@ -288,12 +336,22 @@ void ftYs_JumpAerial_Anim_Cb(Fighter_GObj* gobj)
  void ftCo_JumpAerial_IASA(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -70944,7 +71287,7 @@ index 2e5d12c1f..0717e62b8 100644
      RETURN_IF(ftPe_8011BA54(gobj));
      RETURN_IF(ftCo_800CB870(gobj));
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_JumpAerialF1.c b/src/melee/ft/kinds/ftCommon/ftCo_JumpAerialF1.c
-index f9a7334d5..9dc5d378f 100644
+index f9a7334d5..eeb404cd3 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_JumpAerialF1.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_JumpAerialF1.c
 @@ -1,3 +1,6 @@
@@ -70963,7 +71306,23 @@ index f9a7334d5..9dc5d378f 100644
                  vel.z = 0.0F;
                  ft_800D2E7C(gobj, &vel);
              } else {
-@@ -81,6 +84,12 @@ bool ftCo_800D730C(Fighter_GObj* gobj, bool arg1)
+@@ -61,8 +64,15 @@ bool ftCo_800D730C(Fighter_GObj* gobj, bool arg1)
+             r29 = 0;
+         }
+         r4 = 1;
++#ifdef MU_NATIVE
++        /* Tap jump off (mu_controls.h): the next jump comes from X or Y held, never the stick. */
++        if (!(!mu_control(fp, MU_CONTROL_TAPJUMP_OFF) &&
++              fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold) &&
++            !(fp->input.held_buttons[0] & 0xC00))
++#else
+         if (!(fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold) &&
+             !(fp->input.held_buttons[0] & 0xC00))
++#endif
+         {
+             r4 = 0;
+         }
+@@ -81,6 +91,12 @@ bool ftCo_800D730C(Fighter_GObj* gobj, bool arg1)
  
  void ftCo_800D74A4(Fighter_GObj* gobj)
  {
@@ -70976,7 +71335,7 @@ index f9a7334d5..9dc5d378f 100644
      Vec3 vel;
      Fighter* fp;
      struct Fighter_x2D0_t* tmp;
-@@ -100,7 +109,7 @@ void ftCo_800D74A4(Fighter_GObj* gobj)
+@@ -100,7 +116,7 @@ void ftCo_800D74A4(Fighter_GObj* gobj)
      vel.x = fp->input.lstick[0].x * p->x8;
      tmp = fp->x2D0;
      tmp = (struct Fighter_x2D0_t*) ((s32*) tmp + ftCo_800D7268(fp));
@@ -71717,10 +72076,26 @@ index 2ea0e06d7..f6e4000da 100644
      ftCo_SpawnEf(gobj, fp->parts[FtPart_TopN].joint, 1, 1053);
  }
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_PassiveWall.c b/src/melee/ft/kinds/ftCommon/ftCo_PassiveWall.c
-index f05e8ef34..0faad6c8a 100644
+index f05e8ef34..a7ac3ccbd 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_PassiveWall.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_PassiveWall.c
-@@ -83,8 +83,8 @@ void ftCo_800C1E64(Fighter_GObj* gobj, int msid, int timer, int vel_y_exponent,
+@@ -52,8 +52,15 @@ bool ftCo_800C1D38(Fighter_GObj* gobj)
+ 
+ bool ftCo_800C1E0C(Fighter* fp)
+ {
++#ifdef MU_NATIVE
++    /* Tap jump off (mu_controls.h): the wall tech jump comes from a recent X or Y, never the stick. */
++    if (fp->x67E < p_ftCommonData->x250 ||
++        (!mu_control(fp, MU_CONTROL_TAPJUMP_OFF) &&
++         fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold))
++#else
+     if (fp->x67E < p_ftCommonData->x250 ||
+         fp->input.lstick[0].y >= p_ftCommonData->tap_jump_threshold)
++#endif
+     {
+         return true;
+     }
+@@ -83,8 +90,8 @@ void ftCo_800C1E64(Fighter_GObj* gobj, int msid, int timer, int vel_y_exponent,
      ftKb_SpecialN_800F1F1C(gobj, &ef_offset);
      Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0.0F,
                                timer != 0 ? 0.0F : 1.0F, 0.0F, NULL);
@@ -71731,7 +72106,7 @@ index f05e8ef34..0faad6c8a 100644
      fp->mv.co.passivewall.timer = timer;
      fp->mv.co.passivewall.x4 = 0;
      fp->mv.co.passivewall.x8 = false;
-@@ -103,7 +103,7 @@ void ftCo_800C1E64(Fighter_GObj* gobj, int msid, int timer, int vel_y_exponent,
+@@ -103,7 +110,7 @@ void ftCo_800C1E64(Fighter_GObj* gobj, int msid, int timer, int vel_y_exponent,
              -(fp->x68C_transNPos.z * -fp->facing_dir - pos_x_offset);
      }
      ft_80081F2C(gobj);
@@ -71740,7 +72115,7 @@ index f05e8ef34..0faad6c8a 100644
      ftCommon_8007EBAC(fp, 12, 0);
      if (timer == 0) {
          ft_PlaySFX(fp, 3, 0x7F, 0x40);
-@@ -117,7 +117,7 @@ static inline void inlineA0(Fighter_GObj* gobj)
+@@ -117,7 +124,7 @@ static inline void inlineA0(Fighter_GObj* gobj)
      Fighter* fp = GET_FIGHTER(gobj);
      Fighter_ChangeMotionState(gobj, ftCo_MS_PassiveWallJump, Ft_MF_None,
                                fp->cur_anim_frame, 1, 0, NULL);
@@ -119740,7 +120115,7 @@ index 2adba8159..1d2b33edb 100644
  
      gm_InitVsMode(temp_r31);
 diff --git a/src/melee/gm/gmvs.c b/src/melee/gm/gmvs.c
-index b2fc84a75..5fa1385bd 100644
+index b2fc84a75..e21eb455f 100644
 --- a/src/melee/gm/gmvs.c
 +++ b/src/melee/gm/gmvs.c
 @@ -1,4 +1,13 @@
@@ -121394,7 +121769,7 @@ index b2fc84a75..5fa1385bd 100644
                      lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
                  }
              }
-@@ -1989,6 +2437,21 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1989,6 +2437,24 @@ void fn_8016E730(StartMeleeData* arg0)
      VsSceneController* r30;
  
      db_Setup();
@@ -121408,6 +121783,9 @@ index b2fc84a75..5fa1385bd 100644
 +    }
 +    /* Console rollback: arm deterministic initialization, preserving rules and session RNG. */
 +    mu_console_match_setup();
++    /* Tap jump off and tilt stick (shim/mu_controls.c): every player's choice for this match, taken
++     * once, before the replay or the online match is set up, so a recording carries what was played. */
++    mu_controls_match_start();
 +    /* Slippi playback, RestoreGameInfo: the replay's match data, seed and per-frame seed process. */
 +    mu_replay_start_melee(arg0);
 +    /* Slippi online, InitOnlinePlay: the negotiated match, its seed, delay and pad exchange. */
@@ -121416,7 +121794,7 @@ index b2fc84a75..5fa1385bd 100644
      gm_SetDbPauseInputHandlers(gm_AnyControllerPressedStart,
                                 gm_AnyControllerPressedZ);
      gm_SetPreGObjProcCallback(db_RunEveryFrame);
-@@ -1997,6 +2460,9 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1997,6 +2463,9 @@ void fn_8016E730(StartMeleeData* arg0)
      Camera_Init(70);
      Camera_Create();
      fn_8016DCC0(arg0);
@@ -121426,7 +121804,7 @@ index b2fc84a75..5fa1385bd 100644
      lbRefract_800222A4();
      lb_8000FCDC();
      efLib_Init();
-@@ -2010,7 +2476,7 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2010,7 +2479,7 @@ void fn_8016E730(StartMeleeData* arg0)
  
      r30 = &controller;
  
@@ -121435,7 +121813,7 @@ index b2fc84a75..5fa1385bd 100644
      Item_80266F70();
      Item_80266FCC();
      it_8026D018();
-@@ -2022,13 +2488,20 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2022,13 +2491,20 @@ void fn_8016E730(StartMeleeData* arg0)
      Ground_EnableMatchCamera();
      Camera_8002F3AC();
      fn_801A1134();
@@ -121458,7 +121836,7 @@ index b2fc84a75..5fa1385bd 100644
      if (arg0->rules.on_match_start != NULL) {
          arg0->rules.on_match_start();
      }
-@@ -2052,6 +2525,17 @@ void gm_Scene_Vs_OnEnter(void* arg0)
+@@ -2052,6 +2528,17 @@ void gm_Scene_Vs_OnEnter(void* arg0)
          ifStatus_802F6EA4(3, -1, -1, 0, (void*) fn_8016B7B4, fn_8016B7F8);
      }
      ifTime_CreateTimers();
@@ -121476,7 +121854,7 @@ index b2fc84a75..5fa1385bd 100644
      ifStatus_802F665C(tmp->rules.x0_3);
  }
  
-@@ -2059,7 +2543,7 @@ struct EndMeleeData {
+@@ -2059,7 +2546,7 @@ struct EndMeleeData {
      /* 00 */ u32 x0;
      /* 04 */ u32 x4;
      /* 08 */ u32 x8;
@@ -121485,7 +121863,7 @@ index b2fc84a75..5fa1385bd 100644
  };
  
  static inline bool gm_8016E9C8_inline(void)
-@@ -2086,43 +2570,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
+@@ -2086,43 +2573,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -121565,7 +121943,7 @@ index b2fc84a75..5fa1385bd 100644
  }
  
  void gm_Scene_SuddenDeath_OnEnter(void* user_data)
-@@ -2145,7 +2655,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
+@@ -2145,7 +2658,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
      grStadium_801D410C();
      un_802FD404();
      tmp2 = &controller;
@@ -121574,7 +121952,7 @@ index b2fc84a75..5fa1385bd 100644
      Stage_802252E4(tmp2->start.stkind, NULL);
      grStadium_801D4040();
      if (!controller.start.x1_3) {
-@@ -2187,7 +2697,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2187,7 +2700,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
      float var_f1;
      PAD_STACK(8);
  
@@ -121583,7 +121961,7 @@ index b2fc84a75..5fa1385bd 100644
          Player_GetPlayerSlotType(arg0) == Gm_PKind_NA &&
          Player_GetEntity(arg0) == NULL)
      {
-@@ -2211,7 +2721,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2211,7 +2724,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
          Player_80032768(arg0, &sp18);
          setPlayerUnk45(arg0);
          Player_80031AD0(arg0);
@@ -121592,7 +121970,7 @@ index b2fc84a75..5fa1385bd 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_8016E124();
-@@ -2225,7 +2735,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2225,7 +2738,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
  
  bool fn_8016EF98(int arg0)
  {
@@ -121603,7 +121981,7 @@ index b2fc84a75..5fa1385bd 100644
          ifStatus_802F6788(arg0);
          Player_80031EBC(arg0);
          Player_SetSlottype(arg0, Gm_PKind_NA);
-@@ -2281,10 +2793,20 @@ int gm_8016F120(int arg0)
+@@ -2281,10 +2796,20 @@ int gm_8016F120(int arg0)
  
  void fn_8016F140(int arg0)
  {

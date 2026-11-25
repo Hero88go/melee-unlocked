@@ -287,6 +287,13 @@ void mu_te_debug_menu_save(void);
 unsigned int mu_game_options2(void);
 int mu_te2(unsigned int feature);   /* a second-word 20XX TE feature is in effect */
 int mu_option2_offline(unsigned int bit);   /* a plain second-word option is in effect (offline, no TE master) */
+/* shim/mu_controls.c: tap jump off and tilt stick (port/runtime/abi/mu_controls.h). The host's per-slot
+ * bits are taken once as each match starts (gm/gmvs.c); mu_control says whether this fighter plays
+ * with that bit this match (a person's fighter only). */
+#include "mu_controls.h"
+struct Fighter;
+void mu_controls_match_start(void);
+int mu_control(const struct Fighter* fp, unsigned int bit);
 /* "Freeze Pokemon Stadium (offline only)" (Game tab, Stages): Slippi's Frozen Pokemon
  * Stadium, offline. Never in playback: there the replay's own isFrozenPS counts. */
 int mu_stadium_frozen_option(void);

@@ -97,6 +97,10 @@ enum NetMsg : uint8_t {
   // pads, slippi_port_inputs.h), so between builds with the third capability byte it rides 0xE9 and
   // caps3 bit 0x10, and toward those two releases 0xE5 (NP_MSG_MU_WARMUP_UPSTREAM).
   NP_MSG_MU_WARMUP = 0xE9,
+  // Melee Unlocked only: tap jump off and tilt stick offered and answered for the match
+  // (port/runtime/host/controls_wire.h), sent only to a peer whose build message carried
+  // MU_BUILD_CAPS4_CONTROLS. Reliable and ordered ahead of each selection (0x82).
+  NP_MSG_MU_CONTROLS = 0xEA,
 };
 static_assert(NP_MSG_MU_SETUP_HASH == MU_SETUP_HASH_MSG, "one setup hash id");
 // The warm-up message's id on the wire toward (and from) Melee Unlocked 0.9.215 and 0.9.216, which have
@@ -113,6 +117,9 @@ constexpr uint8_t MU_BUILD_CAPS3_NO_PAUSE = 0x40;
 // 0x80: this build plays an arena free-for-all (a Teams match made with teams off, slippi_arena.h). A
 // free-for-all is refused unless every peer sends it: a build without it would start a teams game.
 constexpr uint8_t MU_BUILD_CAPS3_ARENA_FFA = 0x80;
+// MU_BUILD fourth capability byte, after the port colours (builds before it stop reading at the colours):
+// 0x01 this game plays tap jump off and tilt stick and takes NP_MSG_MU_CONTROLS (controls::advertise).
+constexpr uint8_t MU_BUILD_CAPS4_CONTROLS = 0x01;
 // First capability byte bit Melee Unlocked 0.9.215 and 0.9.216 read as warm-up (their 0xE5 messages).
 constexpr uint8_t MU_BUILD_CAPS_UPSTREAM_WARMUP = 0x80;
 
@@ -386,6 +393,7 @@ class NetplayClient {
                        bool warmup = false;           // takes and sends warm-up messages (NP_MSG_MU_WARMUP)
                        bool pause_rule = false, no_pause = false;   // MU_BUILD_CAPS3_PAUSE_RULE / _NO_PAUSE
                        bool arena_ffa = false;        // MU_BUILD_CAPS3_ARENA_FFA
+                       bool controls = false;         // MU_BUILD_CAPS4_CONTROLS (NP_MSG_MU_CONTROLS)
                        int8_t port_colour[2] = {-1, -1}; };   // their port colour choices (1.0.2 on), -1 none
   // Warm-up (slippi_warmup.h): tell every opponent whose build takes it that this player is warming up
   // in Training (true) or on the character select (false), and the character picked there (Slippi's
@@ -444,6 +452,12 @@ class NetplayClient {
   // takes them (false otherwise); PopGecko takes the oldest received.
   bool SendGecko(const std::vector<uint8_t>& message);
   bool PopGecko(std::vector<uint8_t>& out);
+  // Tap jump off and tilt stick (controls.h): SendControls queues one controls_wire message for every
+  // peer whose build takes them (the send loop drops it for the rest); PopControls takes the oldest
+  // received, already checked to come from the port it names.
+  bool SendControls(const std::vector<uint8_t>& message);
+  bool PopControls(std::vector<uint8_t>& out);
+  bool yougame_peer() const { return yougame_peer_.load(); }
 
  private:
   struct FrameTiming { int32_t frame = 0; uint64_t time_us = 0; };
@@ -548,6 +562,8 @@ class NetplayClient {
   std::deque<std::vector<uint8_t>> arena_inbox_;
   std::mutex gecko_mutex_;                       // gecko_inbox_ (network thread in, game thread out)
   std::deque<std::vector<uint8_t>> gecko_inbox_;
+  std::mutex controls_mutex_;                    // controls_inbox_ (network thread in, game thread out)
+  std::deque<std::vector<uint8_t>> controls_inbox_;
   std::atomic<int8_t> remote_warmup_[REMOTE_PLAYER_MAX] = {-1, -1, -1};   // NP_MSG_MU_WARMUP, by remote index
   std::atomic<bool> yougame_peer_{false};
   std::atomic<int32_t> remote_pick_[REMOTE_PLAYER_MAX] = {-1, -1, -1};    // and the pick it carried

@@ -36,5 +36,17 @@ int main() {
   CHECK(std::strcmp(ranked_start_log(true), "ranked: auto L-cancel off (enforced; saved setting on)") == 0);
   CHECK(std::strcmp(ranked_start_log(false), "ranked: auto L-cancel off (enforced; saved setting off)") == 0);
   CHECK(std::strcmp(ranked_hint, "Auto L-cancel: off (enforced in Ranked).") == 0);
+  // The opponent's OK (controls.h, YouGame Unranked): without it every answer is what it was; with it
+  // only Unranked opens, never Ranked, Teams, Party or a vanilla-only session.
+  for (int mode : {-1, 0, 1, 2, 3, 4, 5}) {
+    for (bool saved : {false, true}) {
+      for (bool vanilla : {false, true}) {
+        CHECK(automatic_allowed(mode, saved, vanilla, false) == automatic_allowed(mode, saved, vanilla));
+        CHECK(automatic_allowed(mode, saved, vanilla, true) == (saved && !vanilla && (mode == -1 || mode == 1 || mode == 2)));
+      }
+    }
+    CHECK((auto_suppressed_mode_agreed(mode, false) == nullptr) == (auto_suppressed_mode(mode) == nullptr));
+    CHECK((auto_suppressed_mode_agreed(mode, true) == nullptr) == (mode == -1 || mode == 1 || mode == 2));
+  }
   std::puts("L-cancel mode/setting matrix, ranked toggle refusal and notices passed");
 }

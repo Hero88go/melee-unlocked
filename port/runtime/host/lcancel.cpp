@@ -39,6 +39,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "lcancel.h"
 #include "gameplay_policy.h"
+#include "controls.h"   // automatic L-cancel agreed with a YouGame Unranked opponent
 #include "test_env.h"
 #include "../abi/mu_lcancel_flash.h"
 
@@ -355,7 +356,7 @@ void set_log_path(const std::string& path) {
 }
 
 const char* auto_suppressed_mode() {
-  return policy::auto_suppressed_mode(slippi::online::session_mode());
+  return policy::auto_suppressed_mode_agreed(slippi::online::session_mode(), controls::lcancel_agreed());
 }
 
 bool online_session_pending() {
@@ -367,7 +368,7 @@ bool online_session_pending() {
 
 bool automatic_active_online() {
   return automatic_enabled() && !host::gameplay::vanilla_only() &&
-         policy::automatic_allowed(slippi::online::session_mode(), true);
+         policy::automatic_allowed(slippi::online::session_mode(), true, false, controls::lcancel_agreed());
 }
 
 void apply(host::PadState pads[4], bool allow_automatic) {
@@ -392,7 +393,8 @@ void apply(host::PadState pads[4], bool allow_automatic) {
   const uint8_t press = inject_value(cal);
   const int window = lcancel_window_of(view);
   const char* suppressed = auto_suppressed_mode();
-  const bool auto_allowed = allow_automatic && policy::automatic_allowed(slippi::online::session_mode(), want_auto);
+  const bool auto_allowed = allow_automatic && policy::automatic_allowed(slippi::online::session_mode(), want_auto, false,
+                                                                         controls::lcancel_agreed());
   // With the automatic press actually doing the L-cancel there is nothing to report, so the flash
   // is off entirely rather than merely never firing. It comes back the moment the press is
   // suppressed (a matchmaking mode), which is exactly when the player wants the feedback again.
@@ -400,11 +402,13 @@ void apply(host::PadState pads[4], bool allow_automatic) {
   if (indicate != g_owner_tracking) { gx::set_owner_tracking(indicate); g_owner_tracking = indicate; }
   if (!indicate && g_tints_set) { gx::clear_player_tints(); g_tints_set = false; for (auto& f : g_flash) f.active = false; }
   if (g_log) {
-    static int last_mode = -2;
+    static int last_mode = -2, last_allowed = -1;
     const int mode = slippi::online::session_mode();
-    if (mode != last_mode) {
+    if (mode != last_mode || (int)auto_allowed != last_allowed) {   // also when an opponent's OK switches it on (controls.h)
       last_mode = mode;
-      host::log("lcancel: session mode %d (%s), auto L-cancel %s", mode, suppressed ? suppressed : "offline or Direct",
+      last_allowed = auto_allowed;
+      host::log("lcancel: session mode %d (%s), auto L-cancel %s", mode,
+                suppressed ? suppressed : mode >= 0 && mode != 2 ? "agreed with the opponent" : "offline or Direct",
                 want_auto ? (auto_allowed ? "allowed" : "suppressed") : "off");
     }
   }

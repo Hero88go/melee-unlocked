@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "controls.h"   // tap jump off and tilt stick: settings, the online agreement
+#include "controls_policy.h"   // which options need an answer (main_bits)
 #include "walter_egg.h"
 #include "settings_search.h"
 #include "gecko_session.h"
@@ -2184,8 +2186,14 @@ static void draw_lcancel_overlays() {
       ImGui::Begin("LCancelModeNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
       clamp_overlay_window();
+      const controls::View agreement = controls::view();
       if (lcancel::automatic_setting_locked())
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", lcancel::policy::ranked_hint);
+      else if (agreement.active && (agreement.mine & MU_CONTROL_AUTO_LCANCEL))
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s",
+                           (mu_controls_slot(agreement.word, slippi::online::local_player_index()) & MU_CONTROL_AUTO_LCANCEL)
+                               ? "Auto L-cancel: your opponent agreed. It is on this match."
+                               : "Auto L-cancel: asking your opponent. Off this match unless they agree.");
       else
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
                            "You currently have auto L-cancel on, but we have disabled it for %s mode", lower.c_str());
@@ -2618,6 +2626,15 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 6);
       else if (key == "lcancel_success_flash") saved_lcancel_success = std::clamp(std::stoi(value), 0, 2);
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
+      else if (key == "tapjumpoff" || key == "tiltstick" || key == "tiltdash" || key == "tiltitem") {
+        controls::Settings c = controls::settings();
+        const bool on = value == "1";
+        if (key == "tapjumpoff") c.tapjump_off = on;
+        else if (key == "tiltstick") c.tilt_stick = on;
+        else if (key == "tiltdash") c.tilt_dash_attack = on;
+        else c.tilt_item_tilt_throw = on;
+        controls::set_settings(c);
+      }
       else if (key == "palstockicons") gecko::option_pal_stock_icons = value == "1";
       else if (key == "noscreenshake") gecko::option_no_screen_shake = value == "1";
       else if (key == "screenshake") gecko::option_screen_shake_percent = std::clamp(std::stoi(value), 0, 200);
@@ -2890,6 +2907,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   texture_packs_off.erase(std::unique(texture_packs_off.begin(), texture_packs_off.end()), texture_packs_off.end());
   texpack::set_disabled_packs(std::move(texture_packs_off));
   if (options.prewarm_only) return;   // no gameplay files or services in a graphics-only run
+  // Answers to opponents' control options (controls.h), remembered beside the settings file.
+  controls::set_memory_path((std::filesystem::path(options.settings_path).parent_path() / "controls-consent.txt").u8string());
   // The player's Gecko codes live beside the settings file.
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::set_code_patches_allowed(!options.native_source);   // the Static Recomp can run a patched function from RAM
@@ -5121,6 +5140,75 @@ static void draw_gecko_offer_panel() {
   ImGui::End();
 }
 
+// Tap jump off and tilt stick (controls.h) on the online character select: an opponent's options this
+// player has not answered (Allow / Decline, remembered for that opponent), a short notice when they were
+// allowed because this player uses the same ones (with "Not this match"), and one line saying what the
+// match plays. The game has the controller here (and Slippi's chat has the D-pad), so the buttons take
+// the mouse; the same answers are in Settings > Game, which a controller can reach.
+static void draw_controls_panel() {
+  const controls::View v = controls::view();
+  if (!v.active || slippi::online::is_online_match() || !slippi::online::in_online_menus()) return;
+  static std::map<int, std::pair<unsigned, double>> own_seen;   // port -> (bits, when the notice appeared)
+  const double now = ImGui::GetTime();
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  std::vector<const controls::PeerView*> asking, own;
+  for (const auto& peer : v.peers) {
+    if (peer.mine == controls::Answer::Ask) asking.push_back(&peer);
+    if (peer.mine == controls::Answer::YesOwn) {
+      auto& seen = own_seen[peer.port];
+      if (seen.first != peer.bits) seen = {peer.bits, now};
+      if (now - seen.second < 10.0) own.push_back(&peer);
+    }
+  }
+  const std::string chord = host::settings_shortcut::chord_name(host::settings_shortcut::kSettingsChord);
+  if (!asking.empty() || !own.empty()) {
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.30f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(560.0f, display.x - 40.0f), 0.0f), ImGuiCond_Always);
+    ImGui::Begin("Control options##online_controls", nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    for (const auto* peer : asking) {
+      ImGui::PushID(peer->port);
+      const std::string who = peer->name.empty() ? "Your opponent" : peer->name;
+      ImGui::TextWrapped("%s wants to play with: %s.", who.c_str(), controls::describe(peer->bits).c_str());
+      ImGui::TextWrapped("Allow it? Your answer is remembered for this opponent.");
+      if (ImGui::Button("Allow")) controls::answer(peer->port, true);
+      ImGui::SameLine();
+      if (ImGui::Button("Decline")) controls::answer(peer->port, false);
+      ImGui::PopID();
+      ImGui::Separator();
+    }
+    if (!asking.empty())
+      ImGui::TextDisabled("Controller: Settings (%s) > Game. Locking in without answering keeps the default controls.", chord.c_str());
+    for (const auto* peer : own) {
+      ImGui::PushID(1000 + peer->port);
+      const std::string who = peer->name.empty() ? "Your opponent" : peer->name;
+      ImGui::TextWrapped("%s plays with %s. Allowed because you use it too.", who.c_str(), controls::describe(peer->bits).c_str());
+      if (ImGui::Button("Not this match")) controls::decline_this_match(peer->port);
+      ImGui::PopID();
+    }
+    ImGui::End();
+  }
+  // What the match will play, as it stands now.
+  bool anything = v.mine != 0;
+  for (const auto& peer : v.peers) anything |= peer.bits != 0;
+  if (!anything) return;
+  std::string line;
+  if (v.word) {
+    line = "Control options this match:";
+    for (int port = 0; port < 4; ++port)
+      if (const unsigned bits = mu_controls_slot(v.word, port))
+        line += " P" + std::to_string(port + 1) + " " + controls::describe(bits) + ".";
+  } else {
+    line = "Default controls this match unless everyone agrees.";
+  }
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const ImVec2 size = ImGui::CalcTextSize(line.c_str());
+  const ImVec2 at(display.x * 0.5f - size.x * 0.5f, display.y - size.y - 14.0f);
+  dl->AddRectFilled(ImVec2(at.x - 10, at.y - 4), ImVec2(at.x + size.x + 10, at.y + size.y + 4), IM_COL32(10, 12, 24, 210), 6.0f);
+  dl->AddText(at, IM_COL32(235, 240, 250, 255), line.c_str());
+}
+
 static void draw_arena_panel(RenderOptions& options, const host::PadState* pads, const host::PadState& followed, bool have_followed) {
   // The local player's controller: any port can drive the online select's hand (a controller in
   // port 2 moves it while port 1 reads as connected and idle, as with an adapter), so the panel
@@ -5374,6 +5462,10 @@ static bool write_settings_file_impl(const SettingsState& state, const RenderOpt
        << "\nlcancel_success_flash " << mu_lcancel_success_color(options.te_options2)
        << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
        << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
+       << "\ntapjumpoff " << (controls::settings().tapjump_off ? 1 : 0)
+       << "\ntiltstick " << (controls::settings().tilt_stick ? 1 : 0)
+       << "\ntiltdash " << (controls::settings().tilt_dash_attack ? 1 : 0)
+       << "\ntiltitem " << (controls::settings().tilt_item_tilt_throw ? 1 : 0)
        << "\npalstockicons " << (gecko::option_pal_stock_icons ? 1 : 0)
        << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
        << "\nscreenshake " << gecko::option_screen_shake_percent
@@ -11175,6 +11267,95 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // the local pad before the game reads it, so it is transmitted like any other input and both
     // clients compute the same landing lag: it cannot desync. It is still gated to offline and
     // Direct because it is a fairness question, not a safety one.
+    // ---- Tap jump off and tilt stick (controls.h) ----
+    // They change the game's own decisions (sourceport/game/shim/mu_controls.c), never the inputs, so
+    // DI and everything else that reads the sticks stays the game's. Offline they apply to everyone
+    // playing on this PC; online only where controls_policy.h allows them and only when every player
+    // agrees for the match. A change made during a match counts from the next one.
+    settings_section("Tap jump and tilt stick");
+    {
+      controls::Settings c = controls::settings();
+      const bool engine = controls::engine_supported();
+      const bool vanilla = host::gameplay::vanilla_only();
+      bool changed_controls = false;
+      ImGui::BeginDisabled(!engine || vanilla);
+      if (settings_toggle("Tap jump off", &c.tapjump_off)) changed_controls = true;
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Pushing the control stick up does not jump: X and Y do.\n"
+                          "Up tilt and up smash with the stick work as always, and DI and every\n"
+                          "other use of the stick are untouched. Not available in YouGame Ranked.");
+      if (settings_toggle("Tilt stick", &c.tilt_stick)) changed_controls = true;
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The C-stick does tilt attacks instead of smash attacks, wherever A could tilt\n"
+                          "(standing, walking, crouching, turning, landing, out of a jab). Backward is a\n"
+                          "turnaround tilt. In the air it still does aerials. Smash attacks with the\n"
+                          "control stick and A are unchanged.");
+      ImGui::BeginDisabled(!c.tilt_stick);
+      int dash = c.tilt_dash_attack ? 0 : 1;
+      static const char* const dash_items[] = {"Dash attack", "Forward smash"};
+      if (settings_combo("Tilt stick in a dash", &dash, dash_items, 2)) { c.tilt_dash_attack = dash == 0; changed_controls = true; }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The C-stick forward in a dash's first frames, with empty hands.\n"
+                          "Dash attack: as in Ultimate. Forward smash: as in Melee.");
+      int item = c.tilt_item_tilt_throw ? 1 : 0;
+      static const char* const item_items[] = {"Smash throw", "Light throw"};
+      if (settings_combo("Tilt stick with an item", &item, item_items, 2)) { c.tilt_item_tilt_throw = item == 1; changed_controls = true; }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The C-stick while holding an item. Smash throw: as in Melee.\n"
+                          "Light throw: the gentle throw A gives, toward the C-stick.");
+      ImGui::EndDisabled();
+      ImGui::EndDisabled();
+      if (changed_controls) {
+        controls::set_settings(c);
+        host::log("settings: controls %s%s", controls::describe(controls::own_bits()).c_str(),
+                  slippi::online::is_online_match() || slippi::online::session_mode() >= 0 ? " (from the next match)" : "");
+        changed = true;
+      }
+      if (!engine) settings_hint("Source Port only.");
+      else if (vanilla) settings_hint("Disabled for this vanilla-only session.");
+#ifdef MELEE_NO_SLIPPI
+      settings_hint("(NOTE: Works offline)");
+#else
+      settings_hint("(NOTE: Offline always. Online only in YouGame Unranked, Friends and Doubles when every player "
+                    "agrees; YouGame Ranked: tilt stick only. Never in Slippi modes.)");
+      // The running online agreement: what each opponent plays with, and this player's answer.
+      const controls::View cv = controls::view();
+      if (cv.active) {
+        const bool fixed = cv.ready || slippi::online::is_online_match();
+        for (const auto& peer : cv.peers) {
+          ImGui::PushID(peer.port);
+          const std::string who = peer.name.empty() ? "P" + std::to_string(peer.port + 1) : peer.name;
+          ImGui::TextWrapped("%s plays with: %s", who.c_str(), controls::describe(peer.bits).c_str());
+          if (controls::policy::main_bits(peer.bits) != 0) {
+            const char* answer = peer.mine == controls::Answer::Ask ? "not answered yet"
+                               : peer.mine == controls::Answer::Yes ? "allowed"
+                               : peer.mine == controls::Answer::YesOwn ? "allowed (you use it too)"
+                               : peer.mine == controls::Answer::NoThisMatch ? "declined for this match"
+                               : peer.mine == controls::Answer::NoLocked ? "declined (you locked in first)"
+                               : peer.mine == controls::Answer::No ? "declined" : "waiting";
+            settings_hint("Your answer: %s", answer);
+            ImGui::BeginDisabled(fixed);
+            if (settings_widgets::Button("Allow")) controls::answer(peer.port, true);
+            ImGui::SameLine();
+            if (settings_widgets::Button("Decline")) controls::answer(peer.port, false);
+            ImGui::SameLine();
+            if (settings_widgets::Button("Not this match")) controls::decline_this_match(peer.port);
+            ImGui::EndDisabled();
+          }
+          ImGui::PopID();
+        }
+        settings_hint(cv.word ? "This match: agreed control options." : "This match: default controls unless everyone agrees.");
+        if (fixed) settings_hint("Locked in: answers now count from the next match.");
+      }
+      const size_t remembered = controls::remembered_count();
+      if (remembered) {
+        if (settings_widgets::Button("Forget remembered answers")) controls::forget_all();
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("%zu opponent%s remembered. Forgetting asks again next time.", remembered, remembered == 1 ? "" : "s");
+      }
+#endif
+    }
+
     settings_section("L-cancel");   // its own section, not under Stage effects (owner, 0.9.210)
     {
       if (settings_lcancel_flash(options)) changed = true;
@@ -12687,6 +12868,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #ifndef MELEE_NO_SLIPPI
   if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active()) draw_arena_panel(options, pads, pad, have_pad);
   if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active()) draw_gecko_offer_panel();
+  if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active()) draw_controls_panel();
 #endif
   if (!state.fill_window && !state.open && !state.menu_open && !replay_control::active() && walter_egg::active()) {
     const ImVec2 screen = ImGui::GetIO().DisplaySize;

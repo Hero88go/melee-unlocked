@@ -1,6 +1,7 @@
 ﻿// Native Melee port entry point.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
+#include "controls.h"   // hidden test runs: the control options test switch
 #include "test_env.h"
 #include <functional>
 #include <windows.h>
@@ -1904,7 +1905,7 @@ static int melee_main(int argc, char** argv) {
   unsigned long settings_standby = 0;   // the launcher's process id: start hidden, show when it asks
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--hidden" || arg == "--headless") automated = true;
+    if (arg == "--hidden" || arg == "--headless") { automated = true; controls::set_test_run(true); }
     if (arg == "--settings-path" && i+1 < argc) gfx.settings_path = argv[++i];
     // Loading the settings logs, and the log file opens on its first line: without this the lines
     // before the full parse went to melee_port.log and so did the rest of the run.

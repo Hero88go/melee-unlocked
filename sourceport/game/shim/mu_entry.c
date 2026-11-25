@@ -55,6 +55,13 @@ unsigned int mu_game_options(void)
 #endif
 }
 
+/* Version 34: tap jump off and tilt stick (mu_controls.h), one byte per player slot; 0 from an older host.
+ * Asked once as each match starts (shim/mu_controls.c). */
+unsigned int mu_control_flags(void)
+{
+    return mu_host && mu_host->version >= 34 && mu_host->control_flags ? mu_host->control_flags() : 0;
+}
+
 unsigned int mu_game_options2(void)
 {
     return mu_host && mu_host->version >= 14 && mu_host->game_options2 ? mu_host->game_options2() : 0;

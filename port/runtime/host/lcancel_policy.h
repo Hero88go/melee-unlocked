@@ -15,8 +15,14 @@ constexpr const char* auto_suppressed_mode(int mode) {
   }
 }
 
-constexpr bool automatic_allowed(int mode, bool saved, bool vanilla_only = false) {
-  return saved && !vanilla_only && auto_suppressed_mode(mode) == nullptr;
+// agreed: the opponent said yes to it for this match (YouGame Unranked, controls.h). It counts only in
+// Unranked; everywhere else the answer is exactly what it was before.
+constexpr bool automatic_allowed(int mode, bool saved, bool vanilla_only = false, bool agreed = false) {
+  return saved && !vanilla_only && (auto_suppressed_mode(mode) == nullptr || (mode == 1 && agreed));
+}
+// The notice's "disabled for this mode", with the same agreement taken into account.
+constexpr const char* auto_suppressed_mode_agreed(int mode, bool agreed) {
+  return mode == 1 && agreed ? nullptr : auto_suppressed_mode(mode);
 }
 
 constexpr bool automatic_setting_locked(int mode) { return mode == 0; }
