@@ -227,7 +227,9 @@ void session_begin(int local_port, const std::vector<Player>& others, int mode, 
   for (const auto& o : others) {
     if (o.port < 0 || o.port >= wire::kPorts || o.port == local_port || g.state.player[o.port]) continue;
     g.state.player[o.port] = true;
-    g.peers.push_back(Peer{o});
+    Peer peer;
+    peer.who = o;
+    g.peers.push_back(peer);
   }
   host::log("controls: agreeing with %zu player%s (mode %d)", g.peers.size(), g.peers.size() == 1 ? "" : "s", mode);
   offer_locked();
