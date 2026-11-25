@@ -71,6 +71,12 @@ def main():
     for needed in needed_inputs:
         if not needed.exists():
             sys.exit(f'Missing on-disk input: {needed}')
+    if not args.host_only:
+        from elf_imports import missing
+        unbound = missing(GAME_LIBRARY)
+        if unbound:
+            sys.exit(f'{GAME_LIBRARY.name} imports {", ".join(unbound)}, which port/mac/elf_loader.cpp does not bind: '
+                     'add them to its table, or the game stops at start on every Mac')
     generate(['python3', 'tools/generate_fobj_host.py'], BUILD/'gen/FObjHost.cpp')
     generate(['python3', 'tools/native_recording_codes.py'], BUILD/'gen/native_recording_codes.h')
     sources = []
