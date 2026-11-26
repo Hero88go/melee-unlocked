@@ -447,25 +447,29 @@ static void header_text(MuRankedWidgets* w, const MuRankedSetupModel* m, const M
     if (!HSD_SisLib_804D1124[0])
         HSD_SisLib_803A62A0(0,"SdSlChr.usd","SIS_SelCharData");
     w->canvas=HSD_SisLib_803A611C(0,NULL,9,18,0,3,0,19);
-    w->text=text_create(w,320,45,.7f);
+    /* The timer (line 0) centred on the turn arrows (y 57: captured 8 below them at y 45, 11-25); the
+     * other lines keep their pixel places through T (their offsets were measured from y 45). */
+#define T 8.0f
+    w->text=text_create(w,320,45-T,.7f);
     if (w->text) {
         w->text->default_alignment=1;
-        HSD_SisLib_803A6B98(w->text,0,130,"%s","");
-        HSD_SisLib_803A6B98(w->text,0,190,"%s","");
-        HSD_SisLib_803A6B98(w->text,0,240,"%s","");
-        HSD_SisLib_803A6B98(w->text,0,295,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,130+T,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,190+T,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,240+T,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,295+T,"%s","");
         for (i=1; i<5; ++i) HSD_SisLib_803A7548(w->text,i,.5f/mu_picture_widen(),.5f);
         /* Pips are at pixel y 25.5, turn arrows at y 61; score sits below. */
-        HSD_SisLib_803A6B98(w->text,0,92.0f-45.0f,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,92.0f-45.0f+T,"%s","");
         HSD_SisLib_803A7548(w->text,5,.45f/mu_picture_widen(),.45f);
         /* 6-8: the winner's lines in DISCONNECTED's place when the opponent left (CTO 11-01).
          * Glyph tops at about y 165, 195 and 218, above "Press A" at about y 262 (build 31). */
-        HSD_SisLib_803A6B98(w->text,0,101,"%s","");
-        HSD_SisLib_803A6B98(w->text,0,135,"%s","");
-        HSD_SisLib_803A6B98(w->text,0,158,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,101+T,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,135+T,"%s","");
+        HSD_SisLib_803A6B98(w->text,0,158+T,"%s","");
         HSD_SisLib_803A7548(w->text,6,.55f/mu_picture_widen(),.55f);
         for (i=7; i<9; ++i) HSD_SisLib_803A7548(w->text,i,.45f/mu_picture_widen(),.45f);
     }
+#undef T
     for (i=0; i<2; ++i) {
         /* Slippi GameSetup.c InitPlayerInfo: the name at scale 5 and the code 2 units under it at scale 3,
          * gray, both 3.55 units in from x 28 to leave room for the rank icon (10 px a unit here). */
