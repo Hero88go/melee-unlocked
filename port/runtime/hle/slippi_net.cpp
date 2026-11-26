@@ -989,6 +989,9 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       const bool has_colours = has_caps3 && (packet >> colour1) && (packet >> colour2);
       uint8_t caps4 = 0;
       const bool has_caps4 = has_colours && (packet >> caps4);
+      host::log("slippi: build bytes caps %02X caps2 %02X caps3 %s%02X colours %s caps4 %s%02X digest %zu",
+                caps, caps2, has_caps3 ? "" : "none ", caps3, has_colours ? "yes" : "no", has_caps4 ? "" : "none ", caps4,
+                rules_digest.size());
       const uint8_t layout = !caps2 ? 0 : has_caps3 ? 2 : 1;
       // Melee Unlocked 0.9.200 to 0.9.211: 0x10 arena rooms, 0x20 automatic L-cancel, 0x40 Gecko codes.
       const bool upstream_arena = !caps2 && (caps & 0x10), upstream_lcancel = !caps2 && (caps & 0x20),

@@ -5899,6 +5899,110 @@ void save(const RenderOptions& options, int tab, bool page) {
 }
 }  // namespace settings_view
 
+// The "Tap jump and tilt stick" section, on the Controls tab next to the controller setup so a
+// GameCube controller reaches it first. Returns true when a setting changed.
+static bool draw_control_options() {
+  bool changed = false;
+  // ---- Tap jump off and tilt stick (controls.h) ----
+  // They change the game's own decisions (sourceport/game/shim/mu_controls.c), never the inputs, so
+  // DI and everything else that reads the sticks stays the game's. Offline they apply to everyone
+  // playing on this PC; online only where controls_policy.h allows them and only when every player
+  // agrees for the match. A change made during a match counts from the next one.
+  settings_section("Tap jump and tilt stick");
+    { static int f = 0; const char* t = std::getenv("MELEE_SETTINGS_SCROLL_TO");   // screenshot tooling
+      if (f < 30 && t && std::strcmp(t, "controls") == 0) { ImGui::SetScrollHereY(0.0f); ++f; } }
+  {
+    controls::Settings c = controls::settings();
+    const bool engine = controls::engine_supported();
+    const bool vanilla = host::gameplay::vanilla_only();
+    bool changed_controls = false;
+    ImGui::BeginDisabled(!engine || vanilla);
+    if (settings_toggle("Tap jump off", &c.tapjump_off)) changed_controls = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Pushing the control stick up does not jump: X and Y do.\n"
+                        "Up tilt and up smash with the stick work as always, and DI and every\n"
+                        "other use of the stick are untouched. Not available in YouGame Ranked.");
+    if (settings_toggle("Tilt stick", &c.tilt_stick)) changed_controls = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("The C-stick does tilt attacks instead of smash attacks, wherever A could tilt\n"
+                        "(standing, walking, crouching, turning, landing, out of a jab). Backward is a\n"
+                        "turnaround tilt. In the air it still does aerials. Smash attacks with the\n"
+                        "control stick and A are unchanged.");
+    ImGui::BeginDisabled(!c.tilt_stick);
+    int dash = c.tilt_dash_attack ? 0 : 1;
+    static const char* const dash_items[] = {"Dash attack", "Forward smash"};
+    if (settings_combo("Tilt stick in a dash", &dash, dash_items, 2)) { c.tilt_dash_attack = dash == 0; changed_controls = true; }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("The C-stick forward in a dash's first frames, with empty hands.\n"
+                        "Dash attack: as in Ultimate. Forward smash: as in Melee.");
+    int item = c.tilt_item_tilt_throw ? 1 : 0;
+    static const char* const item_items[] = {"Smash throw", "Light throw"};
+    if (settings_combo("Tilt stick with an item", &item, item_items, 2)) { c.tilt_item_tilt_throw = item == 1; changed_controls = true; }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("The C-stick while holding an item. Smash throw: as in Melee.\n"
+                        "Light throw: the gentle throw A gives, toward the C-stick.");
+    ImGui::EndDisabled();
+    if (settings_toggle("20XX Melee 1.03", &c.melee103)) changed_controls = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("20XX Melee 1.03's controller fix ruleset by Hax$ and Altimor, as its netplay\n"
+                        "disc plays it: 1.0 cardinals, smash DI, dashback, shield drop, crouch and\n"
+                        "tumble fixes. It replaces UCF for the match. Online it needs every player's\n"
+                        "OK (YouGame Unranked, Friends, Doubles); never Ranked or Slippi.\n"
+                        "In memory of Hax$.");
+    ImGui::EndDisabled();
+    if (changed_controls) {
+      controls::set_settings(c);
+      host::log("settings: controls %s%s", controls::describe(controls::own_bits()).c_str(),
+                slippi::online::is_online_match() || slippi::online::session_mode() >= 0 ? " (from the next match)" : "");
+      changed = true;
+    }
+    if (!engine) settings_hint("Source Port only.");
+    else if (vanilla) settings_hint("Disabled for this vanilla-only session.");
+#ifdef MELEE_NO_SLIPPI
+    settings_hint("(NOTE: Works offline)");
+#else
+    settings_hint("(NOTE: Offline always. Online only in YouGame Unranked, Friends and Doubles when every player "
+                  "agrees; YouGame Ranked: tilt stick only. Never in Slippi modes.)");
+    // The running online agreement: what each opponent plays with, and this player's answer.
+    const controls::View cv = controls::view();
+    if (cv.active) {
+      const bool fixed = cv.ready || slippi::online::is_online_match();
+      for (const auto& peer : cv.peers) {
+        ImGui::PushID(peer.port);
+        const std::string who = peer.name.empty() ? "P" + std::to_string(peer.port + 1) : peer.name;
+        ImGui::TextWrapped("%s plays with: %s", who.c_str(), controls::describe(peer.bits).c_str());
+        if (controls::policy::main_bits(peer.bits) != 0) {
+          const char* answer = peer.mine == controls::Answer::Ask ? "not answered yet"
+                             : peer.mine == controls::Answer::Yes ? "allowed"
+                             : peer.mine == controls::Answer::YesOwn ? "allowed (you use it too)"
+                             : peer.mine == controls::Answer::NoThisMatch ? "declined for this match"
+                             : peer.mine == controls::Answer::NoLocked ? "declined (you locked in first)"
+                             : peer.mine == controls::Answer::No ? "declined" : "waiting";
+          settings_hint("Your answer: %s", answer);
+          ImGui::BeginDisabled(fixed);
+          if (settings_widgets::Button("Allow")) controls::answer(peer.port, true);
+          ImGui::SameLine();
+          if (settings_widgets::Button("Decline")) controls::answer(peer.port, false);
+          ImGui::SameLine();
+          if (settings_widgets::Button("Not this match")) controls::decline_this_match(peer.port);
+          ImGui::EndDisabled();
+        }
+        ImGui::PopID();
+      }
+      settings_hint(cv.word ? "This match: agreed control options." : "This match: default controls unless everyone agrees.");
+      if (fixed) settings_hint("Locked in: answers now count from the next match.");
+    }
+    const size_t remembered = controls::remembered_count();
+    if (remembered) {
+      if (settings_widgets::Button("Forget remembered answers")) controls::forget_all();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%zu opponent%s remembered. Forgetting asks again next time.", remembered, remembered == 1 ? "" : "s");
+    }
+#endif
+  }
+  return changed;
+}
+
 bool settings_frame(SettingsState& state, RenderOptions& options) {
   // The Quit/Restart confirmation, drawn wherever the panel is (a category page or the first page, whose own
   // Quit game button asks it too).
@@ -11200,104 +11304,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // the local pad before the game reads it, so it is transmitted like any other input and both
     // clients compute the same landing lag: it cannot desync. It is still gated to offline and
     // Direct because it is a fairness question, not a safety one.
-    // ---- Tap jump off and tilt stick (controls.h) ----
-    // They change the game's own decisions (sourceport/game/shim/mu_controls.c), never the inputs, so
-    // DI and everything else that reads the sticks stays the game's. Offline they apply to everyone
-    // playing on this PC; online only where controls_policy.h allows them and only when every player
-    // agrees for the match. A change made during a match counts from the next one.
-    settings_section("Tap jump and tilt stick");
-      { static int f = 0; const char* t = std::getenv("MELEE_SETTINGS_SCROLL_TO");   // screenshot tooling
-        if (f < 30 && t && std::strcmp(t, "controls") == 0) { ImGui::SetScrollHereY(0.0f); ++f; } }
-    {
-      controls::Settings c = controls::settings();
-      const bool engine = controls::engine_supported();
-      const bool vanilla = host::gameplay::vanilla_only();
-      bool changed_controls = false;
-      ImGui::BeginDisabled(!engine || vanilla);
-      if (settings_toggle("Tap jump off", &c.tapjump_off)) changed_controls = true;
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Pushing the control stick up does not jump: X and Y do.\n"
-                          "Up tilt and up smash with the stick work as always, and DI and every\n"
-                          "other use of the stick are untouched. Not available in YouGame Ranked.");
-      if (settings_toggle("Tilt stick", &c.tilt_stick)) changed_controls = true;
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("The C-stick does tilt attacks instead of smash attacks, wherever A could tilt\n"
-                          "(standing, walking, crouching, turning, landing, out of a jab). Backward is a\n"
-                          "turnaround tilt. In the air it still does aerials. Smash attacks with the\n"
-                          "control stick and A are unchanged.");
-      ImGui::BeginDisabled(!c.tilt_stick);
-      int dash = c.tilt_dash_attack ? 0 : 1;
-      static const char* const dash_items[] = {"Dash attack", "Forward smash"};
-      if (settings_combo("Tilt stick in a dash", &dash, dash_items, 2)) { c.tilt_dash_attack = dash == 0; changed_controls = true; }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("The C-stick forward in a dash's first frames, with empty hands.\n"
-                          "Dash attack: as in Ultimate. Forward smash: as in Melee.");
-      int item = c.tilt_item_tilt_throw ? 1 : 0;
-      static const char* const item_items[] = {"Smash throw", "Light throw"};
-      if (settings_combo("Tilt stick with an item", &item, item_items, 2)) { c.tilt_item_tilt_throw = item == 1; changed_controls = true; }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("The C-stick while holding an item. Smash throw: as in Melee.\n"
-                          "Light throw: the gentle throw A gives, toward the C-stick.");
-      ImGui::EndDisabled();
-      if (settings_toggle("20XX Melee 1.03", &c.melee103)) changed_controls = true;
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("20XX Melee 1.03's controller fix ruleset by Hax$ and Altimor, as its netplay\n"
-                          "disc plays it: 1.0 cardinals, smash DI, dashback, shield drop, crouch and\n"
-                          "tumble fixes. It replaces UCF for the match. Online it needs every player's\n"
-                          "OK (YouGame Unranked, Friends, Doubles); never Ranked or Slippi.\n"
-                          "In memory of Hax$.");
-      ImGui::EndDisabled();
-      if (changed_controls) {
-        controls::set_settings(c);
-        host::log("settings: controls %s%s", controls::describe(controls::own_bits()).c_str(),
-                  slippi::online::is_online_match() || slippi::online::session_mode() >= 0 ? " (from the next match)" : "");
-        changed = true;
-      }
-      if (!engine) settings_hint("Source Port only.");
-      else if (vanilla) settings_hint("Disabled for this vanilla-only session.");
-#ifdef MELEE_NO_SLIPPI
-      settings_hint("(NOTE: Works offline)");
-#else
-      settings_hint("(NOTE: Offline always. Online only in YouGame Unranked, Friends and Doubles when every player "
-                    "agrees; YouGame Ranked: tilt stick only. Never in Slippi modes.)");
-      // The running online agreement: what each opponent plays with, and this player's answer.
-      const controls::View cv = controls::view();
-      if (cv.active) {
-        const bool fixed = cv.ready || slippi::online::is_online_match();
-        for (const auto& peer : cv.peers) {
-          ImGui::PushID(peer.port);
-          const std::string who = peer.name.empty() ? "P" + std::to_string(peer.port + 1) : peer.name;
-          ImGui::TextWrapped("%s plays with: %s", who.c_str(), controls::describe(peer.bits).c_str());
-          if (controls::policy::main_bits(peer.bits) != 0) {
-            const char* answer = peer.mine == controls::Answer::Ask ? "not answered yet"
-                               : peer.mine == controls::Answer::Yes ? "allowed"
-                               : peer.mine == controls::Answer::YesOwn ? "allowed (you use it too)"
-                               : peer.mine == controls::Answer::NoThisMatch ? "declined for this match"
-                               : peer.mine == controls::Answer::NoLocked ? "declined (you locked in first)"
-                               : peer.mine == controls::Answer::No ? "declined" : "waiting";
-            settings_hint("Your answer: %s", answer);
-            ImGui::BeginDisabled(fixed);
-            if (settings_widgets::Button("Allow")) controls::answer(peer.port, true);
-            ImGui::SameLine();
-            if (settings_widgets::Button("Decline")) controls::answer(peer.port, false);
-            ImGui::SameLine();
-            if (settings_widgets::Button("Not this match")) controls::decline_this_match(peer.port);
-            ImGui::EndDisabled();
-          }
-          ImGui::PopID();
-        }
-        settings_hint(cv.word ? "This match: agreed control options." : "This match: default controls unless everyone agrees.");
-        if (fixed) settings_hint("Locked in: answers now count from the next match.");
-      }
-      const size_t remembered = controls::remembered_count();
-      if (remembered) {
-        if (settings_widgets::Button("Forget remembered answers")) controls::forget_all();
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("%zu opponent%s remembered. Forgetting asks again next time.", remembered, remembered == 1 ? "" : "s");
-      }
-#endif
-    }
-
     settings_section("L-cancel");   // its own section, not under Stage effects (owner, 0.9.210)
     {
       if (settings_lcancel_flash(options)) changed = true;
@@ -11511,6 +11517,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Turn off vibration for GameCube adapters and Xbox controllers, including online play.");
+    ImGui::Spacing();
+    changed |= draw_control_options();
     ImGui::Spacing();
 
     host::InputDebugSnapshot snap;
