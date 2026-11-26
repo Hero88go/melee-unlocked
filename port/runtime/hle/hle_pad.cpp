@@ -423,8 +423,17 @@ HLE(PADRead) {
   host::apply_ko_explosions();
   host::apply_hud_emblems();
   uint32_t base = ARG0, mask = 0;
+  // Melee 3D replaces PADRead with its own copy (the host's is kept: ppc_runtime.cpp), whose last step
+  // carries each port's Throttle button choice from the character select (a byte per port at 8060D4BC,
+  // 0 = R) in the unused button bits 0x6000, and clears 0x0080; its fighter code reads the choice back
+  // from there. Without it the Throttle stayed on R whatever the select showed. Recognised by that
+  // step's own instructions in its PADRead (lbz r3,0(r21) / rlwinm r3,r3,13,17,18), so no other disc
+  // is touched.
+  const bool melee3d_throttle = host::rd32(0x80586FE8u) == 0x88750000u && host::rd32(0x80586FF0u) == 0x54636C64u;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;
+    if (melee3d_throttle && pads[i].err == 0)
+      pads[i].button = (uint16_t)((pads[i].button & ~0x0080u) | ((host::rd8(0x8060D4BCu + i) << 13) & 0x6000u));
     host::wr16(p + 0, pads[i].button);
     host::wr8(p + 2, (uint8_t)pads[i].stick_x);
     host::wr8(p + 3, (uint8_t)pads[i].stick_y);
