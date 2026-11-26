@@ -115,7 +115,7 @@ class TwoDoors(unittest.TestCase):
         coin = body(self.inc, 'static int mu_friends4_coin_locked(u8 door)')
         self.assertIn('door < mu_f4_doors_open()', coin)
         texts = body(self.inc, 'static void mu_f4_texts(int mine)')
-        self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles) {', texts)   # no labels
+        self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {', texts)   # no labels
         # The runtime sends them as open, with no fighter (yougame_lobby_screen.h).
         screen = read('port/runtime/hle/yougame_lobby_screen.h')
         self.assertIn('if (doubles && i >= kDoublesSeats) { d.hover_ch = d.pick_ch = MU_LOBBY_NONE; continue; }', screen)
@@ -306,7 +306,7 @@ class TwoPortraits(unittest.TestCase):
 
     def test_door_labels_outside_doubles_only(self):
         texts = body(self.inc, 'static void mu_f4_texts(int mine)')
-        order = ['&& !doubles) {', '"Inviting..." : "Invite"', 'sprintf(buf, "CPU Lv %u", (unsigned) s->level);',
+        order = ['&& !doubles && v->block_hint != MU_LOBBY_HINT_CLOSED) {', '"Inviting..." : "Invite"', 'sprintf(buf, "CPU Lv %u", (unsigned) s->level);',
                  'else if (s->route != MU_LOBBY_ROUTE_NONE)']
         at = [texts.index(x) for x in order]
         self.assertEqual(at, sorted(at))
@@ -372,13 +372,23 @@ class TwoPortraits(unittest.TestCase):
 
     def test_panel_lines_fit_the_font_and_30_letters(self):
         text = body(self.inc, 'static void mu_f4_panel_text(')
-        lines = re.findall(r'strcpy\(p->(?:line\[\d\]|error), "([^"]*)"\);', text)
+        lines = re.findall(r'strcpy\(p->line\[\d\], "([^"]*)"\);', text)
         lines += re.findall(r'p->gray = "([^"]*)";', text)
-        self.assertGreaterEqual(len(lines), 20)
+        errors = re.findall(r'strcpy\(p->error, "([^"]*)"\);', text)
+        self.assertGreaterEqual(len(lines + errors), 20)
         for line in lines:
             if line:
                 self.assertRegex(line, r"^[A-Za-z0-9 .:,'-]{1,30}$", line)
-        for exact in ('Version mismatch', 'Lobby closed. Hold B to exit', 'Try again', 'Searching for opponents',
+        # An error wraps at MU_F4_PANEL_WRAP (30) on a space: two rows at most, each within 30.
+        for line in errors:
+            self.assertRegex(line, r"^[A-Za-z0-9 .:,'-]{1,47}$", line)
+            rows, rest = 0, line
+            while rest:
+                cut = len(rest) if len(rest) <= 30 else rest.rindex(' ', 0, 31)
+                rows, rest = rows + 1, rest[cut:].lstrip(' ')
+            self.assertLessEqual(rows, 2, line)
+        lines += errors
+        for exact in ('Version mismatch', 'Lobby closed. Press B to leave', 'Try again', 'Searching for opponents',
                       'Press START to search', 'Select your character', 'Character selected', 'Match found',
                       'Waiting for players', 'Search stopped', 'Partner: find online', 'Inviting a friend',
                       'Partner: Player 2', 'Partner: CPU'):
@@ -849,7 +859,7 @@ int main(void)
     check(&v, MU_LOBBY_HINT_NOT_READY, 0, 0, "",
           LINES("Character selected", 2, "Waiting for players", 1, "Partner: find online", 0), "Tab changes partner", "");
     /* The problems, in red: the lines are cleared (Slippi's). */
-    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Hold B to exit");
+    check(&v, MU_LOBBY_HINT_CLOSED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Lobby closed. Press B to leave");
     check(&v, MU_LOBBY_HINT_MISMATCH, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");
     check(&v, MU_LOBBY_HINT_TEAM_MISMATCH, 1, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");
     check(&v, MU_LOBBY_HINT_UNSUPPORTED, 0, 0, "", LINES("", 0, "", 0, "", 0), "", "Version mismatch");
