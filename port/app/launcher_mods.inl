@@ -51,7 +51,7 @@ std::vector<CatalogMod> default_catalog() {
   "mods": [
     {
       "id": "te",
-      "name": "20XX Tournament Edition",
+      "name": "20XX TE Training Pack",
       "credits": "By Dan Salvato and contributors",
       "license": "MPL-2.0",
       "page": "https://github.com/dansalvato/20XXTE/releases/tag/v2d-rev4",
@@ -874,6 +874,38 @@ bool tools_present() {
 enum { ID_MOD_BUTTON = 3000, ID_MOD_UPDATE = 4000, ID_MOD_REMOVE = 5000, ID_MOD_TOGGLE = 6000,
        ID_MOD_FOLDER = 7000, ID_MOD_LINK, ID_MOD_RESCAN, ID_MOD_SKINS = 8000 };
 struct Row { CatalogMod catalog; Installed installed; bool found = false; };
+// 20XX Melee 1.03 is built into the game: its card has no download, only the one switch it shares with
+// Settings, Controls (the "melee103" key). Never in the catalog file: launchers before it would refuse
+// the whole published list over a kind they do not know.
+constexpr const char* kBuiltin20xx = "builtin-20xx-melee-103";
+bool is_builtin(const Row& row) { return row.catalog.kind == "builtin"; }
+bool builtin_20xx_on() {
+  std::ifstream in(fs::u8path(settings_ini_path())); std::string line;
+  bool on = false;
+  while (std::getline(in, line)) {
+    std::istringstream row(line); std::string key; int value = 0;
+    if ((row >> key >> value) && key == "melee103") on = value != 0;
+  }
+  return on;
+}
+bool set_builtin_20xx(bool on, std::string* error) {
+  const fs::path path = fs::u8path(settings_ini_path());
+  std::ifstream in(path, std::ios::binary); std::string contents, line;
+  std::error_code ec;
+  if (!in && (fs::exists(path, ec) || ec)) { *error = "Could not read your existing settings."; return false; }
+  while (std::getline(in, line)) {
+    std::istringstream row(line); std::string key; row >> key;
+    if (key != "melee103") contents += line + '\n';
+  }
+  in.close();
+  contents += std::string("melee103 ") + (on ? "1\n" : "0\n");
+  const fs::path staged = path.wstring() + L".mods-tmp";
+  { std::ofstream out(staged, std::ios::binary | std::ios::trunc); out << contents; if (!out.flush()) { *error = "Could not save your settings."; return false; } }
+  if (!MoveFileExW(staged.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    fs::remove(staged, ec); *error = "Could not save your settings."; return false;
+  }
+  return true;
+}
 int disc_skins(const std::string& disc_path, std::string* sets);
 std::vector<Row> g_rows;
 std::vector<HWND> g_buttons, g_updates, g_removes, g_toggles, g_skins;
@@ -930,6 +962,11 @@ void refresh_window() {
   std::vector<CatalogMod> catalog;
   { std::lock_guard<std::mutex> lock(g_mutex); catalog = g_catalog; }
   g_rows.clear(); std::set<std::string> listed;
+  {
+    Row row; row.catalog.id = kBuiltin20xx; row.catalog.kind = "builtin"; row.catalog.name = "20XX Melee 1.03";
+    row.catalog.credits = "by Hax$ and Altimor. In memory of Hax$.";
+    g_rows.push_back(std::move(row));
+  }
   for (const auto& m : catalog) {
     Row row; row.catalog = m;
     const auto f = found.find(m.id);
@@ -1002,8 +1039,14 @@ void refresh_window() {
     p[3].label = launcher::lang::txw(f.enabled && row.found ? L"On" : L"Off");
     p[3].style = row.found && f.enabled ? STYLE_ON : 0;
     p[3].enabled = playable && !busy && !g_playing;
+    const bool builtin = is_builtin(row);
+    if (builtin) {
+      const bool on = builtin_20xx_on();
+      p[0].label = launcher::lang::txw(on ? L"Turn off" : L"Turn on"); p[0].style = STYLE_ACCENT; p[0].enabled = !g_playing;
+      p[3].label = launcher::lang::txw(on ? L"On" : L"Off"); p[3].style = on ? STYLE_ON : 0; p[3].enabled = !g_playing;
+    }
     for (int k = 0; k < 5; ++k) {
-      p[k].shown = !(k == 4 && !has_skins);
+      p[k].shown = builtin ? (k == 0 || k == 3) : !(k == 4 && !has_skins);
       drawn += L"|" + std::to_wstring(i) + L":" + std::to_wstring(k) + L":" + std::to_wstring(p[k].place.left) + L"," + std::to_wstring(p[k].place.top) +
                L"," + std::to_wstring(p[k].place.right) + L"," + std::to_wstring(p[k].place.bottom) + L":" + p[k].label + L":" +
                (p[k].enabled ? L"1" : L"0") + std::to_wstring((long long)p[k].style) + (p[k].shown ? L"1" : L"0");
@@ -1105,7 +1148,8 @@ void paint_page(HDC dc) {
     const RECT card = card_rect(slot);
     if (bo) launcher::skin::card(dc, g_window, card); else round_rect(dc, card, 10, C_CARD, C_CARD, C_CARD_BORDER);
     const int x = units(card.left), y = units(card.top), text_w = units(card.right) - 16 - 100 - (x + 44);
-    draw_check(dc, x + 16, y + 14, row.found);
+    const bool builtin = is_builtin(row), builtin_on = builtin && builtin_20xx_on();
+    draw_check(dc, x + 16, y + 14, builtin ? builtin_on : row.found);
     // Name, then the catalog's latest version beside it.
     RECT name = LR(x + 44, y + 10, text_w, 22);
     const std::wstring title = widen(m.name);
@@ -1132,11 +1176,19 @@ void paint_page(HDC dc) {
       if (runs_here(f)) state += " | " + tx(f.enabled ? "On" : "Off");
       if (f.status == "untested") state += " | " + tx("Untested");
       state_color = f.status == "supported" ? C_OK : C_WARN;
+    } else if (builtin) {
+      state = tx("Built in, nothing to download") + " | " + tx(builtin_on ? "On" : "Off");
+      state_color = builtin_on ? C_OK : C_DIM;
     } else state = tx(m.one_click ? "Not installed" : "Not installed. Download it from its page, then press Add file.");
     draw_text(dc, widen(state), LR(x + 44, y + 50, text_w, 18), g_font, state_color, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     // Last line: what is happening now, else what runs this mod.
     std::string line; COLORREF line_color = C_DIM;
-    if (status.count(m.id) && (is_busy(m.id) || status[m.id].rfind("Installed", 0) != 0)) { line = tx(status[m.id]); line_color = C_TEXT; }
+    if (builtin) {
+      line = g_engine == ENGINE_SOURCE ? tx("The same switch as Settings, Controls. Online every player must agree; never Ranked or Slippi.")
+                                       : tx("Plays on the Source Port.");
+      line_color = g_engine == ENGINE_SOURCE ? C_DIM : C_WARN;
+    }
+    else if (status.count(m.id) && (is_busy(m.id) || status[m.id].rfind("Installed", 0) != 0)) { line = tx(status[m.id]); line_color = C_TEXT; }
     else if (row.found && !runs_here(f) && scanning()) { line = tx("Checking this disc..."); line_color = C_DIM; }
 #ifdef MELEE_NO_SLIPPI   // the note of such a mod names an engine this launcher does not have
     else if (row.found && !runs_here(f)) { line = tx("This version is not supported yet."); line_color = C_WARN; }
@@ -1333,6 +1385,14 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       const int base = (id / 1000) * 1000, index = id - base;
       if (index < 0 || index >= (int)g_rows.size()) return 0;
       const Row row = g_rows[index];
+      if (is_builtin(row)) {
+        if ((base == ID_MOD_BUTTON || base == ID_MOD_TOGGLE) && !g_playing) {
+          std::string error;
+          if (!set_builtin_20xx(!builtin_20xx_on(), &error)) set_status(row.catalog.id, error);
+          PostMessageW(w, WM_MODS_REFRESH, 0, 0);
+        }
+        return 0;
+      }
       if (base == ID_MOD_SKINS) { if (!g_playing) open_settings("mods"); return 0; }
       if (base == ID_MOD_BUTTON && is_busy(row.catalog.id)) { cancel_job(row.catalog.id); set_status(row.catalog.id, "Cancelling..."); return 0; }
       if (base == ID_MOD_BUTTON && row.found) {

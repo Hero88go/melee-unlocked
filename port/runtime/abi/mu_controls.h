@@ -18,6 +18,9 @@
  *                        Melee's smash throw
  *   AUTO_LCANCEL         host only: this player's automatic L-cancel was agreed (a pad input, never
  *                        read by the game)
+ *   20XX103              20XX Melee 1.03's controller fix ruleset for the whole match (shim/mu_20xx103.c):
+ *                        set in any slot, every fighter plays it (an agreed match only ever has it
+ *                        when every player agreed)
  * Plain C, no host state. SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef MU_CONTROLS_H
 #define MU_CONTROLS_H
@@ -27,9 +30,10 @@
 #define MU_CONTROL_TILT_STICK 0x02u
 #define MU_CONTROL_TILT_DASH_ATTACK 0x04u
 #define MU_CONTROL_TILT_ITEM_TILT_THROW 0x08u
-#define MU_CONTROL_GAME_BITS 0x0Fu   /* the bits the game reads */
 #define MU_CONTROL_AUTO_LCANCEL 0x10u
-#define MU_CONTROL_ALL_BITS 0x1Fu
+#define MU_CONTROL_20XX103 0x20u     /* 20XX Melee 1.03's ruleset (Hax$, Altimor): one player's bit turns it on for the match */
+#define MU_CONTROL_GAME_BITS 0x2Fu   /* the bits the game reads */
+#define MU_CONTROL_ALL_BITS 0x3Fu
 
 /* The sub-choices mean nothing without tilt stick: dropped, so a byte names only what it does. */
 static inline unsigned mu_controls_normalize(unsigned bits)

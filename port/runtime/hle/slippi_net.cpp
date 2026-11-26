@@ -989,6 +989,9 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       const bool has_colours = has_caps3 && (packet >> colour1) && (packet >> colour2);
       uint8_t caps4 = 0;
       const bool has_caps4 = has_colours && (packet >> caps4);
+      host::log("slippi: build bytes caps %02X caps2 %02X caps3 %s%02X colours %s caps4 %s%02X digest %zu",
+                caps, caps2, has_caps3 ? "" : "none ", caps3, has_colours ? "yes" : "no", has_caps4 ? "" : "none ", caps4,
+                rules_digest.size());
       const uint8_t layout = !caps2 ? 0 : has_caps3 ? 2 : 1;
       // Melee Unlocked 0.9.200 to 0.9.211: 0x10 arena rooms, 0x20 automatic L-cancel, 0x40 Gecko codes.
       const bool upstream_arena = !caps2 && (caps & 0x10), upstream_lcancel = !caps2 && (caps & 0x20),
@@ -1031,6 +1034,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         remote_build_[pidx].no_pause = remote_build_[pidx].pause_rule && (caps3 & MU_BUILD_CAPS3_NO_PAUSE) != 0;
         remote_build_[pidx].arena_ffa = has_caps3 && (caps3 & MU_BUILD_CAPS3_ARENA_FFA) != 0;
         remote_build_[pidx].controls = has_caps4 && (caps4 & MU_BUILD_CAPS4_CONTROLS) != 0;
+        remote_build_[pidx].melee103 = has_caps4 && (caps4 & MU_BUILD_CAPS4_20XX103) != 0;
         remote_build_[pidx].port_colour[0] = has_colours && colour1 >= 1 && colour1 <= 4 ? (int8_t)(colour1 - 1) : (int8_t)-1;
         remote_build_[pidx].port_colour[1] = has_colours && colour2 >= 1 && colour2 <= 4 ? (int8_t)(colour2 - 1) : (int8_t)-1;
         if (warmup && remote_warmup_[pidx].load(std::memory_order_relaxed) < 0) remote_warmup_[pidx].store(0, std::memory_order_relaxed);
@@ -1336,7 +1340,7 @@ void NetplayClient::SendBuild() {
     *p << (uint8_t)(c0 + 1) << (uint8_t)(c1 + 1);
   }
   // The fourth capability byte (MU_BUILD_CAPS4_*). Older builds stop reading at the port colours.
-  *p << (uint8_t)(controls::advertise() ? MU_BUILD_CAPS4_CONTROLS : 0);
+  *p << (uint8_t)(controls::advertise() ? MU_BUILD_CAPS4_CONTROLS | MU_BUILD_CAPS4_20XX103 : 0);
   host::log("slippi: sending build: %s%s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "",
             early ? " (takes early inputs)" : "");
   SendAsync(std::move(p));

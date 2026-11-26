@@ -133,7 +133,8 @@ int mu_language_override(void)
  * replays need it to play as they were played), or 0. A replay runs only the version it carries. */
 static int ucf_version(void)
 {
-    if (!mu_general_codes())
+    int mu_20xx103_on(void);
+    if (!mu_general_codes() || mu_20xx103_on())   /* 20XX Melee 1.03's controller fix replaces UCF */
         return 0;
     if (mu_replay_allows(MU_RC_UCF084))
         return 84;

@@ -110,7 +110,7 @@ inline uint32_t decide(const State& s) {
   }
   if (players < 2 || !anything) return 0;
   for (int t = 0; t < kPorts; ++t) {
-    if (!s.player[t] || !(s.bits[t] & (MU_CONTROL_TAPJUMP_OFF | MU_CONTROL_TILT_STICK | MU_CONTROL_AUTO_LCANCEL))) continue;
+    if (!s.player[t] || !(s.bits[t] & (MU_CONTROL_TAPJUMP_OFF | MU_CONTROL_TILT_STICK | MU_CONTROL_AUTO_LCANCEL | MU_CONTROL_20XX103))) continue;
     for (int p = 0; p < kPorts; ++p) {
       if (p == t || !s.player[p]) continue;
       if (!s.have_answer[p][t] || s.answer_seq[p][t] != s.seq[t] || !s.yes[p][t]) return 0;
@@ -129,7 +129,7 @@ inline bool settled(const State& s) {
   for (int p = 0; p < kPorts; ++p)
     if (s.player[p] && !s.have_offer[p]) return false;
   for (int t = 0; t < kPorts; ++t) {
-    if (!s.player[t] || !(s.bits[t] & (MU_CONTROL_TAPJUMP_OFF | MU_CONTROL_TILT_STICK | MU_CONTROL_AUTO_LCANCEL))) continue;
+    if (!s.player[t] || !(s.bits[t] & (MU_CONTROL_TAPJUMP_OFF | MU_CONTROL_TILT_STICK | MU_CONTROL_AUTO_LCANCEL | MU_CONTROL_20XX103))) continue;
     for (int p = 0; p < kPorts; ++p)
       if (p != t && s.player[p] && (!s.have_answer[p][t] || s.answer_seq[p][t] != s.seq[t])) return false;
   }

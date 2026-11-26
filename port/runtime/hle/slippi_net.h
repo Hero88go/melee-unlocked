@@ -120,6 +120,9 @@ constexpr uint8_t MU_BUILD_CAPS3_ARENA_FFA = 0x80;
 // MU_BUILD fourth capability byte, after the port colours (builds before it stop reading at the colours):
 // 0x01 this game plays tap jump off and tilt stick and takes NP_MSG_MU_CONTROLS (controls::advertise).
 constexpr uint8_t MU_BUILD_CAPS4_CONTROLS = 0x01;
+// 0x04 this game plays 20XX Melee 1.03's ruleset (MU_CONTROL_20XX103). A peer without it is never
+// offered the ruleset: its game would play the match without it. (0x02 is kept for voice chat.)
+constexpr uint8_t MU_BUILD_CAPS4_20XX103 = 0x04;
 // First capability byte bit Melee Unlocked 0.9.215 and 0.9.216 read as warm-up (their 0xE5 messages).
 constexpr uint8_t MU_BUILD_CAPS_UPSTREAM_WARMUP = 0x80;
 
@@ -394,6 +397,7 @@ class NetplayClient {
                        bool pause_rule = false, no_pause = false;   // MU_BUILD_CAPS3_PAUSE_RULE / _NO_PAUSE
                        bool arena_ffa = false;        // MU_BUILD_CAPS3_ARENA_FFA
                        bool controls = false;         // MU_BUILD_CAPS4_CONTROLS (NP_MSG_MU_CONTROLS)
+                       bool melee103 = false;         // MU_BUILD_CAPS4_20XX103
                        int8_t port_colour[2] = {-1, -1}; };   // their port colour choices (1.0.2 on), -1 none
   // Warm-up (slippi_warmup.h): tell every opponent whose build takes it that this player is warming up
   // in Training (true) or on the character select (false), and the character picked there (Slippi's

@@ -294,6 +294,21 @@ int mu_option2_offline(unsigned int bit);   /* a plain second-word option is in 
 struct Fighter;
 void mu_controls_match_start(void);
 int mu_control(const struct Fighter* fp, unsigned int bit);
+/* 20XX Melee 1.03 by Hax$ and Altimor, its netplay ruleset (shim/mu_20xx103.c); on per match (mu_controls.c). */
+int mu_20xx103_on(void);
+void mu_20xx_input(struct Fighter* fp);
+void mu_20xx_record_pad(struct Fighter* fp);
+void mu_20xx_proc_update(struct Fighter* fp);
+void mu_20xx_damage_hitlag(struct Fighter* fp);
+void mu_20xx_guard_sdi(struct Fighter* fp);
+void mu_20xx_guard_800939B4_after(struct Fighter* fp);
+int mu_20xx_escape_blocked(struct Fighter* fp);
+int mu_20xx_squatrv_blocked(struct Fighter* fp);
+void mu_20xx_fall_enter(struct Fighter* fp);
+int mu_20xx_damagefall_wiggle(struct HSD_GObj* gobj);
+void mu_20xx_turn(struct Fighter* fp);
+void mu_20xx_nana_buffer(struct Fighter* popo, struct Fighter* nana);
+int mu_20xx_ground_accel(struct Fighter* fp, float accel_max, float target_max);
 void mu_controls_pad(struct Fighter* fp);       /* Fighter_procInput: Start + D-pad toggles */
 int mu_controls_pause_combo(int pad);           /* gmvs.c: that Start is a toggle, not a pause */
 int mu_controls_lcancel_off(int slot);          /* the host's automatic L-cancel, turned off mid-match */

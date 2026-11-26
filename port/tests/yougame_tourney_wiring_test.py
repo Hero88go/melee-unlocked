@@ -116,7 +116,7 @@ class TournamentWiringTest(unittest.TestCase):
         self.assertIn("allow_automatic && g_ports[p].cached)", apply)   # the cached injection, renamed
         self.assertIn("allow_automatic && policy::automatic_allowed", apply)
         self.assertIn("const bool indicate = want_indicator && !auto_allowed;", apply)
-        self.assertIn("if (!auto_allowed) {", apply)   # nothing is injected unless automatic is allowed
+        self.assertIn("if (!auto_allowed || turned_off) {", apply)   # nothing is injected unless automatic is allowed
         self.assertIn("if (indicate || g_tints_set) publish_tints(retrace);", apply)
 
     def test_tournament_page_pause_uses_ranked_eligibility_and_advertisement(self):
