@@ -485,6 +485,8 @@ static void squad_start_refused(void)
 enum { CTL_NONE, CTL_ASKED, CTL_ALLOWED_OWN, CTL_WAITING, CTL_AGREED, CTL_DEFAULTS };
 static u8 ctl_line[8];
 static int st_controls = -1;
+static int st_controls_credit = 0;   /* the Squad Strike credit sits under the status lines */
+static int st_controls_spaced = -1;  /* the layout ctl_layout last set */
 
 static void controls_send(u8 action, u8 port)
 {
@@ -1087,6 +1089,25 @@ static int controls_names(unsigned bits, char* out, int size)
 
 /* Overrides the checklist's third line (and its spinner) and the D-pad hint while there is something to
  * answer, and fills the controls line under them. Connected only; the error state shows its own lines. */
+/* With a control options line showing, the panel has five rows under the header: the three status
+ * lines move up a little and every row gets an even gap, so nothing reads cramped. Without one the
+ * panel is exactly Slippi's (line_y in mu_slippi_css_text_init). */
+static void ctl_layout(int on)
+{
+    static const f32 slippi_y[3] = { 52.0f, 75.0f, 98.0f };
+    static const f32 spaced_y[3] = { 46.0f, 67.0f, 88.0f };
+    static const f32 credit_y[3] = { 44.0f, 63.0f, 82.0f };
+    const f32* y = !on ? slippi_y : st_controls_credit ? credit_y : spaced_y;
+    int i;
+    if (on == st_controls_spaced || st_controls < 0) return;
+    st_controls_spaced = on;
+    for (i = 0; i < 3; i++) {
+        HSD_SisLib_803A746C(dt.text, ST_LINE1 + 2 * i, 90.0f, y[i]);
+        HSD_SisLib_803A746C(dt.text, ST_SPIN1 + 2 * i, 70.0f, y[i]);
+    }
+    HSD_SisLib_803A746C(dt.text, st_controls, 70.0f, st_controls_credit ? 101.0f : 110.0f);
+}
+
 static void controls_lines(u8 conn, const char* opp_name, const char* x_key, const char* y_key)
 {
     char names[64], line[96];
@@ -1094,6 +1115,7 @@ static void controls_lines(u8 conn, const char* opp_name, const char* x_key, con
     if (conn != MU_SLP_MM_CONNECTION_SUCCESS) {
         memset(ctl_line, 0, sizeof ctl_line);
         if (st_controls >= 0) set_text(st_controls, "");
+        ctl_layout(0);
         return;
     }
     controls_send(0, 0);
@@ -1133,6 +1155,8 @@ static void controls_lines(u8 conn, const char* opp_name, const char* x_key, con
         set_text(st_controls, "");
         break;
     }
+    ctl_layout(ctl_line[0] == CTL_ASKED || ctl_line[0] == CTL_ALLOWED_OWN || ctl_line[0] == CTL_WAITING
+               || ctl_line[0] == CTL_AGREED || ctl_line[0] == CTL_DEFAULTS);
 }
 
 static void text_think(HSD_GObj* gobj)
@@ -1533,7 +1557,9 @@ void mu_slippi_css_text_init(void)
     st_opp_picks = create_subtext(t, &color_white, 0.35f, -130.0f, -240.0f);  /* their picks */
     /* Tap jump off and tilt stick: what the match plays, or who asks (controls_lines). */
     /* In the gap under the status lines, above "Hold Z": the panel's border runs under the D-pad line. */
-    st_controls = create_subtext(t, &color_gray, 0.35f, 70.0f, credit ? 110.0f : 116.0f);
+    st_controls = create_subtext(t, &color_gray, 0.38f, 70.0f, credit ? 101.0f : 110.0f);
+    st_controls_credit = credit;
+    st_controls_spaced = -1;
 }
 
 /* ---- chat (mu_slippi_chat.c): the CSS data table as SlippiCSS.dat reads it ---- */

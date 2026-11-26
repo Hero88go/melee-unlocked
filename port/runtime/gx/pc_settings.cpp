@@ -11206,6 +11206,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // playing on this PC; online only where controls_policy.h allows them and only when every player
     // agrees for the match. A change made during a match counts from the next one.
     settings_section("Tap jump and tilt stick");
+      { static int f = 0; const char* t = std::getenv("MELEE_SETTINGS_SCROLL_TO");   // screenshot tooling
+        if (f < 30 && t && std::strcmp(t, "controls") == 0) { ImGui::SetScrollHereY(0.0f); ++f; } }
     {
       controls::Settings c = controls::settings();
       const bool engine = controls::engine_supported();
