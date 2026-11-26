@@ -116,6 +116,19 @@ void normalize(Room& r) {
     compact_ring(r);
     if (fighters(r) < kFfaMin) shrink_to_singles(r);
   }
+  // Doubles with two people and their two bots: the people are one team, the bots the other (slots 0-1
+  // and 2-3). Seated as they came in, each person had their own bot as partner, and the players had no
+  // way to team up against the bots (daretodair, 11-25).
+  if (doubles(r) && !r.in_game && fighters(r) == 4 && people_in_ring(r) == 2) {
+    uint8_t ring[4]; uint16_t tenure[4];
+    int k = 0;
+    for (int pass = 0; pass < 2; ++pass)
+      for (int s = 0; s < 4; ++s) {
+        const Member* m = find(r, r.ring[s]);
+        if (m && is_bot(*m) == (pass == 1)) { ring[k] = r.ring[s]; tenure[k] = r.tenure[s]; ++k; }
+      }
+    if (k == 4) for (int s = 0; s < 4; ++s) { r.ring[s] = ring[s]; r.tenure[s] = tenure[s]; }
+  }
   // Someone who asked, or was chosen to come in, and got into the ring anyway: that is settled.
   if (r.asker != kNone && ring_slot(r, r.asker) >= 0) { r.asker = kNone; r.refused = 0; }
   if (r.incoming != kNone && ring_slot(r, r.incoming) >= 0) r.incoming = kNone;

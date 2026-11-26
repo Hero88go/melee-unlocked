@@ -792,6 +792,26 @@ Room two_people_ffa_ok() {
   return r;
 }
 
+// daretodair 11-25: two people, a 20XX bot each, then doubles: the people are one team, the bots the other.
+TEST(two_people_with_a_bot_each_play_doubles_together) {
+  Room r = two_people_ffa_ok();
+  const uint8_t a = add_bot(r, 0, 20, kPro20xx, 9), b = add_bot(r, 1, 20, kPro20xx, 9);
+  CHECK(a != kNone && b != kNone);
+  std::string why;
+  CHECK(switch_offered(r, Ring::Doubles, &why));
+  CHECK(propose_switch(r, 0, Ring::Doubles));
+  CHECK(vote_switch(r, 1, true));
+  std::printf("    ring %d %d %d %d\n", r.ring[0], r.ring[1], r.ring[2], r.ring[3]);
+  CHECK(doubles(r) && fighters(r) == 4);
+  CHECK(team_of_slot(r, ring_slot(r, 0)) == team_of_slot(r, ring_slot(r, 1)));
+  CHECK(team_of_slot(r, ring_slot(r, a)) == team_of_slot(r, ring_slot(r, b)));
+  for (int g = 0; g < 4; ++g) {
+    win(r, r.ring[g % 2 ? 2 : 0]);
+    std::printf("    after game %d: ring %d %d %d %d\n", g + 1, r.ring[0], r.ring[1], r.ring[2], r.ring[3]);
+    CHECK(team_of_slot(r, ring_slot(r, 0)) == team_of_slot(r, ring_slot(r, 1)));
+  }
+}
+
 TEST(pro_ai_makes_a_free_for_all_of_three) {
   Room r = two_people_ffa_ok();
   const uint8_t bot = add_bot(r, 0, 2, 3);
