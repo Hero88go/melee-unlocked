@@ -580,6 +580,7 @@ bool g_mod_root_explicit = false;
 // in command-line order, then Mods/Files when it exists. A later layer wins over an earlier one.
 std::string g_mod_profile_name;
 std::vector<mods::Layer> g_mod_layers;
+bool g_replay_no_mods = false;   // set_replay: the replay records no mod content (load_mod_overlay)
 std::vector<mods::Layer> g_explicit_mod_layers;
 std::vector<std::filesystem::path> g_mod_gcis;
 std::string g_mod_fingerprint;                 // content identity of the enabled layers, "" = vanilla
@@ -738,6 +739,14 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
 
 void load_mod_overlay() {
   if (host::gameplay::vanilla_only()) return;
+  // A replay that records no mod content (any replay Slippi Dolphin wrote, a broadcast watched live)
+  // was played on the standard game: the viewer's own mods would show a different game and can play
+  // it differently (player report 11-26: a vanilla match always showed as Animelee). Mods named on the
+  // command line still load.
+  if (g_replay_no_mods && g_mod_layers.empty()) {
+    host::log("mods: the replay records no mod content; it plays on the standard game, the Mods folder's packs stay off");
+    return;
+  }
   namespace fs = std::filesystem;
   std::error_code ec;
   apply_detected_mods();
@@ -3078,6 +3087,11 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_VS_PRO) {   // shim/mu_practice_cpu.c: one byte per port, 0xFF for the game's own CPU
           // Never in an online match or a replay, whatever the game library asks.
           const bool offline = !g_replaying && !slippi::online::is_online_match();
+          if (offline && n == 2 && p[0] < 4 &&
+              (p[1] == 0 || p[1] == 1 || p[1] == 3 || p[1] == 4 || p[1] >= 0xFE)) {
+            practice_cpu::set_vs_pro(p[0], p[1] >= 0xFE ? -1 : p[1]);
+            if (p[1] == 0xFE) gx::RenderOptions::live_cpu_20xx() = true;
+          }
           for (int port = 0; port < 4; ++port) {
             const int pro = offline ? practice_cpu::vs_pro(port) : -1;
             reply.push_back(pro < 0 ? 0xFF : (uint8_t)pro);
@@ -6089,6 +6103,7 @@ void check_replay_content() {
 
 bool set_replay(const char* path) {
   g_replay_mod_profile = read_replay_mod_profile(path);
+  g_replay_no_mods = g_replay_mod_profile.empty();
   g_replay_feature_options = read_replay_feature_options(path);
   g_replay_feature_options2 = read_replay_feature_options(path, 1);
   g_replay_feature_options3 = read_replay_feature_options(path, 2);

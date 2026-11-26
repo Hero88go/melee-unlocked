@@ -26,6 +26,7 @@
 #include "yougame_exit_reason.h"
 #include "yougame_ranked.h"
 #include "yougame_room.h"
+#include "../../app/launcher_room_state.h"
 #include "yougame_room_relay.h"
 #include "yougame_lobby.h"
 #include "yougame_doubles_lobby.h"
@@ -3674,6 +3675,66 @@ bool coming_soon_build() {
 #endif
 }
 bool available() { return active() || launcher(); }
+namespace {
+std::shared_ptr<Socket> launcher_rendezvous;
+std::thread launcher_rendezvous_pump;
+std::atomic<bool> launcher_rendezvous_stop{false};
+}
+void launcher_room_close() {
+  launcher_rendezvous_stop = true;
+  if (launcher_rendezvous) launcher_rendezvous->close();
+  if (launcher_rendezvous_pump.joinable()) launcher_rendezvous_pump.join();
+  launcher_rendezvous.reset();
+}
+bool launcher_room_plan(const std::string& code, const std::function<std::string(int)>& available,
+                        int& variant, std::string& arena, std::string& error) {
+  launcher_room_close();
+  if (!::launcher::room::valid_code(code)) { error="Invalid launcher room code."; return false; }
+  try {
+    const json ticket = bridge({{"type","mpTicket"},{"room",code},{"players",8},{"mode","mu-launcher"},
+      {"ranked",false},{"lobby",{{"version",1},{"minPlayers",2},{"maxLocalPlayers",1},
+                                  {"compatibility","mu-launcher-room-1"}}}},10000);
+    auto socket=std::make_shared<Socket>();
+    if (!socket->open_session(ticket.value("url",std::string()),ticket.value("ticket",std::string()),code,&error)) return false;
+    ::launcher::room::State room;
+    room.code=code;
+    const uint64_t until=now_ms()+600000;
+    auto flush=[&] { for (const auto& frame:room.out) socket->send(frame); room.out.clear(); };
+    while (!host::exit_requested() && now_ms()<until) {
+      json frame;
+      if (socket->next(frame,100)) {
+        const bool configured=room.receive(frame);
+        if (room.hosting()) { error="The host has left this launcher room."; return false; }
+        if (configured) {
+          error=available(room.variant);
+          room.ready(error.empty(),error);
+          flush();
+          if (!error.empty()) return false;
+        }
+        flush();
+        if (!room.error.empty()) { error=room.error; return false; }
+        if (room.started) {
+          variant=room.variant; arena=room.arena;
+          launcher_rendezvous=socket;
+          launcher_rendezvous_stop=false;
+          launcher_rendezvous_pump=std::thread([socket,room=std::move(room)]() mutable {
+            while (!launcher_rendezvous_stop && !socket->closed()) {
+              json next;
+              if (!socket->next(next,100)) continue;
+              room.receive(next);
+              for (const auto& reply:room.out) socket->send(reply);
+              room.out.clear();
+            }
+          });
+          host::log("launcher room: host started %s", ::launcher::room::variant_name(variant));
+          return true;
+        }
+      } else if (socket->closed()) { error="The launcher room connection ended."; return false; }
+    }
+    error="The host did not start this room.";
+  } catch (const std::exception& e) { error=e.what(); }
+  return false;
+}
 bool session() { return active() || (launcher() && g_launcher_session.load()); }
 bool friends_flow() { return active() || (launcher() && g_channel_up.load()); }
 bool extension_waiting() { return kAppExpected && !kNoApp && g_match_bridge && g_channel_allowed.load() && !g_channel_up.load(); }

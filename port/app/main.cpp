@@ -37,6 +37,8 @@
 #include "slippi_online.h"
 #ifndef MELEE_NO_SLIPPI
 #include "slippi_arena.h"
+#include "native_practice.h"
+#include "yougame_friends.h"
 #endif
 #include "slippi_net.h"
 #include "jukebox.h"
@@ -1903,6 +1905,7 @@ static int melee_main(int argc, char** argv) {
   bool automated = false, explicit_frame_mode = false, settings_window_only = false, load_settings = false;
   bool explicit_card_dir = false, explicit_replay_dir = false;
   unsigned long settings_standby = 0;   // the launcher's process id: start hidden, show when it asks
+  std::string launcher_room_invite;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--hidden" || arg == "--headless") { automated = true; controls::set_test_run(true); }
@@ -1993,7 +1996,12 @@ static int melee_main(int argc, char** argv) {
     source_port::mods::set_auto_detect(true);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
     // it can never publish. With the setting off no thread is started and no pipe is opened.
-    if (gfx.discord_presence) { host::discord::configure(gfx.discord_app_id); host::discord::enable(true); }
+    // The launcher preloads Settings in a second copy of this executable. Only the
+    // process with the game window should advertise a game PID to Discord.
+    if (gfx.discord_presence && !settings_window_only) {
+      host::discord::configure(gfx.discord_app_id);
+      host::discord::enable(true);
+    }
     threaded = true;
   } else if (load_settings) {
     // Test runs of the settings themselves (tools/m3_option_runs.py): read --settings-path the way a
@@ -2037,6 +2045,37 @@ static int melee_main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
+    if (a == "--launcher-room") {
+      launcher_room_invite = next();
+      if (launcher_room_invite.size() < 6 || launcher_room_invite.size() > 12 ||
+          launcher_room_invite.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789") != std::string::npos) return 2;
+      continue;
+    }
+#ifndef MELEE_NO_SLIPPI
+    if (a == "--launcher-arena") {
+      const std::string code = next();
+      const bool hosting = std::string(next()) == "host";
+      const std::string ready_file = next();
+      if (code.size() < 6 || code.size() > 12 ||
+          code.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789") != std::string::npos) return 2;
+#ifdef MELEE_SOURCE_PORT
+      source_port::set_resume_online();
+#endif
+      // No online-mode argument here: it presses that mode's menu row, which under the YouGame layout is
+      // Doubles, and the game left the menu for the Doubles home before the arena step could run (live
+      // room test 11-26). submit_launcher_arena sets online mode 2 itself as it opens the arena select.
+      slippi::arena::set_launcher_room(code, hosting, ready_file == "-" ? std::string() : ready_file);
+      slippi::native_practice::submit_launcher_arena();
+      continue;
+    }
+#endif
+    if (a == "--room-melee103") {
+      const bool enabled = std::string(next()) == "on";
+      auto settings = controls::settings();
+      settings.melee103 = enabled;
+      controls::set_settings(settings);
+      continue;
+    }
     if (host::gameplay::vanilla_only() && host::gameplay::conflicts_with_vanilla(a)) {
       std::fprintf(stderr, "--vanilla-only cannot be combined with %s; launch the mod listing without --vanilla-only\n", a.c_str());
       return 2;
@@ -2697,6 +2736,43 @@ static int melee_main(int argc, char** argv) {
 #endif
   }
 #ifdef MELEE_SOURCE_PORT
+  // YouGame can launch an accepted friend invite directly into a launcher room.
+  // Resolve its build before loading a saved mod profile or the game library.
+#ifndef MELEE_NO_SLIPPI
+  if (yougame::active() || !launcher_room_invite.empty()) {
+    yougame::console::responsive_wait([] { return yougame::wait_identity(10000); }, [] { host::window_pump(); });
+    if (launcher_room_invite.empty()) launcher_room_invite=yougame::friends::events.take_launcher_join();
+    if (!launcher_room_invite.empty()) {
+      screen_label::show("Joining room. Waiting for the host to start...",600.0);
+      int variant=0;
+      std::string arena,error,disc;
+      const bool joined=yougame::console::responsive_wait([&] {
+        return yougame::launcher_room_plan(launcher_room_invite,[&](int selected) -> std::string {
+          if (selected!=1 && selected!=2) return {};
+          source_port::mods::ScanOptions scan;
+          scan.base_iso=std::filesystem::u8path(o.iso); scan.source_port=true;
+          std::map<std::string,int> choices;
+          const auto found=source_port::mods::scan(scan,&choices);
+          const std::string id=selected==1 ? "akaneia" : "ace";
+          for (const auto& item:found.items)
+            if (item.can_enable && item.catalog_id.find(id)!=std::string::npos) {
+              disc=item.path.u8string(); return {};
+            }
+          return "Install "+std::string(selected==1 ? "Akaneia" : "ACE")+" in Mods before joining this room.";
+        },variant,arena,error);
+      }, [] { host::window_pump(); });
+      if (!joined) { host::log("launcher room: %s",error.c_str()); yougame::launcher_room_close(); host::end_process(2); }
+      source_port::mods::set_auto_detect(false);
+      gfx.mod_profile.clear();
+      if (!disc.empty()) source_port::set_mod_iso(disc.c_str());
+      auto settings=controls::settings(); settings.melee103=variant==3; controls::set_settings(settings);
+      yougame::set_launcher_session(true);
+      slippi::arena::set_launcher_room(arena,false,{});
+      slippi::native_practice::submit_launcher_arena();
+      screen_label::show("Room started",2.0);
+    }
+  }
+#endif
   // The profile picked in the settings panel, unless the command line gave its own mod layers. A
   // profile that no longer loads starts the retail game rather than refusing to start.
   if (gx::RenderOptions::mod_features_available() && !source_port::has_mod_layers() && !gfx.mod_profile.empty()) {
@@ -2886,6 +2962,9 @@ static int melee_main(int argc, char** argv) {
     const auto caches = ::gx::cache_store::request_flush_all("exit");
     // Join the console link service before tearing down the host/bridge.
     yougame::console::console_engine().end("window closed");
+#ifndef MELEE_NO_SLIPPI
+    yougame::launcher_room_close();
+#endif
     yougame::console::wait_friends_retired(2000);   // a Leave just before quitting still leaves the room
     ::gx::cache_store::wait_flush_all(caches, caches_due);   // what is left of the 3 s
     host::report_sim_work();

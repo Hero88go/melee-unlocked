@@ -1389,12 +1389,13 @@ void request_user_exit() {
 }
 static void (*g_before_restart)() = nullptr;
 void set_before_restart(void (*hook)()) { g_before_restart = hook; }
-void request_restart() {
+void request_restart(const std::string& extra_arguments) {
   // Start the replacement first and only then ask for a clean shutdown: if the launch fails there
   // is nothing to recover to, so the running game is left alone rather than closed into nothing.
   wchar_t exe[MAX_PATH];
   if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) { log("restart: cannot find this executable"); return; }
   std::wstring cmd = GetCommandLineW();
+  if (!extra_arguments.empty()) cmd += L" " + std::wstring(extra_arguments.begin(),extra_arguments.end());
   // The replacement reads the shader and pipeline caches as it starts: write them first.
   ::gx::cache_store::flush_all("relaunch", std::chrono::milliseconds(3000));
   if (g_before_restart) g_before_restart();

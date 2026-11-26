@@ -305,7 +305,7 @@ ${melee_dxc_err}")
   # further down, plus MELEE_NO_SLIPPI. With it the lobby needs no Slippi account, an accepted match
   # starts melee_source with --p2p-* (a peer-to-peer session), and automatic pairing is offered.
   # When the normal target's sources or settings change below, change them here as well.
-  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
+  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_room.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
     third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
     runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
   set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
@@ -523,6 +523,10 @@ target_compile_features(port_online_rows_test PRIVATE cxx_std_17)
 add_test(NAME port_online_rows COMMAND port_online_rows_test)
 set_tests_properties(port_online_rows PROPERTIES TIMEOUT 10)
 # The launcher's YouGame bridge: parsing, checks and answers, with a stand-in for YouGame's site.
+add_executable(port_launcher_room_state_test tests/launcher_room_state_test.cpp)
+target_include_directories(port_launcher_room_state_test PRIVATE third_party)
+target_compile_features(port_launcher_room_state_test PRIVATE cxx_std_17)
+add_test(NAME port_launcher_room_state COMMAND port_launcher_room_state_test)
 add_executable(port_launcher_yougame_test tests/launcher_yougame_test.cpp app/launcher_yougame.cpp)
 melee_yougame_web(port_launcher_yougame_test)
 target_include_directories(port_launcher_yougame_test PRIVATE app third_party)
@@ -1223,7 +1227,7 @@ if(MELEE_CPU_BASELINE STREQUAL "AVX2")
 endif()
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
-add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
+add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_room.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
   third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
   runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
@@ -1606,6 +1610,10 @@ add_executable(port_phob_test tests/phob_test.cpp runtime/host/phob.cpp runtime/
 target_include_directories(port_phob_test PRIVATE runtime/host)
 target_compile_features(port_phob_test PRIVATE cxx_std_17)
 add_test(NAME port_phob COMMAND port_phob_test)
+add_executable(port_phob_backup_test tests/phob_backup_test.cpp runtime/host/phob_store.cpp runtime/host/phob.cpp)
+target_include_directories(port_phob_backup_test PRIVATE runtime/host runtime/ppc runtime ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(port_phob_backup_test PRIVATE cxx_std_17)
+add_test(NAME port_phob_backup COMMAND port_phob_backup_test)
 
 # The local-only NVIDIA integrator (see melee_add_local_nvidia_integrator at the top).
 melee_add_local_nvidia_integrator(runtime melee_port melee_source)

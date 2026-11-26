@@ -219,7 +219,7 @@ void publish_lobby_result(int winner_index, int end_method, int lras = -1, const
 // so the replay is finalised and the pipeline cache written before the new process takes over.
 // Used for settings a running device cannot adopt, the graphics backend being the one that
 // matters today.
-void request_restart();
+void request_restart(const std::string& extra_arguments = {});
 // Called right before this game starts its own replacement (request_restart, restart_after_device_loss,
 // restart_with_mod_looks), so values this process took out of its environment at start (the YouGame
 // launcher's bridge) are there again for the new process.
@@ -418,6 +418,11 @@ std::vector<std::string> phob_setup_list();
 bool phob_setup_delete(const std::string& name);
 bool phob_setup_save(const std::string& name, const phob::Settings& s, bool with_calibration);
 bool phob_setup_load(const std::string& name, phob::Settings& s);
+// Copies of each port's settings (PhobGCC\Backups): one at every start and one before anything that replaces
+// them wholesale (a setup load, a reset, a calibration), the newest 20 per port. Restore puts back the newest
+// copy that differs from `s`; false when there is none.
+void phob_backup(int port);
+bool phob_backup_restore(int port, phob::Settings& s);
 // Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
 double gcadapter_poll_rate_hz();
 // Why a plugged-in adapter cannot be read (another program has it, no driver), in words for the

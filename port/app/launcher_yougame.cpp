@@ -713,6 +713,7 @@ AppSignIn sign_in_app(bool may_start, const std::string& version, std::string* d
       {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_session.web || g_env.id != e.id) { step("signed in on this launcher meanwhile"); return AppSignIn::kSignedIn; }
+        if (!may_start && g_app_choice == 0) { step("Disconnect was chosen meanwhile"); return AppSignIn::kSignedOut; }
         g_session = s;
         g_app_choice = 1;   // the launcher starts the app quietly next time, to take this account again
       }
@@ -1291,6 +1292,7 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
       // A room named by its code is a private room (a friend's room, a held lobby or home), never a queue.
       if (!ranked && q.count("room") && q["room"].is_string() && !q.count("queue")) body["queue"] = "private";
       if (q.count("lobby")) body["lobby"] = q["lobby"];
+      if (!ranked && q.value("public", false) && q.count("room") && q.count("lobby")) body["public"] = true;
       if (q.count("direct") && q["direct"].is_string()) body["direct"] = q["direct"];
       if (q.count("room") && q["room"].is_string()) body["room"] = q["room"];
       if (q.value("afterMatch", std::string()) == "stay") body["after_match"] = "stay";
@@ -1317,6 +1319,28 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
     return reply(200, error_json(e.what()));
   }
   return reply(200, {{"ok", false}, {"error", "Not supported by the Melee Unlocked launcher"}, {"code", "unsupported"}});
+}
+
+std::string sdk_request(const std::string& request_json, const std::string& version, int timeout_ms) {
+  const json request = json::parse(request_json);
+  if (account().app || request.value("type", std::string()) == "mpFriend") {
+    const auto response = app::social(staging_env(), version, {request}, timeout_ms);
+    const auto found = response.answers.find(request.value("type", std::string()));
+    if (found == response.answers.end()) throw std::runtime_error("Open YouGame to invite a friend, or use Copy code to share this room.");
+    if (!found->second.value("ok", false))
+      throw std::runtime_error(found->second.value("error", std::string("YouGame refused the room request.")));
+    return found->second.value("result", json::object()).dump();
+  }
+  HttpRequest http;
+  http.method = "POST"; http.path = "/sdk"; http.body = request_json;
+  http.headers["authorization"] = "Bearer launcher-room";
+  http.headers["host"] = "127.0.0.1:0";
+  std::string build;
+  { std::lock_guard<std::mutex> lock(g_mutex); build = g_build_json; }
+  const json response = json::parse(handle(http, {"launcher-room"}, 0, real_backend(), build).body);
+  if (!response.value("ok", false))
+    throw std::runtime_error(response.value("error", std::string("YouGame refused the room request.")));
+  return response.value("result", json::object()).dump();
 }
 
 }  // namespace launcher::yougame

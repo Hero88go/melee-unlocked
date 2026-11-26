@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "host.h"
 #include "controller_profiles.h"
+#include <algorithm>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -15,6 +17,8 @@ std::filesystem::path g_folder;
 
 std::filesystem::path port_file(int port) { return g_folder / ("port" + std::to_string(port + 1) + ".ini"); }
 std::filesystem::path setup_folder() { return g_folder / "Setups"; }
+std::filesystem::path backup_folder() { return g_folder / "Backups"; }
+constexpr size_t kBackupsKept = 20;
 
 bool read_text(const std::filesystem::path& path, std::string& text) {
   std::ifstream in(path, std::ios::binary);
@@ -38,7 +42,68 @@ bool write_text(const std::filesystem::path& path, const std::string& text) {
   std::filesystem::rename(temporary, path, ec);
   return !ec;
 }
+// This port's backups, oldest first (the names carry the time, so they sort by it).
+std::vector<std::filesystem::path> backups_of(int port) {
+  std::vector<std::filesystem::path> out;
+  const std::string prefix = "port" + std::to_string(port + 1) + "-";
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(backup_folder(), ec))
+    if (e.path().extension() == ".ini" && e.path().filename().u8string().rfind(prefix, 0) == 0) out.push_back(e.path());
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// Player reports 11-26: a controller setup lost to a reset or a setup load could not be brought back. The port's
+// file as it is now goes to Backups, unless the newest backup already holds the same text. Caller holds the lock.
+void backup_locked(int port) {
+  if (g_folder.empty() || port < 0 || port > 3) return;
+  std::string text;
+  if (!read_text(port_file(port), text) || text.empty()) return;
+  auto list = backups_of(port);
+  std::string newest;
+  if (!list.empty() && read_text(list.back(), newest) && newest == text) return;
+  char stamp[32];
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+#ifdef _WIN32
+  localtime_s(&tm, &now);
+#else
+  localtime_r(&now, &tm);
+#endif
+  std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tm);
+  std::filesystem::path path = backup_folder() / ("port" + std::to_string(port + 1) + "-" + stamp + ".ini");
+  for (int n = 2; std::filesystem::exists(path) && n < 100; ++n)
+    path = backup_folder() / ("port" + std::to_string(port + 1) + "-" + stamp + "-" + std::to_string(n) + ".ini");
+  if (!write_text(path, text)) return;
+  list = backups_of(port);
+  std::error_code ec;
+  while (list.size() > kBackupsKept) { std::filesystem::remove(list.front(), ec); list.erase(list.begin()); }
+}
 }  // namespace
+
+void phob_backup(int port) {
+  std::lock_guard<std::mutex> lock(g_store_mutex);
+  backup_locked(port);
+}
+
+bool phob_backup_restore(int port, phob::Settings& s) {
+  std::lock_guard<std::mutex> lock(g_store_mutex);
+  if (g_folder.empty() || port < 0 || port > 3) return false;
+  const std::string now = phob::serialize(s);
+  auto list = backups_of(port);
+  for (auto it = list.rbegin(); it != list.rend(); ++it) {
+    std::string text;
+    if (!read_text(*it, text)) continue;
+    phob::Settings back = s;
+    phob::parse(text, back);
+    if (phob::serialize(back) == now) continue;
+    const bool hardware = s.phob_hardware;
+    s = back;
+    s.phob_hardware = hardware;   // the controller is what it is
+    return true;
+  }
+  return false;
+}
 
 void phob_store_load(const std::string& settings_path) {
   std::lock_guard<std::mutex> lock(g_store_mutex);
@@ -48,6 +113,7 @@ void phob_store_load(const std::string& settings_path) {
     std::string text;
     if (read_text(port_file(port), text)) phob::parse(text, s);
     gcadapter_phob_set(port, s);
+    backup_locked(port);   // the settings this session started with
   }
 }
 

@@ -70,6 +70,10 @@ bool coming_soon();
 bool coming_soon_build();
 // YouGame's online rows can be offered: the app started the game, or the launcher's bridge is up.
 bool available();
+// An accepted launcher invite waits for the host, then keeps its rendezvous seat during play.
+bool launcher_room_plan(const std::string& code, const std::function<std::string(int)>& available,
+                        int& variant, std::string& arena, std::string& error);
+void launcher_room_close();
 // The local channel (yougame_channel.h): a game nothing started finds a running YouGame app on this
 // computer. start_channel probes once on its own thread, after the log is open (main, after
 // logging_ready); `automated` (--hidden/--headless) runs never probe unless MELEE_TEST_YOUGAME_CHANNEL=1,

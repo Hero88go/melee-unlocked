@@ -28,6 +28,7 @@ namespace slippi::arena {
 // plays its matches on base+300+20*(games%10)+i. Every member is locked in with <character> (default Fox) as soon
 // as it is connected, since nobody presses Start in a test.
 bool set_test(const std::string& spec);
+void set_launcher_room(std::string code, bool hosting, std::string ready_file);
 bool test_mode();
 bool locks_in_itself();   // tests: the room locks pairs in with a random stage (test room or MELEE_TEST_ARENA_AUTOLOCK)
 // The online recording's code list (a watcher's live recording needs it; the feed does not carry it).

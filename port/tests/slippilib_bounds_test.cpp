@@ -100,6 +100,8 @@ void check_whole(const Bytes& raw, const char* what) {
   ok = ok && settings->geckoCodes.size() == 16 && settings->geckoCodes[0] == 0xC2 && settings->geckoCodes[15] == 0x77;
   ok = ok && game->GetVersionString() == "3.12.0";
   ok = ok && game->DoesFrameExist(-123) && game->DoesFrameExist(-122) && !game->DoesFrameExist(-121);
+  // A frame the file does not have is null, never an exception (B-1523: a gap stopped the game).
+  ok = ok && game->GetFrame(-121) == nullptr && game->GetFrame(5000) == nullptr;
   if (ok) {
     Slippi::FrameData* frame = game->GetFrame(-122);
     ok = frame->frame == -122 && frame->randomSeedExists && frame->randomSeed == 0xAABBCCDDu && frame->inputsFullyFetched;

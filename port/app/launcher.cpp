@@ -54,6 +54,7 @@
 #include "launcher_engine.h"
 #include "launcher_lobby.h"
 #include "launcher_yglobby.h"
+#include "launcher_room.h"
 #include "launcher_egg.h"
 #include "launcher_pad.h"
 #include "launcher_melee_assets.h"
@@ -1379,12 +1380,12 @@ void apply_look(int look) {
 void show_look_menu() {
   HMENU m = CreatePopupMenu();
   const int now = launcher::melee_look::look();
-  AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Look");
-  AppendMenuW(m, MF_STRING | (now == 0 ? MF_CHECKED : 0), 1, L"Classic");
-  AppendMenuW(m, MF_STRING | (now == 1 ? MF_CHECKED : 0), 2, L"Classic, Melee font");
-  AppendMenuW(m, MF_STRING | (now == 2 ? MF_CHECKED : 0), 3, L"Brawl Online by sarahkittyy");
+  AppendMenuW(m, MF_STRING | MF_GRAYED, 0, launcher::lang::txw(L"Look").c_str());
+  AppendMenuW(m, MF_STRING | (now == 0 ? MF_CHECKED : 0), 1, launcher::lang::txw(L"Classic").c_str());
+  AppendMenuW(m, MF_STRING | (now == 1 ? MF_CHECKED : 0), 2, launcher::lang::txw(L"Classic, Melee font").c_str());
+  AppendMenuW(m, MF_STRING | (now == 2 ? MF_CHECKED : 0), 3, launcher::lang::txw(L"Brawl Online by sarahkittyy").c_str());
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING, 4, L"Launcher color");
+  AppendMenuW(m, MF_STRING, 4, launcher::lang::txw(L"Launcher color").c_str());
   RECT b{}; GetWindowRect(GetDlgItem(g_main, ID_THEME), &b);
   UINT align = TPM_BOTTOMALIGN | TPM_RIGHTALIGN; POINT at{b.right, b.top};
   if (launcher::skin::shown()) { GetCursorPos(&at); at.y -= S(14); align = TPM_BOTTOMALIGN | TPM_LEFTALIGN; }   // above the palette tool
@@ -1715,7 +1716,7 @@ void choose_rail_image();
 void select_tab(int idx) {
   const int previous = g_tab;
   g_tab = idx;
-  for (HWND h : g_play) if (h) ShowWindow(h, idx == 0 ? SW_SHOW : SW_HIDE);
+  for (HWND h : g_play) if (h && h != g_update_btn) ShowWindow(h, idx == 0 ? SW_SHOW : SW_HIDE);
   for (HWND h : g_build) if (h) ShowWindow(h, idx == 1 ? SW_SHOW : SW_HIDE);
   replay_layout();
   if (idx != 2) launcher::lobby::hide();
@@ -1743,7 +1744,9 @@ void select_tab(int idx) {
   }
   mod_manager::show_page(idx == 4);
   if (idx == 0 && (!g_slippi_missing || vanilla_active())) ShowWindow(g_slippi_btn, SW_HIDE);
-  if (idx != 0) ShowWindow(g_update_btn, SW_HIDE);
+  const auto update_state = host::updater::state();
+  ShowWindow(g_update_btn, idx == 0 && (update_state == host::updater::State::UpdateAvailable ||
+                                       update_state == host::updater::State::Failed) ? SW_SHOW : SW_HIDE);
   if (skin_full && idx != 2) launcher::skin::compact(idx == 1 ? 5 : idx == 3 ? 3 : idx == 4 ? 4 : 2);   // e.g. Play found no game: Build, with the sidebar
   if (g_main) InvalidateRect(g_main, nullptr, FALSE);
 }
@@ -1785,6 +1788,27 @@ void start_build() {
 }
 
 void launch_game_now();
+
+struct RoomLaunch { int variant; std::string code; bool host; std::string ready_file; };
+constexpr UINT WM_APP_ROOM_LAUNCH = WM_APP + 56;
+std::string room_disc(int variant) {
+  if (variant != 1 && variant != 2) return {};
+  const std::string id = variant == 1 ? "akaneia" : "ace";
+  for (const auto& item : mod_manager::installed()) {
+    const auto& mod = item.second;
+    if ((item.first.find(id) != std::string::npos || mod.id.find(id) != std::string::npos) &&
+        launcher::mod_catalog::playable(mod) && file_exists(mod.path)) return mod.path;
+  }
+  return {};
+}
+std::string room_available(int variant) {
+  if (g_playing) return "Close your current game before joining this room.";
+  if (g_iso.empty()) return "Choose your Melee USA 1.02 disc first.";
+  if (!source_available()) return "Install the Source Port build first.";
+  if ((variant == 1 || variant == 2) && room_disc(variant).empty())
+    return std::string("Install ") + launcher::room::variant_name(variant) + " on the Mods page first.";
+  return {};
+}
 
 void warm_cache_thread() {
   log_line("Warming the graphics cache before launch (the first run may take 15 to 30 seconds)");
@@ -2136,12 +2160,18 @@ void launch_game_now() {
   if (!g_mod_launch_iso.empty()) {
     exe = g_mod_launch_engine == "source" ? source_exe_in(source_exe_dir()) : static_recomp_exe();
     const std::string base = active_dir();
+    // Switchable Source Port packs are read from the saved choices at each boot.
+    // An explicit --mod-iso survives an in-game restart and overrides a saved Off.
+    const bool saved_layers = g_mod_launch_engine == "source" &&
+        (g_mod_launch_kind == "asset_mod" || g_mod_launch_kind == "tmce" || g_mod_launch_kind == "te");
     args = g_mod_launch_engine == "source"
-        ? " --iso \"" + g_iso + "\" " + (g_mod_launch_kind == "te" ? "--mod-gci" : "--mod-iso") + " \"" + g_mod_launch_iso + "\""
+        ? " --iso \"" + g_iso + "\""
         : " --iso \"" + g_mod_launch_iso + "\" --mod-base-iso \"" + g_iso + "\"";
+    if (g_mod_launch_engine == "source" && !saved_layers)
+      args += " --mod-iso \"" + g_mod_launch_iso + "\"";
     args += " --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
     // Explicit Source layers take precedence over automatic layers. Keep enabled TE alongside a disc.
-    if (g_mod_launch_engine == "source" && g_mod_launch_kind != "te")
+    if (g_mod_launch_engine == "source" && !saved_layers)
       for (const auto& entry : mod_manager::view().installed)
         if (entry.second.kind == "te" && entry.second.enabled && launcher::mod_catalog::playable(entry.second))
           args += " --mod-gci \"" + entry.second.path + "\"";
@@ -2285,7 +2315,7 @@ void browse() {
     if (disc_rvz::detect(std::filesystem::path(file)) != disc_rvz::Format::NotCompressed) {
       mod_manager::open(); std::thread(mod_manager::install_file, std::wstring(file), std::string(), g_iso).detach(); return;
     }
-    if (mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) != mod_manager::kVanillaMd5) {
+    if (!mod_manager::is_game_disc(file)) {
       // Not the vanilla disc. Only a Melee NTSC 1.02 disc can be a mod; anything else (another game, NTSC 1.00 or
       // 1.01, PAL, a trimmed image) used to be filed under Mods too, where it loaded nothing and the player was
       // told nothing (player report 11-21: "whenever I browse for an ISO it just goes to the mods tab").
@@ -2598,6 +2628,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // YouGame: the bridge the game's YouGame rows ask (launcher_yougame.h), up for the whole run.
       launcher::yougame::set_on_session_change([] { PostMessageW(g_main, WM_APP_YOUGAME, 0, 0); });
       launcher::yougame::set_web_folder(widen(g_dir) + L"\\YouGameWeb");   // the sign-in page's browser view keeps its session here
+      if (g_launcher_test)
+        if (const char* folder = std::getenv("MELEE_LAUNCHER_TEST_WEB_FOLDER"))
+          launcher::yougame::set_web_folder(widen(folder));
 #ifndef MELEE_YOUGAME_COMING_SOON
       if (std::string why; !launcher::yougame::start_bridge(&why)) log_line("yougame: the launcher's bridge did not start (%s)", why.c_str());
       // Which builds YouGame allows: when it is on an older release, get that one beside this
@@ -2973,7 +3006,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         bool vanilla = false;
         if (disc) {
           HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-          vanilla = mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) == mod_manager::kVanillaMd5;
+          vanilla = mod_manager::is_game_disc(file);
           SetCursor(old);
         }
         const bool compressed_disc = disc_rvz::detect(std::filesystem::path(file)) != disc_rvz::Format::NotCompressed;
@@ -3097,6 +3130,30 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // the moment it started.
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
       return 0;
+    case WM_APP+57: launcher::yglobby::refresh(); return 0;
+    case WM_APP_ROOM_LAUNCH: {
+      std::unique_ptr<RoomLaunch> launch(reinterpret_cast<RoomLaunch*>(lp));
+      if (!launch) return 0;
+      if (const std::string error = room_available(launch->variant); !error.empty()) {
+        MessageBoxW(hwnd, widen(error).c_str(), L"YouGame room", MB_OK | MB_ICONINFORMATION);
+        return 0;
+      }
+      settings_standby_stop();
+      const int saved_engine = g_engine;
+      const auto saved_vanilla = g_vanilla;
+      g_engine = ENGINE_SOURCE; g_vanilla.vanilla = false;
+      g_game_exe = source_exe_in(source_exe_dir());
+      g_yougame_launch_args = " --no-mod-autodetect --launcher-arena " + launch->code +
+          (launch->host ? " host " : " guest ") + "\"" +
+          (launch->ready_file.empty() ? "-" : launch->ready_file) + "\" --room-melee103 " +
+          (launch->variant == 3 ? "on" : "off");
+      const std::string disc = room_disc(launch->variant);
+      if (!disc.empty()) g_yougame_launch_args += " --mod-iso \"" + disc + "\"";
+      launch_game_now();
+      g_yougame_launch_args.clear();
+      g_engine = saved_engine; g_vanilla = saved_vanilla;
+      return 0;
+    }
     case WM_APP_CACHE_WARM_DONE:
       g_building = false;
       EnableWindow(g_play_btn, !g_iso.empty() && !g_playing);
@@ -3109,7 +3166,36 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // The lobby answers requests from here too (a banner), also before its page was opened, and
       // hears about a changed Game Build, setup or Mods folder within two seconds.
       launcher::lobby::tick_ui();
+      // The player may sign in to the app after opening this launcher.
+      static ULONGLONG app_account_checked = 0;
+      if (!g_launcher_test && !vanilla_active() && !launcher::yougame::account().signed_in &&
+          !launcher::yougame::app_declined() && GetTickCount64() - app_account_checked >= 15000 &&
+          !g_yg_connecting.exchange(true)) {
+        app_account_checked = GetTickCount64();
+        std::thread([version = yougame_build_version()] {
+          std::string detail;
+          if (launcher::yougame::sign_in_app(false, version, &detail) == launcher::yougame::AppSignIn::kSignedIn)
+            log_line("yougame: connected after the app signed in (%s)", detail.c_str());
+          g_yg_connecting = false;
+          PostMessageW(g_main, WM_APP_YOUGAME, 0, 0);
+        }).detach();
+      }
       replay_live_tick();   // "Watch live": opens a new broadcast game as it appears
+      if (g_launcher_test && std::getenv("MELEE_LAUNCHER_TEST_ROOM")) {
+        static bool opened = false;
+        if (!opened && launcher::yougame::account().signed_in) {
+          opened = true;
+          const std::string request = std::getenv("MELEE_LAUNCHER_TEST_ROOM");
+          launcher::room::open(request == "create" ? std::string() : request, 0, true);
+        }
+        const auto room = launcher::room::current();
+        if (room.can_start() && std::getenv("MELEE_LAUNCHER_TEST_ROOM_START")) launcher::room::start();
+        int ready = 0;
+        for (const auto& member : room.members) if (member.second.ready) ++ready;
+        std::ofstream(g_dir + "/room-test.json") << nlohmann::json{
+          {"code",room.code},{"connected",room.connected},{"members",room.members.size()},
+          {"ready",ready},{"started",room.started},{"launching",room.launching},{"error",room.error}}.dump();
+      }
       // Test mode: What's new opens once the notes arrive, and its text is written beside the launcher.
       if (static bool shown; g_launcher_test && !shown && std::getenv("MELEE_LAUNCHER_TEST_CHANGELOG") && !host::updater::releases().empty()) {
         shown = true;
@@ -3288,6 +3374,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       SetTextColor(dc, bo(C_TEXT)); SetBkColor(dc, bo(C_FIELD)); return (LRESULT)field_brush();
     }
     case WM_DESTROY:
+      launcher::room::shutdown();
       launcher::lobby::shutdown();
       KillTimer(hwnd, ID_TIMER); settings_standby_stop(); host::updater::shutdown();
       if (g_dog) DeleteObject(g_dog);
@@ -3363,6 +3450,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdline, int show) {
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   launcher::lobby::init(hwnd, g_dir);
   launcher::yglobby::init(hwnd, {[](int) { start_game(); }, [] { save_ini(); }, std::string(MELEE_PORT_VERSION)});
+  launcher::room::init({room_available,
+      [hwnd](int variant, const std::string& code, bool host, const std::string& ready) {
+        PostMessageW(hwnd, WM_APP_ROOM_LAUNCH, 0, (LPARAM)new RoomLaunch{variant, code, host, ready});
+      },
+      [hwnd] { PostMessageW(hwnd, WM_APP+57, 0, 0); },
+      std::string(MELEE_PORT_VERSION), g_dir});
   launcher::egg::init(hwnd);   // the character select's easter egg, over the launcher
   launcher::melee_assets::set_disc(g_iso);   // Melee's hand, frames and font, read from the player's own disc
   if (g_launcher_test && std::getenv("MELEE_LAUNCHER_TEST_ASSETS")) launcher::melee_assets::dump(g_dir);
@@ -3384,6 +3477,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdline, int show) {
                                 const std::string m = mod_manager::summary(); s.mods_on = m != launcher::lang::tx("Mods: none active");
                                 s.mods = s.mods_on ? widen(m.rfind("Mods: ", 0) == 0 ? m.substr(6) : m) : launcher::lang::txw(L"none");
                                 s.version = widen(MELEE_PORT_VERSION);
+                                s.extension = launcher::yougame::extension();
                                 if (host::updater::state() == host::updater::State::UpdateAvailable) s.update = launcher::lang::txw(L"Update to") + L" " + widen(host::updater::latest_version());
                                 const auto* cur = launcher::lang::find(launcher::lang::current()); s.language = cur ? cur->native : L"English";
                                 return s;
@@ -3395,6 +3489,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdline, int show) {
                                 else if (part == 3) choose_version();
                                 else if (part == 4) PostMessageW(g_main, WM_COMMAND, ID_UPDATE, 0);
                                 else if (part == 5) PostMessageW(g_main, WM_COMMAND, ID_LANGUAGE, 0);
+                                else if (part == 6) {
+                                  launcher::yougame::set_extension(!launcher::yougame::extension());
+                                  save_ini();
+                                }
                               },
                               [] {   // the game build Play Melee starts (as the Game page's GAME BUILD row shows it)
                                 const int on = g_engine == ENGINE_SOURCE && source_available() ? (g_vanilla.vanilla && vanilla_supported() ? 2 : 0) : 1;

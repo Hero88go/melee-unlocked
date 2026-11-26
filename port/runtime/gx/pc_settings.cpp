@@ -6014,6 +6014,13 @@ static bool draw_control_options() {
 }
 
 bool settings_frame(SettingsState& state, RenderOptions& options) {
+  // Character select edits the same saved choices as the Game settings page.
+  for (int port = 0; port < 4; ++port) {
+    const int pro = practice_cpu::vs_pro(port);
+    if (options.vs_pro[port] != pro) { options.vs_pro[port] = pro; state.dirty = true; }
+  }
+  const bool cpu_20xx = RenderOptions::live_cpu_20xx();
+  if (options.cpu_20xx != cpu_20xx) { options.cpu_20xx = cpu_20xx; state.dirty = true; }
   // The Quit/Restart confirmation, drawn wherever the panel is (a category page or the first page, whose own
   // Quit game button asks it too).
   const auto confirm_popup = [&]() {
@@ -11207,10 +11214,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (options.discord_presence != discord_was) {
       changed = true;
       host::discord::configure(options.discord_app_id);
-      host::discord::enable(options.discord_presence);   // starts or stops one background thread
+      if (!g_settings_standalone) host::discord::enable(options.discord_presence);
     }
     if (options.discord_presence) {
-      ImGui::TextWrapped("%s", host::discord::status().c_str());
+      if (g_settings_standalone) settings_hint("Discord presence starts when you launch the game.");
+      else ImGui::TextWrapped("%s", host::discord::status().c_str());
       settings_hint("A new Application ID is picked up the next time you switch this off and on.");
 #ifdef MELEE_NO_SLIPPI
       ImGui::TextWrapped("Your IP address is never published. Who can see what you are playing depends on your Discord activity privacy settings.");

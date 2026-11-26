@@ -296,6 +296,7 @@ void mu_controls_match_start(void);
 int mu_control(const struct Fighter* fp, unsigned int bit);
 /* 20XX Melee 1.03 by Hax$ and Altimor, its netplay ruleset (shim/mu_20xx103.c); on per match (mu_controls.c). */
 int mu_20xx103_on(void);
+int mu_20xx103_selected(void);   /* Current CSS choice, before the next match freezes its controls. */
 void mu_20xx_input(struct Fighter* fp);
 void mu_20xx_record_pad(struct Fighter* fp);
 void mu_20xx_proc_update(struct Fighter* fp);

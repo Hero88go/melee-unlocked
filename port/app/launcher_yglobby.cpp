@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 #include "launcher_yglobby.h"
+#include "launcher_room.h"
 #include <commctrl.h>
 #include "launcher_theme.h"
 #include "launcher_yougame.h"
@@ -50,7 +51,7 @@ namespace {
 
 // ---------------------------------------------------------------------------------------------- data
 
-const wchar_t* kBuildName[4] = {L"", L"Akaneia 1.0.1", L"ACE 2.0.1", L"Mod build"};
+const wchar_t* kBuildName[4] = {L"", L"Akaneia 1.0.1", L"ACE 2.0.1", L"20XX Melee 1.03"};
 const COLORREF kBuildColor[4] = {RGB(200, 210, 230), RGB(255, 179, 168), RGB(168, 212, 255), RGB(214, 190, 255)};
 
 // The page's sample data for lobbypreview=1 (the same as the owner's mockups).
@@ -165,11 +166,14 @@ void parse_rooms(const json& rooms, Data& d) {
   for (const auto& r : rooms) {
     if (!r.is_object() || str(r, "code").empty()) continue;
     Room x; x.code = wide(str(r, "code"));
+    if (str(r, "mode") != "mu-launcher") continue;
     x.name = wide(str(r, "name")); if (x.name.empty()) x.name = L"Room " + x.code;
     x.host = wide(str(r, "host")); x.rules = wide(str(r, "rules"));
     const std::string mode = str(r, "mode"); x.size = num(r, "size", 2); x.players = num(r, "players", 1);
     x.mode = mode.find("team") != std::string::npos ? 1 : (x.size > 2 && mode.find("single") == std::string::npos) ? 2 : 0;
     x.in_game = str(r, "state") == "in_game"; x.viewers = num(r, "viewers"); x.build = build_of(r);
+    const std::string code = str(r, "code");
+    if (code.size() == 12 && code[0] == 'm' && code[1] >= '0' && code[1] <= '3') x.build = code[1]-'0';
     d.rooms.push_back(x);
   }
   d.known = true;
@@ -700,7 +704,8 @@ int g_hot = -1; int g_hot_act = -1, g_hot_arg = 0;   // the hovered item (index 
 bool g_tracking = false;
 
 enum Act { A_TAB_ONLINE, A_TAB_FRIENDS, A_ELO, A_LIVE_WATCH, A_PLAY, A_TAB_ROOMS, A_TAB_LIVE, A_FILTER,
-           A_PUBLIC, A_PRIVATE, A_CREATE, A_CODE_JOIN, A_ROOM, A_LIVE_ROW, A_PLAYER_WATCH, A_MY_MAIN, A_SIGN_IN };
+           A_PUBLIC, A_PRIVATE, A_CREATE, A_CODE_JOIN, A_ROOM, A_LIVE_ROW, A_PLAYER_WATCH, A_MY_MAIN, A_SIGN_IN,
+           A_ROOM_START, A_ROOM_INVITE, A_ROOM_LEAVE, A_ROOM_COPY };
 struct Hit { RECT r; int act, arg; };
 std::vector<Hit> g_hits;
 
@@ -1031,6 +1036,36 @@ void place_code(RECT r) {
 void rooms_panel(HDC dc, const Data& d, RECT p) {
   frame(dc, p, C_PANEL, C_SEP, 10);
   const int x0 = p.left + S(14), x1 = p.right - S(14);
+  const auto room = launcher::room::current();
+  if (!room.code.empty() || !room.error.empty()) {
+    if (g_code) ShowWindow(g_code, SW_HIDE);
+    int y = p.top + S(14);
+    text(dc, wide(room.name.empty() ? "Room" : room.name), rc(x0, y, x1-x0, S(26)), g_f.bold, C_TEXT);
+    y += S(32);
+    text(dc, wide(std::string(launcher::room::variant_name(room.variant)) + "  " + room.code),
+         rc(x0, y, x1-x0, S(24)), g_f.body, C_DIM);
+    y += S(36);
+    for (const auto& member : room.members) {
+      text(dc, wide(member.second.name + (member.first == room.host ? " (host)" : "")),
+           rc(x0, y, x1-x0-S(70), S(24)), g_f.body, C_TEXT);
+      text(dc, member.second.ready ? L"Ready" : L"Checking", rc(x1-S(70), y, S(70), S(24)),
+           g_f.sm, member.second.ready ? C_OK : C_DIM);
+      y += S(30);
+    }
+    const std::string status = !room.error.empty() ? room.error : room.started ? "Arena open. Players can join using this room code."
+        : room.launching ? "Opening the host arena..." : room.connected ? "Waiting for players" : "Connecting to YouGame...";
+    text(dc, wide(status), rc(x0, y+S(10), x1-x0, S(50)), g_f.body, room.error.empty() ? C_DIM : C_AMBER, DT_WORDBREAK);
+    y += S(74);
+    int x = x0;
+    if (room.hosting() && !room.started) {
+      button(dc, rc(x,y,S(90),S(30)), L"Start", room.can_start(), room.can_start() ? A_ROOM_START : -1);
+      x += S(100);
+    }
+    button(dc, rc(x,y,S(90),S(30)), L"Invite", false, A_ROOM_INVITE); x += S(100);
+    button(dc, rc(x,y,S(90),S(30)), L"Copy code", false, A_ROOM_COPY);
+    button(dc, rc(x0,y+S(40),S(90),S(30)), L"Leave", false, A_ROOM_LEAVE);
+    return;
+  }
   int x = x0; const int ty = p.top + S(10);
   const std::wstring tabs[2] = {L"Public rooms" + (d.known ? L" " + std::to_wstring(d.rooms.size()) : L""), L"Live games" + (d.known ? L" " + std::to_wstring(d.live.size()) : L"")};
   for (int i = 0; i < 2; ++i) {
@@ -1157,8 +1192,9 @@ void paint(HDC target) {
   const Data d = data();
   header(dc, d, W);
   const int top = S(68), bottom = H - S(18), leftW = S(276), gap = S(14);
-  online_list(dc, d, RECT{S(22), top, S(22) + leftW, bottom});
-  const int rx0 = S(22) + leftW + gap, rx1 = W - S(22);
+  const int sidebar = W - S(22) - leftW;
+  online_list(dc, d, RECT{sidebar, top, W-S(22), bottom});
+  const int rx0 = S(22), rx1 = sidebar - gap;
   int y = top;
   if (d.known && !d.live.empty()) { live_bar(dc, d, RECT{rx0, y, rx1, y + S(50)}); y += S(50) + gap; }
   queues(dc, d, RECT{rx0, y, rx1, y + (d.known ? S(72) : S(56))}); y += (d.known ? S(72) : S(56)) + gap;
@@ -1194,10 +1230,23 @@ void act(int a, int arg) {
     case A_PUBLIC: g_public = true; break;
     case A_PRIVATE: g_public = false; break;
     case A_PLAY: if (repeat_press()) return; if (g_cb.play) g_cb.play(arg); return;
-    case A_CREATE:   // the game opens rooms (YouGame's Friends lobby): start it, public or private as picked
+    case A_ROOM_START: launcher::room::start(); return;
+    case A_ROOM_INVITE: launcher::room::invite(); return;
+    case A_ROOM_LEAVE: launcher::room::leave(); return;
+    case A_ROOM_COPY: {
+      const auto room = launcher::room::current();
+      const std::wstring value = wide(room.code);
+      if (OpenClipboard(g_window)) {
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (value.size()+1)*sizeof(wchar_t));
+        if (memory) { void* data = GlobalLock(memory); memcpy(data,value.c_str(),(value.size()+1)*sizeof(wchar_t));
+          GlobalUnlock(memory); EmptyClipboard(); if (!SetClipboardData(CF_UNICODETEXT,memory)) GlobalFree(memory); }
+        CloseClipboard();
+      }
+      return;
+    }
+    case A_CREATE:
       if (repeat_press()) return;
-      if (g_cb.play) g_cb.play(g_public ? 3 : 4);
-      toast(L"Starting the game: open Online, then Friends, to open your room."); return;
+      create_room(g_public); return;
     case A_CODE_JOIN: case A_ROOM: {   // YouGame's own invite link: YouGame starts the game into that room
       std::wstring code;
       if (a == A_ROOM && arg >= 0 && arg < (int)d.rooms.size()) code = d.rooms[arg].code;
@@ -1206,7 +1255,7 @@ void act(int a, int arg) {
       code = room_code(code);
       if (code.empty()) { toast(L"A room code is 6 to 12 letters or numbers."); return; }
       if (repeat_press()) return;
-      open_yougame(L"/g/" + wide(kSlug) + L"?room=" + code + L"&lobby=1"); toast(L"Opening room " + code + L" in YouGame..."); return;
+      join(code); return;
     }
     case A_LIVE_WATCH: case A_LIVE_ROW: {   // YouGame's own watch page for that match
       if (repeat_press()) return;
@@ -1349,12 +1398,28 @@ bool repeat_press() {
   static ULONGLONG last = 0; const ULONGLONG now = GetTickCount64();
   const bool repeat = last && now - last < 1000; if (!repeat) last = now; return repeat;
 }
+void refresh() { publish_view(); }
 void join(const std::wstring& code_in) {
   const std::wstring code = room_code(code_in);
-  if (!code.empty()) open_yougame(L"/g/" + wide(kSlug) + L"?room=" + code + L"&lobby=1");
+  if (!code.empty()) {
+    launcher::room::open(std::string(code.begin(), code.end()), 0, false);
+    PostMessageW(g_owner, WM_APP+70, 0, 0);
+    open();
+  }
 }
 void watch(const std::wstring& code) { if (!code.empty()) open_yougame(L"/g/" + wide(kSlug) + L"/watch/" + code); }
-void create_room(bool is_public) { if (g_cb.play) g_cb.play(is_public ? 3 : 4); }
+void create_room(bool is_public) {
+  HMENU menu = CreatePopupMenu();
+  for (int variant=0; variant<4; ++variant)
+    AppendMenuW(menu, MF_STRING, variant+1, wide(launcher::room::variant_name(variant)).c_str());
+  POINT point{}; GetCursorPos(&point);
+  const int choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, 0, g_owner, nullptr);
+  DestroyMenu(menu);
+  if (!choice) return;
+  launcher::room::open({}, choice-1, is_public);
+  PostMessageW(g_owner, WM_APP+70, 0, 0);
+  open();
+}
 void play(int queue) { if (g_cb.play) g_cb.play(queue); }
 void open_yougame_page() { open_yougame(L"/g/" + wide(kSlug)); }
 void set_preview(bool on) { g_preview = on; if (g_window) InvalidateRect(g_window, nullptr, FALSE); }

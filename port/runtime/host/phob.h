@@ -135,6 +135,9 @@ struct PortState {
   float x_pos_filt = 0, y_pos_filt = 0;
   struct Wave { float old_x = 0, old_y = 0, old_vx = 0, old_vy = 0, out_x = 0, out_y = 0; } wave_a, wave_c;
   float smooth_ax = 0, smooth_ay = 0, smooth_cx = 0, smooth_cy = 0;
+  // The last report's linearized sticks: a report that stands for several 1 ms loops (a stock adapter
+  // reports every 8 ms) is ramped from here, so the filters see the stick move as a Phob's 1 kHz reads do.
+  float last_ax = 0, last_ay = 0, last_cx = 0, last_cy = 0;
   uint8_t ax = 127, ay = 127, cx = 127, cy = 127;   // the output bytes (the firmware's btn), origin 127
   int start_lockout = 1000, du_lockout = 1000;
   // The unfiltered output, for the Phob menus' input viewer and scope.

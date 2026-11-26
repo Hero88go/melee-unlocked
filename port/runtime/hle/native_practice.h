@@ -99,6 +99,8 @@ void submit_warmup();
 void submit_warmup_return();
 // The ARENA card on the YouGame Friends lobby's select (slippi_arena FromFriends): to the online select.
 void submit_arena_from_friends();
+// A launcher room starts on Direct's character select, before opening its arena.
+void submit_launcher_arena();
 // The main menu's cleanup came (the online select was left, or the player is passing through): true
 // when a search the player chose to keep goes on (slippi_online.cpp skips that cleanup then).
 bool keep_search_at_menu();

@@ -822,7 +822,7 @@ void prompt_box(float x, float y, float w, const View& v, int kind) {
 // character (ghost_ai).
 struct BotChoice { uint8_t character, pro; const char* name; };
 // Then the 20XX CPUs (owner 11-24): a CPU port on every machine with the 20XX AI on for the match.
-constexpr BotChoice kBotChoices[] = {{2, 3, "Pro AI Fox"}, {20, 0, "Pro AI Falco"}, {9, 1, "Pro AI Marth"}, {17, 4, "Pro AI Yoshi"},
+constexpr BotChoice kBotChoices[] = {{2, 3, "Cody Schwab (Fox)"}, {20, 0, "Mang0 (Falco)"}, {9, 1, "Zain (Marth)"}, {17, 4, "aMSa (Yoshi)"},
                                      {2, ar::kPro20xx, "20XX Fox"}, {20, ar::kPro20xx, "20XX Falco"},
                                      {9, ar::kPro20xx, "20XX Marth"}, {19, ar::kPro20xx, "20XX Sheik"},
                                      {0, ar::kPro20xx, "20XX Falcon"}, {15, ar::kPro20xx, "20XX Puff"},

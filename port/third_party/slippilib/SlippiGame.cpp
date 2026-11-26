@@ -651,8 +651,11 @@ namespace Slippi {
   }
 
   FrameData* SlippiGame::GetFrame(int32_t frame) {
-    // Get the frame we want
-    return game->framesByIndex.at(frame);
+    // The frame, or null when the file has none with that number (B-1523, 11-26: a replay with a gap in its
+    // frames stopped the whole game with "invalid unordered_map key" in the replay coach's scan, which skips
+    // a missing frame; every other caller asks DoesFrameExist first).
+    const auto it = game->framesByIndex.find(frame);
+    return it == game->framesByIndex.end() ? nullptr : it->second;
   }
 
   FrameData* SlippiGame::GetFrameAt(uint32_t pos) {

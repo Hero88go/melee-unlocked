@@ -68,6 +68,7 @@ void sign_out_code();
 // player, on another thread. Not signed in: the sign-in starts.
 void friend_action(const std::string& username, bool accept, std::function<void(const std::wstring&)> done);
 void fit();   // the launcher window changed size
+void refresh();
 bool me_pending();   // the YouGame app runs and its answer for you has not come yet   // a lobby setting changed outside the page (the skin): the launcher saves it
 void set_my_main(int character, bool picked = false);   // main=N in launcher.ini when picked (-1: none); else a guess from your replays
 bool main_picked();

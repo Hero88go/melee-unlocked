@@ -13,6 +13,8 @@
 #include <gdiplus.h>
 #include "launcher_melee_look.h"
 #include "launcher_yglobby.h"
+#include "launcher_room.h"
+#include "launcher_lang.h"
 
 #include <algorithm>
 #include <memory>
@@ -143,8 +145,16 @@ void icon(HDC dc, int id, double x, double y, double px, COLORREF c) {
   Gdiplus::SolidBrush b(gc(c)); g.FillPath(&b, &path);
 }
 // Plain text from its top-left, as the mockup's text boxes (line height 1.33 of the size). Returns its width.
-int text_w(HDC dc, HFONT f, const std::wstring& s) { HGDIOBJ o = SelectObject(dc, f); SIZE z{}; GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &z); SelectObject(dc, o); return z.cx; }
-int tx(HDC dc, const std::wstring& s, double x, double y, HFONT f, COLORREF c, double maxw = 0, UINT align = DT_LEFT) {
+// The skin's fixed text in the player's language (player report 11-26: it stayed English). Drawing and measuring
+// both translate, so layout measures the words it draws; text with no translation comes back unchanged.
+std::wstring L10(const std::wstring& s) { return launcher::lang::txw(s); }
+// A translated sentence with one {} filled in (a name, a count), so a language can put it where it reads right.
+std::wstring fill(const wchar_t* english, const std::wstring& a) {
+  std::wstring s = L10(english); const size_t p = s.find(L"{}"); if (p != std::wstring::npos) s.replace(p, 2, a); return s;
+}
+int text_w(HDC dc, HFONT f, const std::wstring& s0) { const std::wstring s = L10(s0); HGDIOBJ o = SelectObject(dc, f); SIZE z{}; GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &z); SelectObject(dc, o); return z.cx; }
+int tx(HDC dc, const std::wstring& s0, double x, double y, HFONT f, COLORREF c, double maxw = 0, UINT align = DT_LEFT) {
+  const std::wstring s = L10(s0);
   const int w = text_w(dc, f, s);
   RECT r{X(x), X(y), maxw > 0 ? X(x + maxw) : X(x) + w + 2, X(y) + X(40)};
   HGDIOBJ o = SelectObject(dc, f); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, c);
@@ -153,11 +163,13 @@ int tx(HDC dc, const std::wstring& s, double x, double y, HFONT f, COLORREF c, d
 }
 // Melee's font at the mockup's size n (its cell is 0.78 n), from the cell's top-left; else a bold system font.
 int cell_of(double n) { return std::max(6, X(n * 0.78)); }
-int mw(HDC dc, const std::wstring& s, double n) {
+int mw(HDC dc, const std::wstring& s0, double n) {
+  const std::wstring s = L10(s0);
   const int w = launcher::melee_look::width_cell(s, cell_of(n)); if (w >= 0) return w;
   HFONT f = font(n * 0.62, FW_SEMIBOLD); const int v = text_w(dc, f, s); DeleteObject(f); return v;
 }
-void mt(HDC dc, const std::wstring& s, double x, double y, double n, COLORREF c, double maxw = 0, double skew = 0, UINT align = DT_LEFT) {
+void mt(HDC dc, const std::wstring& s0, double x, double y, double n, COLORREF c, double maxw = 0, double skew = 0, UINT align = DT_LEFT) {
+  const std::wstring s = L10(s0);
   // Too long for its room: the text gets smaller (down to 60%, centred where it was) before it is ever cut short.
   if (maxw > 0 && mw(dc, s, n) > X(maxw)) {
     double k = n; const double floor_n = n * 0.6;
@@ -198,7 +210,7 @@ void avatar(HDC dc, int main, double x, double y, double px, const std::string& 
 const COLORREF kOk = RGB(0x74, 0xC2, 0x7A), kAmber = RGB(0xD9, 0xA4, 0x41), kLiveRed = RGB(0xE5, 0x53, 0x4B);
 const COLORREF kTier[6] = {RGB(0xD9, 0x90, 0x63), RGB(0xC9, 0xD2, 0xDC), RGB(0xF0, 0xC2, 0x4A), RGB(0x5F, 0xD8, 0xC8), RGB(0x77, 0xBA, 0xF2), RGB(0xFF, 0xC8, 0x57)};
 const wchar_t* kTierName[6] = {L"Bronze", L"Silver", L"Gold", L"Platinum", L"Diamond", L"Challenger"};
-const wchar_t* kBuild[4] = {L"", L"Akaneia 1.0.1", L"ACE 2.0.1", L"Mod build"};
+const wchar_t* kBuild[4] = {L"", L"Akaneia 1.0.1", L"ACE 2.0.1", L"20XX Melee 1.03"};
 const COLORREF kBuildCol[4] = {0, RGB(255, 179, 168), RGB(168, 212, 255), RGB(214, 190, 255)};
 const wchar_t kDot[] = L" \u00B7 ";
 
@@ -288,9 +300,9 @@ void place_edit(HWND e, RECT r) {
 }
 std::wstring status_line(const wchar_t* what) {
   switch (launcher::yglobby::source_state()) {
-    case 0: return std::wstring(L"Loading ") + what + L" from YouGame...";
-    case 3: return L"Can't reach YouGame right now. Trying again shortly.";
-    default: return std::wstring(L"YouGame hasn't opened ") + what + L" to the launcher yet. This fills in by itself once it does.";
+    case 0: return fill(L"Loading {} from YouGame...", L10(what));
+    case 3: return L10(L"Can't reach YouGame right now. Trying again shortly.");
+    default: return fill(L"YouGame hasn't opened {} to the launcher yet. This fills in by itself once it does.", L10(what));
   }
 }
 // A thin thumb at a list's right edge, only when the list has more rows than fit.
@@ -326,7 +338,7 @@ void play_page(HDC dc, const launcher::yglobby::Data& d, double bottom) {
   mt(dc, L"Play", 244, 24.1, 46, RGB(255, 255, 255), 0, 12);
   if (d.known) {
     const double tx0 = 244 + mw(dc, L"Play", 46) * 96.0 / dpi() + 14;
-    dot(dc, tx0 + 3.5, 45, 7, kOk); tx(dc, std::to_wstring(d.online) + (d.online == 1 ? L" player in-game" : L" players in-game"), tx0 + 13, 36.5, g_f13, P.text2);
+    dot(dc, tx0 + 3.5, 45, 7, kOk); tx(dc, fill(d.online == 1 ? L"{} player in-game" : L"{} players in-game", std::to_wstring(d.online)), tx0 + 13, 36.5, g_f13, P.text2);
   }
   // The main way in: Melee itself (every mode, online too, from its own menus), as big as the page's heading.
   { const double w = std::max(190.0, mw(dc, L"Play Melee", 26) * 96.0 / dpi() + 48); frame_button(dc, 964 - w, 20, w, 44, L"Play Melee", 26, A_PLAY_OFFLINE); }
@@ -336,7 +348,7 @@ void play_page(HDC dc, const launcher::yglobby::Data& d, double bottom) {
   for (int i = 0; i < 3; ++i) {
     const double y = 92 + 37 * i;
     frame_button(dc, 264, y, 190, 32, q[i], 21, A_QUEUE, i);
-    if (d.known) { icon(dc, i == 2 ? I_FRIEND : I_PEOPLE, 468, y + 8.5, 15, P.text2); tx(dc, std::to_wstring(d.waiting[i]) + L" in queue", 488, y + 7.5, g_f13, P.text2); }
+    if (d.known) { icon(dc, i == 2 ? I_FRIEND : I_PEOPLE, 468, y + 8.5, 15, P.text2); tx(dc, fill(L"{} in queue", std::to_wstring(d.waiting[i])), 488, y + 7.5, g_f13, P.text2); }
   }
   {
     const int t = d.me_known ? launcher::yglobby::my_tier(d) : -1;
@@ -345,8 +357,8 @@ void play_page(HDC dc, const launcher::yglobby::Data& d, double bottom) {
     else if (t >= 0) {
       // YouGame's own label with its division ("Silver II") when it names this tier, as the YouGame page shows it.
       l1 = d.me_label.rfind(kTierName[t], 0) == 0 ? d.me_label : std::wstring(kTierName[t]); c1 = kTier[t]; big = true;
-      if (d.me_matches >= 0) l3 = std::to_wstring(d.me_matches) + L" ranked " + (d.me_matches == 1 ? L"match" : L"matches");
-      if (d.me_wins >= 0 && d.me_losses >= 0) l3 = std::to_wstring(d.me_matches) + L" ranked sets" + kDot + std::to_wstring(d.me_wins) + L"W-" + std::to_wstring(d.me_losses) + L"L";
+      if (d.me_matches >= 0) l3 = fill(d.me_matches == 1 ? L"{} ranked match" : L"{} ranked matches", std::to_wstring(d.me_matches));
+      if (d.me_wins >= 0 && d.me_losses >= 0) l3 = fill(L"{} ranked sets", std::to_wstring(d.me_matches)) + kDot + std::to_wstring(d.me_wins) + L"W-" + std::to_wstring(d.me_losses) + L"L";
     } else { l1 = L"Unranked"; l3 = d.me_label.empty() ? L"Play ranked to place" : d.me_label; }
     const bool spark = big && d.me_history.size() >= 2;
     const double tw = std::max({140.0, text_w(dc, g_f15, l1) * 96.0 / dpi(), text_w(dc, g_f12, l3) * 96.0 / dpi()});
@@ -377,7 +389,7 @@ void play_page(HDC dc, const launcher::yglobby::Data& d, double bottom) {
   double y = 286;
   if (!d.known || d.rooms.empty()) {
     RECT r = R(264, y + 30, 680, 60); HGDIOBJ o = SelectObject(dc, g_f13); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, P.dim);
-    const std::wstring s = d.known ? std::wstring(L"No public rooms right now. Create one!") : status_line(L"public rooms");
+    const std::wstring s = d.known ? L10(L"No public rooms right now. Create one!") : status_line(L"public rooms");
     DrawTextW(dc, s.c_str(), -1, &r, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX); SelectObject(dc, o);
     return;
   }
@@ -410,35 +422,60 @@ void status_line_bar(HDC dc, double bottom) {
   if (!g_cb.status) return;
   const auto s = g_cb.status();
   const double y = bottom - 38, h = 24;
+  const std::wstring extension = launcher::lang::txw(L"Launch with YouGame extension");
+  const double language_width = text_w(dc, g_f12, s.language) * 96.0 / dpi();
+  const double language_x = 960 - language_width;
+  const double extension_width = text_w(dc, g_f12, extension) * 96.0 / dpi() + 20;
+  const double extension_x = language_x - 34 - extension_width;
+  const double content_right = extension_x - 12;
   double x = 248;
-  auto part = [&](int id, bool dotted, COLORREF dot_c, const std::wstring& label, const std::wstring& value, COLORREF value_c) {
+  auto part = [&](int id, bool dotted, COLORREF dot_c, const std::wstring& label, const std::wstring& value, COLORREF value_c, double limit = 0.0) {
     const double x0 = x; const bool hot = is_hot(A_STATUS, id);
+    const double right = limit > 0 ? std::min(content_right, x0 + limit) : content_right;
+    if (right <= x0 + 12) return;
     if (dotted) { dot(dc, x + 3.5, y + h / 2, 7, dot_c); x += 12; }
     const COLORREF vc = hot ? RGB(255, 255, 255) : value_c;
     if (g_status_style == 1) {   // B: one font (the page's), the value brighter and bolder
       if (!label.empty()) x += tx(dc, label, x, y + 4, g_f12, P.dim) * 96.0 / dpi() + 4;
-      x += tx(dc, value, x, y + 3.5, g_f13b, vc) * 96.0 / dpi();
+      const double available = std::max(1.0, right-x);
+      tx(dc, value, x, y+3.5, g_f13b, vc, available);
+      x += std::min(text_w(dc,g_f13b,value)*96.0/dpi(),available);
     } else if (g_status_style == 2) {   // C: Melee's font throughout
       if (!label.empty()) { mt(dc, label, x, y + 7, 15, P.dim); x += mw(dc, label, 15) * 96.0 / dpi() + 6; }
-      mt(dc, value, x, y + 5.6, 17, vc); x += mw(dc, value, 17) * 96.0 / dpi();
+      const double available = std::max(1.0, right-x);
+      mt(dc, value, x, y + 5.6, 17, vc, available);
+      x += std::min(mw(dc, value, 17)*96.0/dpi(), available);
     } else {   // A: the label in the page's font, the value in Melee's, on one baseline
       if (!label.empty()) x += tx(dc, label, x, y + 4.5, g_f12, P.dim) * 96.0 / dpi() + 5;
       // y + 4.6: the value's baseline on the label's (measured 11-24: at y + 6.6 every value sat 2 px under its
       // label, "none" most visibly, owner's report).
-      mt(dc, value, x, y + 4.6, 17, vc); x += mw(dc, value, 17) * 96.0 / dpi();
+      const double available = std::max(1.0, right-x);
+      mt(dc, value, x, y + 4.6, 17, vc, available);
+      x += std::min(mw(dc, value, 17)*96.0/dpi(), available);
     }
     if (hot) hline(dc, x0 + (dotted ? 12 : 0), y + 20, x - x0 - (dotted ? 12 : 0), P.dim);
     hit(R(x0 - 4, y, x - x0 + 8, h), A_STATUS, id);
-    x += 14;
+    x += 10;
   };
-  part(0, true, s.slippi_ok ? kOk : P.dim, L"Slippi", s.slippi, P.text2);
-  part(1, true, s.yougame_ok ? kOk : P.dim, L"YouGame", s.yougame, s.yougame_ok ? P.text2 : P.accent);
-  part(2, true, s.mods_on ? kOk : P.dim, L"Mods", s.mods, P.text2);
+  part(0, true, s.slippi_ok ? kOk : P.dim, L"Slippi", s.slippi, P.text2, 126);
+  part(1, true, s.yougame_ok ? kOk : P.dim, L"YouGame", s.yougame, s.yougame_ok ? P.text2 : P.accent, 134);
+  std::wstring mods = s.mods;
+  const size_t prefix = mods.find(L": ");
+  if (prefix != std::wstring::npos) mods.erase(0,prefix+2);
+  const double version_width = (g_status_style == 1 ? text_w(dc,g_f13b,s.version) : mw(dc,s.version,17))*96.0/dpi()+12;
+  part(2, true, s.mods_on ? kOk : P.dim, L"Mods", mods, P.text2, std::max(45.0, content_right-x-version_width));
   part(3, false, 0, L"", s.version, P.text2);
   if (!s.update.empty()) part(4, false, 0, L"", s.update, P.accent);
+  const bool extension_hot = is_hot(A_STATUS, 6);
+  line_box(dc, extension_x, y+6, 12, 12, 3, extension_hot ? P.accent : P.dim);
+  if (s.extension) {
+    fill_box(dc, extension_x+2, y+8, 8, 8, 1, P.accent);
+  }
+  tx(dc, extension, extension_x+19, y+4, g_f12, extension_hot ? RGB(255,255,255) : P.text2);
+  hit(R(extension_x-4,y,extension_width+8,h),A_STATUS,6);
   // the language, at the right edge, with the globe
-  const double lw = text_w(dc, g_f12, s.language) * 96.0 / dpi(), lx = 960 - lw;
-  if (lx - 22 > x) {
+  const double lw = language_width, lx = language_x;
+  {
     const bool hot = is_hot(A_STATUS, 5);
     icon(dc, I_GLOBE, lx - 20, y + 4, 15, hot ? RGB(255, 255, 255) : P.dim);
     tx(dc, s.language, lx, y + 4, g_f12, hot ? RGB(255, 255, 255) : P.text2);
@@ -454,7 +491,7 @@ void spectate_page(HDC dc, const launcher::yglobby::Data& d, double bottom) {
     dot(dc, tx0 + 3.5, 45, 7, kLiveRed); tx(dc, std::to_wstring(d.live.size()) + L" live games", tx0 + 13, 36.5, g_f13, P.text2); }
   if (!d.known || d.live.empty()) {
     RECT r = R(264, 140, 680, 60); HGDIOBJ o = SelectObject(dc, g_f13); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, P.dim);
-    const std::wstring s = d.known ? (d.in_match > 0 ? std::to_wstring(d.in_match) + (d.in_match == 1 ? L" player is" : L" players are") + L" in a match. YouGame doesn't list matches to watch yet; they show here once it does." : std::wstring(L"No matches being played right now.")) : status_line(L"matches being played");
+    const std::wstring s = d.known ? (d.in_match > 0 ? fill(d.in_match == 1 ? L"{} player is in a match. YouGame doesn't list matches to watch yet; they show here once it does." : L"{} players are in a match. YouGame doesn't list matches to watch yet; they show here once it does.", std::to_wstring(d.in_match)) : L10(L"No matches being played right now.")) : status_line(L"matches being played");
     DrawTextW(dc, s.c_str(), -1, &r, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX); SelectObject(dc, o);
     return;
   }
@@ -503,7 +540,7 @@ void rail(HDC dc, const launcher::yglobby::Data& d, int W, int H) {
     RECT e{X(L0), 0, X(L0 + 1), H}; b = CreateSolidBrush(P.soft_shell); FillRect(dc, &e, b); DeleteObject(b); }
   const double x0 = L0 + 13;   // 1005, the rail's content edge
   int friends = 0; for (const auto& q : d.players) friends += q.friend_;
-  const std::wstring tabs[2] = {L"Online" + (d.known ? L" " + std::to_wstring(d.online) : L""), L"Friends" + (d.known ? L" " + std::to_wstring(friends) : L"")};
+  const std::wstring tabs[2] = {L10(L"Online") + (d.known ? L" " + std::to_wstring(d.online) : L""), L10(L"Friends") + (d.known ? L" " + std::to_wstring(friends) : L"")};
   double x = x0 + 6;
   for (int i = 0; i < 2; ++i) {
     const double w = text_w(dc, g_f13, tabs[i]) * 96.0 / dpi();
@@ -523,7 +560,7 @@ void rail(HDC dc, const launcher::yglobby::Data& d, int W, int H) {
   const double bottom = H * 96.0 / dpi();
   if (!d.known || d.players.empty()) {
     RECT r = R(x0 + 8, y + 60, 231, 80); HGDIOBJ o = SelectObject(dc, g_f13); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, P.dim);
-    const std::wstring s = !d.known ? status_line(L"who's online") : !d.players_known ? std::wstring(L"Sign in to see who's online.") : std::wstring(L"Nobody else is online right now.");
+    const std::wstring s = !d.known ? status_line(L"who's online") : !d.players_known ? L10(L"Sign in to see who's online.") : L10(L"Nobody else is online right now.");
     if (d.known && !d.players_known) hit(r, A_SIGN_IN);   // that line signs in too
     DrawTextW(dc, s.c_str(), -1, &r, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX); SelectObject(dc, o);
     return;
@@ -562,9 +599,9 @@ void rail(HDC dc, const launcher::yglobby::Data& d, int W, int H) {
   g_rail_scroll.area = R(L0, 98, 272, bottom - 98);
   if (!shown_friends && !shown_others) {
     RECT r = R(x0 + 8, y + 40, 231, 60); HGDIOBJ o = SelectObject(dc, g_f13); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, P.dim);
-    const std::wstring msg = !filter.empty() ? std::wstring(L"No one here matches \u201C") + q + L"\u201D." : g_rail_tab == 1 ? std::wstring(L"None of your friends are online.") : std::wstring(L"Nobody else is online right now.");
+    const std::wstring msg = !filter.empty() ? fill(L"No one here matches \u201C{}\u201D.", q) : g_rail_tab == 1 ? L10(L"None of your friends are online.") : L10(L"Nobody else is online right now.");
     if (!filter.empty()) {   // add that name as a friend
-      const std::wstring add = std::wstring(L"Add \u201C") + q + L"\u201D as a friend";
+      const std::wstring add = fill(L"Add \u201C{}\u201D as a friend", q);
       const bool hot = is_hot(A_ADD_TYPED, 0);
       tx(dc, add, x0 + 8, y + 100, g_f13, hot ? RGB(255, 255, 255) : P.accent, 231, DT_CENTER);
       hit(R(x0 + 8, y + 96, 231, 24), A_ADD_TYPED, 0);
@@ -638,7 +675,7 @@ void paint(HDC target) {
   SelectObject(dc, old); DeleteObject(bm); DeleteDC(dc);
 }
 
-void toast(const std::wstring& s) { g_toast = s; g_toast_until = GetTickCount64() + 4000; SetTimer(g_window, 1, 4100, nullptr); InvalidateRect(g_window, nullptr, FALSE); }
+void toast(const std::wstring& s) { g_toast = L10(s); g_toast_until = GetTickCount64() + 4000; SetTimer(g_window, 1, 4100, nullptr); InvalidateRect(g_window, nullptr, FALSE); }
 
 void act(int a, int arg) {
   const auto d = launcher::yglobby::current();
@@ -648,12 +685,12 @@ void act(int a, int arg) {
       if (g_cb.open_page) g_cb.open_page(arg - 2); return;
     case A_PLAY_OFFLINE: if (launcher::yglobby::repeat_press()) return; if (g_cb.play_offline) g_cb.play_offline(); return;
     case A_QUEUE: if (launcher::yglobby::repeat_press()) return; launcher::yglobby::play(arg); toast(L"Starting the game..."); return;
-    case A_CREATE: if (launcher::yglobby::repeat_press()) return; launcher::yglobby::create_room(true); toast(L"Starting the game: open Online, then Friends, to open your room."); return;
+    case A_CREATE: if (launcher::yglobby::repeat_press()) return; launcher::yglobby::create_room(true); return;
     case A_JOIN_CODE: { wchar_t b[32] = {}; if (g_code) GetWindowTextW(g_code, b, 31); if (!b[0]) { toast(L"Type a room code first."); return; }
       const std::wstring code = launcher::yglobby::room_code(b);
       if (code.empty()) { toast(L"A room code is 6 to 12 letters or numbers."); return; }
       if (launcher::yglobby::repeat_press()) return;
-      launcher::yglobby::join(code); toast(L"Opening room " + code + L" in YouGame..."); return; }
+      launcher::yglobby::join(code); toast(fill(L"Opening room {} in YouGame...", code)); return; }
     case A_ROOM: if (arg >= 0 && arg < (int)d.rooms.size() && !launcher::yglobby::repeat_press()) {
         // Watch joins too: in an Arena room everyone not fighting watches the match (the game's own Arena spectating).
         launcher::yglobby::join(d.rooms[arg].code);
@@ -663,17 +700,25 @@ void act(int a, int arg) {
     case A_ELO: g_elo = !g_elo; launcher::yglobby::set_elo(g_elo); launcher::yglobby::settings_changed(); break;
     case A_ME: launcher::yglobby::open_yougame_page(); return;
     case A_RAIL_ART: if (g_cb.rail_picture) g_cb.rail_picture(); return;
-    case A_STATUS: if (g_cb.status_click) g_cb.status_click(arg); return;
+    case A_STATUS:
+      if (g_cb.status_click) g_cb.status_click(arg);
+      InvalidateRect(g_window, nullptr, FALSE);
+      return;
     case A_BUILD_MENU: if (g_cb.build_menu) g_cb.build_menu(); break;
     case A_PLAYER_MENU: if (arg >= 0 && arg < (int)d.players.size()) {
         const auto& pl = d.players[arg]; const std::string user(pl.code.begin(), pl.code.end());
         HMENU m = CreatePopupMenu();
-        if (pl.link == 1) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, (L"You and " + pl.name + L" are friends").c_str());
-        else if (pl.link == 2) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Friend request sent");
-        else if (pl.link == 3) AppendMenuW(m, MF_STRING, 2, (L"Accept " + pl.name + L"'s friend request").c_str());
-        else AppendMenuW(m, MF_STRING, 1, (L"Add " + pl.name + L" as a friend").c_str());
+        AppendMenuW(m, MF_STRING, 3, L10(L"Challenge in a YouGame room").c_str());
+        if (pl.link == 1) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, fill(L"You and {} are friends", pl.name).c_str());
+        else if (pl.link == 2) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L10(L"Friend request sent").c_str());
+        else if (pl.link == 3) AppendMenuW(m, MF_STRING, 2, fill(L"Accept {}'s friend request", pl.name).c_str());
+        else AppendMenuW(m, MF_STRING, 1, fill(L"Add {} as a friend", pl.name).c_str());
         POINT p{}; GetCursorPos(&p);
         const int pick = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, g_window, nullptr); DestroyMenu(m);
+        if (pick == 3) {
+          launcher::yglobby::create_room(false);
+          launcher::room::invite();
+        }
         if ((pick == 1 || pick == 2) && !user.empty())
           launcher::yglobby::friend_action(user, pick == 2, [](const std::wstring& say) { if (g_window) PostMessageW(g_window, WM_APP + 3, 0, (LPARAM)new std::wstring(say)); });
       } return;
@@ -769,7 +814,7 @@ void show() {
     g_code = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, g_window, nullptr, GetModuleHandleW(nullptr), nullptr);
     g_search = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, g_window, nullptr, GetModuleHandleW(nullptr), nullptr);
     for (HWND e : {g_code, g_search}) SendMessageW(e, WM_SETFONT, (WPARAM)g_f13, FALSE);
-    SendMessageW(g_code, EM_SETCUEBANNER, TRUE, (LPARAM)L"Room code"); SendMessageW(g_code, EM_LIMITTEXT, 16, 0);
+    SendMessageW(g_code, EM_SETCUEBANNER, TRUE, (LPARAM)L10(L"Room code").c_str()); SendMessageW(g_code, EM_LIMITTEXT, 16, 0);
     SetWindowSubclass(g_code, [](HWND e, UINT m, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) -> LRESULT {
       // the launcher's dialog loop keeps Enter for itself unless the box asks for it
       if (m == WM_GETDLGCODE && lp && ((MSG*)lp)->message == WM_KEYDOWN && ((MSG*)lp)->wParam == VK_RETURN) return DLGC_WANTALLKEYS;
@@ -777,7 +822,7 @@ void show() {
       if (m == WM_CHAR && (wp == L'\r' || wp == L'\n')) return 0;   // no beep
       return DefSubclassProc(e, m, wp, lp);
     }, 1, 0);
-    SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search players"); SendMessageW(g_search, EM_LIMITTEXT, 30, 0);
+    SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)L10(L"Search players").c_str()); SendMessageW(g_search, EM_LIMITTEXT, 30, 0);
   }
   // Nothing of the Classic look may draw over the skin: its controls go hidden, and any shown again later is
   // clipped under it (the skin stays on top of its siblings).

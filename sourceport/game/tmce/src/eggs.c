@@ -181,6 +181,12 @@ void Event_Init(GOBJ *gobj)
     accumulated_damage = 0;
     /* The console loads the event fresh each time; here the count would carry over. */
     egg_counter = 0;
+    /* Free Practice changes these static menu flags for the current exercise. */
+    Options_Main[OPT_FREEPRACTICE].disable = 0;
+    Options_Main[OPT_DAMAGETHRESHOLD].disable = 1;
+    Options_Main[OPT_SCALE].disable = 1;
+    Options_Main[OPT_VELOCITY].disable = 1;
+    Options_Main[OPT_COLLISION].disable = 1;
 #endif
     // initialize egg camera subject
     cam = CameraSubject_Alloc();

@@ -17,7 +17,7 @@ struct Callbacks {
   std::function<void()> rail_picture;   // clicking Bailey: pick another picture (or bring her back)
   // The status line under Play and Spectate, and what a click on each part does (0 Slippi, 1 YouGame, 2 Mods,
   // 3 the version, 4 Update, 5 the language).
-  struct Status { std::wstring slippi, yougame, mods, version, update, language; bool slippi_ok = false, yougame_ok = false, mods_on = false; };
+  struct Status { std::wstring slippi, yougame, mods, version, update, language; bool slippi_ok = false, yougame_ok = false, mods_on = false, extension = false; };
   std::function<Status()> status;
   std::function<void(int part)> status_click;
   std::function<std::wstring()> build_name;   // the game build Play Melee starts

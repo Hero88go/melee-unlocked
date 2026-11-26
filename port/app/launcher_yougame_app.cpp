@@ -353,7 +353,7 @@ Social social_direct(bool staging, const std::string& version, const std::vector
   got.hello = run(staging, version, timeout_ms, [&](const Request& request, Answer& out) {
     for (const json& body : requests) {
       const std::string type = body.value("type", std::string());
-      got.answers[type] = request(body, 8000);
+      got.answers[type] = request(body, type == "mpFriend" ? timeout_ms : 8000);
     }
     (void)out;
   });

@@ -1839,6 +1839,8 @@ void test_request_training(int character) {
 
 std::atomic<bool> g_arena_from_friends{false};
 void submit_arena_from_friends() { g_arena_from_friends.store(true); }
+std::atomic<bool> g_launcher_arena{false};
+void submit_launcher_arena() { g_launcher_arena.store(true); }
 
 void submit_warmup_return() {
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -2032,6 +2034,26 @@ void tick() {
   // The ARENA card on the Friends lobby's select (the app's channel or the launcher's bridge alike): as an
   // accepted arena invite, without the join. The lobby is not disarmed: the select's unload sends its LEAVE,
   // so the room closes for the others. Only from the lobby's own select (the online major).
+  if (g_launcher_arena.load() && major == 1 && g_bridge && g_scene_steady >= 120 &&
+      yougame::identity().ok && yougame::friends::menu_safe(major, minor)) {
+    g_launcher_arena = false;
+    yougame::set_launcher_session(true);
+    yougame::friends::events.online_menu(false);
+    slippi::online::disarm_friends_lobby();
+    slippi::online::native_cleanup_match();
+    g_lifecycle = Lifecycle{};
+    clear_search_metadata();
+    set_online_mode(2);
+    g_practice = {};
+    g_practice.valid = true;
+    g_practice.players[0].active = true;
+    g_practice.players[0].character = 0;
+    write_event_backup();
+    if (g_content_bridge) g_content_bridge(2, true);
+    request_major(kOnlineMajor);
+    host::log("launcher room: opening the arena character select");
+    return;
+  }
   if (g_arena_from_friends.exchange(false)) {
     if (major == kOnlineMajor && slippi::online::friends_lobby_armed() && !slippi::playback::enabled()) {
       host::log("arena: from the Friends lobby to the online select");
@@ -2160,6 +2182,14 @@ void tick() {
       }
 #endif
       auto room = yougame::friends::events.take_join(true);
+      if (!room.empty() && yougame::friends::events.join_launcher()) {
+        // Relaunch before loading another build's assets. The accepted room code is bounded ASCII.
+        if (room.size()>=6 && room.size()<=12 &&
+            room.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789")==std::string::npos) {
+          host::request_restart("--launcher-room "+room);
+        }
+        return;
+      }
       // An invite into an arena (inviteMode "arena"): the arena joins its YouGame room and the player
       // waits on the online character select (YouGame Friends, the arena's home under YouGame; the game's
       // own mode there is Direct's), where the arena starts each game it puts them in.

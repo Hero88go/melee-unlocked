@@ -271,7 +271,7 @@ inline json doubles_match_ticket(const std::string& compatibility, bool ranked =
 // Room kinds (Events::room_kind): what a joined room turned out to be. kRoomArena is only ever an invite's
 // own word (inviteMode "arena"): the arena's 8-seat room (slippi_arena.cpp under YouGame) is joined as itself,
 // never tried as another kind and never reached by a retry of one.
-inline constexpr int kRoom1v1 = 0, kRoomFriends4 = 1, kRoomDoubles = 2, kRoomArena = 3;
+inline constexpr int kRoom1v1 = 0, kRoomFriends4 = 1, kRoomDoubles = 2, kRoomArena = 3, kRoomLauncher = 4;
 // The launch invite the page hands over for a Teams invite (Player.tsx hello, /api/multiplayer/teams):
 // nativeTeamsInvite {v, room, mode:"teams", md?}. Without md it is a Teams home this build's Doubles select
 // may be (tried first; the room decides); md:1 is the legacy console Doubles path (MELEE_DOUBLES).
@@ -287,7 +287,7 @@ inline int invite_mode_kind(const json& value) {
   if (!value.is_object() || !value.count("inviteMode") || !value["inviteMode"].is_string()) return -1;
   const auto& mode = value["inviteMode"].get_ref<const std::string&>();
   return mode == "singles" ? kRoom1v1 : mode == "default" ? kRoomFriends4 : mode == "teams" ? kRoomDoubles
-       : mode == "arena" ? kRoomArena : -1;
+       : mode == "arena" ? kRoomArena : mode == "mu-launcher" ? kRoomLauncher : -1;
 }
 // The arena's room under YouGame: one private room of kArenaSeats for the whole arena (Hero's room limit), keyed
 // by this build's own key plus ":arena-1" (lobby::arena_compatibility), so the Friends lobby's 4-seat rules and its
@@ -550,6 +550,15 @@ class Events {
   int join_players() const { std::lock_guard<std::mutex> lock(mutex_); return join_players_; }
   // The last taken join is an invite into an arena's room (inviteMode "arena"): the arena joins it, nothing else.
   bool join_arena() const { std::lock_guard<std::mutex> lock(mutex_); return join_first_ == kRoomArena; }
+  bool join_launcher() const { std::lock_guard<std::mutex> lock(mutex_); return join_first_ == kRoomLauncher; }
+  std::string take_launcher_join() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pending_first_ != kRoomLauncher) return {};
+    pending_first_ = kRoom1v1;
+    pending_players_ = 0;
+    pending_hinted_ = pending_strict_ = pending_doubles_ = false;
+    return std::exchange(pending_, {});
+  }
   // A room that refused the ticket with lobby_mismatch is tried the other way only when nothing else
   // explains it: its kind isn't known yet and the taken join named no size and no compatibility key.
   // lobby_mismatch is also the refusal for a different build or remix (and console_mixed_builds), which
@@ -752,8 +761,8 @@ class Events {
   // a Teams invite keeps the page's size (join_doubles decides it). mutex_ held.
   // An arena invite is strict: its room is only ever joined as the arena's (never rerouted, players 8).
   void invite_mode_locked(int kind) {
-    if (kind == kRoomArena) {
-      pending_first_ = kRoomArena;
+    if (kind == kRoomArena || kind == kRoomLauncher) {
+      pending_first_ = kind;
       pending_hinted_ = pending_strict_ = true;
       pending_players_ = kArenaSeats;
       return;

@@ -303,6 +303,10 @@ int main(int argc, char** argv) {
     CHECK(d["ok"] == true);
     const json sent2 = json::parse(f.last_ticket);
     CHECK(sent2["queue"] == "casual" && sent2["direct"] == "FRND#7" && sent2["after_match"] == "stay");
+      CHECK(call(f, post(R"({"type":"mpTicket","players":8,"mode":"mu-launcher","room":"m0abcdefghjk",
+          "public":true,"lobby":{"version":1,"minPlayers":2,"maxLocalPlayers":1,"compatibility":"mu-launcher-room-1"}})"))["ok"] == true);
+      const json public_room = json::parse(f.last_ticket);
+      CHECK(public_room["public"] == true && public_room["queue"] == "private" && public_room["players"] == 8);
     const json bad = call(f, post(R"({"type":"mpTicket","players":2,"mode":"singles","direct":"BAD#1"})"));
     CHECK(bad["ok"] == false && bad["code"] == "not_found" && bad["error"] == "No player has that code");
   }

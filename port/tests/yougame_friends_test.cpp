@@ -276,6 +276,20 @@ int main() {
   for (int major : {0, 2, 3, 0x1C, 0x2B}) CHECK(!menu_safe(major, 2));
 
   Events launch;
+  Events launcher_invite;
+  launcher_invite.hello({{"room","m0abcd234567"},{"inviteMode","mu-launcher"}});
+  CHECK(launcher_invite.take_launcher_join()=="m0abcd234567");
+  CHECK(launcher_invite.take_join(true).empty());
+  Events ordinary_invite;
+  ordinary_invite.hello({{"room","abcd2345"}});
+  CHECK(ordinary_invite.take_launcher_join().empty());
+  CHECK(ordinary_invite.take_join(true)=="abcd2345");
+  Events running_launcher_invite;
+  CHECK(running_launcher_invite.push({{"type","join"},{"room","m3abcd234567"},{"inviteMode","mu-launcher"}},100));
+  CHECK(running_launcher_invite.take_join(true)=="m3abcd234567");
+  CHECK(running_launcher_invite.join_launcher());
+  CHECK(!running_launcher_invite.join_arena());
+  CHECK(!running_launcher_invite.mismatch_reroutes("m3abcd234567"));
   launch.hello({{"room", "abcd2345"}});
   CHECK(launch.take_join(false).empty()); // local match: leave it pending
   CHECK(launch.take_join(true) == "abcd2345");

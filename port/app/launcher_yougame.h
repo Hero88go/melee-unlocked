@@ -116,6 +116,8 @@ int site_get(const std::string& path, std::string* body);
 bool start_bridge(std::string* error);
 std::string bridge_url();
 std::string new_launch_token();
+// Launcher room requests use the currently connected account, including the app's account.
+std::string sdk_request(const std::string& request_json, const std::string& version, int timeout_ms = 15000);
 // The files of the build about to start: their SHA-256 goes with every ticket (build check).
 void set_build(const std::string& version, const std::wstring& exe, const std::wstring& game_library);
 

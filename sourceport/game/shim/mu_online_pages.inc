@@ -74,9 +74,16 @@ static int pages_start(void)
     return 0;
 }
 
+static int pages_unranked_stepped;   /* the player moved Unranked's slider since the game started */
 static int pages_unranked_value(void)
 {
     if (agent_copy) return 0;
+    /* A remembered YouGame or Both while YouGame is not signed in and Slippi is: Slippi Unranked (player report
+     * 11-26: Slippi's page showed only "Unranked", refused with "YouGame is not signed in", and a Slippi-only
+     * player could not play Unranked at all). A choice made on the slider this session still stands. */
+    if (unranked_val >= 0 && unranked_val < 2 && !pages_unranked_stepped && !(yg_flags & YG_ROWS_OPEN) &&
+        slp.app_state == MU_SLP_APP_LOGGED_IN)
+        return 2;
     return unranked_val >= 0 ? unranked_val : slippi_submenu ? 2 : 0;
 }
 /* The hovered row's service is Slippi's (Unranked follows its slider; Both counts as YouGame's here,
@@ -265,6 +272,7 @@ static void pages_unranked_step(int dir)
     static const char* const names[] = { "YouGame Unranked", "Both Unranked", "Slippi Unranked" };
     if (v < 0 || v > 2) return;
     unranked_val = v;
+    pages_unranked_stepped = 1;
     pages_save((u8) (0x46 + v));
     OSReport("online menu: Unranked slider: %s\n", names[v]);
     pages_refresh = 1;

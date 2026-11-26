@@ -25,6 +25,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <memory>
@@ -36,6 +37,9 @@ namespace feed = slippi::arena_feed;
 void watch_feed(const uint8_t* data, size_t size);
 
 namespace {
+
+std::string launcher_room, launcher_ready;
+bool launcher_host = false, launcher_opened = false;
 
 // Players a room takes before it refuses the next: kRoomLimit. Tests only: MELEE_TEST_ARENA_ROOM_LIMIT
 // (2 to kRoomLimit) lowers it, so the refusal is proven with real games inside the limit of 8 games.
@@ -1152,16 +1156,16 @@ struct YgByCode {
   uint64_t rejoin_at = 0, rejoin_until = 0;
 } g_ygc;
 
-void yg_open(const std::string& room) {
+void yg_open(const std::string& room, bool own = false) {
   g_yg = true;
   g_yg_seen_host = false;
   g_yg_close_at = 0;
   g_links.clear();
   g_ping.fill(-1);
   std::string code = room;
-  if (room.empty()) {
+  if (room.empty() || own) {
     open_room();
-    if (yg_by_code()) {
+    if (room.empty() && yg_by_code()) {
       const std::string mine = yougame::identity().code;
       if (!mine.empty()) code = arena_by_code_room(mine);
     }
@@ -2280,6 +2284,12 @@ void publish_view() {
 }  // namespace
 
 // ---------------------------------------------------------------- public
+void set_launcher_room(std::string code, bool hosting, std::string ready_file) {
+  launcher_room = std::move(code);
+  launcher_host = hosting;
+  launcher_ready = std::move(ready_file);
+  launcher_opened = false;
+}
 bool set_test(const std::string& spec) {
   int index = -1, count = 0, base = 0, character = 2;
   const int n = std::sscanf(spec.c_str(), "%d/%d/%d/%d", &index, &count, &base, &character);
@@ -2423,6 +2433,20 @@ void direct_pro_ai_tick() {
 
 void tick() {
   if (!rooms_enabled()) return;   // tests only: rooms off
+  if (!launcher_room.empty() && !launcher_opened && yougame::identity().ok &&
+      online::in_online_menus() && g_css_mode.load() == (int)Matchmaking::DIRECT && yg_identity()) {
+    // yg_identity: this player's YouGame id stands for them in the room, as on every other YouGame route.
+    // Without it the host opened the room with no id and turned away each member's hello (live test 11-26).
+    yougame::set_launcher_session(true);
+    launcher_opened = true;
+    yg_open(launcher_room, launcher_host);
+  }
+  if (launcher_opened && launcher_host && !launcher_ready.empty() &&
+      yougame::arena_room::state() == 2 &&
+      yougame::arena_room::me() == yougame::arena_room::host()) {
+    std::ofstream ready(std::filesystem::u8path(launcher_ready));
+    if (ready) { ready << launcher_room; ready.close(); launcher_ready.clear(); }
+  }
   // Came from the Friends lobby's ARENA card: on the online select (Direct's mode), open the room and invite.
   if (g_open_on_arrival) {
     if (now_ms() > g_open_on_arrival || g_active) {

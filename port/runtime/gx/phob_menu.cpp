@@ -310,8 +310,9 @@ std::vector<Row> rows_for(int port, MenuState& m) {
     // A PhobGCC calibrates itself: only the settings a setup keeps are offered for it.
     case STICK: rows = s.phob_hardware ? std::vector<Row>{page(FILTER), page(GEOM)} : std::vector<Row>{page(CALIBRATE), page(FILTER), page(GEOM)}; break;
     case CALIBRATE: {
-      const auto begin = [&m](Screen sc, Stick which, bool fix) {
-        return [&m, sc, which, fix]() {
+      const auto begin = [&m, port](Screen sc, Stick which, bool fix) {
+        return [&m, port, sc, which, fix]() {
+          host::phob_backup(port);   // a new calibration replaces the old one
           StickCal& saved = which == ASTICK ? m.s.a_cal : m.s.c_cal;
           const int scaler = which == ASTICK ? m.s.a_scaler : m.s.c_scaler;
           if (fix) {
@@ -394,9 +395,9 @@ std::vector<Row> rows_for(int port, MenuState& m) {
     }
     case RESET:
       rows.push_back(action("Soft Reset", m.reset_pending == 0 ? "Press A again" : "", "This resets everything to defaults except for stick calibration, which is untouched.",
-                            [&m, &s]() { if (m.reset_pending == 0) { soft_reset(s); m.reset_pending = -1; say(m, "Soft reset done."); } else m.reset_pending = 0; }));
+                            [&m, &s, port]() { if (m.reset_pending == 0) { host::phob_backup(port); soft_reset(s); m.reset_pending = -1; say(m, "Soft reset done."); } else m.reset_pending = 0; }));
       rows.push_back(action("Hard Reset", m.reset_pending == 1 ? "Press A again" : "", "This resets everything including stick cal. You'll need to perform stick calibration again.",
-                            [&m, &s]() { if (m.reset_pending == 1) { hard_reset(s); m.reset_pending = -1; say(m, "Hard reset done."); } else m.reset_pending = 1; }));
+                            [&m, &s, port]() { if (m.reset_pending == 1) { host::phob_backup(port); hard_reset(s); m.reset_pending = -1; say(m, "Hard reset done."); } else m.reset_pending = 1; }));
       break;
     case SCOPE: rows = {page(INPUTVIEW), page(XYSCOPE), page(COORDVIEW), page(TIMESCOPE), page(PRESSTIME), page(REACTION), page(CONTSCOPE), page(GATE), page(EXPORT)}; break;
     case COORDVIEW: {
@@ -522,9 +523,20 @@ std::vector<Row> rows_for(int port, MenuState& m) {
       // Back to the defaults in one place: the firmware's Soft Reset, which keeps the stick calibration.
       rows.push_back(action("Reset to Default", m.reset_pending == 2 ? "Press A again" : "",
                             "Every setting back to PhobGCC's default. Your stick calibration stays.",
-                            [&m, &s]() {
-                              if (m.reset_pending == 2) { soft_reset(s); m.reset_pending = -1; m.active_setup.clear(); say(m, "Back to the defaults."); }
+                            [&m, &s, port]() {
+                              if (m.reset_pending == 2) { host::phob_backup(port); soft_reset(s); m.reset_pending = -1; m.active_setup.clear(); say(m, "Back to the defaults."); }
                               else m.reset_pending = 2;
+                            }));
+      // Player reports 11-26: a setup lost to a reset or a load. Every start and every reset, load or
+      // calibration keeps a copy first (PhobGCC\Backups); this puts the newest different one back.
+      rows.push_back(action("Restore Previous Settings", m.reset_pending == 3 ? "Press A again" : "",
+                            "Puts back this socket's settings from before the last reset, setup load or calibration (or from when the game started). Copies are kept in the PhobGCC Backups folder.",
+                            [&m, port]() {
+                              if (m.reset_pending != 3) { m.reset_pending = 3; return; }
+                              m.reset_pending = -1;
+                              Settings back = m.s;
+                              if (host::phob_backup_restore(port, back)) { host::phob_backup(port); m.s = back; m.active_setup.clear(); say(m, "Previous settings restored."); }
+                              else say(m, "No earlier settings saved for this socket yet.");
                             }));
       if (!s.phob_hardware) {
         static int with_cal;
@@ -546,7 +558,7 @@ std::vector<Row> rows_for(int port, MenuState& m) {
                             }));
       for (const std::string& name : names)
         rows.push_back(action("Load " + name, name == m.active_setup ? "In use" : "", "Loads this setup onto this socket.",
-                              [&m, name]() { if (host::phob_setup_load(name, m.s)) { m.active_setup = name; say(m, "Loaded " + name + "."); } }));
+                              [&m, name, port]() { host::phob_backup(port); if (host::phob_setup_load(name, m.s)) { m.active_setup = name; say(m, "Loaded " + name + "."); } }));
       if (!names.empty()) {
         static int pick;
         m.setup_pick = std::clamp(m.setup_pick, 0, (int)names.size() - 1);

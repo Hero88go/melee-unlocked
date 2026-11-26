@@ -246,3 +246,8 @@ int mu_20xx103_on(void)
         if (mu_controls_slot(mu_controls_word, slot) & MU_CONTROL_20XX103) return 1;
     return 0;
 }
+
+int mu_20xx103_selected(void)
+{
+    return (mu_control_flags() & 0x20202020u) != 0;
+}

@@ -306,6 +306,14 @@ std::string hash_file(const std::wstring& path, LPCWSTR algorithm) {
   BCryptCloseAlgorithmProvider(alg, 0);
   return out;
 }
+bool is_game_disc(const std::wstring& path) {
+  if (hash_file(path, BCRYPT_MD5_ALGORITHM) == kVanillaMd5) return true;
+  // Scrubbed images keep the game files while replacing unused disc padding. The
+  // existing vanilla verifier checks those files independently of their layout.
+  source_port::mods::ScanOptions options;
+  options.mods_dir = fs::u8path(mods_dir());
+  return source_port::mods::identify_vanilla(fs::path(path), options).kind == source_port::mods::Kind::Vanilla;
+}
 std::string size_text(uint64_t bytes) {
   char buf[32];
   if (bytes >= kGiB) std::snprintf(buf, sizeof buf, "%.1f GB", bytes / (double)kGiB);
@@ -640,7 +648,7 @@ void install_file_job(std::wstring file, std::string id, const std::string& iso,
     fs::path name = fs::path(file).stem();
     if (info.format == disc_rvz::Format::NKit && name.extension() == L".nkit") name = name.stem();
     name.concat(L".iso");
-    if (hash_file(staged.wstring(), BCRYPT_MD5_ALGORITHM) == kVanillaMd5) {
+    if (is_game_disc(staged.wstring())) {
       const fs::path target = fs::u8path(work_dir()) / "Disc" / name;
       if (!place(staged, target, &error)) { set_status(key, error); return; }
       PostMessageW(g_main, WM_APP_GAME_DISC, 0, (LPARAM) new std::string(target.u8string()));

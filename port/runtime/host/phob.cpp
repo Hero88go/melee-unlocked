@@ -605,6 +605,7 @@ Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps
     st.wave_a.old_x = st.wave_a.out_x = lin_ax; st.wave_a.old_y = st.wave_a.out_y = lin_ay;
     st.wave_c.old_x = st.wave_c.out_x = st.smooth_cx = lin_cx;
     st.wave_c.old_y = st.wave_c.out_y = st.smooth_cy = lin_cy;
+    st.last_ax = lin_ax; st.last_ay = lin_ay; st.last_cx = lin_cx; st.last_cy = lin_cy;
     st.primed = true;
   }
 
@@ -678,10 +679,17 @@ Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps
     }
 
     // ---- readSticks ----
-    filter_step(p, st, lin_ax, lin_ay);
+    // Player report 11-26: on a stock adapter (a report every 8 ms) each reading was held for all 8 loops, so the
+    // snapback filter settled onto it and a release's overshoot reached the game as if the filter were off
+    // (shield stops rolled). The firmware reads a moving stick every 1 ms: the loops between two reports
+    // get the reading ramped from the last report to this one. One loop per report (a 1 kHz adapter) is as before.
+    const float k = (float)(n + 1) / (float)steps;
+    const float step_ax = st.last_ax + (lin_ax - st.last_ax) * k, step_ay = st.last_ay + (lin_ay - st.last_ay) * k;
+    const float step_cx = st.last_cx + (lin_cx - st.last_cx) * k, step_cy = st.last_cy + (lin_cy - st.last_cy) * k;
+    filter_step(p, st, step_ax, step_ay);
     const float pos_ax = st.smooth_ax, pos_ay = st.smooth_ay;
     float pos_cx, pos_cy;
-    run_waveshaping(st.wave_c, lin_cx, lin_cy, pos_cx, pos_cy, s.cx_waveshaping, s.cy_waveshaping, g, false);
+    run_waveshaping(st.wave_c, step_cx, step_cy, pos_cx, pos_cy, s.cx_waveshaping, s.cy_waveshaping, g, false);
     const float old_cx = st.smooth_cx, old_cy = st.smooth_cy;
     st.smooth_cx = g.cx_smooth * pos_cx + (1 - g.cx_smooth) * old_cx;
     st.smooth_cy = g.cy_smooth * pos_cy + (1 - g.cy_smooth) * old_cy;
@@ -719,6 +727,7 @@ Output step(const Prepared& p, PortState& st, const HardwareInput& in, int steps
     out.trig_l = out_la;
     out.trig_r = out_ra;
   }
+  st.last_ax = lin_ax; st.last_ay = lin_ay; st.last_cx = lin_cx; st.last_cy = lin_cy;
   out.stick_x = (int8_t)((int)st.ax - 127);
   out.stick_y = (int8_t)((int)st.ay - 127);
   out.sub_x = (int8_t)((int)st.cx - 127);

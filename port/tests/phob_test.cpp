@@ -385,6 +385,26 @@ int main() {
       CHECK(fin && (c.buttons[0] & 4) && !(c.buttons[1] & 4) && (c.analog_marks[6] & 1) && !(c.analog_marks[5] & 1)); }
   }
 
+  // A stock adapter reports every 8 ms (player report 11-26: shield stops rolled with the snapback filter on).
+  // Each report used to be held for all 8 loops, the filter settled on it, and a release's overshoot
+  // reached the game as with the filter off. Ramped between reports, the filter acts at 125 Hz too.
+  {
+    const float rim = 0.51f + 0.37f * 1.05f;
+    auto release = [&](int ms) { const float t = ms / 1000.0f; return 0.51f + (rim - 0.51f) * std::exp(-60.0f * t) * std::cos(2 * kPi * 35.0f * t); };
+    auto worst_at_8ms = [&](int snapback) {
+      Settings f = s; f.x_snapback = f.y_snapback = snapback;
+      Prepared pf; prepare(f, pf); PortState sf;
+      step(pf, sf, at(rim, 0.49f), 300);
+      int worst = 0;
+      for (int ms = 0; ms < 80; ms += 8) worst = std::min(worst, (int)step(pf, sf, at(release(ms), 0.49f), 8).stick_x);
+      return worst;
+    };
+    const int off = worst_at_8ms(0), def = worst_at_8ms(kSnapbackDefault), most = worst_at_8ms(kSnapbackMax);
+    std::printf("8 ms reports, worst overshoot: filter off %d, default %d, strongest %d\n", off, def, most);
+    CHECK(def > off + 8);
+    CHECK(most > -10);
+  }
+
   if (g_failures) std::printf("%d failure(s)\n", g_failures);
   else std::printf("phob: all checks passed\n");
   return g_failures ? 1 : 0;

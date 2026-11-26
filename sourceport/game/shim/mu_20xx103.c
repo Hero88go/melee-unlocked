@@ -207,8 +207,9 @@ void mu_20xx_guard_sdi(Fighter* fp)
     }
     fp->active_timer.lstick.x = 0xFE;
     scl = fp->input.lstick[0].x * p_ftCommonData->sdi_pos_scale * p_ftCommonData->x4C0;
-    fp->cur_pos.x = fp->coll_data.floor.normal.y * scl + fp->cur_pos.x;
-    fp->cur_pos.y = scl * -fp->coll_data.floor.normal.x + fp->cur_pos.y;
+    /* The original uses fmadds, which rounds the product and sum once. */
+    fp->cur_pos.x = __builtin_fmaf(fp->coll_data.floor.normal.y, scl, fp->cur_pos.x);
+    fp->cur_pos.y = __builtin_fmaf(scl, -fp->coll_data.floor.normal.x, fp->cur_pos.y);
     return;
 none:
     s->sdi_held = 0;
@@ -389,8 +390,8 @@ void mu_20xx_proc_update(Fighter* fp)
         float d = fp->input.lstick[0].x - before;
         if (!(before * d <= 0.0f)) {
             float k = ((float*) fp->dat_attrs)[0x64 / 4] * fp->co_attrs.walk_accel_mul;
-            fp->gr_vel = d * k + fp->gr_vel;
-            fp->cur_pos.x = d * k + fp->cur_pos.x;
+            fp->gr_vel = __builtin_fmaf(d, k, fp->gr_vel);
+            fp->cur_pos.x = __builtin_fmaf(d, k, fp->cur_pos.x);
         }
     }
 }
