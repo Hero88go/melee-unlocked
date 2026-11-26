@@ -544,6 +544,69 @@ bool nkit_convert(File& in, const fs::path& out_path, const Progress& progress, 
   return true;
 }
 
+// ---- CISO: "CISO", the block size (little-endian), then one byte per block (1 stored, 0 all zero) up to
+// 0x8000; the stored blocks follow in disc order. A GameCube disc is 1459978240 bytes.
+constexpr uint32_t kCisoHeader = 0x8000, kCisoMap = kCisoHeader - 8;
+constexpr uint64_t kGameCubeDisc = 1459978240ull;
+bool ciso_header(File& in, uint32_t* block, std::vector<uint8_t>* map) {
+  uint8_t head[8];
+  if (!in.seek(0) || !in.read(head, 8) || std::memcmp(head, "CISO", 4) != 0) return false;
+  *block = (uint32_t)head[4] | (uint32_t)head[5] << 8 | (uint32_t)head[6] << 16 | (uint32_t)head[7] << 24;
+  map->assign(kCisoMap, 0);
+  return *block >= 0x8000 && *block <= (64u << 20) && (*block & (*block - 1)) == 0 && in.read(map->data(), kCisoMap);
+}
+uint64_t ciso_size(uint32_t, const std::vector<uint8_t>&) {
+  return kGameCubeDisc;   // every GameCube disc; the last stored block can run past its end, and trailing zero blocks are left out
+}
+bool ciso_probe(File& in, Info* info, std::string* error) {
+  uint32_t block = 0;
+  std::vector<uint8_t> map;
+  if (!ciso_header(in, &block, &map)) return fail(error, "This CISO image's header is damaged. Copy or download it again.");
+  uint8_t disc[8] = {};
+  if (!map[0] || !in.seek(kCisoHeader) || !in.read(disc, 8)) return fail(error, "This CISO image has no disc header.");
+  info->format = Format::Ciso;
+  info->gamecube = true;
+  info->iso_size = ciso_size(block, map);
+  info->game_id.clear();
+  for (int i = 0; i < 6; ++i) info->game_id += (disc[i] >= 32 && disc[i] < 127) ? (char)disc[i] : '?';
+  info->revision = disc[7];
+  info->compression = "none";
+  return true;
+}
+bool ciso_convert(File& in, const fs::path& out_path, const Progress& progress, std::string* error) {
+  uint32_t block = 0;
+  std::vector<uint8_t> map;
+  if (!ciso_header(in, &block, &map)) return fail(error, "This CISO image's header is damaged. Copy or download it again.");
+  const uint64_t total = ciso_size(block, map);
+  const fs::path part = fs::path(out_path).concat(".part");
+  std::error_code ec;
+  fs::create_directories(out_path.parent_path(), ec);
+  bool ok = false;
+  struct Remove { const fs::path& p; bool* ok; ~Remove() { if (!*ok) { std::error_code e; fs::remove(p, e); } } } cleanup{part, &ok};
+  {
+    File out;
+    if (!out.open(part, true)) return fail(error, "Could not write the disc image to " + out_path.parent_path().u8string() + ".");
+    if (!in.seek(kCisoHeader)) return fail(error, "This CISO image could not be read.");
+    std::vector<uint8_t> buf(block), zeros(block, 0);
+    uint64_t written = 0;
+    for (size_t i = 0; i < map.size() && written < total; ++i) {
+      const size_t n = (size_t)std::min<uint64_t>(block, total - written);
+      if (map[i]) {
+        if (!in.read(buf.data(), n)) return fail(error, "This CISO image is cut short. Copy or download it again.");
+        if (n < block && !in.seek(kCisoHeader)) return fail(error, "This CISO image could not be read.");   // the last block
+        if (!out.write(buf.data(), n)) return fail(error, "Could not write the disc image.");
+      } else if (!out.write(zeros.data(), n)) return fail(error, "Could not write the disc image.");
+      written += n;
+      if (progress && !progress(written, total)) return fail(error, "Cancelled.");
+    }
+    if (!out.close()) return fail(error, "Could not write the disc image.");
+  }
+  fs::rename(part, out_path, ec);
+  if (ec) return fail(error, "Could not write the disc image to " + out_path.parent_path().u8string() + ".");
+  ok = true;
+  return true;
+}
+
 }  // namespace
 
 Format detect(const fs::path& file) {
@@ -552,6 +615,7 @@ Format detect(const fs::path& file) {
   if (!in.open(file, false) || !in.read(magic, 4)) return Format::NotCompressed;
   if (std::memcmp(magic, "RVZ\x01", 4) == 0) return Format::Rvz;
   if (std::memcmp(magic, "WIA\x01", 4) == 0) return Format::Wia;
+  if (std::memcmp(magic, "CISO", 4) == 0) return Format::Ciso;
   if (nkit_tag(in)) return Format::NKit;
   return Format::NotCompressed;
 }
@@ -560,6 +624,7 @@ bool probe(const fs::path& file, Info* info, std::string* error) {
   File in;
   if (!in.open(file, false)) return fail(error, "The disc image could not be opened.");
   if (nkit_tag(in)) return nkit_probe(in, info, error);
+  { uint32_t b; std::vector<uint8_t> m; if (ciso_header(in, &b, &m)) return ciso_probe(in, info, error); }
   Image im;
   if (!read_image(in, file, &im, error)) return false;
   info->format = im.format;
@@ -576,6 +641,7 @@ bool convert(const fs::path& in_path, const fs::path& out_path, const Progress& 
   File in;
   if (!in.open(in_path, false)) return fail(error, "The disc image could not be opened.");
   if (nkit_tag(in)) return nkit_convert(in, out_path, progress, error);
+  { uint32_t b; std::vector<uint8_t> m; if (ciso_header(in, &b, &m)) return ciso_convert(in, out_path, progress, error); }
   Image im;
   if (!read_image(in, in_path, &im, error)) return false;
   Decoder dec(im);

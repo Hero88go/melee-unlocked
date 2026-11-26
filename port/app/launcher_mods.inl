@@ -626,7 +626,7 @@ void install_file_job(std::wstring file, std::string id, const std::string& iso,
     const fs::path staged = mods / ".downloads" / ("rvz-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + ".iso");
     set_status(key, info.format == disc_rvz::Format::NKit
                         ? std::string("Restoring the full Melee 1.02 disc from the NKit image...")
-                        : std::string("Unpacking the ") + (info.format == disc_rvz::Format::Rvz ? "RVZ" : "WIA") + " disc image to a full ISO...");
+                        : std::string("Unpacking the ") + (info.format == disc_rvz::Format::Rvz ? "RVZ" : info.format == disc_rvz::Format::Ciso ? "CISO" : "WIA") + " disc image to a full ISO...");
     int shown = -1;
     const bool converted = disc_rvz::convert(fs::path(file), staged, [&](uint64_t done, uint64_t total) {
       const int percent = total ? (int)(done * 100 / total) : 0;

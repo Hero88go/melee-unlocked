@@ -1990,9 +1990,10 @@ static std::wstring base_disc_problem(const std::string& path) {
   std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
   if (!f) return L"The disc image could not be opened. Choose your Melee NTSC 1.02 ISO again.";
   unsigned char hdr[8]{}; f.read((char*)hdr, 8);
+  // RVZ, WIA, NKit and CISO images are unpacked to a full ISO when picked or dropped (disc_rvz); GCZ is not.
   if (!std::memcmp(hdr, "RVZ\x01", 4) || !std::memcmp(hdr, "WIA\x01", 4) || !std::memcmp(hdr, "CISO", 4) ||
       (hdr[0] == 0x01 && hdr[1] == 0xC0 && hdr[2] == 0x0B && hdr[3] == 0xB1))
-    return L"This disc image is compressed (RVZ, GCZ, WIA or CISO). In Dolphin, right-click the game, choose Convert File and pick ISO, then choose that ISO here.";
+    return L"This disc image is compressed (GCZ). In Dolphin, right-click the game, choose Convert File and pick ISO, then choose that ISO here.";
   if (std::memcmp(hdr, "GALE01", 6) != 0)
     return L"This file is not a Melee NTSC disc image. Choose your own Melee NTSC 1.02 ISO.";
   if (hdr[7] != 2)
@@ -2277,7 +2278,7 @@ void set_iso(const std::string& path) {
 
 void browse() {
   wchar_t file[MAX_PATH]{};
-  OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof ofn; ofn.hwndOwner = g_main; ofn.lpstrFilter = L"GameCube disc image (*.iso;*.gcm;*.rvz;*.wia)\0*.iso;*.gcm;*.rvz;*.wia\0All files\0*.*\0"; ofn.lpstrFile = file; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST;
+  OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof ofn; ofn.hwndOwner = g_main; ofn.lpstrFilter = L"GameCube disc image (*.iso;*.gcm;*.rvz;*.wia;*.ciso)\0*.iso;*.gcm;*.rvz;*.wia;*.ciso\0All files\0*.*\0"; ofn.lpstrFile = file; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST;
   if (GetOpenFileNameW(&ofn)) {
     // Dolphin's compressed images, and an NKit image of Melee 1.02, are unpacked to a full ISO first (the Mods page shows progress);
     // the 1.02 disc then becomes the game disc and a modded one goes into Mods.
@@ -2737,6 +2738,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
       if (!g_launcher_test) SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
       DragAcceptFiles(hwnd, TRUE);
+      // A launcher running elevated (started by an elevated program, or as administrator) gets no drops from
+      // Explorer unless these messages are let through: a dropped disc did nothing in any look (11-25).
+      ChangeWindowMessageFilterEx(hwnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+      ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+      ChangeWindowMessageFilterEx(hwnd, 0x0049 /* WM_COPYGLOBALDATA */, MSGFLT_ALLOW, nullptr);
       if (g_launcher_test) mod_manager::test_get();
       if (g_launcher_test && std::getenv("MELEE_LAUNCHER_TEST_CHANGELOG")) host::updater::check(MELEE_PORT_VERSION);
       if (g_launcher_test && std::getenv("MELEE_LAUNCHER_TEST_REPLAY_LIST")) refresh_replays();   // writes the list there
@@ -3399,11 +3405,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdline, int show) {
                                 const bool have[3] = {source_available(), recomp_available(), source_available() && vanilla_supported()};
                                 const wchar_t* names[3] = {L"Source Port", L"Static Recomp (Legacy)", L"Vanilla"};
                                 HMENU m = CreatePopupMenu();
+                                // No Melee disc yet: the Classic look's Browse, here too (gone once a disc is chosen).
+                                if (g_iso.empty()) {
+                                  AppendMenuW(m, MF_STRING, 10, launcher::lang::txw(L"Browse for your Melee 1.02 ISO...").c_str());
+                                  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+                                }
                                 AppendMenuW(m, MF_STRING | MF_GRAYED, 0, launcher::lang::txw(L"Game build").c_str());
                                 for (int i = 0; i < 3; ++i) AppendMenuW(m, MF_STRING | (i == on ? MF_CHECKED : 0) | (have[i] ? 0 : MF_GRAYED), 1 + i,
                                   (launcher::lang::txw(names[i]) + (have[i] ? L"" : L"  (not installed)")).c_str());
                                 POINT p{}; GetCursorPos(&p);
                                 const int pick = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, g_main, nullptr); DestroyMenu(m);
+                                if (pick == 10) { browse(); return; }
                                 if (pick >= 1 && pick <= 3 && pick - 1 != on) { select_build(pick - 1); save_ini(); InvalidateRect(g_main, nullptr, FALSE); }
                               }});
   if (launcher::melee_look::look() == launcher::melee_look::kBrawlOnline) PostMessageW(hwnd, WM_APP + 71, 0, 0);   // open in that look

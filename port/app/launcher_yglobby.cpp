@@ -1234,6 +1234,7 @@ LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
       }
       return 0;
     }
+    case WM_DROPFILES: return SendMessageW(GetParent(w), WM_DROPFILES, wp, lp);   // the launcher's own handler
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(w, &ps); paint(dc); EndPaint(w, &ps); return 0; }
     case WM_PRINT: case WM_PRINTCLIENT: paint((HDC)wp); if (m == WM_PRINT && g_code && IsWindowVisible(g_code)) {
@@ -1294,7 +1295,7 @@ void open() {
   RECT client{}; GetClientRect(g_owner, &client);
   const int rail = MulDiv(190, GetDpiForWindow(g_owner), 96);
   if (!g_window) {
-    g_window = CreateWindowExW(0, L"MeleeUnlockedYouGameLobby", L"", WS_CHILD | WS_CLIPCHILDREN, rail, 0, client.right - rail, client.bottom,
+    g_window = CreateWindowExW(WS_EX_ACCEPTFILES, L"MeleeUnlockedYouGameLobby", L"", WS_CHILD | WS_CLIPCHILDREN, rail, 0, client.right - rail, client.bottom,
                                g_owner, nullptr, GetModuleHandleW(nullptr), nullptr);
     g_code = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, g_window, nullptr, GetModuleHandleW(nullptr), nullptr);
     fonts(); SendMessageW(g_code, WM_SETFONT, (WPARAM)g_f.body, FALSE);

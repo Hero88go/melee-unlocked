@@ -698,6 +698,7 @@ void act(int a, int arg) {
 
 LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
+    case WM_DROPFILES: return SendMessageW(GetParent(w), WM_DROPFILES, wp, lp);   // the launcher's own handler
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(w, &ps); paint(dc); EndPaint(w, &ps); return 0; }
     case WM_PRINT: case WM_PRINTCLIENT: paint((HDC)wp);
@@ -763,7 +764,7 @@ void show() {
   g_compact = false;
   RECT client{}; GetClientRect(g_main, &client);
   if (!g_window) {
-    g_window = CreateWindowExW(0, L"MeleeUnlockedSkin", L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, client.right, client.bottom, g_main, nullptr, GetModuleHandleW(nullptr), nullptr);
+    g_window = CreateWindowExW(WS_EX_ACCEPTFILES, L"MeleeUnlockedSkin", L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, client.right, client.bottom, g_main, nullptr, GetModuleHandleW(nullptr), nullptr);
     fonts();
     g_code = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, g_window, nullptr, GetModuleHandleW(nullptr), nullptr);
     g_search = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, g_window, nullptr, GetModuleHandleW(nullptr), nullptr);

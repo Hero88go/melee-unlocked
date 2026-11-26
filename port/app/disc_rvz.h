@@ -15,9 +15,11 @@
 
 namespace disc_rvz {
 
-enum class Format { NotCompressed, Wia, Rvz, NKit };
+enum class Format { NotCompressed, Wia, Rvz, NKit, Ciso };
 
-// From the file's first four bytes ("WIA\x01" or "RVZ\x01"), or NKit's tag at 0x200; NotCompressed for
+// CISO ("CISO", the compact format some loaders and tools write): a block size, a map of which blocks
+// are stored, then the stored blocks in disc order; the blocks left out are all zero.
+// From the file's first four bytes ("WIA\x01", "RVZ\x01" or "CISO"), or NKit's tag at 0x200; NotCompressed for
 // anything else. An NKit image is a disc with the padding between its files taken out. Only Melee NTSC
 // 1.02's is turned back into the disc: its layout and its padding's generator seeds are built in
 // (nkit_melee102.inc), and the result must have the retail disc's MD5.
