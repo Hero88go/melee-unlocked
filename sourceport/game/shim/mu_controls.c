@@ -105,6 +105,17 @@ void mu_controls_pad(struct Fighter* fp)
 {
     unsigned now, before, bits;
     int slot, i;
+    /* Training offline: a choice changed in the settings applies at once, not from the next match (a
+     * player turned tap jump off and tilt stick on inside Training and saw nothing change, 11-25).
+     * Nothing else is recorded or played against anyone there; every other mode keeps its word. */
+    if (!mu_online_active() && gm_GetCurrentGameMode() == 0x1C /* GM_TRAINING */) {
+        const unsigned int live = mu_control_flags();
+        if (live != mu_controls_word) {
+            mu_controls_word = live;
+            OSReport("controls: training now P1 %02X P2 %02X P3 %02X P4 %02X\n", mu_controls_slot(live, 0),
+                     mu_controls_slot(live, 1), mu_controls_slot(live, 2), mu_controls_slot(live, 3));
+        }
+    }
     if (mu_controls_word == 0 || fp == NULL || ftCo_IsCpuControlled(fp)) return;
     slot = fp->player_idx;
     bits = toggleable(slot);
