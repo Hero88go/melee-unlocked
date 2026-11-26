@@ -534,7 +534,8 @@ void handle_app_line(const std::string& line) {
 #ifdef MELEE_DOUBLES
         doubles::ui.back_if_active();
 #endif
-        friends::lobby.leave(); console::entry.stop(); } // no-op outside a held room
+        friends::lobby.leave(); console::entry.stop();   // no-op outside a held room
+        slippi::online::ask_friends_lobby_leave(); }    // the 4-door select and the 2-seat Doubles home
       if (!g_stdio && g_channel_allowed) { sign_in_push(push); update_push(push); }   // sign-in's pushes, gameUpdate
       const bool taken = friends::events.push(push, now_ms());
       if (taken && friends::version_reason(push)) log_friend_version();
