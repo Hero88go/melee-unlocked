@@ -46,6 +46,8 @@
 #include "gx_core.h"
 #include "coming_soon_overlay.h"
 #include "cosmetic_mods.h"
+#include "controls.h"   // tap jump off and tilt stick: the exchange, the setup hash fold, the frozen word
+#include "controls_policy.h"
 #if MU_SQUAD
 // Based on Squad Strike by Chris (x9x9x9x9x9), https://github.com/x9x9x9x9x9/squad-strike v1.0.0, used with the author's permission (11-03-2026)
 #include "yougame_squad.h"
@@ -75,6 +77,7 @@
 #include <unordered_set>
 
 namespace slippi::online {
+void controls_pump();   // tap jump off and tilt stick: the exchange (below), also run while a match is set up
 namespace {
 
 Config g_config;
@@ -431,6 +434,9 @@ static void stop_early_inputs() {
 }
 static int g_match_delay = 0;
 bool g_in_online_match = false;
+// Tap jump off and tilt stick (controls.h): set at the online game's first frame; the next character
+// select frame after it is the end of that match (the select is never polled during one).
+bool g_controls_match_running = false;
 namespace late_read { static void end(); }   // the late controller read (below): a game or its session is over
 // Warm-up room (warmup_park): the pair stays connected while the player is in Training.
 bool g_warmup_parked = false;
@@ -681,6 +687,8 @@ void cleanup_connection(yougame::Leave why = yougame::Leave::Lost) {
   g_squad_match_standards.clear();
 #endif
   gecko_session::disconnected();
+  controls::session_end();
+  g_controls_match_running = false;
 #ifdef YOUGAME_AGENT_TEST_HOOK
   yougame::agent_test::static_match.event(yougame::agent_test::StaticEvent::Cancel, true, [] {});
 #endif
@@ -1159,6 +1167,8 @@ void handle_online_inputs(const uint8_t* payload, uint32_t size, std::vector<uin
     g_in_online_match = true;
     g_friends_lobby.note.clear();
     gecko_session::match_started();   // the agreed Gecko codes, decided from both locks
+    g_controls_match_running = true;
+    controls::match_started();   // answers count from the next match on
     if (g_user) g_user->ResetOnlineCompatibility();  // the next game needs its own fresh check
     host::input_mark_match_start();
     // Early inputs: watch the controller for the match. Sent only to peers whose build takes them.
@@ -1857,6 +1867,55 @@ int setup_hash_gate(uint8_t remote_count, uint64_t inputs, uint64_t setup, std::
 uint32_t g_last_match_state_retrace = 0;
 std::atomic<bool> g_online_menu_visible{false};
 
+// Tap jump off and tilt stick (controls.h): this connection counts as a YouGame match. Hidden test runs
+// may make a local-peer pair count as one (MELEE_TEST_CONTROLS_YOUGAME=1); a player's game never can.
+bool controls_yougame() {
+  if (!g_netplay) return false;
+  const char* as_yougame = controls::test_run() ? host::test_env::getenv("MELEE_TEST_CONTROLS_YOUGAME") : nullptr;
+  return g_netplay->yougame_peer() || (as_yougame && as_yougame[0] == '1');
+}
+// Every machine runs the exchange here: this game offers it, every peer's build announced it with a
+// setup hash, and the mode allows it. Built only from what every machine knows alike.
+bool controls_expected() {
+  if (!g_netplay || !controls::advertise()) return false;
+  const int remotes = bounded_remote_machine_count();
+  if (remotes <= 0) return false;
+  for (int i = 0; i < remotes; ++i) {
+    const auto rb = g_netplay->GetRemoteBuild(i);
+    if (!rb.received || !rb.controls || !rb.setup_hash) return false;
+  }
+  return controls::policy::exchange((int)g_last_search.mode, controls_yougame());
+}
+// When the exchange began waiting to settle with both sides ready (0: not waiting).
+uint64_t g_controls_wait_since = 0;
+constexpr uint64_t kControlsSettleMs = 20000;   // longer than the answer window (controls::kAskSeconds) and the own-options hold
+
+// Tap jump off and tilt stick (controls.h): which offer each in-game port plays with. Without a Friends
+// lobby setup each person's machine plays its own port. With one, a person's seat plays its own
+// machine's offer and a partner seat on the same machine (Kind::Local) plays its owner's; CPUs and
+// Pro AI seats play the default controls. Every machine holds the same setup, so the same answer.
+void controls_freeze(const yougame::lobby::Plan* plan) {
+  int owner[4] = {-1, -1, -1, -1};
+  if (plan) {
+    for (int i = 0; i < plan->ports && i < 4; ++i) {
+      const auto& seat = plan->port[i];
+      if (seat.pro >= 0) continue;
+      if (seat.kind == yougame::lobby::Kind::Human) owner[i] = i;
+      else if (seat.kind == yougame::lobby::Kind::Local && i > 0 && plan->port[i - 1].kind == yougame::lobby::Kind::Human &&
+               plan->port[i - 1].connection_id == seat.connection_id)
+        owner[i] = i - 1;
+    }
+  } else if (g_netplay) {
+    const int local = g_netplay->LocalPlayerPort();
+    if (local >= 0 && local < 4) owner[local] = local;
+    for (int i = 0; i < bounded_remote_machine_count(); ++i) {
+      const auto rb = g_netplay->GetRemoteBuild(i);
+      if (rb.received && rb.port < 4) owner[rb.port] = rb.port;
+    }
+  }
+  controls::freeze(owner);
+}
+
 void prepare_online_match_state(std::vector<uint8_t>& q) {
   // The guest polls again on returning to CSS. End the match flag, retaining the peer and room.
   if (g_in_online_match && yougame::unranked::keep_css(yougame::active(), (int)g_last_search.mode)) {
@@ -2402,6 +2461,12 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   // setup hash has sent the same one; a different one refuses the match, before any frame runs.
   if (setup_built) {
     std::string why;
+    // The exchange moves here too, not only on character select frames: a match set up without the
+    // select on screen still settles instead of waiting out its 10 seconds.
+    controls_pump();
+    // Tap jump off and tilt stick (controls.h): the decision joins the inputs, so machines that decided
+    // differently wait for each other's next message and never start one match on two decisions.
+    setup_inputs = controls::fold_inputs(setup_inputs);
     const int gate = setup_hash_gate(bounded_remote_machine_count(), setup_inputs,
                                      setup_block_hash(block, lobby_plan ? lobby_plan->humans : bounded_remote_port_count() + 1u, rng_offset, alt_stage_mode,
                                                       setup_squad, setup_budget, setup_lobby), &why);
@@ -2412,9 +2477,30 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       prepare_online_match_state(q);
       return;
     }
-    if (gate == 0) q[2] = 0;   // MSRB_REMOTE_READY: the game keeps waiting for the opponent
+    if (gate == 0) {
+      q[2] = 0;   // MSRB_REMOTE_READY: the game keeps waiting for the opponent
+    } else if (controls_expected() && !controls::settled()) {
+      // Tap jump off and tilt stick: an answer or an offer is still on its way. Locked-in players answer
+      // at once, so this is one round trip; a match never starts on a decision still changing.
+      if (!g_controls_wait_since) { g_controls_wait_since = time_ms(); host::log("controls: waiting for the agreement to arrive"); }
+      if (time_ms() - g_controls_wait_since < kControlsSettleMs) {
+        q[2] = 0;
+      } else {
+        host::log("controls: the agreement never arrived, match not started");
+        g_controls_wait_since = 0;
+        g_netplay->ForceDisconnect();
+        cleanup_connection();
+        g_forced_error = "Control options could not be agreed with your opponent. Match not started.";
+        prepare_online_match_state(q);
+        return;
+      }
+    } else {
+      g_controls_wait_since = 0;
+      controls_freeze(lobby_plan);   // every machine agreed: this match plays this decision
+    }
   } else if (g_setup_hash.have) {
     g_setup_hash = {};   // a new setup (a rematch, a changed pick) starts a new wait
+    g_controls_wait_since = 0;
   }
   append_u32(q, rng_offset);
   q.push_back((uint8_t)effective_delay());
@@ -2709,7 +2795,63 @@ void set_squad_standard_copy(squad_costume::Standard (*copy)(const std::string& 
 // a connection to one opponent is up and its build message came (or did not, within the wait), and
 // its messages move both ways; when the codes are agreed, this side's selection goes again with the
 // new lock.
+// Tap jump off and tilt stick (controls.h), every character select frame: the exchange starts once the
+// connection is up and every peer's build message came (or the wait for it ran out), and only when
+// the mode allows it and every peer announced it with a setup hash (the decision rides in the hash).
+void controls_pump() {
+  static const NetplayClient* started = nullptr;
+  const bool up = g_netplay && g_netplay->GetSlippiConnectStatus() == NetplayClient::ConnectStatus::CONNECTED;
+  if (!up) {
+    if (started) { controls::session_end(); started = nullptr; }
+    g_controls_match_running = false;
+    return;
+  }
+  if (g_controls_match_running) { g_controls_match_running = false; controls::match_ended(); }
+  if (started != g_netplay.get()) {
+    const uint64_t since = g_netplay->ConnectedAtMs();
+    const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const int remotes = bounded_remote_machine_count();   // the machines in the connection (RemoteCount() counts only those whose pads came)
+    bool all = remotes > 0, capable = true;
+    std::vector<controls::Player> others;
+    const auto info = g_matchmaking ? g_matchmaking->GetPlayerInfo() : std::vector<UserInfo>{};
+    for (int i = 0; i < remotes; ++i) {
+      const auto rb = g_netplay->GetRemoteBuild(i);
+      if (!rb.received) { all = false; continue; }
+      if (!rb.controls || !rb.setup_hash || rb.port > 3) { capable = false; continue; }
+      controls::Player player;
+      player.port = rb.port;
+      for (const auto& u : info) {
+        if (u.port != rb.port + 1) continue;
+        player.key = !u.uid.empty() ? "id:" + u.uid : !u.connect_code.empty() ? "code:" + u.connect_code : std::string();
+        player.name = u.display_name;
+      }
+      if (player.name.empty()) player.name = g_matchmaking ? g_matchmaking->GetPlayerName((uint8_t)rb.port) : std::string();
+      others.push_back(std::move(player));
+    }
+    if (!all && (since == 0 || now - since < kBuildWaitMs)) return;   // a build message may still come
+    const bool yougame = controls_yougame();
+    if (all && capable && controls::advertise()) {
+      controls::session_begin(g_netplay->LocalPlayerPort(), others, (int)g_last_search.mode, yougame,
+                              g_local_selections.is_character_selected != 0);
+      if (!controls::session_active())
+        host::log("controls: no agreement in this match (mode %d, %s)", (int)g_last_search.mode,
+                  yougame ? "YouGame" : "not a YouGame match");
+    } else {
+      controls::session_end();
+      host::log("controls: no agreement in this match (%s)", !controls::advertise() ? "this game does not offer them"
+                                                            : !all ? "an opponent's build never came"
+                                                                   : "an opponent's game does not take them");
+    }
+    started = g_netplay.get();
+  }
+  std::vector<uint8_t> message;
+  while (g_netplay->PopControls(message)) controls::receive(message.data(), message.size());
+  controls::tick();
+  for (const auto& out : controls::take_outgoing()) g_netplay->SendControls(out);
+}
+
 void gecko_pump() {
+  controls_pump();
   static const NetplayClient* started = nullptr;
   const bool up = g_netplay && g_netplay->GetSlippiConnectStatus() == NetplayClient::ConnectStatus::CONNECTED;
   if (!up) {

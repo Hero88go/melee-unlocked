@@ -9,7 +9,7 @@ def read(p): return (ROOT / p).read_text()
 class CssJoinWiring(unittest.TestCase):
     def test_fixed_byte_abi_and_version_gates(self):
         h=read('port/runtime/abi/mu_host.h')
-        self.assertIn('#define MU_HOST_API_VERSION 33',h)   # 33: main's pro AI tag robot (upstream 26)
+        self.assertIn('#define MU_HOST_API_VERSION 34',h)   # 34: control options (tap jump, tilt stick); 33: main's pro AI tag robot (upstream 26)
         self.assertIn('#define MU_GAME_API_VERSION 10',h)
         self.assertIn('int32_t (*css_state)(int32_t operation, void* bytes, uint32_t size)',h)
         self.assertIn('host->version != MU_HOST_API_VERSION',read('sourceport/game/shim/mu_entry.c'))
@@ -29,7 +29,7 @@ class CssJoinWiring(unittest.TestCase):
         # Build 58: upstream v0.9.102 adds 1 (grizumi, the live Fountain of Dreams scenery).
         # Build 65: upstream v0.9.104 adds 9 (render semantics in cobj/dobj/lobj/tobj 6, Kirby hats in ftparts 2, gm_1601 1).
         # The 4-player Friends select adds 2 (the host-only Rules and Teams guards in mncharsel).
-        self.assertEqual(len(re.findall(r'^@@ ',patch,re.M)),10153)  # 1.0.15: one more (a fighter's swinging parts with a bone missing, lb_00F9.c); 1.0.3: one more (added items start with no command script, item.c); 1.0.1: one more (the Training HUD switch, gm_1884.c, and the item script guard, itanimlist.c); 0.9.992: three more (Final Destination's background guard for skins without its animations, grlast.c); 0.9.990: one more for the rogueMelee Disable fix (main becad61b), one more (single player stock icon lists on an m-ex disc's icon table); 8 more (an m-ex disc's own menu under VS Mode: mnmain 7, gmvsmode 1); one more (TObj palette index past 255); 19 more (the 0.9.216 merge and the online menu description hook); build 103: two more (results screen and main menu); build 101: v0.9.120's two new patch hunks (97: v0.9.117's itzako hunk)
+        self.assertEqual(len(re.findall(r'^@@ ',patch,re.M)),10167)  # tap jump off and tilt stick: 14 more (the mid-match toggle's pause check, gmvs.c) (gmvs.c match start, ftCo_Jump/JumpAerial/JumpAerialF1/PassiveWall, ftCo_AttackS3/S4/Hi3/Hi4/Lw3/Lw4/Dash and their headers); 1.0.15: one more (a fighter's swinging parts with a bone missing, lb_00F9.c); 1.0.3: one more (added items start with no command script, item.c); 1.0.1: one more (the Training HUD switch, gm_1884.c, and the item script guard, itanimlist.c); 0.9.992: three more (Final Destination's background guard for skins without its animations, grlast.c); 0.9.990: one more for the rogueMelee Disable fix (main becad61b), one more (single player stock icon lists on an m-ex disc's icon table); 8 more (an m-ex disc's own menu under VS Mode: mnmain 7, gmvsmode 1); one more (TObj palette index past 255); 19 more (the 0.9.216 merge and the online menu description hook); build 103: two more (results screen and main menu); build 101: v0.9.120's two new patch hunks (97: v0.9.117's itzako hunk)
 
     def test_apply_validates_all_ports_before_any_setter(self):
         apply=body(read('sourceport/game/include/mu_css_transfer.inc'),'mu_css_transfer')

@@ -7,6 +7,7 @@
 // What still differs from the recompiled build is listed where it happens: no memory card yet
 // (M10), Slippi's game side not present (M12).
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "controls.h"   // tap jump off and tilt stick (MuHostApi.control_flags)
 #include "test_env.h"
 #include "layer_fingerprint.h"
 #ifdef YOUGAME_AGENT_TEST_HOOK
@@ -2367,6 +2368,7 @@ constexpr uint8_t CMD_VS_PRO = 0xC8;   // VS Mode: the pro each port's CPU plays
 constexpr uint8_t CMD_FRAME_EVENT = 0xE8;   // replay frame data for the coach (shim/mu_framedata.c, host/replay_coach.h)
 constexpr uint8_t CMD_REPLAY_DEFENSE = 0xE9;   // a takeover's opponents once the game leaves the replay (shim/mu_replay_defend.c)
 constexpr uint8_t CMD_ZELDA_AS_SHEIK = 0xDE;  // a human's Zelda starts as Sheik (shim/mu_slippi_css.c): offline only; upstream 0xE6, CMD_YOUGAME_FRIENDS_MENU in this build
+constexpr uint8_t CMD_CONTROLS = 0xC9;   // tap jump off and tilt stick: the character select's line and its answers (controls.h)
 constexpr uint8_t CMD_CSS_FRAME = 0xDA;  // every character select frame (shim/mu_slippi_css.c): the easter egg; upstream 0xEC, MU_SQUAD_COMMAND in this build
 constexpr uint8_t CMD_ARENA_HAND = 0xDB;  // the online CSS hand (shim/mu_slippi_css.c): an arena room's side panels; upstream 0xEF, CMD_YOUGAME_MENU in this build
 constexpr uint8_t CMD_ARENA_PICK = 0xDC;  // the online CSS pick (shim/mu_slippi_sss.c): an arena room's portraits; upstream 0xEE, MU_MAKER_COMMAND in this build
@@ -3019,6 +3021,16 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           return true;
         }
         if (c == CMD_CSS_FRAME) slippi::online::gecko_pump();   // Gecko codes for the match (gecko_session.h)
+        if (c == CMD_CONTROLS && n == 2) {
+          // Tap jump off and tilt stick on the online character select (shim/mu_slippi_css.c): p[0] 0 asks for
+          // the checklist line, 1 allows port p[1]'s options, 2 declines them, 3 asks for defaults this match.
+          if (p[0] == 1 || p[0] == 2) controls::answer(p[1], p[0] == 1);
+          else if (p[0] == 3) controls::decline_this_match(p[1]);
+          const controls::CssLine line = controls::css_line();
+          reply = {(uint8_t)line.state, (uint8_t)(line.port < 0 ? 0xFF : line.port), (uint8_t)line.seconds,
+                   (uint8_t)line.theirs, (uint8_t)line.mine, 0, 0, 0};
+          return true;
+        }
         if (c == CMD_CSS_FRAME && n == 0) { walter_egg::set_camera(nullptr); reply.push_back(walter_egg::css_frame()); return true; }
         if (c == CMD_CSS_FRAME && n == 13 * sizeof(float)) {   // with the menu camera (shim mu_menu_camera): the C-stick's turn
           float camera[13];
@@ -5047,6 +5059,17 @@ MuReplayStart g_replay_start{};
 std::vector<uint8_t> g_replay_game_start;   // the original Game Start payload (command 0x36), reused
 std::vector<uint8_t> g_replay_game_end;
 slippi::NativeReplayStream g_replay_stream;
+// Tap jump off and tilt stick (controls.h, MuHostApi.control_flags): the game asks once as each match
+// starts. Playback plays what the replay recorded ("muControls"); otherwise this PC's choice offline or
+// the online agreement. Whatever the match plays goes into its recording.
+uint32_t g_replay_controls = 0;
+uint32_t h_control_flags() {
+  uint32_t word = 0;
+  if (g_replaying) word = g_replay_controls;
+  else if (!yougame::console::console_active() && !yougame::tournament_active()) word = controls::match_word();
+  g_replay_stream.set_controls(word);
+  return word;
+}
 bool g_replay_written = false;
 #if MU_SQUAD
 // Based on Squad Strike by Chris (x9x9x9x9x9), https://github.com/x9x9x9x9x9/squad-strike v1.0.0, used with the author's permission (11-03-2026)
@@ -5694,6 +5717,8 @@ MuHostApi make_host() {
   h.picture_widen = h_picture_widen;
   h.hud_combo = h_hud_combo;
   h.shield_color = h_shield_color;
+  h.control_flags = h_control_flags;   // version 34: tap jump off and tilt stick
+  controls::set_engine_supported(true);   // the Source Port runs them (the Static Recomp never sets this)
   h.grid_color = h_grid_color;
   h.screen_shake_scale = h_screen_shake_scale;
   h.hud_extras = h_hud_extras;
@@ -6026,14 +6051,15 @@ bool set_replay(const char*) { return false; }   // main refuses --replay before
 // The "modProfile" metadata a native recording made with mod layers carries (see
 // NativeReplayStream::set_mod_profile); empty for the retail game and for other recorders.
 std::string g_replay_mod_profile;
-uint32_t read_replay_feature_options(const char* path, int word = 0) {   // 0 "muOptions", 1 "muOptions2", 2 "muOptions3"
+uint32_t read_replay_feature_options(const char* path, int word = 0) {   // 0 "muOptions", 1 "muOptions2", 2 "muOptions3", 3 "muControls"
   std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
   std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   static const char key1[] = "U\x09muOptionsl";
   static const char key2[] = "U\x0AmuOptions2l";
   static const char key3[] = "U\x0AmuOptions3l";
-  const char* key = word == 2 ? key3 : word == 1 ? key2 : key1;
-  const size_t key_len = word == 2 ? sizeof key3 - 1 : word == 1 ? sizeof key2 - 1 : sizeof key1 - 1;
+  static const char key4[] = "U\x0AmuControlsl";
+  const char* key = word == 3 ? key4 : word == 2 ? key3 : word == 1 ? key2 : key1;
+  const size_t key_len = word == 3 ? sizeof key4 - 1 : word == 2 ? sizeof key3 - 1 : word == 1 ? sizeof key2 - 1 : sizeof key1 - 1;
   const auto at = std::search(bytes.begin(), bytes.end(), key, key + key_len);
   if (at == bytes.end() || bytes.end() - at < (std::ptrdiff_t)(key_len + 4)) return 0;
   const uint8_t* p = (const uint8_t*)&*(at + key_len);
@@ -6066,6 +6092,8 @@ bool set_replay(const char* path) {
   g_replay_feature_options = read_replay_feature_options(path);
   g_replay_feature_options2 = read_replay_feature_options(path, 1);
   g_replay_feature_options3 = read_replay_feature_options(path, 2);
+  g_replay_controls = read_replay_feature_options(path, 3);
+  if (g_replay_controls) host::log("replay: recorded with control options %08X (tap jump, tilt stick)", g_replay_controls);
   if (host::gameplay::vanilla_only() &&
       (!g_replay_mod_profile.empty() || g_replay_feature_options || g_replay_feature_options2 ||
        (g_replay_feature_options3 & MU_GAME_OPTION3_CPU_ALL))) {

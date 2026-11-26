@@ -40,6 +40,9 @@ void mu_lcancel_view(MuLcancelView* out)
         out->lcancel_window = p_ftCommonData->xE4;
         out->z_analog = p_ftCommonData->z_press_analog_value;
     }
+    for (slot = 0; slot < 4; ++slot) {
+        out->auto_off[slot] = mu_controls_lcancel_off(slot);
+    }
     /* As the recompiled build: human slots 0-3, first one on each controller port. */
     for (slot = 0; slot < 4; ++slot) {
         HSD_GObj* gobj;

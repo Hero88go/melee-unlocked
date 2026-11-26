@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 33
+#define MU_HOST_API_VERSION 34
 #define MU_GAME_API_VERSION 10
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -441,6 +441,11 @@ typedef struct MuHostApi {
      * the name. `dx` is the robot's centre right of the tag's x and `width` the room the name left for
      * it, both in 640x480 units; width 0 when this tag has none. Display only. */
     void (*hud_pro_tag)(int32_t slot, float dx, float width);
+    /* Version 34. Control options (mu_controls.h): one byte of MU_CONTROL_* bits per player slot,
+     * slot 0 in the low byte. Asked once as each match starts (gm/gmvs.c, before the replay and the
+     * online match are set up) and kept for the whole match; the game applies a slot's bits only to a
+     * human slot. 0 keeps every decision the game's own. */
+    uint32_t (*control_flags)(void);
 } MuHostApi;
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):

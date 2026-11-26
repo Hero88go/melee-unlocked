@@ -553,6 +553,12 @@ static void proai_seat_ask(void)
     }
 }
 MU_EXCLUSIONS(proai_seat, MU_EXCLUDE(proai_port), MU_EXCLUDE(proai_pro), MU_EXCLUDE(proai_reply), MU_EXCLUDE(match_20xx))
+/* The Pro AI seat this machine plays in the running network match, -1 none (shim/mu_controls.c: a
+ * seat the model plays never takes a person's control options). */
+int mu_online_proai_port(void)
+{
+    return mu_online.active ? proai_port : -1;
+}
 
 static int capture_state(int frame)
 {

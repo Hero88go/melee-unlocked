@@ -40,6 +40,9 @@ class NativeReplayStream {
   void set_feature_options(uint32_t options) { feature_options_ = options; }
   void set_feature_options2(uint32_t options) { feature_options2_ = options; }   // "muOptions2"
   void set_feature_options3(uint32_t options) { feature_options3_ = options; }   // "muOptions3"
+  // Tap jump off and tilt stick as the match played them (mu_controls.h, one byte per port); 0 writes
+  // no key. Playback hands the game exactly these.
+  void set_controls(uint32_t word) { controls_ = word; }   // "muControls"
   // A replay viewer's jump back: the stream as it stood at an earlier point of the same match, so
   // the frames played again are recorded once.
   struct Mark {
@@ -62,6 +65,7 @@ class NativeReplayStream {
   uint32_t feature_options_ = 0;
   uint32_t feature_options2_ = 0;
   uint32_t feature_options3_ = 0;
+  uint32_t controls_ = 0;
   bool fail(const char* reason);
   std::map<uint8_t, uint16_t> sizes_;
   std::vector<std::pair<uint8_t, uint16_t>> table_;   // Slippi's declared command table, in order

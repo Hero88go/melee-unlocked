@@ -9,7 +9,7 @@
 
 static int checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::cerr << __LINE__ << ": " << #x << '\n'; std::exit(1); } } while (0)
-static_assert(MU_HOST_API_VERSION == 33 && MU_GAME_API_VERSION == 10);   // 33: the pro AI tag robot
+static_assert(MU_HOST_API_VERSION == 34 && MU_GAME_API_VERSION == 10);   // 34: control options
 
 // Only the command declaration from mu_native.h is needed by this portable shim.
 #define MU_NATIVE_H

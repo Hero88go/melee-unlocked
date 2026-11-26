@@ -29,6 +29,7 @@ uint32_t rd32(uint32_t address) {
 uint8_t rd8(uint32_t address) { return memory[address]; }
 void log(const char*, ...) {}
 }
+namespace controls { bool lcancel_agreed() { return false; } }   // no network match in this test
 namespace slippi::online {
 int session_mode() { return network_mode; }
 int session_mode_or_parked() { return network_mode; }   // no warm-up in this test: the same

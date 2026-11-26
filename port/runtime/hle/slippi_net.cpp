@@ -28,6 +28,7 @@
 #include "gx_core.h"   // the player's own shield colour for the build message
 #include "early_input.h"
 #include "lcancel.h"   // automatic L-cancel, announced in the build message
+#include "controls.h"  // tap jump off and tilt stick: the capability and the exchange's messages
 #include "gecko_session.h"   // Gecko codes agreed for the match, locked with each selection
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -986,6 +987,8 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       const bool has_caps3 = caps2 && (packet >> caps3);
       uint8_t colour1 = 0, colour2 = 0;
       const bool has_colours = has_caps3 && (packet >> colour1) && (packet >> colour2);
+      uint8_t caps4 = 0;
+      const bool has_caps4 = has_colours && (packet >> caps4);
       const uint8_t layout = !caps2 ? 0 : has_caps3 ? 2 : 1;
       // Melee Unlocked 0.9.200 to 0.9.211: 0x10 arena rooms, 0x20 automatic L-cancel, 0x40 Gecko codes.
       const bool upstream_arena = !caps2 && (caps & 0x10), upstream_lcancel = !caps2 && (caps & 0x20),
@@ -1027,6 +1030,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         remote_build_[pidx].pause_rule = has_caps3 && (caps3 & MU_BUILD_CAPS3_PAUSE_RULE) != 0;
         remote_build_[pidx].no_pause = remote_build_[pidx].pause_rule && (caps3 & MU_BUILD_CAPS3_NO_PAUSE) != 0;
         remote_build_[pidx].arena_ffa = has_caps3 && (caps3 & MU_BUILD_CAPS3_ARENA_FFA) != 0;
+        remote_build_[pidx].controls = has_caps4 && (caps4 & MU_BUILD_CAPS4_CONTROLS) != 0;
         remote_build_[pidx].port_colour[0] = has_colours && colour1 >= 1 && colour1 <= 4 ? (int8_t)(colour1 - 1) : (int8_t)-1;
         remote_build_[pidx].port_colour[1] = has_colours && colour2 >= 1 && colour2 <= 4 ? (int8_t)(colour2 - 1) : (int8_t)-1;
         if (warmup && remote_warmup_[pidx].load(std::memory_order_relaxed) < 0) remote_warmup_[pidx].store(0, std::memory_order_relaxed);
@@ -1036,6 +1040,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
                 mod_view ? name.c_str() : "", mod_view ? (" " + fp.substr(0, 16)).c_str() : "",
                 (caps & 1) ? ", takes early inputs" : "", shield ? "" : "none ", shield & 0xFFFFFFu);
       if ((caps2 & MU_BUILD_CAPS2_AUTO_LCANCEL) || upstream_lcancel) host::log("slippi: opponent %u has automatic L-cancel on", port);
+      if (has_caps4 && (caps4 & MU_BUILD_CAPS4_CONTROLS)) host::log("slippi: opponent %u takes control options (tap jump, tilt stick)", port);
       if (layout != 2) host::log("slippi: opponent %u speaks the %s build message", port, layout ? "YouGame 1xx" : "Melee Unlocked 0.9.216 and older");
       if (warmup) host::log("slippi: opponent %u takes warm-up messages (id 0x%02X)", port, layout == 0 ? NP_MSG_MU_WARMUP_UPSTREAM : (unsigned)NP_MSG_MU_WARMUP);
 #if MU_SQUAD
@@ -1197,6 +1202,23 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       gecko_inbox_.emplace_back(packet.data() + head, packet.data() + packet.size());
       break;
     }
+    case NP_MSG_MU_CONTROLS: {
+      // 'M' 'U' 'C' version, kind, sender port, ... (controls_wire.h), from a peer that announced it,
+      // over that peer's own connection. Kept as is for the game thread, which decodes it.
+      if (packet.size() < 7 || packet.size() > 64 || packet.data()[1] != 'M' || packet.data()[2] != 'U' || packet.data()[3] != 'C') break;
+      const uint8_t port = packet.data()[6];
+      const uint8_t pidx = PlayerIdxFromPort(port);
+      if (pidx >= remote_player_count_) break;
+      {
+        std::lock_guard<std::mutex> lk(build_mutex_);
+        if (!remote_build_[pidx].controls) break;
+      }
+      if (machine_pad_format_ && SenderPort(peer) != port) { host::log("slippi: controls message for port %u from another connection", port); break; }
+      std::lock_guard<std::mutex> lk(controls_mutex_);
+      if (controls_inbox_.size() >= 64) { host::log("slippi: controls inbox full, message dropped"); break; }
+      controls_inbox_.emplace_back(packet.data() + 1, packet.data() + packet.size());
+      break;
+    }
     case NP_MSG_MU_WARMUP: {
       // 'M' 'U' 'W' version, sender port, state (1 warming up in Training, 0 on the character select),
       // then the character picked on the select and its costume (0xFF: none yet), from a peer that
@@ -1313,6 +1335,8 @@ void NetplayClient::SendBuild() {
     sent_port_colour_.store((c0 & 0xFF) | ((c1 & 0xFF) << 8));
     *p << (uint8_t)(c0 + 1) << (uint8_t)(c1 + 1);
   }
+  // The fourth capability byte (MU_BUILD_CAPS4_*). Older builds stop reading at the port colours.
+  *p << (uint8_t)(controls::advertise() ? MU_BUILD_CAPS4_CONTROLS : 0);
   host::log("slippi: sending build: %s%s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "",
             early ? " (takes early inputs)" : "");
   SendAsync(std::move(p));
@@ -1397,6 +1421,24 @@ void NetplayClient::SendWarmup(bool warming, uint8_t character, uint8_t costume)
   *p << (uint8_t)NP_MSG_MU_WARMUP << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'W' << (uint8_t)1 << player_idx_
      << (uint8_t)(warming ? 1 : 0) << character << costume;
   SendAsync(std::move(p));
+}
+
+bool NetplayClient::SendControls(const std::vector<uint8_t>& message) {
+  if (message.empty() || message.size() > 64) return false;
+  if (status_.load(std::memory_order_acquire) != ConnectStatus::CONNECTED) return false;
+  auto p = std::make_unique<Packet>();
+  *p << (uint8_t)NP_MSG_MU_CONTROLS;
+  p->append(message.data(), message.size());
+  SendAsync(std::move(p));   // the send loop gives it only to peers whose build takes it
+  return true;
+}
+
+bool NetplayClient::PopControls(std::vector<uint8_t>& out) {
+  std::lock_guard<std::mutex> lk(controls_mutex_);
+  if (controls_inbox_.empty()) return false;
+  out = std::move(controls_inbox_.front());
+  controls_inbox_.pop_front();
+  return true;
 }
 
 bool NetplayClient::PopGecko(std::vector<uint8_t>& out) {
@@ -1626,6 +1668,12 @@ void NetplayClient::Send(Packet& packet) {
       // Only to a peer whose build said it takes them; reliable, on the control channel.
       std::lock_guard<std::mutex> lk(build_mutex_);
       if (i >= (size_t)REMOTE_PLAYER_MAX || !remote_build_[i].gecko) continue;
+    }
+    if (mid == NP_MSG_MU_CONTROLS) {
+      // Only to a peer whose build said it takes them; reliable, on the control channel, in order
+      // with the selections.
+      std::lock_guard<std::mutex> lk(build_mutex_);
+      if (i >= (size_t)REMOTE_PLAYER_MAX || !remote_build_[i].controls) continue;
     }
     if (mid == NP_MSG_MU_WARMUP) {
       // Only to a peer whose build said it reads them; reliable, on the control channel.
@@ -2111,6 +2159,10 @@ void NetplayClient::SetMatchSelections(PlayerSelections& s) {
     std::lock_guard<std::mutex> lk(selection_mutex_);
     match_info_.local.Merge(s);
     match_info_.local.player_idx = player_idx_;
+    // Tap jump off and tilt stick (controls.h): this player's offer and answers go out ahead of the
+    // selection on the same ordered queue, so a peer that sees this lock-in holds every message that
+    // decides the match. SendControls only queues (no build lock taken here).
+    for (const auto& m : controls::before_selection(match_info_.local.is_character_selected != 0)) SendControls(m);
 #if MU_SQUAD
     // Based on Squad Strike by Chris (x9x9x9x9x9), https://github.com/x9x9x9x9x9/squad-strike v1.0.0, used with the author's permission (11-03-2026)
     if (match_info_.local.is_character_selected) squad_locked_seen_.store(true);
@@ -2162,6 +2214,7 @@ void NetplayClient::ResendSelections() {
   auto spac = std::make_unique<Packet>();
   {
     std::lock_guard<std::mutex> lk(selection_mutex_);
+    for (const auto& m : controls::before_selection(match_info_.local.is_character_selected != 0)) SendControls(m);
     WriteSelections(*spac, match_info_.local);
   }
   const std::vector<uint8_t> lock = gecko_session::lock_message();
