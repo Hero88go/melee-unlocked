@@ -97196,6 +97196,51 @@ index 0a6de83d2..935dad092 100644
      fp->u.ss.x2244 = 0;
 +#endif
  }
+diff --git a/src/melee/ft/kinds/ftSamus/inlines.h b/src/melee/ft/kinds/ftSamus/inlines.h
+index f5d095697..e39d2530e 100644
+--- a/src/melee/ft/kinds/ftSamus/inlines.h
++++ b/src/melee/ft/kinds/ftSamus/inlines.h
+@@ -13,6 +13,15 @@
+ #include <melee/ft/types.h>
+ #include <melee/it/kinds/itsamuschargeshot.h>
+ #include <sysdolphin/baselib/gobj.h>
++#if MU_ROGUE  /* rogueMelee + Melee Maker */
++#include <mu_bm.h>
++/* Samus's neutral B state: a fighter borrowing it keeps it in its borrowed-move vars, not in fp->u.ss
++ * (another fighter's own state there). Read through fp->u.ss, a Melee Maker build that borrowed the
++ * charge shot passed a stray item pointer to its cleanup (player crash 11-25, 1.0.25). */
++#define MU_SS_VARS(fp) (&MU_BM_Vars((fp), Ft_Kind_Samus)->ss)
++#else
++#define MU_SS_VARS(fp) (&(fp)->u.ss)
++#endif
+ 
+ static inline void ftSamus_updateDamageDeathCBs(HSD_GObj* gobj)
+ {
+@@ -32,9 +41,9 @@ static inline void ftSamus_destroyAllEF(HSD_GObj* gobj)
+ {
+     if (gobj) {
+         Fighter* fp = GET_FIGHTER(gobj);
+-        if (fp->u.ss.x2234) {
++        if (MU_SS_VARS(fp)->x2234) {
+             efLib_DestroyAll(gobj);
+-            fp->u.ss.x2234 = 0;
++            MU_SS_VARS(fp)->x2234 = 0;
+         }
+     }
+ }
+@@ -43,10 +52,10 @@ static inline void ftSamus_UnkAndDestroyAllEF(HSD_GObj* gobj)
+ {
+     if (gobj != NULL) {
+         Fighter* fp = gobj->user_data;
+-        Item_GObj* x222C = fp->u.ss.x222C;
++        Item_GObj* x222C = MU_SS_VARS(fp)->x222C;
+         if (x222C != NULL) {
+             it_802B5974(x222C);
+-            fp->u.ss.x222C = NULL;
++            MU_SS_VARS(fp)->x222C = NULL;
+         }
+         ftSamus_destroyAllEF(gobj);
+     }
 diff --git a/src/melee/ft/kinds/ftSamus/types.h b/src/melee/ft/kinds/ftSamus/types.h
 index 936231f8c..3bd4a8c01 100644
 --- a/src/melee/ft/kinds/ftSamus/types.h
