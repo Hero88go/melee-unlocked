@@ -45,6 +45,7 @@ class ComplianceDiagnosticsTest(unittest.TestCase):
             "port/runtime/hle/native_practice.h": 1,       # the sparring note
             "port/tests/ghost_ai_test.cpp": 3,             # policy choice notes
             "sourceport/game/shim/mu_practice_cpu.c": 5,   # the pro per character, the name tag table
+            "port/runtime/gx/arena_panel.cpp": 1,          # Arena's named bots (owner's request, 1.0.31)
         }
         for directory in ("port", "sourceport"):
             for path in (ROOT / directory).rglob("*"):

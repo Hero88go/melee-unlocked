@@ -19,7 +19,7 @@ def body(text, start, end):
 class RestartKeepsSigninWiringTest(unittest.TestCase):
     def test_every_restart_runs_the_hook_before_it_starts_the_new_process(self):
         host = source("port/runtime/host/host.cpp")
-        for start, end in [("void request_restart() {", "bool restart_after_device_loss("),
+        for start, end in [("void request_restart(const std::string& extra_arguments) {", "bool restart_after_device_loss("),
                            ("bool restart_after_device_loss(", "static std::filesystem::path launcher_folder()"),
                            ("bool restart_with_mod_looks() {", "int exit_code()")]:
             fn = body(host, start, end)
