@@ -1738,9 +1738,20 @@ void apply_known_box_layout(int idx) {
   std::string lower = name;
   for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
   const HidBindings generic = default_hid_bindings()[0], before_hat = hid_bindings_before_hat();
+  // A B0XX on firmware 4.x that an earlier version gave HayBox's layout (A and B swapped), and that the
+  // player never changed, takes its own.
+  const HidBindings haybox = haybox_dinput_bindings();
+  if (hidpad_b0xx_firmware4(idx) && std::memcmp(&g_hid_bindings[idx], &haybox, sizeof haybox) == 0) {
+    g_hid_bindings[idx] = b0xx_firmware4_bindings();
+    host::log("hid pad %d: %s, a B0XX on firmware 4.x: its own layout (was HayBox's)", idx + 1, name.c_str());
+    return;
+  }
   if (std::memcmp(&g_hid_bindings[idx], &generic, sizeof generic) != 0 &&
       std::memcmp(&g_hid_bindings[idx], &before_hat, sizeof before_hat) != 0) return;
-  if (lower.find("vjoy") != std::string::npos) {
+  if (hidpad_b0xx_firmware4(idx)) {
+    g_hid_bindings[idx] = b0xx_firmware4_bindings();
+    host::log("hid pad %d: %s, using the B0XX firmware 4.x layout", idx + 1, name.c_str());
+  } else if (lower.find("vjoy") != std::string::npos) {
     g_hid_bindings[idx] = vjoy_b0xx_bindings();
     host::log("hid pad %d: %s, using the B0XX (vJoy) layout", idx + 1, name.c_str());
   } else if (hidpad_frame1_dinput(idx)) {

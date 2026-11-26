@@ -91,6 +91,13 @@ struct Slot {
   int8_t rest[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
   uint8_t origin[8] = {255, 255, 255, 255, 255, 255, 255, 255};   // hid_trigger_from_origin, per axis
 };
+// A B0XX on its own firmware 4.x: named "Arduino Leonardo", axes declared signed -32767..32767, buttons
+// 1-20 (HayBox on the same board declares 0..65535 and buttons 1-16). Its sticks send up positive and
+// its A and B are the other way round from HayBox's (11-25, v2 box on 4.01).
+bool b0xx_firmware4_shape(const Slot& s) {
+  return s.button_min == 1 && s.button_max == 20 && s.axes[0].logical_min == -32767 &&
+         s.axes[0].logical_max == 32767 && s.name == "Arduino Leonardo";
+}
 
 constexpr USAGE kAxisOrder[8] = {kUsageX, kUsageY, kUsageZ, kUsageRx, kUsageRy, kUsageRz, kUsageSlider, kUsageHat};
 
@@ -503,8 +510,7 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
   // -32767..32767, with buttons 1-20 (HayBox on the same board declares 0..65535 and buttons 1-16). It
   // sends the GameCube's direction, up positive, as firmware v3 did below; flipped as HID's Y, a player's
   // up and down were swapped on both sticks (11-25, v2 box on 4.01).
-  const bool b0xx_firmware4 = s.button_min == 1 && s.button_max == 20 && s.axes[0].logical_min == -32767 &&
-                              s.axes[0].logical_max == 32767 && s.name == "Arduino Leonardo";
+  const bool b0xx_firmware4 = b0xx_firmware4_shape(s);
   auto stick = [&](int i, bool flip) -> int8_t {
     const Axis& ax = s.axes[i];
     if (b0xx_firmware4) flip = false;
@@ -619,6 +625,12 @@ uint32_t hidpad_poll(PadState out[kHidPadSlots], uint32_t buttons[kHidPadSlots])
     present |= 1u << i;
   }
   return present;
+}
+
+bool hidpad_b0xx_firmware4(int slot) {
+  if (slot < 0 || slot >= kHidPadSlots) return false;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_slots[slot].ready && b0xx_firmware4_shape(g_slots[slot]);
 }
 
 bool hidpad_haybox_dinput(int slot) {

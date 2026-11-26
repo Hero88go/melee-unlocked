@@ -264,6 +264,13 @@ inline HidBindings haybox_dinput_bindings() {
   b.mask[(size_t)BindAction::DLeft] = HID_HAT_LEFT; b.mask[(size_t)BindAction::DRight] = HID_HAT_RIGHT;
   return b;
 }
+// A B0XX on its own firmware 4.x (hidpad_b0xx_firmware4): HayBox's order with A and B the other way
+// round (11-25: a v2 box on 4.01 had A and B swapped with HayBox's layout).
+inline HidBindings b0xx_firmware4_bindings() {
+  HidBindings b = haybox_dinput_bindings();
+  b.mask[(size_t)BindAction::A] = 1u << 0;  b.mask[(size_t)BindAction::B] = 1u << 1;
+  return b;
+}
 // A Frame1 on its own firmware in DInput mode ("Frame1 Dinput", hid_pad.h): the button order of its
 // maker's pico-rectangle HID report, A B X Y Start, three unused, D-pad left right down up, Z R L.
 // The analog sliders carry the trigger travel; these bits are the full presses.

@@ -89,6 +89,8 @@ inline bool haybox_dinput_shape(const HidAxisRange (&axes)[8], unsigned button_m
 }
 // Whether the device in a slot has that shape.
 bool hidpad_haybox_dinput(int slot);
+// A B0XX on its own firmware 4.x (hid_pad.cpp: Arduino Leonardo, signed axes, buttons 1-20).
+bool hidpad_b0xx_firmware4(int slot);
 
 // A Frame1 on its own firmware in DInput mode (Mod Y held on plug-in) names itself "Frame1 Dinput".
 // It is not HayBox: its maker's public pico-rectangle firmware ("HID with triggers", which it grew
