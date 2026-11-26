@@ -499,8 +499,15 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
                   chosen == kStickTwos ? "two's complement" : "offset binary");
     }
   }
+  // A B0XX on its own firmware 4.x names itself "Arduino Leonardo" and declares its axes signed,
+  // -32767..32767, with buttons 1-20 (HayBox on the same board declares 0..65535 and buttons 1-16). It
+  // sends the GameCube's direction, up positive, as firmware v3 did below; flipped as HID's Y, a player's
+  // up and down were swapped on both sticks (11-25, v2 box on 4.01).
+  const bool b0xx_firmware4 = s.button_min == 1 && s.button_max == 20 && s.axes[0].logical_min == -32767 &&
+                              s.axes[0].logical_max == 32767 && s.name == "Arduino Leonardo";
   auto stick = [&](int i, bool flip) -> int8_t {
     const Axis& ax = s.axes[i];
+    if (b0xx_firmware4) flip = false;
     // Two's-complement data in a field declared unsigned (a B0XX r2 on firmware v3) is the GameCube's own
     // signed reading, up positive (its raw values: up +20688, down -20432): not flipped as HID's Y is.
     if (s.stick_enc[i] == kStickTwos && ax.logical_min >= 0) flip = false;
