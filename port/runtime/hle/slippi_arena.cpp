@@ -1982,8 +1982,11 @@ bool test_autolock() {
 
 void steer_match() {
   if (g_self == kNone || g_room.in_game || g_wait_room || now_ms() < g_next_match_ms) return;
-  if (g_room.members.size() < 2 && !g_test.on) {
-    // Alone in the room: nothing to steer, and the player's own Direct searches are their own.
+  if (people(g_room) < 2 && !g_test.on) {
+    // Alone in the room (bots count for nothing: a person and their own bots have no second machine to
+    // play, and the select sat waiting on "not enough fighters" after the friend dropped, player report
+    // 11-26): nothing to steer, and the player's own Direct searches are their own.
+    if (g_plan_on) { clear_plan(); event("no other person in the room: waiting for friends (bots stay in)"); }
     g_status = "Waiting for friends to join";
     return;
   }
@@ -2061,7 +2064,17 @@ void steer_match() {
   const std::string lock_key = t.code + "/" + std::to_string(g_room.games);
   if (searching) {
     g_status = st.state == (int)Matchmaking::CONNECTION_SUCCESS ? "Ready to fight " + t.label : "Connecting to " + t.label;
-    const bool may_lock = st.state == (int)Matchmaking::CONNECTION_SUCCESS && !st.local_ready && g_test_lock_key != lock_key;
+    bool may_lock = st.state == (int)Matchmaking::CONNECTION_SUCCESS && !st.local_ready && g_test_lock_key != lock_key;
+    {
+      // Tests: MELEE_TEST_ARENA_LOCK_DELAY_MS holds the test lock-in back that long after the connection,
+      // so a room change can land while both are connected on the select (player report 11-26).
+      static const int delay = [] { const char* v = host::test_env::getenv("MELEE_TEST_ARENA_LOCK_DELAY_MS"); return v ? std::atoi(v) : 0; }();
+      static std::string connected_key;
+      static uint64_t connected_at = 0;
+      if (st.state != (int)Matchmaking::CONNECTION_SUCCESS) connected_key.clear();
+      else if (connected_key != lock_key) { connected_key = lock_key; connected_at = now_ms(); }
+      if (delay > 0 && may_lock && now_ms() - connected_at < (uint64_t)delay) may_lock = false;
+    }
     if (g_test.on && !test_press_start() && may_lock && online::arena_lock_in(g_test.character, 0)) {
       g_test_lock_key = lock_key;
       event("locked in for %s", t.code.c_str());
@@ -2212,6 +2225,13 @@ void run_test_plan() {
     if ((p.what == "doubles" && (int)g_room.members.size() < std::max(4, named)) ||
         (p.what == "ffa" && (int)g_room.members.size() < std::max(kFfaMin, named))) return;
     if (p.what == "watch" && !find(g_room, (uint8_t)std::atoi(p.arg.c_str()))) return;
+    // Tests: MELEE_TEST_ARENA_SWITCH_CONNECTED=1 holds a switch until the next game's connection is up and
+    // nobody has locked in yet (the room changes under a connected select, as a person's vote can).
+    static const bool switch_connected = [] { const char* v = host::test_env::getenv("MELEE_TEST_ARENA_SWITCH_CONNECTED"); return v && *v == '1'; }();
+    if (switch_connected && (p.what == "doubles" || p.what == "ffa" || p.what == "singles")) {
+      const online::ArenaMatchStatus ms = online::arena_match_status();
+      if (ms.state != (int)Matchmaking::CONNECTION_SUCCESS || ms.in_match || ms.local_ready) return;
+    }
     uint8_t bot_owner = kNone;
     if (p.what == "bot" || p.what == "cpu") {
       // ARENA#k in a test room, or a real member's code (bot:0:HERO#162-2 in a real room's plan).
@@ -2255,10 +2275,43 @@ void run_test_plan() {
   }
 }
 
+// Tests (hidden runs): MELEE_TEST_ARENA_GUEST_PROPOSE=<ffa|doubles|singles>:<games>: a member who is not the
+// host proposes that switch through the link, as a person's R on the panel does, once the room has finished
+// that many games (and, with MELEE_TEST_ARENA_SWITCH_CONNECTED=1, once its next game's connection is up),
+// then votes yes; the host then votes yes as a person answering the prompt would (player report 11-26).
+void guest_test_switch() {
+  static const std::string spec = [] { const char* v = host::test_env::getenv("MELEE_TEST_ARENA_GUEST_PROPOSE"); return std::string(v ? v : ""); }();
+  if (spec.empty() || !g_active || g_self == kNone || g_room.in_game) return;
+  const size_t colon = spec.find(':');
+  const std::string what = spec.substr(0, colon);
+  const uint32_t after = colon == std::string::npos ? 0 : (uint32_t)std::atoi(spec.c_str() + colon + 1);
+  if (g_hosting) {
+    if (!g_room.switch_pending || !is_person(g_self)) return;
+    const auto voters = switch_voters(g_room);
+    if (std::find(voters.begin(), voters.end(), g_self) == voters.end() || (g_room.switch_votes & (1u << g_self))) return;
+    do_act({Act::VoteSwitch, 1, {}});
+    event("test: the host votes yes on the switch");
+    return;
+  }
+  static bool done = false;
+  if (done || g_room.games < after || g_room.switch_pending) return;
+  static const bool switch_connected = [] { const char* v = host::test_env::getenv("MELEE_TEST_ARENA_SWITCH_CONNECTED"); return v && *v == '1'; }();
+  if (switch_connected) {
+    const online::ArenaMatchStatus ms = online::arena_match_status();
+    if (ms.state != (int)Matchmaking::CONNECTION_SUCCESS || ms.in_match || ms.local_ready) return;
+  }
+  const Ring kind = what == "doubles" ? Ring::Doubles : what == "singles" ? Ring::Singles : Ring::Ffa;
+  done = true;
+  event("test: this member proposes %s after %u games", ring_name(kind), after);
+  do_act({Act::ProposeSwitch, (uint8_t)((int)kind + 1), {}});
+  do_act({Act::VoteSwitch, 1, {}});
+}
+
 void publish_view() {
-  // The select locks in at once (no stage pick, no team toggle) in a free-for-all and in any match with Pro AI
-  // seats (the room's setup decides stage and teams).
-  g_css_ffa.store(g_active && g_self != kNone && (ffa(g_room) || g_plan_on));
+  // The select locks in at once (no stage pick, no team toggle) in a free-for-all. A singles or doubles ring
+  // with bots goes to the stage select as a Direct match does: the people's pick is the stage (slippi_online
+  // code match, player report 11-26), and the room's setup still decides the teams.
+  g_css_ffa.store(g_active && g_self != kNone && ffa(g_room));
   View v;
   v.active = g_active;
   v.hosting = g_hosting;
@@ -2524,6 +2577,7 @@ void tick() {
   if (g_hosting && set_ffa_allowed(g_room, !legacy_member())) event("free-for-all %s", g_room.ffa_allowed ? "available: every build plays it" : "off: a member's build is older");
   pending_end_tick();
   run_test_plan();
+  guest_test_switch();
   broadcast_room();
   steer_match();
   pip_tick();
