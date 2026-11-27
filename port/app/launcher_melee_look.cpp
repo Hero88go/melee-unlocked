@@ -20,6 +20,8 @@ namespace launcher::melee_look {
 namespace {
 
 int g_look = kBrawlOnline;   // the default look (owner 11-23); launcher.ini's look= picks another
+int g_pointer = kPointer3d;   // launcher.ini pointer=
+bool g_pointer_left = false;  // launcher.ini pointer_left=
 namespace ma = launcher::melee_assets;
 
 // A premultiplied 32-bit DIB in a memory DC, ready for AlphaBlend.
@@ -90,6 +92,9 @@ std::list<Frame> g_frames;
 
 void set_look(int l) { g_look = l >= (int)kClassic && l <= (int)kBrawlOnline ? l : (int)kClassic; }   // unknown: Classic
 int look() { return g_look; }
+void set_pointer(int style, bool left) { g_pointer = style >= kPointer3d && style <= kPointerWindows ? style : (int)kPointer3d; g_pointer_left = left; }
+int pointer() { return g_pointer; }
+bool pointer_left() { return g_pointer_left; }
 bool melee_art() { return g_look != kClassic && ma::font().ok; }
 
 int text_width(const std::wstring& s, HFONT size_from) {
@@ -236,14 +241,19 @@ int width_cell(const std::wstring& s, int cell) {
 bool text_cell(HDC dc, const std::wstring& s, RECT r, int cell, COLORREF color, UINT fmt, double skew) { return draw_line(dc, s, r, nullptr, color, fmt, cell, skew); }
 
 HCURSOR hand_cursor(int pose) {
-  static HCURSOR cursors[3] = {}; static bool tried[3] = {}; static int hot_x = -1, hot_y = 1;
-  if (!melee_art()) return nullptr;
+  // One set per pointer style (3D or flat) and side (as drawn, or mirrored to point left).
+  static HCURSOR cursors[2][2][3] = {}; static bool tried[2][2][3] = {}; static int hot_xs[2][2] = {{-1, -1}, {-1, -1}}, hot_y = 1;
+  if (!melee_art() || g_pointer == kPointerWindows) return nullptr;
   pose = std::clamp(pose, 0, 2);
-  if (tried[pose]) return cursors[pose] ? cursors[pose] : pose ? hand_cursor(0) : nullptr;
-  tried[pose] = true;
-  const ma::Image& posed = ma::hand_pose(pose);
+  const int flat = g_pointer == kPointerFlat ? 1 : 0, left = g_pointer_left ? 1 : 0;
+  if (flat) pose = 0;   // the first hand has one pose
+  if (tried[flat][left][pose]) return cursors[flat][left][pose] ? cursors[flat][left][pose] : pose ? hand_cursor(0) : nullptr;
+  tried[flat][left][pose] = true;
+  static const ma::Image none{};
+  const ma::Image& posed = flat ? none : ma::hand_pose(pose);
   const ma::Image& im = posed.w ? posed : ma::hand(); if (!im.w || (pose && !posed.w)) return pose ? hand_cursor(0) : nullptr;
-  HCURSOR& cursor = cursors[pose];
+  HCURSOR& cursor = cursors[flat][left][pose];
+  int& hot_x = hot_xs[flat][left];
   const int H = GetSystemMetrics(SM_CYCURSOR) * 3 / 2, W = H * im.w / im.h;   // a bit larger than an arrow, as on the character select
   BITMAPV5HEADER bh{}; bh.bV5Size = sizeof bh; bh.bV5Width = W; bh.bV5Height = -H; bh.bV5Planes = 1; bh.bV5BitCount = 32; bh.bV5Compression = BI_BITFIELDS;
   bh.bV5RedMask = 0x00FF0000; bh.bV5GreenMask = 0x0000FF00; bh.bV5BlueMask = 0x000000FF; bh.bV5AlphaMask = 0xFF000000;
@@ -252,15 +262,17 @@ HCURSOR hand_cursor(int pose) {
   if (!color) return nullptr;
   uint32_t* px = (uint32_t*)bits;
   for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) {
-    const uint32_t p = im.bgra[(size_t)(y * im.h / H) * im.w + (x * im.w / W)];
+    const int sx = left ? W - 1 - x : x;   // mirrored: the art's right edge drawn on the left
+    const uint32_t p = im.bgra[(size_t)(y * im.h / H) * im.w + (sx * im.w / W)];
     const uint32_t a = p >> 24, i = (posed.w ? (p & 255) : 0xE8) * a / 255;   // the glove: the pose's own shading (premultiplied), else flat white
     px[(size_t)y * W + x] = a << 24 | i << 16 | i << 8 | i;
   }
   HBITMAP mask = CreateBitmap(W, H, 1, 1, nullptr);
   // The fingertip (the pointing pose's topmost inked pixel); every pose keeps that spot so the hand never jumps.
   if (hot_x < 0) {
-    const ma::Image& p0 = ma::hand_pose(0).w ? ma::hand_pose(0) : ma::hand(); hot_x = W / 3;
+    const ma::Image& p0 = !flat && ma::hand_pose(0).w ? ma::hand_pose(0) : ma::hand(); hot_x = W / 3;
     for (int y = 0; y < p0.h && hot_x == W / 3; ++y) for (int x = 0; x < p0.w; ++x) if ((p0.bgra[(size_t)y * p0.w + x] >> 24) > 128) { hot_x = x * W / p0.w; hot_y = y * H / p0.h + 1; break; }
+    if (left) hot_x = W - 1 - hot_x;
   }
   ICONINFO ii{}; ii.fIcon = FALSE; ii.xHotspot = (DWORD)hot_x; ii.yHotspot = (DWORD)hot_y; ii.hbmColor = color; ii.hbmMask = mask;
   cursor = (HCURSOR)CreateIconIndirect(&ii);

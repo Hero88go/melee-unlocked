@@ -334,6 +334,8 @@ void load_ini() {
       else if (line == "lobbypreview=1") launcher::yglobby::set_preview(true);
       else if (line == "lobbyelo=1") launcher::yglobby::set_elo(true);
       else if (line.rfind("look=", 0) == 0) launcher::melee_look::set_look(std::atoi(line.c_str() + 5));
+      else if (line.rfind("pointer=", 0) == 0) launcher::melee_look::set_pointer(std::atoi(line.c_str() + 8), launcher::melee_look::pointer_left());
+      else if (line == "pointer_left=1") launcher::melee_look::set_pointer(launcher::melee_look::pointer(), true);
       else if (line.rfind("skinsize=", 0) == 0) { int w = 0, h = 0; if (std::sscanf(line.c_str() + 9, "%d,%d", &w, &h) == 2 && w >= 980 && h >= 560 && w <= 8000 && h <= 5000) { g_skin_w = w; g_skin_h = h; } }
       else if (line.rfind("lobbyiso=", 0) == 0) g_lobby_prefs.custom_iso = line.substr(9);
       else if (line.rfind("lobbyisoname=", 0) == 0) g_lobby_prefs.custom_name = line.substr(13);
@@ -378,6 +380,8 @@ void save_ini() {
     if (launcher::yglobby::preview()) f << "lobbypreview=1\n";
     if (launcher::yglobby::elo()) f << "lobbyelo=1\n";
     f << "look=" << launcher::melee_look::look() << "\n";
+    f << "pointer=" << launcher::melee_look::pointer() << "\n";
+    if (launcher::melee_look::pointer_left()) f << "pointer_left=1\n";
     if (g_skin_w) f << "skinsize=" << g_skin_w << "," << g_skin_h << "\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
@@ -938,6 +942,10 @@ RECT slippi_text_rect() { const PlayLayout l = play_layout(); return LR(CX + 15,
 // Where the account line is, Vanilla shows its one choice instead: the box and its label.
 RECT vanilla_check_rect() { return LR(CX, play_layout().slippi_y, 330, 22); }
 RECT version_text_rect() { const PlayLayout l = play_layout(); return LR(CX + 15, l.version_y, 319, ui_fix_status() ? 17 : 24); }
+// "Change look" at the right end of the Mods line: the Look menu (Brawl Online, Classic, the pointer), which was
+// only under the colour wheel and hard to find from the Classic looks (owner 11-25).
+constexpr int kLookLinkW = 110;
+RECT look_link_rect() { const PlayLayout l = play_layout(); return LR(CX + CW - kLookLinkW, ui_fix_status() ? l.mods_y : 260, kLookLinkW, 17); }
 RECT drop_sub_rect() { return LR(CX, 86, CW, 20); }
 
 const wchar_t* HINT_TEXT =
@@ -1309,14 +1317,16 @@ void paint_play(HDC dc) {
     dot(dc, CX, rows.version_y + 3, g_version_dot);
     row(rows.version_y, version, version_link, 319);
     dot(dc, CX, rows.mods_y + 3, mods_line == launcher::lang::tx("Mods: none active") ? C_FAINT : C_OK);
-    row(rows.mods_y, widen(mods_line), launcher::lang::txw(L"Open Mods folder"), CW - 15);
+    row(rows.mods_y, widen(mods_line), launcher::lang::txw(L"Open Mods folder"), CW - 15 - kLookLinkW);
+    draw_text(dc, launcher::lang::txw(L"Change look"), look_link_rect(), g_font, C_TEXT, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
   } else {
   dot(dc, CX, 239, g_version_dot);   // centred on the first line of version_text_rect
   draw_text(dc, widen(g_version_line), version_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
 
   // Same shape as the account and version lines: a dot, then dim text. Green dot while a mod is on.
   dot(dc, CX, 263, mods_line == launcher::lang::tx("Mods: none active") ? C_FAINT : C_OK);
-  draw_text(dc, widen(mods_line + " | " + launcher::lang::tx("Open Mods folder")), LR(CX + 15, 260, CW - 15, 17), g_font, C_DIM, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+  draw_text(dc, widen(mods_line + " | " + launcher::lang::tx("Open Mods folder")), LR(CX + 15, 260, CW - 15 - kLookLinkW, 17), g_font, C_DIM, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+  draw_text(dc, launcher::lang::txw(L"Change look"), look_link_rect(), g_font, C_TEXT, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
   }
   if (!vanilla_active()) paint_yougame_line(dc);
   RECT sep = LR(CX, rows.sep_y, CW, 1);
@@ -1421,6 +1431,17 @@ void show_look_menu() {
   AppendMenuW(m, MF_STRING | (now == 0 ? MF_CHECKED : 0), 1, launcher::lang::txw(L"Classic").c_str());
   AppendMenuW(m, MF_STRING | (now == 1 ? MF_CHECKED : 0), 2, launcher::lang::txw(L"Classic, Melee font").c_str());
   AppendMenuW(m, MF_STRING | (now == 2 ? MF_CHECKED : 0), 3, launcher::lang::txw(L"Brawl Online by sarahkittyy").c_str());
+  // The pointer in the Melee looks (owner 11-25): the 3D hand, the first flat hand, or the Windows pointer;
+  // the hand can point left as a mouse pointer does. The Classic look always has the Windows pointer.
+  const int ptr = launcher::melee_look::pointer();
+  const UINT melee_only = now == 0 ? MF_GRAYED : 0;
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING | MF_GRAYED, 0, launcher::lang::txw(L"Pointer").c_str());
+  AppendMenuW(m, MF_STRING | melee_only | (ptr == 0 ? MF_CHECKED : 0), 5, launcher::lang::txw(L"Melee hand").c_str());
+  AppendMenuW(m, MF_STRING | melee_only | (ptr == 1 ? MF_CHECKED : 0), 6, launcher::lang::txw(L"Melee hand, flat").c_str());
+  AppendMenuW(m, MF_STRING | melee_only | (ptr == 2 ? MF_CHECKED : 0), 7, launcher::lang::txw(L"Windows pointer").c_str());
+  AppendMenuW(m, MF_STRING | (now == 0 || ptr == 2 ? MF_GRAYED : 0) | (launcher::melee_look::pointer_left() ? MF_CHECKED : 0), 8,
+              launcher::lang::txw(L"Hand points left").c_str());
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, 4, launcher::lang::txw(L"Launcher color").c_str());
   RECT b{}; GetWindowRect(GetDlgItem(g_main, ID_THEME), &b);
@@ -1429,6 +1450,8 @@ void show_look_menu() {
   const int pick = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | align, at.x, at.y, 0, g_main, nullptr);
   DestroyMenu(m);
   if (pick == 4) { open_theme_picker(); return; }
+  if (pick >= 5 && pick <= 7) { launcher::melee_look::set_pointer(pick - 5, launcher::melee_look::pointer_left()); save_ini(); return; }
+  if (pick == 8) { launcher::melee_look::set_pointer(launcher::melee_look::pointer(), !launcher::melee_look::pointer_left()); save_ini(); return; }
   if (pick >= 1 && pick <= 3 && pick - 1 != now) apply_look(pick - 1);
 }
 #include "launcher_crash.inl"
@@ -2633,7 +2656,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,
                                   0,0,0,0,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
         TOOLINFOW tip{sizeof tip};tip.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tip.hwnd=hwnd;
-        std::wstring tip_text=launcher::lang::txw(L"Launcher color");   // the tooltip keeps its own copy
+        std::wstring tip_text=launcher::lang::txw(L"Look and color");   // the tooltip keeps its own copy (the Look menu: Brawl Online, Classic, pointer, colour)
         tip.uId=(UINT_PTR)g_play[6];tip.lpszText=tip_text.data();
         SendMessageW(tips,TTM_ADDTOOLW,0,(LPARAM)&tip);
       }
@@ -2905,6 +2928,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       RECT mods_line = LR(CX, play_layout().mods_y, CW, 17);
       RECT version_line = version_text_rect();
       if (g_tab == 0 && PtInRect(&version_line, p)) { show_changelog(); return 0; }
+      if (RECT look = look_link_rect(); g_tab == 0 && PtInRect(&look, p)) { show_look_menu(); return 0; }
       if (g_tab == 0 && !vanilla_active() && PtInRect(&g_yg_link[0], p)) { yougame_connect(); return 0; }
       if (g_tab == 0 && !vanilla_active() && PtInRect(&g_yg_link[2], p)) {
         // One press, one toggle: a second press inside 350 ms (a bounce, a double click) changes nothing, and the

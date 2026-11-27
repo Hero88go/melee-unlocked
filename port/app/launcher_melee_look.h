@@ -25,6 +25,13 @@ bool caption(HDC dc, const std::wstring& s, RECT r, HFONT size_from, COLORREF co
 // shaded from the art and blended into the button.
 bool button(HDC dc, RECT r, COLORREF fill_top, COLORREF fill_bottom, COLORREF rim, bool css_mask = false);
 HCURSOR hand_cursor(int pose = 0);   // Melee's hand as a pointer: 0 pointing, 1 the grab, 2 open (nullptr without the art)
+// The pointer the Melee looks use (the Look menu, launcher.ini pointer= / pointer_left=, owner 11-25): kPointer3d the
+// shaded posed hand, kPointerFlat the first flat white hand, kPointerWindows the normal Windows pointer (hand_now is
+// then nullptr). Left: the hand mirrored, pointing up and left as a mouse pointer does.
+enum Pointer { kPointer3d = 0, kPointerFlat = 1, kPointerWindows = 2 };
+void set_pointer(int style, bool left);
+int pointer();
+bool pointer_left();
 // The hand for this moment: grabbing while the button is held (mouse_msg: the message WM_SETCURSOR names), open over
 // something clickable, otherwise pointing.
 HCURSOR hand_now(bool over_clickable, UINT mouse_msg);
