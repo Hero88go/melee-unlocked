@@ -843,24 +843,48 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
   const DiscInfo info = parse_disc(in, size);
   d.name = file.filename().u8string();
   if (!info.ok) { d.message = "Could not read this disc image."; return d; }
-  // The whole file once: MD5 for the known builds, SHA-256 for its identity.
+  // The whole file once: MD5 for the known builds, SHA-256 for its identity. --vanilla-only does this
+  // on every launch with the game window up, so the two hashes run side by side and the next chunk is
+  // read while they work: the check costs about the slower hash alone, not read + MD5 + SHA-256.
   {
     Hasher md5(BCRYPT_MD5_ALGORITHM), sha(BCRYPT_SHA256_ALGORITHM);
-    std::vector<uint8_t> chunk(4u << 20);
+    std::vector<uint8_t> chunks[2] = {std::vector<uint8_t>(4u << 20), std::vector<uint8_t>(4u << 20)};
     in.clear(); in.seekg(0);
     uint64_t done = 0;
-    while (in) {
+    const auto started = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::duration reading{};
+    const auto read_chunk = [&](std::vector<uint8_t>& chunk) -> size_t {
+      if (!in) return 0;
+      const auto t = std::chrono::steady_clock::now();
       in.read((char*)chunk.data(), (std::streamsize)chunk.size());
+      reading += std::chrono::steady_clock::now() - t;
       const std::streamsize n = in.gcount();
-      if (n <= 0) break;
-      md5.update(chunk.data(), (size_t)n);
-      sha.update(chunk.data(), (size_t)n);
+      return n > 0 ? (size_t)n : 0;
+    };
+    int current = 0;
+    for (size_t n = read_chunk(chunks[0]); n; current ^= 1) {
+      const uint8_t* data = chunks[current].data();
+      std::thread md5_worker;
+      try { md5_worker = std::thread([&md5, data, n] { md5.update(data, n); }); } catch (...) {}
+      if (!md5_worker.joinable()) md5.update(data, n);   // no thread to spare: one after the other
+      sha.update(data, n);
       done += (uint64_t)n;
+      // The other buffer is free: read into it while MD5 finishes this one.
+      const size_t next = read_chunk(chunks[current ^ 1]);
+      if (md5_worker.joinable()) md5_worker.join();
+      n = next;
     }
     if (done != size) { d.message = "Could not read this disc image."; return d; }
     const std::string md5_hex = md5.hex();
     d.hash = sha.hex();
     in.clear();
+    if (log) {
+      const auto ms = [](std::chrono::steady_clock::duration t) {
+        return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t).count());
+      };
+      *log = "whole disc checked in " + ms(std::chrono::steady_clock::now() - started) + " ms (reading " +
+             ms(reading) + " ms, " + std::to_string(done >> 20) + " MB)";
+    }
     if (md5_hex == kVanillaMd5) {
       d.kind = Kind::Vanilla; d.name = "Melee NTSC 1.02"; d.key = content_key(d.hash);
       set_support(d, Engine::Either, Support::Supported, false);
