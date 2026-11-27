@@ -1307,7 +1307,7 @@ class VulkanBackend final : public Backend {
     VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
     info.renderArea = {{0, 0}, swap_extent_}; info.layerCount = 1; info.colorAttachmentCount = 1; info.pColorAttachments = &color;
     vkCmdBeginRendering(f.cmd, &info);
-    const auto rects = progress_frame::layout((int)swap_extent_.width, (int)swap_extent_.height, done, total);
+    const auto rects = progress_frame::layout((int)swap_extent_.width, (int)swap_extent_.height, done, total, progress_frame::title(pipelines_compiled_.load() > 0));
     // One clear call per colour, with all of that colour's rectangles.
     for (uint32_t c : {progress_frame::kPanel, progress_frame::kTrack, progress_frame::kFill, progress_frame::kText, progress_frame::kDim}) {
       std::vector<VkClearRect> clears;

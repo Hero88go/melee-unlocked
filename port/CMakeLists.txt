@@ -305,7 +305,7 @@ ${melee_dxc_err}")
   # further down, plus MELEE_NO_SLIPPI. With it the lobby needs no Slippi account, an accepted match
   # starts melee_source with --p2p-* (a peer-to-peer session), and automatic pairing is offered.
   # When the normal target's sources or settings change below, change them here as well.
-  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_room.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
+  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_room.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp app/slippi_profile_fetch.cpp
     third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
     runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
   set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
@@ -1227,7 +1227,7 @@ if(MELEE_CPU_BASELINE STREQUAL "AVX2")
 endif()
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
-add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_room.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp
+add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_yglobby.cpp app/launcher_room.cpp app/launcher_egg.cpp app/launcher_pad.cpp app/launcher_melee_assets.cpp app/launcher_melee_look.cpp app/launcher_skin.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp app/launcher_yougame.cpp app/slippi_profile_fetch.cpp
   third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
   runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)

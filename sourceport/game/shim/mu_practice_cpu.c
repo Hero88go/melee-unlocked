@@ -393,6 +393,7 @@ static unsigned char proai_trigger(float v)
     if (r > 255.0f) r = 255.0f;
     return (unsigned char) (r + 0.5f);
 }
+static int proai_target[4] = {-1, -1, -1, -1};   /* each seat's opponent (a port), kept between frames */
 int mu_proai_seat_pad(int port, int pro, PADStatus* out)
 {
     HSD_GObj* g;
@@ -408,19 +409,32 @@ int mu_proai_seat_pad(int port, int pro, PADStatus* out)
     g = Player_GetEntity(port);
     if (g == NULL || g->user_data == NULL) return 0;
     fp = g->user_data;
-    for (k = 0; k < 4; k++) {
-        HSD_GObj* o;
-        Fighter* f;
-        float dx, dy, d;
-        if (k == port || Player_GetStocks(k) <= 0) continue;
-        if (teams && Player_GetTeam(k) == Player_GetTeam(port)) continue;
-        o = Player_GetEntity(k);
-        if (o == NULL || o->user_data == NULL) continue;
-        f = o->user_data;
-        dx = f->cur_pos.x - fp->cur_pos.x;
-        dy = f->cur_pos.y - fp->cur_pos.y;
-        d = dx * dx + dy * dy;
-        if (d < best) { best = d; opp = f; }
+    {
+        /* The opponent the model watches. It is trained one on one, so it keeps one opponent while that
+         * one is in play, and changes only when they are out (no stocks, dead or not yet back) or another
+         * is clearly nearer (under two thirds of the distance). Picking the nearest anew every frame fed it
+         * two opponents in turn, and a dead one in its blast zone corner: in doubles it then ran off the
+         * stage and fell without recovering (player report 11-26). No opponent in play: it waits. */
+        Fighter* current = NULL;
+        float current_d = 1e30f;
+        for (k = 0; k < 4; k++) {
+            HSD_GObj* o;
+            Fighter* f;
+            float dx, dy, d;
+            if (k == port || Player_GetStocks(k) <= 0) continue;
+            if (teams && Player_GetTeam(k) == Player_GetTeam(port)) continue;
+            o = Player_GetEntity(k);
+            if (o == NULL || o->user_data == NULL) continue;
+            f = o->user_data;
+            if (f->motion_id <= 11) continue;   /* Dead* and Sleep: off the stage until they come back */
+            dx = f->cur_pos.x - fp->cur_pos.x;
+            dy = f->cur_pos.y - fp->cur_pos.y;
+            d = dx * dx + dy * dy;
+            if (k == proai_target[port]) { current = f; current_d = d; }
+            if (d < best) { best = d; opp = f; }
+        }
+        if (current != NULL && (opp == current || current_d * (4.0f / 9.0f) <= best)) opp = current;
+        proai_target[port] = opp != NULL ? opp->player_idx : -1;
     }
     if (opp == NULL) return 0;
     __builtin_memset(&c, 0, sizeof c);
@@ -781,7 +795,8 @@ MU_EXCLUSIONS(practice_cpu,
               MU_EXCLUDE(pc_config),
               MU_EXCLUDE(pc_config_frame),
               MU_EXCLUDE(pc_logs),
-              MU_EXCLUDE(ghost_applied))
+              MU_EXCLUDE(ghost_applied),
+              MU_EXCLUDE(proai_target))
 
 /* Pro AI name tag (ifnametag.c): the name of the pro a pro AI plays as on this CPU slot, in the game's
  * full-width text, else NULL. The game then shows it on the CPU's own grey tag in place of "CP". */

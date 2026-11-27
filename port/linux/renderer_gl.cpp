@@ -826,7 +826,7 @@ void main() {
     glViewport(0, 0, w, h);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glEnable(GL_SCISSOR_TEST);
-    for (const auto& r : gx::progress_frame::layout(w, h, done, total)) {
+    for (const auto& r : gx::progress_frame::layout(w, h, done, total, gx::progress_frame::title(programs_linked_.load() > 0))) {
       glScissor(r.x, h - r.y - r.h, r.w, r.h);   // GL counts rows from the bottom
       glClearColor(((r.rgba >> 24) & 255) / 255.0f, ((r.rgba >> 16) & 255) / 255.0f, ((r.rgba >> 8) & 255) / 255.0f, (r.rgba & 255) / 255.0f);
       glClear(GL_COLOR_BUFFER_BIT);

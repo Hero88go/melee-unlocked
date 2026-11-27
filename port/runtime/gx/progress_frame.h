@@ -22,6 +22,10 @@
 namespace gx::progress_frame {
 
 inline constexpr const char* kTitle = "Preparing graphics for this PC (first start only)";
+// Every pipeline so far came from the cache: only loading, not the first start's compiling (GitHub #138: after
+// a reboot the cache files are read from a cold disk, and "first start only" stayed up on every first launch).
+inline constexpr const char* kLoadingTitle = "Loading graphics";
+inline const char* title(bool compiling) { return compiling ? kTitle : kLoadingTitle; }
 
 struct Rect {
   int x, y, w, h;      // pixels, top-left origin

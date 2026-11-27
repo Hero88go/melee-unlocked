@@ -73,6 +73,8 @@
 #include "launcher_crash_text.h"   // with launcher_crash_zip.h; launcher_crash.inl sits inside the namespace below
 #ifndef MELEE_NO_SLIPPI
 #include "slippi_account.h"
+#include "slippi_profile_fetch.h"
+#include <mutex>
 #endif
 // Every message box shows in the player's language (fixed English wording is looked up).
 inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
@@ -410,11 +412,46 @@ bool verify_iso(const std::string& path, std::string* why) {
 
 // Use the game's account discovery and credential checks so this line reflects a usable login.
 #ifndef MELEE_NO_SLIPPI
+// The account's current name and code from Slippi's server, once per launch and account (GitHub #139:
+// user.json keeps the name from the last Slippi Launcher login; Slippi Dolphin and the game show the
+// server's). The line shows user.json's until the answer comes, then the server's.
+std::mutex g_slippi_fresh_mutex;
+std::string g_slippi_fresh_uid, g_slippi_fresh_name, g_slippi_fresh_code;
+bool g_slippi_fresh_asked = false;
+const UINT WM_APP_SLIPPI_PROFILE = WM_APP + 80;
+void slippi_profile_refresh(const std::string& uid) {
+  {
+    std::lock_guard<std::mutex> lock(g_slippi_fresh_mutex);
+    if (uid.empty() || (g_slippi_fresh_asked && g_slippi_fresh_uid == uid)) return;
+    g_slippi_fresh_asked = true;
+    g_slippi_fresh_uid = uid;
+    g_slippi_fresh_name.clear();
+    g_slippi_fresh_code.clear();
+  }
+  std::thread([uid] {
+    std::string name, code;
+    if (!launcher::slippi_profile::fetch(uid, &name, &code)) return;
+    {
+      std::lock_guard<std::mutex> lock(g_slippi_fresh_mutex);
+      if (g_slippi_fresh_uid != uid) return;
+      g_slippi_fresh_name = name;
+      g_slippi_fresh_code = code;
+    }
+    if (g_main) PostMessageW(g_main, WM_APP_SLIPPI_PROFILE, 0, 0);
+  }).detach();
+}
 std::string slippi_account_line() {
   if (auto profile = slippi::account::resolve(std::filesystem::path(g_dir) / "User" / "Slippi")) {
     auto name = slippi::account::text(profile.data, "displayName");
+    auto code = slippi::account::text(profile.data, "connectCode");
+    const auto uid = slippi::account::text(profile.data, "uid");
+    slippi_profile_refresh(uid);
+    {
+      std::lock_guard<std::mutex> lock(g_slippi_fresh_mutex);
+      if (g_slippi_fresh_uid == uid && !g_slippi_fresh_name.empty()) name = g_slippi_fresh_name;
+      if (g_slippi_fresh_uid == uid && !g_slippi_fresh_code.empty()) code = g_slippi_fresh_code;
+    }
     if (name.empty()) name = "?";
-    const auto code = slippi::account::text(profile.data, "connectCode");
     launcher::lobby::set_account(name, code);
     return "Slippi account: " + name + " (" + code + ")";
   }
@@ -3076,6 +3113,15 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (g_yg_play_after) { g_yg_play_after = false; start_game(); }
       return 0;
     }
+#ifndef MELEE_NO_SLIPPI
+    case WM_APP_SLIPPI_PROFILE: {   // the server's name and code arrived (slippi_profile_refresh)
+      const std::string before = g_slippi_line;
+      refresh_account_line();
+      log_line("slippi: account line from Slippi's server (%s)", before == g_slippi_line ? "same as user.json" : "user.json was stale");
+      if (before != g_slippi_line) InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    }
+#endif
     case WM_APP_GAME_DONE:
       g_playing = false;
       if (g_yg_reopen && !launcher::yougame::account().signed_in) { g_yg_reopen = false; g_yg_again = true; yougame_connect(); g_yg_again = false; }
