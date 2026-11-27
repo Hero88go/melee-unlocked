@@ -136,6 +136,8 @@ add_test(NAME port_css_join_wiring COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/port/tests/css_join_wiring_test.py")
 add_test(NAME port_css_origin_wiring COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/port/tests/css_origin_wiring_test.py")
+add_test(NAME port_replay_mods_folder_wiring COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/port/tests/replay_mods_folder_wiring_test.py")
 add_test(NAME port_sdl_video_thread_wiring COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/port/tests/sdl_video_thread_wiring_test.py")
 add_test(NAME port_card_ring_zero_init COMMAND "${Python3_EXECUTABLE}" -B

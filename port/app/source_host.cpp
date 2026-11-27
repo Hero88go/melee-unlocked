@@ -581,6 +581,8 @@ bool g_mod_root_explicit = false;
 std::string g_mod_profile_name;
 std::vector<mods::Layer> g_mod_layers;
 bool g_replay_no_mods = false;   // set_replay: the replay records no mod content (load_mod_overlay)
+std::string g_replay_recorded_mods;   // set_replay: the content identity the replay records, "" = none
+bool g_replay_layers_chosen = false;  // replay_layers_from_mods_folder picked this session's layers
 std::vector<mods::Layer> g_explicit_mod_layers;
 std::vector<std::filesystem::path> g_mod_gcis;
 std::string g_mod_fingerprint;                 // content identity of the enabled layers, "" = vanilla
@@ -635,6 +637,7 @@ std::string dir_layer_fingerprint(const std::string& profile) {
 // code mods need the Static Recomp and are not loaded.
 void apply_detected_mods() {
   if (yougame::console::console_active()) return; // startup() scans/protects the ordinary card
+  if (g_replay_layers_chosen) return;              // the Mods folder was scanned already this session
   if (!gx::RenderOptions::mod_features_available() || !mods::auto_detect()) return;
   mods::StartupOptions options;
   options.card_dir = std::filesystem::u8path(host::options.card_dir);
@@ -737,6 +740,53 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
   }
 }
 
+// A replay whose recorded content is not the layers the Mods folder chose: looks for the Mods folder
+// disc it was recorded with, alone (a disc's own Play launch loads just that disc, then Mods/Files
+// when that folder exists). On a match, this session's layers become that disc's and the overlay is
+// cleared for load_mod_overlay to build again; false leaves everything as it was.
+bool replay_layers_from_mods_folder(const ModOverlay::BaseDisc& base, const ModOverlay::DiscLookup& lookup,
+                                    const ModOverlay::DiscRead& read_base,
+                                    const std::vector<std::string>& folder_layer_ids) {
+  if (g_replay_layers_chosen || g_replay_recorded_mods.empty() || g_replay_recorded_mods == g_mod_fingerprint) return false;
+  if (!g_explicit_mod_layers.empty() || !g_mod_profile_name.empty() || !mods::status().detected) return false;
+  const auto view = mods::panel_view();
+  for (const auto& d : view.result.items) {
+    if (d.card || d.kind == mods::Kind::Unsupported || d.kind == mods::Kind::Vanilla || !mods::runs_on(d, true)) continue;
+    const bool only_this = g_mod_layers.size() == 1 + folder_layer_ids.size() && g_mod_layers[0].path == d.path;
+    if (only_this) continue;   // this session already has that disc alone
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(d.path, ec)) continue;
+    ModOverlay trial;
+    trial.set_layered(true);
+    trial.set_base_disc(base, read_base);
+    const std::string label = "layer 1 " + d.path.u8string();
+    std::string error;
+    if (!trial.add_iso(d.path, label, lookup, read_base, error)) continue;
+    const std::string fingerprint = layer_fingerprint(trial, label, [] { return mods::Sha256{}; });
+    if (fingerprint.empty()) continue;
+    for (const bool with_folder : {false, true}) {
+      if (with_folder && folder_layer_ids.empty()) continue;
+      mods::Sha256 identity;
+      identity.update("iso\t" + fingerprint + "\n");
+      if (with_folder) for (const auto& id : folder_layer_ids) identity.update(id);
+      if (identity.hex() != g_replay_recorded_mods) continue;
+      host::log("mods: the replay was recorded with %s (content %s), not this session's %s; it plays with that disc",
+                d.path.u8string().c_str(), g_replay_recorded_mods.substr(0, 16).c_str(),
+                g_mod_fingerprint.empty() ? "standard game" : g_mod_fingerprint.substr(0, 16).c_str());
+      g_replay_layers_chosen = true;
+      g_mod_layers.assign(1, {mods::LayerKind::Iso, d.path, d.kind == mods::Kind::TmCe});
+      g_mod_overlay = ModOverlay{};
+      g_mod_gcis.clear();
+      g_card_imports.clear();
+      g_mod_fingerprint.clear();
+      mods::status().akaneia = false;
+      mods::status().arcade = false;
+      return true;
+    }
+  }
+  return false;
+}
+
 void load_mod_overlay() {
   if (host::gameplay::vanilla_only()) return;
   // A replay that records no mod content (any replay Slippi Dolphin wrote, a broadcast watched live)
@@ -756,7 +806,8 @@ void load_mod_overlay() {
     else if (fs::exists(g_mod_root, ec) && !ec)
       g_mod_layers.push_back({mods::LayerKind::Dir, g_mod_root});
   }
-  if (g_mod_layers.empty()) return;
+  // With nothing on, a replay recorded with mods still looks for its disc in the Mods folder below.
+  if (g_mod_layers.empty() && (g_replay_recorded_mods.empty() || g_replay_layers_chosen)) return;
   std::string error;
   g_mod_overlay.set_layered(true);
   // Compare each imported ISO against the original disc, never against a previously
@@ -772,8 +823,9 @@ void load_mod_overlay() {
   auto read_base = [](uint32_t offset, void* dst, uint32_t size) {
     return host::disc_read(offset, dst, size);
   };
+  ModOverlay::BaseDisc base_disc;   // kept for replay_layers_from_mods_folder's trial overlays
   {
-    ModOverlay::BaseDisc base;
+    ModOverlay::BaseDisc& base = base_disc;
     for (const auto& kv : base_paths) if (!base_fst[kv.second].dir) base.files.push_back(kv.first);
     std::sort(base.files.begin(), base.files.end());
     uint8_t header[0x440];
@@ -784,11 +836,12 @@ void load_mod_overlay() {
       for (int i = 0; i < 18; ++i) extent = std::max(extent, be32(dol + i * 4) + be32(dol + 0x90 + i * 4));
       base.dol_size = extent;
     }
-    g_mod_overlay.set_base_disc(std::move(base), read_base);
+    g_mod_overlay.set_base_disc(base, read_base);
   }
   mods::Sha256 identity;
   std::string summary;
   uint32_t layer_index = 0;
+  std::vector<std::string> folder_layer_ids;   // the Mods/Files layer's "dir\t<fingerprint>\n" (replay_layers_from_mods_folder)
   for (const auto& layer : g_mod_layers) {
     const std::string label = "layer " + std::to_string(++layer_index) + " " + layer.path.u8string();
     const bool explicit_layer = std::any_of(g_explicit_mod_layers.begin(), g_explicit_mod_layers.end(),
@@ -822,6 +875,8 @@ void load_mod_overlay() {
     }
     const char* kind = layer.kind == mods::LayerKind::Iso ? "iso" : layer.kind == mods::LayerKind::Dir ? "dir" : "gci";
     identity.update(std::string(kind) + "\t" + fingerprint + "\n");
+    if (layer.kind == mods::LayerKind::Dir && layer.path == g_mod_root)
+      folder_layer_ids.push_back(std::string(kind) + "\t" + fingerprint + "\n");
     const KnownPack* known = nullptr;
     for (const auto& pack : kKnownPacks) if (*pack.fingerprint && fingerprint == pack.fingerprint) known = &pack;
     if (known && std::strncmp(known->name, "20XX TE", 7) == 0) mods::status().te_owned = true;
@@ -840,6 +895,18 @@ void load_mod_overlay() {
     summary += (summary.empty() ? "" : ", ") + (known ? std::string(known->name) : layer.path.filename().u8string());
   }
   g_mod_fingerprint = identity.hex();
+  // A replay recorded with other mods than the Mods folder chose for this session (a match from a
+  // disc's own Play launch, Akaneia say, opened later from the launcher's Replays tab) plays with
+  // the Mods folder disc that recorded it, instead of stopping (player report 11-26).
+  if (g_mod_layers.empty()) g_mod_fingerprint.clear();   // the standard game: no content identity
+  if (replay_layers_from_mods_folder(base_disc, lookup, read_base, folder_layer_ids)) {
+    load_mod_overlay();
+    return;
+  }
+  if (g_mod_layers.empty()) {   // no disc recorded it: the standard game, as before
+    g_mod_overlay = ModOverlay{};
+    return;
+  }
   for (const auto& report : g_mod_overlay.iso_reports()) {
     uint64_t dol_bytes = 0;
     for (const auto& run : report.dol_runs) dol_bytes += run.second;
@@ -6104,6 +6171,7 @@ void check_replay_content() {
 bool set_replay(const char* path) {
   g_replay_mod_profile = read_replay_mod_profile(path);
   g_replay_no_mods = g_replay_mod_profile.empty();
+  g_replay_recorded_mods = g_replay_mod_profile;
   g_replay_feature_options = read_replay_feature_options(path);
   g_replay_feature_options2 = read_replay_feature_options(path, 1);
   g_replay_feature_options3 = read_replay_feature_options(path, 2);
