@@ -2417,6 +2417,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     // Doubles: the room's pairs wear the colours their players chose (lobby::doubles_colors). Hashed with
     // the block: a machine that mapped other colours refuses the match, never plays a different one.
     const auto team_colors = yougame::lobby::doubles_colors(*lobby_plan, lobby_colors);
+    int match_stage = lobby_plan->stage;
     if (lobby_plan->code_match) {
       // A code match: each person's own pick from the select (sent_selections, by port); the Pro AI seats
       // keep the setup's. Hashed with the block, so a machine with other picks refuses the match.
@@ -2426,6 +2427,27 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
         picked.port[port].pick.ch = code_picks[port].character_id;
         picked.port[port].pick.color = code_picks[port].character_color;
       }
+      // The stage the people picked (player report 11-26: every pick gave the room's own draw): the first
+      // person's by port, as in a plain Direct match; the room's draw when nobody picked a legal one
+      // (a 3 or 4 fighter game never plays Fountain of Dreams). Every machine holds the same sent picks,
+      // so all take the same stage. Only when every peer's build does the same (MU_BUILD_CAPS4_ARENA_STAGE_PICK).
+      bool every_peer_picks = remote_count > 0;
+      for (int i = 0; i < remote_count; ++i) {
+        const auto rb = g_netplay->GetRemoteBuild(i);
+        if (!rb.received || !rb.arena_stage_pick) every_peer_picks = false;
+      }
+      if (every_peer_picks) {
+        for (int port = 0; port < picked.humans && port < (int)code_picks.size(); ++port) {
+          if (picked.port[port].pro >= 0) continue;
+          const auto& s = code_picks[port];
+          if (!s.is_stage_selected || !yougame::lobby::stage_ok(s.stage_id) || s.stage_id == stage_pool::kFountain) continue;
+          picked.stage = s.stage_id;
+          break;
+        }
+        if (picked.stage != lobby_plan->stage)
+          host::log("slippi: arena room match plays the picked stage %d (the room drew %d)", picked.stage, lobby_plan->stage);
+      }
+      match_stage = picked.stage;
       yougame::lobby::apply(picked, block.data(), block.size(), timer, g_lobby_costumes.data(), &team_colors);
     } else {
       yougame::lobby::apply(*lobby_plan, block.data(), block.size(), timer, g_lobby_costumes.data(), &team_colors);
@@ -2438,7 +2460,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       static std::string last;
       char line[192];
       int len = std::snprintf(line, sizeof line, "match %s stage %d seed %08X friendly fire %s:", lobby_plan->match_id.c_str(),
-                              lobby_plan->stage, lobby_plan->seed, lobby_plan->rules.friendly_fire ? "on" : "off");
+                              match_stage, lobby_plan->seed, lobby_plan->rules.friendly_fire ? "on" : "off");
       for (int i = 0; i < lobby_plan->ports && len > 0 && len < (int)sizeof line; ++i)
         len += std::snprintf(line + len, sizeof line - len, " P%d %s char %u team %u", i + 1,
                              block[0x61 + i * 0x24] == 1 ? "cpu" : "human", block[0x60 + i * 0x24], block[0x69 + i * 0x24]);
@@ -2448,7 +2470,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     // Doubles: the room's teams, not the colours they wore (as the 4-peer route keeps them).
     if (lobby_plan->doubles)
       for (int i = 0; i < 4; ++i) g_game_facts.teams[i] = i < lobby_plan->ports ? lobby_plan->port[i].pick.team : -1;
-    g_game_facts.stage = (uint16_t)lobby_plan->stage;
+    g_game_facts.stage = (uint16_t)match_stage;
     g_game_facts.rng = rng_offset;
     g_game_facts.characters[0] = block[0x60];
     g_game_facts.characters[1] = block[0x60 + 0x24];
@@ -3300,6 +3322,9 @@ bool arena_lock_in(uint8_t character, uint8_t color, bool random_stage) {
   if (g_matchmaking->GetMatchmakeState() != Matchmaking::CONNECTION_SUCCESS || g_local_selections.is_character_selected) return false;
   uint8_t selections[9] = {g_local_selections.team_id, character, color, 1, 0, 0, (uint8_t)(random_stage ? 3 : 0),
                            (uint8_t)g_last_search.mode, 0};   // a random legal stage, or none yet
+  // Tests (hidden runs): MELEE_TEST_ARENA_STAGE=<id> locks in with that stage picked, as a person's stage select does.
+  static const int test_stage = [] { const char* v = host::test_env::getenv("MELEE_TEST_ARENA_STAGE"); return v && *v ? std::atoi(v) : -1; }();
+  if (test_stage >= 2 && test_stage <= 32) { selections[4] = 0; selections[5] = (uint8_t)test_stage; selections[6] = 1; }
   set_match_selections(selections);
   return true;
 }
