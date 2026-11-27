@@ -113,7 +113,8 @@ class HostWiring(unittest.TestCase):
         self.assertLess(sel.index('controls::before_selection'), sel.index('WriteSelections(*spac'))
         self.assertIn('if (mid == NP_MSG_MU_CONTROLS) {', net)
         self.assertIn('remote_build_[pidx].controls = has_caps4 && (caps4 & MU_BUILD_CAPS4_CONTROLS) != 0;', net)
-        self.assertIn('*p << (uint8_t)(controls::advertise() ? MU_BUILD_CAPS4_CONTROLS | MU_BUILD_CAPS4_20XX103 : 0);', net)
+        # 1.0.33: the arena stage pick bit rides the same byte, whatever the controls say.
+        self.assertIn('*p << (uint8_t)((controls::advertise() ? MU_BUILD_CAPS4_CONTROLS | MU_BUILD_CAPS4_20XX103 : 0) | MU_BUILD_CAPS4_ARENA_STAGE_PICK);', net)
 
     def test_setup_hash_carries_the_decision_and_freezes_it(self):
         online = (HOST / 'hle/slippi_online.cpp').read_text(encoding='utf-8')
