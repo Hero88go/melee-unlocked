@@ -65,7 +65,7 @@ struct Options {
   bool settings_custom_color_enabled=false;
   float settings_custom_color[3]{};
 } options;
-static bool g_settings_custom_color_enabled, g_hud_match;
+static bool g_settings_custom_color_enabled, g_hud_match, g_hud_fight;
 static int g_settings_palette;
 static ImVec4 g_settings_custom_color;
 static ImFont* g_settings_heading_font;
