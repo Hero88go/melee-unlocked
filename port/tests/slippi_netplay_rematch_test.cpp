@@ -71,8 +71,8 @@ int main() {
     }, "four peers failed to connect");
     for (int i = 0; i < 4; ++i) select(*clients[i], i, 0);
     await([&] {
-      for (auto& c : clients) for (const auto& r : c->GetMatchInfo().remote)
-        if (!r.is_character_selected) return false;
+      for (auto& c : clients) for (int k = 0; k < 3; ++k)   // a 4-player session: remotes 0-2 (the arrays hold 5)
+        if (!c->GetMatchInfo().remote[k].is_character_selected) return false;
       return true;
     }, "initial selections did not arrive");
     for (auto& c : clients) c->StartSlippiGame();
@@ -87,8 +87,8 @@ int main() {
     // only clears the first remote, leaving two queues headed at frame 90.
     for (int i : {2, 0, 3, 1}) select(*clients[i], i, 1);
     await([&] {
-      for (auto& c : clients) for (const auto& r : c->GetMatchInfo().remote)
-        if (r.rng_offset != 101) return false;
+      for (auto& c : clients) for (int k = 0; k < 3; ++k)
+        if (c->GetMatchInfo().remote[k].rng_offset != 101) return false;
       return true;
     }, "rematch selections did not arrive");
     for (auto& c : clients) for (int p = 0; p < 3; ++p)

@@ -10,6 +10,7 @@
 #include <xinput.h>
 #include <hidsdi.h>
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -221,8 +222,15 @@ constexpr ULONGLONG kPointerRestMs = 2500;
 ULONGLONG g_pointer_moved = 0;      // tick of the last real mouse movement over the window
 LPARAM g_pointer_at = -1;           // where it was then (client coordinates as WM_MOUSEMOVE packs them)
 bool g_pointer_rested = false;      // hidden by the rest rule, until the next movement
+// The game window's last place: window-place.ini beside the settings file (window_remember_place), "" none.
+std::string g_place_file;
 
 #ifdef _WIN32
+// The visible game window opens where it was left (a player's report 11-27: borderless full screen always
+// opened on the first monitor, never the second the player plays on). place_save writes it as the window closes.
+bool g_place_window = false;   // this window is the visible game window
+RECT g_normal_rect{};          // its windowed rectangle from before borderless full screen (screen pixels)
+void place_save();
 // The renderer's startup runs on a worker while the window's own thread keeps answering its messages
 // (window_responsive). Meanwhile that thread runs none of the renderer's callbacks (the worker is still
 // installing them) and the progress panel's steps are queued to it (loading_show).
@@ -539,7 +547,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (!g_startup_busy.load())
     if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
-    case WM_CLOSE: g_closed = true; request_user_exit(); return 0;
+    case WM_CLOSE: place_save(); g_closed = true; request_user_exit(); return 0;
     case WM_APP + 7:   // kCursorRefresh, see window_input_capture
       if (window_focused(h)) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
       return 0;
@@ -677,6 +685,20 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       host::log(w ? "window: the game is in front again" : "window: another program took the focus");
       if (w) g_activated.store(true);
       break;
+    // The game window's place (place_save), the moment it changes: a drag or resize ends, or the window lands on
+    // another monitor (Win+Shift+Arrow moves a borderless window with no drag). Not only at close: a game that
+    // ends on its own may never get a close.
+    case WM_EXITSIZEMOVE:
+      place_save();
+      break;
+    case WM_WINDOWPOSCHANGED:
+      if (g_place_window && h == g_hwnd && !IsIconic(h)) {
+        static HMONITOR last = nullptr;
+        const HMONITOR now = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+        if (last && now != last) place_save();
+        last = now;
+      }
+      break;
     case WM_DISPLAYCHANGE:
       host::log("window: the desktop display mode changed to %ux%u, %u bits", (unsigned)LOWORD(l), (unsigned)HIWORD(l), (unsigned)w);
       break;
@@ -698,6 +720,12 @@ bool pad_menu_chord() {
   return yougame::channel_menu_key("pad");
 }
 }  // namespace
+
+void window_remember_place(const std::string& settings_path) {
+  const size_t slash = settings_path.find_last_of("/\\");
+  g_place_file = (slash == std::string::npos ? std::string() : settings_path.substr(0, slash + 1)) + "window-place.ini";
+  log("window: its place is kept in %s", g_place_file.c_str());
+}
 
 #ifdef _WIN32
 void window_prefer_background(bool) {}
@@ -773,6 +801,28 @@ void* window_create(int w, int h, const wchar_t* title, bool visible, bool flip)
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   if (!g_hwnd) die("cannot create native window");
   g_window_thread = GetCurrentThreadId();
+  if ((visible || host::test_env::getenv("MELEE_TEST_WINDOW_PLACE")) && !boxed && !yougame::embed_toplevel() &&
+      !g_place_file.empty()) {
+    g_place_window = true;
+    // Where it was left, when that place is still on a monitor: the window keeps the size it was made
+    // with, its top left corner kept inside that monitor's work area so its title bar can be reached.
+    long x = 0, y = 0, pw = 0, ph = 0;
+    std::FILE* f = _wfopen(std::filesystem::u8path(g_place_file).c_str(), L"rb");
+    const bool read = f && std::fscanf(f, "%ld %ld %ld %ld", &x, &y, &pw, &ph) == 4 && pw > 0 && ph > 0;
+    if (f) std::fclose(f);
+    RECT saved{x, y, x + pw, y + ph}, now{};
+    const HMONITOR monitor = read ? MonitorFromRect(&saved, MONITOR_DEFAULTTONULL) : nullptr;
+    MONITORINFO mi{sizeof(mi)};
+    if (monitor && GetMonitorInfoW(monitor, &mi) && GetWindowRect(g_hwnd, &now)) {
+      const long ww = now.right - now.left, wh = now.bottom - now.top;
+      x = std::max<long>(mi.rcWork.left, std::min<long>(x, mi.rcWork.right - std::min<long>(ww, mi.rcWork.right - mi.rcWork.left)));
+      y = std::max<long>(mi.rcWork.top, std::min<long>(y, mi.rcWork.bottom - std::min<long>(wh, mi.rcWork.bottom - mi.rcWork.top)));
+      SetWindowPos(g_hwnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      log("window: opened where it was left (%ld, %ld)", x, y);
+    } else if (read) {
+      log("window: its last place is on no monitor now; Windows places it");
+    }
+  }
   { std::lock_guard<std::mutex> lock(g_keys_mutex); apply_shortcuts(); }
   yougame::embed_window_ready(reinterpret_cast<uintptr_t>(g_hwnd));
   if (boxed) {
@@ -860,6 +910,25 @@ void* window_create(int w, int h, const wchar_t* title, bool visible, bool flip)
 
 namespace {
 bool g_fullscreen = false;
+
+// The game window's place as it closes: its windowed rectangle (the one from before borderless full screen
+// while in it). A borderless window moved to another monitor (Win+Shift+Arrow) is saved on that monitor.
+void place_save() {
+  if (!g_place_window || !g_hwnd || g_place_file.empty() || IsIconic(g_hwnd)) return;
+  RECT r{};
+  if (g_fullscreen) r = g_normal_rect;
+  else if (!GetWindowRect(g_hwnd, &r)) return;
+  if (r.right <= r.left || r.bottom <= r.top) return;
+  const HMONITOR now = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi{sizeof(mi)};
+  if (MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST) != now && GetMonitorInfoW(now, &mi))
+    OffsetRect(&r, mi.rcWork.left + 40 - r.left, mi.rcWork.top + 40 - r.top);
+  std::FILE* f = _wfopen(std::filesystem::u8path(g_place_file).c_str(), L"wb");
+  if (!f) return;
+  std::fprintf(f, "%ld %ld %ld %ld\n", (long)r.left, (long)r.top, (long)(r.right - r.left), (long)(r.bottom - r.top));
+  std::fclose(f);
+  log("window: place saved (%ld, %ld)", (long)r.left, (long)r.top);
+}
 }
 
 void window_set_fullscreen(bool enabled) {
@@ -869,6 +938,7 @@ void window_set_fullscreen(bool enabled) {
   if (yougame::embedded()) return;   // the player box is the page's to size
   if (enabled) {
     GetWindowPlacement(g_hwnd, &saved);
+    GetWindowRect(g_hwnd, &g_normal_rect);   // where it opens next time (place_save)
     MONITORINFO info{sizeof(info)};
     if (!GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &info)) return;
     // Keep WS_VISIBLE: replacing the style with a bare WS_POPUP hid the window, so the desktop
@@ -883,6 +953,7 @@ void window_set_fullscreen(bool enabled) {
     SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
   }
   fullscreen = enabled;
+  place_save();
 }
 
 bool window_is_fullscreen() { return g_fullscreen; }
@@ -1084,6 +1155,7 @@ void window_destroy() {
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     for (const char* line : g_shortcut_keys.cancel().lines) yougame::parity::signals.emit(line);
   }
+  place_save();
   if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; }
 }
 
@@ -1907,7 +1979,7 @@ bool input_load_script(const char* path) {
       else if (!strcmp(tok, "DL")) e.buttons |= PAD_LEFT; else if (!strcmp(tok, "DR")) e.buttons |= PAD_RIGHT;
       else if (!strncmp(tok, "sx=", 3)) e.sx = (int8_t)atoi(tok + 3); else if (!strncmp(tok, "sy=", 3)) e.sy = (int8_t)atoi(tok + 3);
       else if (!strncmp(tok, "cx=", 3)) e.cx = (int8_t)atoi(tok + 3); else if (!strncmp(tok, "cy=", 3)) e.cy = (int8_t)atoi(tok + 3);
-      else if (!strncmp(tok, "p=", 2)) { e.port = atoi(tok + 2) - 1; if (e.port < 0 || e.port > 3) e.port = 0; g_script_ports |= 1u << e.port; }
+      else if (!strncmp(tok, "p=", 2)) { e.port = atoi(tok + 2) - 1; if (e.port < 0 || e.port > 5) e.port = 0; g_script_ports |= 1u << e.port; }   // p=5, p=6: Triples' pads 5 and 6
     }
     g_script.push_back(e);
   }
@@ -2080,7 +2152,8 @@ static void note_script_presses(const PadState out[4]) {
   tick.probe_pad = tick.pad;
 }
 
-static void script_pads(uint32_t frame, bool update_state, PadState out[4]) {
+// first/count: the ports filled, out[0] being port `first` (input_poll_extra asks for 4 and 5, Triples).
+static void script_pads(uint32_t frame, bool update_state, PadState out[], int first = 0, int count = 4) {
 #ifdef YOUGAME_AGENT_TEST_HOOK
   if (!agent_input_allowed(yougame::agent_test::InputKey::Script)) return;
 #endif
@@ -2114,9 +2187,10 @@ static void script_pads(uint32_t frame, bool update_state, PadState out[4]) {
   if (in_section && !g_script_has_scene_wait && script_pad_frames() && g_pad_frame.load(std::memory_order_relaxed) > 0)
     rel = (uint32_t)g_pad_frame.load(std::memory_order_relaxed) + 1;   // the game frame this poll is for
   if (in_section && g_script_loop && (!g_script_has_scene_wait || use_match_frame)) rel %= g_script_loop;
-  for (int port = 0; port < 4; ++port) {
+  for (int slot = 0; slot < count; ++slot) {
+    const int port = first + slot;
     if (port && !(g_script_ports & (1u << port))) continue;
-    out[port].err = 0;
+    out[slot].err = 0;
     const ScriptEntry* cur = nullptr;
     for (const ScriptEntry& e : g_script) {
       if (e.port != port) continue;
@@ -2133,7 +2207,7 @@ static void script_pads(uint32_t frame, bool update_state, PadState out[4]) {
       } else if (!in_section && e.frame <= frame) cur = &e;
     }
     if (cur) {
-      PadState& q = out[port];
+      PadState& q = out[slot];
       q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy;
       // A digital L/R press on hardware bottoms the trigger out, so mirror that when the script
       // did not ask for a specific analog value (light shield needs the explicit l=/r= token).
@@ -2148,8 +2222,12 @@ static void script_pads(uint32_t frame, bool update_state, PadState out[4]) {
 // side_effects: the game's own poll, which may re-point a port at a renamed HID slot and records
 // what feeds each port; the early-input sampler reads with false, under the same lock.
 static std::mutex g_devices_mutex;
+// Triples (MuHostApi.pad_read_extra): pads 5 and 6 as the game's last poll left them, game thread only.
+static PadState g_extra_pads[2] = {{0, 0, 0, 0, 0, 0, 0, 0, 0, -1}, {0, 0, 0, 0, 0, 0, 0, 0, 0, -1}};
+static PortSource g_extra_feeding[2] = {{DeviceKind::None, -1}, {DeviceKind::None, -1}};   // what feeds pads 5 and 6 (rumble)
+// extra: when given, pads 5 and 6 (Triples): the next connected controllers that no port 1-4 is set to.
 static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_effects,
-                         PadState* keyboard_navigation = nullptr, bool console = false) {
+                         PadState* keyboard_navigation = nullptr, bool console = false, PadState* extra = nullptr) {
   // Poll every physical source unconditionally, then route each in-game port to
   // whichever device g_port_sources[port] assigns it to. This lets keyboard, an
   // Xbox pad, and the GC adapter all drive different ports at the same time.
@@ -2349,10 +2427,35 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
     debug.ports[port] = out[port];
     debug.feeding[port] = src;
   }
+  // Triples: pads 5 and 6 take the next connected controllers no port 1-4 is set to, in the order GameCube
+  // adapter, Xbox, PlayStation, Switch Pro, box: four adapter ports and two Xbox pads are six players
+  // with nothing to set up. Same poll as ports 1-4, so they are exactly as fresh.
+  if (extra) {
+    extra[0] = {}; extra[0].err = -1; extra[1] = {}; extra[1].err = -1;
+    PortSource feeding[2] = {{DeviceKind::None, -1}, {DeviceKind::None, -1}};
+    int n = 0;
+    auto take = [&](DeviceKind kind, int index, bool connected, const PadState& pad) {
+      if (!connected || n >= 2) return;
+      for (int port = 0; port < 4; ++port)
+        if (debug.feeding[port].kind == kind && debug.feeding[port].index == index) return;
+      feeding[n] = {kind, index};
+      extra[n++] = pad;
+    };
+    for (int i = 0; i < 4; ++i) take(DeviceKind::GCAdapter, i, (gc_mask & (1u << i)) != 0, gc[i]);
+    for (int i = 0; i < 4; ++i) take(DeviceKind::XInputPad, i, xin_connected[i], xin[i]);
+    for (int i = 0; i < 4; ++i) take(DeviceKind::DS4Pad, i, ds4_connected[i], ds4[i]);
+    for (int i = 0; i < 4; ++i) take(DeviceKind::SwitchPro, i, swpro_connected[i], swpro[i]);
+    for (int i = 0; i < 4; ++i) take(DeviceKind::HidPad, i, hid_connected[i], hid[i]);
+    if (side_effects) { g_extra_feeding[0] = feeding[0]; g_extra_feeding[1] = feeding[1]; }
+  }
   // Background input off and another window in front: every port stays plugged in but neutral.
-  if (!focused && !g_background_input)
+  if (!focused && !g_background_input) {
     for (int port = 0; port < 4; ++port)
       if (out[port].err == 0) { const auto err = out[port].err; out[port] = {}; out[port].err = err; debug.ports[port] = out[port]; }
+    if (extra)
+      for (int i = 0; i < 2; ++i)
+        if (extra[i].err == 0) { extra[i] = {}; extra[i].err = 0; }
+  }
   debug.keyboard_actions = keyboard_actions;
 }
 
@@ -2561,6 +2664,8 @@ void input_poll(PadState out[4]) {
   }
   if (input_script_active()) {
     script_pads(retrace_count(), true, out);
+    g_extra_pads[0] = {}; g_extra_pads[0].err = -1; g_extra_pads[1] = {}; g_extra_pads[1].err = -1;
+    script_pads(retrace_count(), false, g_extra_pads, 4, 2);   // p=5, p=6 (Triples)
     if (latency_trace_enabled()) note_script_presses(out);
     route_takeover(out);
     if (const uint16_t held = g_test_hold.load(std::memory_order_relaxed)) { out[0].button |= held; out[0].err = 0; }
@@ -2574,7 +2679,7 @@ void input_poll(PadState out[4]) {
   InputDebugSnapshot debug{};
   {
     std::lock_guard<std::mutex> devices(g_devices_mutex);
-    read_devices(out, debug, true, &ui.keyboard_navigation);
+    read_devices(out, debug, true, &ui.keyboard_navigation, false, g_extra_pads);
   }
   ui.gamecube = debug.gc_mask != 0;
   const auto takeover = route_takeover(out);
@@ -2724,6 +2829,11 @@ bool input_changed_since_poll(double tick_start) {
   return false;
 }
 
+void input_poll_extra(PadState out[2]) {
+  out[0] = g_extra_pads[0];
+  out[1] = g_extra_pads[1];
+}
+
 void input_read_devices(PadState out[4]) {
   InputDebugSnapshot debug{};
   std::lock_guard<std::mutex> devices(g_devices_mutex);
@@ -2850,7 +2960,7 @@ void log_first_rumble(int game_port, const char* where) {
 }  // namespace
 
 void input_rumble(int game_port, bool on) {
-  if (game_port < 0 || game_port > 3) return;
+  if (game_port < 0 || game_port > 5) return;   // 4 and 5: Triples' pads 5 and 6
   std::lock_guard<std::mutex> lock(g_rumble_mutex);
   // The Lossless adapter's lag test (lag_test_codes.h): its start signal is the character select's
   // rumble on all four ports, which the adapter itself listens for. Dolphin in that setup sends port
@@ -2863,7 +2973,7 @@ void input_rumble(int game_port, bool on) {
     return;
   }
   if (!g_rumble_enabled.load()) on = false;
-  const PortSource& src = g_port_feeding[game_port];   // where the input came from, fallback included
+  const PortSource& src = game_port < 4 ? g_port_feeding[game_port] : g_extra_feeding[game_port - 4];   // where the input came from, fallback included
   const bool valid = src.index >= 0 && src.index < 4;
   if (valid && controller_relay::rumble(src.kind,src.index,on)) return;
   if (src.kind == DeviceKind::GCAdapter && valid) { gcadapter_rumble(src.index, on); if (on) log_first_rumble(game_port, "GameCube adapter"); }

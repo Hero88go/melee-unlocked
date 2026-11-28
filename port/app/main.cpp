@@ -2287,8 +2287,8 @@ static int melee_main(int argc, char** argv) {
           at = comma + 1;
         }
       }
-      ok = ok && lp.local_port > 0 && !lp.remotes.empty() && lp.remotes.size() <= 3 && lp.local_index >= 0 && lp.local_index <= (int)lp.remotes.size();
-      if (!ok) { std::fprintf(stderr, "--local-peer idx:port:ip:port[,ip:port[,ip:port]] (2-4 players, idx < players)\n"); return 2; }
+      ok = ok && lp.local_port > 0 && !lp.remotes.empty() && lp.remotes.size() <= (size_t)slippi::REMOTE_PLAYER_MAX && lp.local_index >= 0 && lp.local_index <= (int)lp.remotes.size();
+      if (!ok) { std::fprintf(stderr, "--local-peer idx:port:ip:port[,ip:port...] (2-6 players, idx < players)\n"); return 2; }
       lp.enabled = true; }
     else if (a == "--test-stage") {
       auto& lp = slippi::Matchmaking::local_peer;
@@ -2674,6 +2674,10 @@ static int melee_main(int argc, char** argv) {
     if (!headless) {
       prepare_render_backend(gfx);
     }
+    // A visible game window opens where it was last closed (window.h window_remember_place).
+    // Tests only (MELEE_TEST_WINDOW_PLACE=1): a hidden run's window does it too, so a hidden test can check it.
+    if (!headless && (!hidden || host::test_env::getenv("MELEE_TEST_WINDOW_PLACE")))
+      host::window_remember_place(gfx.settings_path);
     if (!headless && threaded) {
       backend = gx::create_threaded_backend(gfx, !hidden);
     } else if (!headless) {

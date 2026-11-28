@@ -5866,8 +5866,9 @@ static bool fighter_sound_overlay(const std::vector<uint8_t>& clean, const std::
     const uint64_t entry = root_start + 8ull * i;
     const uint32_t object = be32(clean.data() + entry), name = be32(clean.data() + entry + 4);
     if ((uint64_t)strings + name + 6 >= clean.size() || object >= data_size) continue;
-    if (std::memcmp(clean.data() + strings + name, "ftData", 6) == 0 &&
-        clean[(size_t)strings + name + 6] == 0) ftdata = object;
+    // The root is named for the fighter ("ftDataCaptain", "ftDataFox"): a name that is exactly "ftData" never
+    // occurs, so before 11-27 no fighter file passed here.
+    if (std::memcmp(clean.data() + strings + name, "ftData", 6) == 0) ftdata = object;
   }
   auto ptr = [&](uint32_t at, uint32_t* out) {
     auto found = pointers.find(at);
@@ -5903,14 +5904,22 @@ static bool fighter_sound_overlay(const std::vector<uint8_t>& clean, const std::
       else if (opcode > 9) { *error = "Fighter move script contains an unsupported command."; return false; }
       else if (opcode == 5 || opcode == 7) words = 2;
       if ((uint64_t)at + 4ull * words > data_size) { *error = "Fighter move command exceeds its archive."; return false; }
-      if (opcode == 0x0B) {             // hitbox creation: sound kind only
-        const uint32_t clean_word = be32(data + at + 16), mod_word = be32(mod_data + at + 16);
-        const uint32_t value = (clean_word & ~0x1Fu) | (mod_word & 0x1Fu);
-        if (value != clean_word) { put_be32(merged->data() + 0x20 + at + 16, value); changed = true; }
-      } else if (opcode == 0x22) {      // throw hitbox: sound kind only
-        const uint32_t clean_word = be32(data + at + 8), mod_word = be32(mod_data + at + 8);
-        const uint32_t value = (clean_word & ~0xFu) | (mod_word & 0xFu);
-        if (value != clean_word) { put_be32(merged->data() + 0x20 + at + 8, value); changed = true; }
+      // A hit's sound: strength and kind (lb/types.h, bit fields from the top). Kind 13 at strength 2 is
+      // the one sound the game also branches on (ftcoll.c keeps its handle elsewhere), so a change into
+      // or out of it stays the disc's. Before 11-27 the masks here were the low bits: for a hitbox those
+      // are its grounded/aerial switches (gameplay), and the sound itself was never taken.
+      const auto take_sound = [&](uint32_t offset, uint32_t mask, unsigned kind_shift, unsigned strength_shift) {
+        const uint32_t clean_word = be32(data + at + offset), mod_word = be32(mod_data + at + offset);
+        const uint32_t value = (clean_word & ~mask) | (mod_word & mask);
+        const auto special = [&](uint32_t v) { return ((v >> kind_shift) & 0xF) == 0xD && ((v >> strength_shift) & 7) == 2; };
+        if (value != clean_word && special(value) == special(clean_word)) {
+          put_be32(merged->data() + 0x20 + at + offset, value); changed = true;
+        }
+      };
+      if (opcode == 0x0B) {             // hitbox creation, word 4: strength bits 9..7, kind bits 6..2
+        take_sound(16, 0x3FCu, 2, 7);
+      } else if (opcode == 0x22) {      // throw hitbox, word 2: strength bits 18..16, kind bits 15..12
+        take_sound(8, 0x7F000u, 12, 16);
       } else if (opcode == 0x11) {      // sound ID, volume and pan
         copy_word(at + 4); copy_word(at + 8);
       } else if (opcode == 0x26) {      // six random sound IDs; leave RNG range and behavior alone
@@ -6850,6 +6859,20 @@ RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::stri
   publish_locked(fst, fst_size, &target, &result);
   if (!result.ok) host::log("cosmetics: %s was not published again (%s)", target.c_str(), result.message.c_str());
   return result;
+}
+
+bool fighter_sounds_merged(const std::string& path, const std::vector<uint8_t>& clean, const std::vector<uint8_t>& pack,
+                           std::vector<uint8_t>* merged, std::string* detail) {
+  std::string local;
+  if (!detail) detail = &local;
+  size_t kind = 0; const char* character = nullptr;
+  std::string name = path;
+  const size_t slash = name.find_last_of("/\\");
+  if (slash != std::string::npos) name = name.substr(slash + 1);
+  if (!merged || !fighter_sound_identity(name, &kind, &character)) { *detail = "not a fighter file"; return false; }
+  if (!fighter_sound_overlay(clean, pack, kind, merged, detail)) return false;
+  *detail = *merged == pack ? "sounds only" : "the mod's sounds on the standard moves";
+  return true;
 }
 
 bool file_textures_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate, std::string* detail) {

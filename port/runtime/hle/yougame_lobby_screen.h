@@ -1,4 +1,4 @@
-// What the Friends select draws (4 doors; 2 for the Doubles home, mode MU_LOBBY_M_DOUBLES), from the lobby's view (yougame_lobby.h Control::View): each
+// What the Friends select draws (4 doors, 6 in a six-seat room; 2 for the Doubles home, mode MU_LOBBY_M_DOUBLES), from the lobby's view (yougame_lobby.h Control::View): each
 // seat's door, the rules, and one short hint line, as the private MU_LOBBY_COMMAND view
 // (abi/mu_lobby_wire.h). Pure, so the hint for every Start block and Rooms refusal is unit tested.
 #pragma once
@@ -133,8 +133,11 @@ inline MuLobbyView screen_view(const Control::View& v, const ScreenFlags& f) {
   if (!doubles && v.state.rules.squad) out.mode |= MU_LOBBY_M_SQUAD;
   if (!doubles && v.squad_available) out.mode |= MU_LOBBY_M_SQUAD_AVAILABLE;
 #endif
-  out.my_seat = v.my_seat >= 0 && v.my_seat < kSeats ? (unsigned char)v.my_seat : MU_LOBBY_NONE;
-  out.host_seat = v.state.host >= 0 && v.state.host < kSeats ? (unsigned char)v.state.host : MU_LOBBY_NONE;
+  // The room's seats: a Doubles home keeps the 4-door select's count (doors 3 and 4 shut).
+  const int seats = !doubles && v.state.size == kSeatsMax ? kSeatsMax : kSeats;
+  out.seat_count = (unsigned char)seats;
+  out.my_seat = v.my_seat >= 0 && v.my_seat < seats ? (unsigned char)v.my_seat : MU_LOBBY_NONE;
+  out.host_seat = v.state.host >= 0 && v.state.host < seats ? (unsigned char)v.state.host : MU_LOBBY_NONE;
   out.block_hint = (unsigned char)(f.armed && f.closed ? MU_LOBBY_HINT_CLOSED : block_hint(v, f.armed));
   out.refusal_hint = (unsigned char)refusal_hint(v.refusal, v.refusal_action);
   if (v.state.rules.squad && v.refusal_action == "start" && v.refusal == "shape")
@@ -148,10 +151,10 @@ inline MuLobbyView screen_view(const Control::View& v, const ScreenFlags& f) {
   const Rules& r = v.state.rules;
   out.rules = {(unsigned char)r.teams, (unsigned char)r.friendly_fire, (unsigned char)r.time,
                (unsigned char)r.stocks, (unsigned char)r.minutes, (unsigned char)r.pause};
-  for (int i = 0; i < kSeats; ++i) {
+  for (int i = 0; i < kSeatsMax; ++i) {
     const Seat& s = v.state.seats[i];
     MuLobbySeat& d = out.seats[i];
-    if (doubles && i >= kDoublesSeats) { d.hover_ch = d.pick_ch = MU_LOBBY_NONE; continue; }   // doors 3-4 stay shut
+    if ((doubles && i >= kDoublesSeats) || i >= seats) { d.hover_ch = d.pick_ch = MU_LOBBY_NONE; continue; }   // doors 3-4 stay shut; a 4-seat room has no 5 and 6
     d.kind = s.kind == Kind::Local ? MU_LOBBY_KIND_LOCAL : s.kind == Kind::Human ? MU_LOBBY_KIND_HUMAN : s.kind == Kind::Cpu ? MU_LOBBY_KIND_CPU : MU_LOBBY_KIND_OPEN;
     d.lineup_count = (unsigned char)s.lineup.size();
     for (size_t j = 0; j < s.lineup.size() && j < 4; ++j) {

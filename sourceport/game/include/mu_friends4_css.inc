@@ -16,12 +16,18 @@
  * (mu_lobby_pads, shim/mu_slippi_menu.c). Doubles draws no hint line or door labels: the right half of the
  * row, where doors 3 and 4 were, carries the panel of Slippi's online select (shim/mu_slippi_css.c: its
  * font, places, colours and spinners), saying the fighter, the search and the partner (mu_f4_panel). Every
- * other select, Friends included, keeps all four doors and its text. */
+ * other select, Friends included, keeps all four doors and its text.
+ * A six-seat room (Triples, view.seat_count 6) is the same select on Melee's six-door layout (mncharsel.c
+ * mu_css6, the Triples mod's rescaled cards): this player's pad drives its seat's door 1 to 6 (doors 5 and 6
+ * read pads 5 and 6, shim/mu_slippi_menu.c mu_lobby_pads_extra), and every rule above holds for all six. The
+ * select is built with the room's door count; a room that turns out to seat six once its state arrives opens
+ * the select again (mu_f4_reshape). */
 #include <mu_lobby_wire.h>
 
 #define MU_F4_HOLD 60    /* frames the host's own change to a door wins over a view that hasn't caught up */
 #define MU_F4_NOTE 120   /* frames a refusal or a press that did nothing stays on the hint line */
-#define MU_F4_LINES 6    /* the hint, the rules, one label per door (all blank in Doubles: mu_f4_panel) */
+#define MU_F4_DOORS MU_LOBBY_SEATS   /* the most doors: six in a six-seat room */
+#define MU_F4_LINES (2 + MU_F4_DOORS)   /* the hint, the rules, one label per door (all blank in Doubles: mu_f4_panel) */
 /* Doubles: the right-hand panel, subtext for subtext the one mu_slippi_css_text_init makes (header, three
  * lines each with its spinner, two gray rows, the top bar's two, four red error rows). */
 #define MU_F4_PANEL_SUBS 15
@@ -41,17 +47,18 @@ static struct {
     HSD_Text* text;                 /* made at the first frame of each build of the screen */
     int line[MU_F4_LINES];
     char drawn[MU_F4_LINES][96];
-    float toggle[4][2], teambox[4][2];   /* the doors' HMN/CPU switch and team box as Melee has them */
-    float toggle_put[4][2], teambox_put[4][2];   /* what mu_f4_bounds last wrote there */
-    unsigned sig[4];                /* what each other door last drew from the view, 0: draw again */
-    int hold[4];
-    unsigned char kind_seen[4];     /* each door's kind as this code last left it, 0xFF: not yet; any
+    float toggle[MU_F4_DOORS][2], teambox[MU_F4_DOORS][2];   /* the doors' HMN/CPU switch and team box as Melee has them */
+    float toggle_put[MU_F4_DOORS][2], teambox_put[MU_F4_DOORS][2];   /* what mu_f4_bounds last wrote there */
+    int bounds_doors;               /* the door count those bounds were taken on (4 or 6), 0: none yet */
+    unsigned sig[MU_F4_DOORS];      /* what each other door last drew from the view, 0: draw again */
+    int hold[MU_F4_DOORS];
+    unsigned char kind_seen[MU_F4_DOORS];   /* each door's kind as this code last left it, 0xFF: not yet; any
                                      * other kind at the next frame is the host's own switch press */
     unsigned char partner_sent[4];
     unsigned char sent[4];          /* this player's last HOVER/PICK/UNPICK request, sent[0] 0xFF: none,
                                      * MU_F4_IDLE: off the icons after a hover (nothing went out) */
-    unsigned char seat_sent[4][2];  /* the host's last SEAT {kind, level} per door */
-    unsigned char cpu_sent[4][3];   /* the host's last CPU_PICK {ch, color, team} per door */
+    unsigned char seat_sent[MU_F4_DOORS][2];  /* the host's last SEAT {kind, level} per door */
+    unsigned char cpu_sent[MU_F4_DOORS][3];   /* the host's last CPU_PICK {ch, color, team} per door */
     MuLobbyRules rules_sent, rules_drawn;
     int rules_sent_ok, rules_drawn_ok;
     unsigned char mode_seen, seat_seen, lineup_sent[10];
@@ -64,12 +71,12 @@ static struct {
     char note_seen[MU_LOBBY_NOTE];
     unsigned char note_seq_seen;    /* view.note_seq when note_seen was taken: a new drop shows again */
     int note_text_frames;
-    unsigned char door_color[4];    /* the colour each door's own X/Y cycle last sent (m-ex wrap) */
+    unsigned char door_color[MU_F4_DOORS];    /* the colour each door's own X/Y cycle last sent (m-ex wrap) */
     int locked;                     /* this player's B5 lock-in went out for the started setup */
     int leaving;                    /* the select is on its way to the splash or the stage select */
     int curtain_made;               /* this build of the screen has its black cover (mu_lobby_curtain) */
-    unsigned char kind_logged[4];   /* each seat's kind + 1 as last logged, 0: not yet */
-    unsigned char lineup_logged[4]; /* Squad Strike: each seat's lineup count + 1 as last logged, 0: not yet */
+    unsigned char kind_logged[MU_F4_DOORS];   /* each seat's kind + 1 as last logged, 0: not yet */
+    unsigned char lineup_logged[MU_F4_DOORS]; /* Squad Strike: each seat's lineup count + 1 as last logged, 0: not yet */
     /* Doubles: doors 3 and 4 hidden, with each joint's and text's own hidden bit from before, for the way
      * back. Only this build's: every build of the screen makes new joints and texts. */
     int shut;
@@ -115,7 +122,7 @@ static struct {
     float caption_box[4];           /* the plate: left, top, right, bottom, in world units (mu_f4_caption_draw) */
     unsigned char invite_door;      /* the door whose card opened the invite picker + 1, 0: none */
     unsigned char stopped_seen;     /* last frame's block_hint was SEARCH_STOPPED: its 2 s note shows once */
-    unsigned char route_logged[4];  /* Doubles: each seat's link route + 1 as last logged, 0: not yet */
+    unsigned char route_logged[MU_F4_DOORS];  /* Doubles: each seat's link route + 1 as last logged, 0: not yet */
     unsigned char own_drawn;        /* this player's door + 1 once drawn as HMN this visit, 0: not yet */
 } mu_f4;
 
@@ -130,7 +137,8 @@ static void mu_friends4_css_build(void)
         /* A new visit: nothing kept from the last one but the doors' saved bounds and the last note seen
          * (its text and drop count), so a drop's note shows once, not again on every return from the stage
          * select; a new drop (view.note_seq) or a different text shows again. */
-        float toggle[4][2], teambox[4][2], toggle_put[4][2], teambox_put[4][2];
+        float toggle[MU_F4_DOORS][2], teambox[MU_F4_DOORS][2], toggle_put[MU_F4_DOORS][2], teambox_put[MU_F4_DOORS][2];
+        const int bounds_doors = mu_f4.bounds_doors;
         char note_seen[MU_LOBBY_NOTE];
         const unsigned char note_seq_seen = mu_f4.note_seq_seen;
         /* Behind the cover the first read can't be the baseline: it may already carry the refusal of this Start. */
@@ -146,6 +154,7 @@ static void mu_friends4_css_build(void)
         memcpy(mu_f4.teambox, teambox, sizeof teambox);
         memcpy(mu_f4.toggle_put, toggle_put, sizeof toggle_put);
         memcpy(mu_f4.teambox_put, teambox_put, sizeof teambox_put);
+        mu_f4.bounds_doors = bounds_doors;
         memcpy(mu_f4.note_seen, note_seen, sizeof note_seen);
         mu_f4.note_seq_seen = note_seq_seen;
         mu_f4.refusal_seq = refusal_seq;
@@ -153,15 +162,15 @@ static void mu_friends4_css_build(void)
         mu_f4.sent[0] = mu_f4.partner_sent[0] = 0xFF;
         mu_f4.partner_kind = 0xFF;
         mu_f4.pair_team = mu_f4.partner_team_seen = mu_f4.pair_seen[0] = mu_f4.pair_seen[1] = 0xFF;
-        for (i = 0; i < 4; ++i) mu_f4.seat_sent[i][0] = mu_f4.cpu_sent[i][0] = 0xFF;
+        for (i = 0; i < MU_F4_DOORS; ++i) mu_f4.seat_sent[i][0] = mu_f4.cpu_sent[i][0] = 0xFF;
     }
-    for (i = 0; i < 4; ++i) mu_f4.kind_seen[i] = 0xFF;
+    for (i = 0; i < MU_F4_DOORS; ++i) mu_f4.kind_seen[i] = 0xFF;
     mu_f4.mode_seen = mu_f4.seat_seen = 0xFF;
     mu_f4.lineup_sent[0] = 0xFF;
     mu_f4.text = mu_f4.panel = NULL;
     memset(mu_f4.drawn, 0, sizeof mu_f4.drawn);
     memset(mu_f4.panel_drawn, 0, sizeof mu_f4.panel_drawn);
-    for (i = 0; i < 4; ++i) mu_f4.sig[i] = 0;
+    for (i = 0; i < MU_F4_DOORS; ++i) mu_f4.sig[i] = 0;
     mu_f4.curtain_made = 0;
     mu_f4.art_made = 0;
     mu_f4.art = 0;
@@ -171,9 +180,12 @@ static void mu_friends4_css_build(void)
     mu_f4.shut_count = mu_f4.shut_texts = mu_f4.plates = 0;
 }
 
+/* The doors this build of the select has: Melee's four, or six in a six-seat room (mncharsel.c mu_css6). */
+static int mu_f4_doors_built(void) { return MU_CSS_SIX_DOORS ? 6 : 4; }
+
 static int mu_f4_mine(void)
 {
-    return mu_f4.view_ok && mu_f4.view.my_seat < MU_LOBBY_SEATS ? mu_f4.view.my_seat : (gm_801677F0() & 3);
+    return mu_f4.view_ok && mu_f4.view.my_seat < mu_f4_doors_built() ? mu_f4.view.my_seat : (gm_801677F0() & 3);
 }
 static int mu_f4_host(void)
 {
@@ -187,8 +199,13 @@ static void mu_f4_note(unsigned hint)
 /* The Doubles home (2 doors), and its search (the select locked, B cancels). */
 static int mu_f4_doubles(void) { return mu_f4.view_ok && (mu_f4.view.mode & MU_LOBBY_M_DOUBLES); }
 static int mu_f4_searching(void) { return mu_f4_doubles() && (mu_f4.view.mode & MU_LOBBY_M_SEARCHING); }
-/* The doors a seat of this select stands behind: 2 in Doubles, else 4. */
-static int mu_f4_doors_open(void) { return mu_f4_doubles() ? MU_LOBBY_DOUBLES_SEATS : MU_LOBBY_SEATS; }
+/* The doors a seat of this select stands behind: 2 in Doubles, else the room's (4 or 6) that this select has. */
+static int mu_f4_doors_open(void)
+{
+    const int built = mu_f4_doors_built();
+    if (mu_f4_doubles()) return MU_LOBBY_DOUBLES_SEATS;
+    return mu_f4.view_ok && mu_f4.view.seat_count < built ? mu_f4.view.seat_count : built;
+}
 
 /* The coin pickup (cursor think): only this player's own coin, and the host's on a CPU's door. A
  * person's coin is already only theirs in Melee. Once the setup is frozen nobody's coin moves. */
@@ -478,6 +495,23 @@ static u32 mu_friends4_css_start(u32 trigger, int ready)
         mu_f4_note(mu_f4.view.block_hint);
         return 0;
     }
+    {
+        /* Tests only (MELEE_TEST_LOBBY_STAGE=<stage>): the host's START starts on that stage at once, as the
+         * stage select's pick does (shim/mu_slippi_menu.c lobby_sss_decide), so a hidden run needs no presses there. */
+        extern const char* mu_test_getenv(const char* name);
+        const char* test_stage = mu_test_getenv("MELEE_TEST_LOBBY_STAGE");
+        if (test_stage != NULL && *test_stage) {
+            unsigned stage = 0;
+            unsigned char start[2] = { MU_LOBBY_OP_START, 0 };
+            const char* d;
+            for (d = test_stage; *d >= '0' && *d <= '9' && stage < 100; ++d) stage = stage * 10 + (unsigned) (*d - '0');
+            start[1] = (unsigned char) (mu_lobby_stage_ok(stage) ? stage : 0);
+            OSReport("friends lobby: test start, stage %u (no stage select)\n", (unsigned) start[1]);
+            if (mu_lobby_send(start, sizeof start)) sfxForward();
+            else lbAudioAx_80024030(3);
+            return 0;
+        }
+    }
     OSReport("friends lobby: host start, to the stage select\n");
     {
         const unsigned char open[2] = { MU_LOBBY_OP_STAGE_SELECT, 1 };   /* the guests go with this host */
@@ -499,7 +533,7 @@ static void mu_f4_bounds(int mine)
 {
     int i;
     const int doubles = mu_f4_doubles(), doors = mu_f4_doors_open(), locked = mu_f4_searching();
-    for (i = 0; i < 4; ++i) {
+    for (i = 0; i < mu_f4_doors_built(); ++i) {
         CSSDoor* door = &mnCharSel_803F0DFC.doors[i];
         const unsigned kind = mu_f4.view_ok ? mu_f4.view.seats[i].kind : MU_LOBBY_KIND_OPEN;
         const int host = mu_f4_host() && i != mine && i < doors && !locked;
@@ -529,8 +563,8 @@ static void mu_f4_bounds(int mine)
         /* A level slider on a door this player doesn't set lets go. */
         if (door->is_hold_cpu_slider && !toggle) {
             int c;
-            for (c = 0; c < 4; ++c)
-                if (mnCharSel_804A0BC0[c] && mnCharSel_804A0BC0[c]->x5 == 1 && mnCharSel_804A0BC0[c]->x6 == i + 4)
+            for (c = 0; c < MU_CSS_DOORS; ++c)   /* a hand on a slider holds door + MU_CSS_DOORS (mncharsel.c) */
+                if (mnCharSel_804A0BC0[c] && mnCharSel_804A0BC0[c]->x5 == 1 && mnCharSel_804A0BC0[c]->x6 == i + MU_CSS_DOORS)
                     mnCharSel_804A0BC0[c]->x5 = 2;
             door->is_hold_cpu_slider = 0;
         }
@@ -718,7 +752,7 @@ static void mu_f4_restore(void)
     } else {
         mu_f4_unshut();
     }
-    for (i = 0; i < 4; ++i) {
+    for (i = 0; i < MU_F4_DOORS; ++i) {
         CSSDoor* door = &mnCharSel_803F0DFC.doors[i];
         if (mu_f4.toggle[i][0] != mu_f4.toggle[i][1] &&
             (door->togglebtn_left == door->togglebtn_right ||
@@ -735,6 +769,7 @@ static void mu_f4_restore(void)
         mu_f4.toggle[i][0] = mu_f4.toggle[i][1] = mu_f4.teambox[i][0] = mu_f4.teambox[i][1] = 0;
         mu_f4.toggle_put[i][0] = mu_f4.toggle_put[i][1] = mu_f4.teambox_put[i][0] = mu_f4.teambox_put[i][1] = 0;
     }
+    mu_f4.bounds_doors = 0;
 }
 
 static unsigned char mu_f4_u8(unsigned v, unsigned max) { return (unsigned char) (v > max ? max : v); }
@@ -772,7 +807,7 @@ static unsigned char mu_f4_door_color(int i, unsigned ch, unsigned costume)
  * when drawing is possible and nothing draws it again: Melee's N/A stayed on it. Draw it once, when it can be. */
 static void mu_f4_own_drawn(int mine)
 {
-    if (mu_friends_css_frames < 2 || mine < 0 || mine > 3 || mu_f4.own_drawn == mine + 1 ||
+    if (mu_friends_css_frames < 2 || mine < 0 || mine >= mu_f4_doors_built() || mu_f4.own_drawn == mine + 1 ||
         mnCharSel_803F0DFC.doors[mine].p_kind != Gm_PKind_Human)
         return;
     mu_f4.own_drawn = (unsigned char) (mine + 1);
@@ -1002,7 +1037,7 @@ static void mu_f4_proai_lift(CSSData* css)
 /* Another person's hand (cursor think): their door comes from the view and the hand stays parked. */
 static int mu_friends4_view_hand(u8 port)
 {
-    if (!mu_lobby_css() || !mu_f4.view_ok || !(mu_f4.view.flags & MU_LOBBY_F_KNOWN) || port >= MU_LOBBY_SEATS)
+    if (!mu_lobby_css() || !mu_f4.view_ok || !(mu_f4.view.flags & MU_LOBBY_F_KNOWN) || port >= mu_f4_doors_open())
         return 0;
     if (port == mu_f4_mine() || (port == 1 && mu_lobby_local_owned(&mu_f4.view))) return 0;
     return mu_f4.view.seats[port].kind == MU_LOBBY_KIND_HUMAN || mu_f4.view.seats[port].kind == MU_LOBBY_KIND_LOCAL;
@@ -1191,7 +1226,7 @@ static void mu_f4_host_doors(CSSData* css, int mine)
 static void mu_f4_doors(CSSData* css, int mine)
 {
     int i;
-    for (i = 0; i < 4; ++i) {
+    for (i = 0; i < mu_f4_doors_open(); ++i) {
         const MuLobbySeat* s = &mu_f4.view.seats[i];
         unsigned sig;
         int reopen;
@@ -1285,7 +1320,7 @@ static void mu_f4_rules(CSSData* css)
         mu_f4.rules_drawn_ok = 1;
         mnCharSel_8025EE8C(css->match_type);
         if (teams_changed)
-            for (i = 0; i < 4; ++i) mnCharSel_8025DB34((u8) i);
+            for (i = 0; i < mu_f4_doors_built(); ++i) mnCharSel_8025DB34((u8) i);
     }
 }
 
@@ -1295,9 +1330,9 @@ static int mu_f4_over_door(int i, float x, float y)
 {
     float left = mu_f4.toggle[i][0], width = 0;
     if (mu_f4.toggle[i][0] == mu_f4.toggle[i][1]) return 0;
-    if (i < 3 && mu_f4.toggle[i + 1][0] != mu_f4.toggle[i + 1][1]) width = mu_f4.toggle[i + 1][0] - mu_f4.toggle[i][0];
+    if (i + 1 < mu_f4_doors_built() && mu_f4.toggle[i + 1][0] != mu_f4.toggle[i + 1][1]) width = mu_f4.toggle[i + 1][0] - mu_f4.toggle[i][0];
     else if (i > 0 && mu_f4.toggle[i - 1][0] != mu_f4.toggle[i - 1][1]) width = mu_f4.toggle[i][0] - mu_f4.toggle[i - 1][0];
-    if (width <= 0) width = 15.0f;
+    if (width <= 0) width = mu_f4_doors_built() == 6 ? 10.25f : 15.0f;   /* the six cards' spacing (mncharsel.c MU_CSS6_SPACING) */
     if (!(x > left - 1.0f && x < left + width - 2.0f)) return 0;
     return y > -22.0f && y < -4.6f ? 1 : y >= -4.6f && y < 0.2f ? 2 : 0;
 }
@@ -1307,13 +1342,13 @@ static int mu_f4_over_door(int i, float x, float y)
 static void mu_f4_log_a(int mine)
 {
     int c, i;
-    for (c = 0; c < 4; ++c) {
+    for (c = 0; c < mu_f4_doors_built(); ++c) {
         struct CSSCursorData* hand = mnCharSel_804A0BC0[c];
         if (!(HSD_PadCopyStatus[c].trigger & HSD_PAD_A)) continue;
         OSReport("friends lobby: A on port %d, mine %d, my seat %d, view %d, flags 0x%02x, hand %s %.1f,%.1f held %d/%d\n",
                  c, mine, (int) mu_f4.view.my_seat, mu_f4.view_ok, (unsigned) mu_f4.view.flags, hand ? "at" : "none",
                  hand ? hand->xC : 0.0f, hand ? hand->x10 : 0.0f, hand ? (int) hand->x5 : -1, hand ? (int) hand->x6 : -1);
-        for (i = 0; hand && i < MU_LOBBY_SEATS; ++i)
+        for (i = 0; hand && i < mu_f4_doors_open(); ++i)
             OSReport("friends lobby:   door %d kind %d switch %.1f..%.1f hit %d\n", i + 1, (int) mu_f4.view.seats[i].kind,
                      mu_f4.toggle[i][0], mu_f4.toggle[i][1], mu_f4_over_door(i, hand->xC, hand->x10));
     }
@@ -1329,10 +1364,10 @@ static void mu_f4_invite(int mine)
     int i;
     if (mu_f4_doubles()) return;   /* Doubles: the partner tab's Invite and START (mu_f4_partner_start) */
     if (!hand || !(HSD_PadCopyStatus[mine].trigger & HSD_PAD_A)) return;
-    if (hand->x5 == 1 && hand->x6 >= 4) why = "holding a level slider";
+    if (hand->x5 == 1 && hand->x6 >= MU_CSS_DOORS) why = "holding a level slider";
     else if (mu_f4.view.flags & MU_LOBBY_F_STARTED) why = "a match is being set up";
     else if (mu_f4.view.flags & MU_LOBBY_F_INVITING) why = "the invite picker is already open";
-    for (i = 0; why == NULL && i < MU_LOBBY_SEATS; ++i) {
+    for (i = 0; why == NULL && i < mu_f4_doors_open(); ++i) {
         unsigned char req = MU_LOBBY_OP_INVITE;
         if (i == mine || mu_f4.view.seats[i].kind != MU_LOBBY_KIND_OPEN || mu_f4_over_door(i, hand->xC, hand->x10) != 1)
             continue;
@@ -1355,8 +1390,8 @@ static int mu_f4_inviting_door(const MuLobbyView* v, int mine)
 {
     int i, d = (int) mu_f4.invite_door - 1;
     if (!v || !(v->flags & MU_LOBBY_F_INVITING)) return -1;
-    if (d >= 0 && d < 4 && d != mine && v->seats[d].kind == MU_LOBBY_KIND_OPEN) return d;
-    for (i = 0; i < 4; ++i)
+    if (d >= 0 && d < mu_f4_doors_open() && d != mine && v->seats[d].kind == MU_LOBBY_KIND_OPEN) return d;
+    for (i = 0; i < mu_f4_doors_open(); ++i)
         if (i != mine && v->seats[i].kind == MU_LOBBY_KIND_OPEN) return i;
     return -1;
 }
@@ -1601,11 +1636,16 @@ static void mu_f4_text_make(void)
     HSD_SisLib_803A7548(text, mu_f4.line[0], 0.45f, 0.45f);
     mu_f4.line[1] = HSD_SisLib_803A6B98(text, 156.0f, -280.0f, " ");
     HSD_SisLib_803A7548(text, mu_f4.line[1], 0.32f, 0.32f);
-    for (i = 0; i < 4; ++i) {
-        const float x = mu_skin_pos_set[i] ? MU_TE_SHIELD_X(mu_skin_pos[i].x) : -240.0f + 160.0f * i;
+    for (i = 0; i < mu_f4_doors_built(); ++i) {
+        /* Six cards: under each card's middle, on Melee's spacing for the six (mncharsel.c MU_CSS6_LEFT and
+         * MU_CSS6_SPACING, 10.25 world units, 106.5 here), in the cards' own 0.66 width. */
+        const int six = mu_f4_doors_built() == 6;
+        const float x = six ? -240.0f + 106.5f * i
+                            : mu_skin_pos_set[i] ? MU_TE_SHIELD_X(mu_skin_pos[i].x) : -240.0f + 160.0f * i;
         const float y = 196.0f;
+        const float size = six ? 0.4f * 0.66f : 0.4f;
         mu_f4.line[2 + i] = HSD_SisLib_803A6B98(text, x, y, " ");
-        HSD_SisLib_803A7548(text, mu_f4.line[2 + i], 0.4f, 0.4f);
+        HSD_SisLib_803A7548(text, mu_f4.line[2 + i], size, size);
     }
     mu_f4_panel_make();
     mu_f4.text = text;
@@ -1946,7 +1986,7 @@ static void mu_f4_texts(int mine)
         mu_f4.refusal_seq = v->refusal_seq;
         mu_f4.refusal_ok = 1;
         /* Squad Strike: each person's pick count as the room has it, once per change. */
-        for (i = 0; i < 4; ++i) {
+        for (i = 0; i < mu_f4_doors_open(); ++i) {
             const unsigned n = v->seats[i].kind == MU_LOBBY_KIND_HUMAN && (v->mode & MU_LOBBY_M_SQUAD) ? v->seats[i].lineup_count : 0;
             if (n + 1 == mu_f4.lineup_logged[i]) continue;
             if (n || mu_f4.lineup_logged[i] > 1) OSReport("friends lobby: squad seat %d picks %u/4\n", i, n);
@@ -1986,7 +2026,7 @@ static void mu_f4_texts(int mine)
         mu_f4_panel(v, 1, hint, noted, note, mine);
     } else
 #if MU_SQUAD
-    if (gmSquad_LobbyChosen() && mine >= 0 && mine < 4 && squad_note[mine] && mu_f4.note_frames == 0) {
+    if (gmSquad_LobbyChosen() && mine >= 0 && mine < 4 && squad_note[mine] && mu_f4.note_frames == 0) {   /* Squad: 2 seats */
         mu_f4_line(0, "Squads too big to load together: pick a lighter fighter.");
     } else
 #endif
@@ -1996,8 +2036,8 @@ static void mu_f4_texts(int mine)
     } else {
         /* The host knows START goes on; the line only says what is in the way. */
         if (v && (v->mode & MU_LOBBY_M_SQUAD) && hint == MU_LOBBY_HINT_PICK) {
-            unsigned n = v->my_seat < 4 ? v->seats[v->my_seat].lineup_count : 0;
-            if (n == 4) for (i = 0; i < 4; ++i)
+            unsigned n = v->my_seat < v->seat_count ? v->seats[v->my_seat].lineup_count : 0;
+            if (n == 4) for (i = 0; i < v->seat_count; ++i)
                 if (v->seats[i].kind == MU_LOBBY_KIND_HUMAN && v->seats[i].lineup_count < n) n = v->seats[i].lineup_count;
             sprintf(buf, "Pick 4 fighters first (%u/4).", n);
             mu_f4_line(0, buf);
@@ -2011,8 +2051,8 @@ static void mu_f4_texts(int mine)
     } else {
         mu_f4_line(1, "");   /* the select itself shows the rules */
     }
-    for (i = 0; i < 4; ++i) {
-        const MuLobbySeat* s = v ? &v->seats[i] : NULL;
+    for (i = 0; i < mu_f4_doors_built(); ++i) {
+        const MuLobbySeat* s = v && i < mu_f4_doors_open() ? &v->seats[i] : NULL;
         buf[0] = 0;
         /* Doubles draws no door labels: the doors and the panel say it, the link's route goes to the log. */
         if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && doubles && s->route != MU_LOBBY_ROUTE_NONE &&
@@ -2200,7 +2240,7 @@ static void mu_f4_sync_mode(CSSData* css, int mine)
     /* The mode the log last named (0 none, 1 Free-for-all, 2 Team Battle, 3 Squad Strike). It outlives a visit,
      * so coming back from Rules or the stage select doesn't log the mode again: one line per real change. */
     static unsigned char mu_f4_mode_logged;
-    if (mu_f4.view_ok && mu_f4.view.my_seat < 4) {
+    if (mu_f4.view_ok && mu_f4.view.my_seat < mu_f4_doors_built()) {
         const unsigned mode = (mu_f4.view.mode & MU_LOBBY_M_SQUAD) | (mu_f4.view.rules.teams ? 1 : 0);
         const int first = mu_f4.mode_seen == 0xFF;
         if (mu_f4.mode_seen != mode || mu_f4.seat_seen != mu_f4.view.my_seat) {
@@ -2273,6 +2313,26 @@ static void mu_f4_test_partner(int mine)
     }
 }
 
+/* The room's seats are not this select's doors (a room that seats six, known once its state arrives, or a
+ * six-door select whose room has four): the select opens again, as it does after the stage select, and is
+ * built with the room's door count (mncharsel.c mu_css6_wanted). Picks, rules and seats are the room's and
+ * come back from the view. Not while a match is being set up or the select is already on its way out. */
+static int mu_f4_reshape(void)
+{
+    if (!mu_f4.view_ok || !(mu_f4.view.flags & MU_LOBBY_F_KNOWN) || mu_f4_doubles() || mu_f4.leaving ||
+        (mu_f4.view.flags & MU_LOBBY_F_STARTED) || mu_friends_css_frames < 2)
+        return 0;
+    if (mu_f4.view.seat_count == mu_f4_doors_built()) return 0;
+    OSReport("friends lobby: the room has %u seats: the select opens again with %u doors\n",
+             (unsigned) mu_f4.view.seat_count, (unsigned) mu_f4.view.seat_count);
+    mu_f4.leaving = 1;
+    mu_lobby_css_exit(MU_LOBBY_EXIT_NONE);
+    mnCharSel_804D6CF6 = 1;
+    mnCharSel_804D6CF2 = 0xFF;
+    gm_801A4B60();
+    return 1;
+}
+
 static void mu_friends4_css_frame(void)
 {
     CSSData* css = mnCharSel_804D6CB0;
@@ -2294,6 +2354,7 @@ static void mu_friends4_css_frame(void)
     mu_f4.view_ok = v != NULL;
     if (v) mu_f4.view = *v;
     mu_lobby_curtain_frame(v);
+    if (mu_f4_reshape()) return;
     if (!mu_f4.curtain_made) {
         /* Here, not in the build: the build runs before the screen's text camera exists. Moved to the end of the
          * last list that camera draws, so it covers the coins, hands and every text. */
@@ -2306,7 +2367,7 @@ static void mu_friends4_css_frame(void)
     /* Only a seated guest with a pick follows: someone who sat down during the stage select stays here.
      * A match that has started is never followed back there, even if the frame closing the stage select was lost. */
     if (!mu_f4.leaving && mu_f4.view_ok && (mu_f4.view.mode & MU_LOBBY_M_STAGE_SELECT) &&
-        !(mu_f4.view.flags & (MU_LOBBY_F_HOST | MU_LOBBY_F_STARTED)) && mu_f4.view.my_seat < MU_LOBBY_SEATS &&
+        !(mu_f4.view.flags & (MU_LOBBY_F_HOST | MU_LOBBY_F_STARTED)) && mu_f4.view.my_seat < mu_f4_doors_built() &&
         (mu_f4.view.seats[mu_f4.view.my_seat].flags & MU_LOBBY_S_PICKED)) {
         OSReport("friends lobby: the host went to the stage select, following\n");
         mu_f4.leaving = 1;
@@ -2316,10 +2377,18 @@ static void mu_friends4_css_frame(void)
         gm_801A4B60();
     }
     mine = mu_f4_mine();
+    if (mu_f4.bounds_doors != mu_f4_doors_built()) {
+        /* Bounds taken on the other layout (four doors, now six, or back): Melee's own for this one. */
+        memset(mu_f4.toggle, 0, sizeof mu_f4.toggle);
+        memset(mu_f4.teambox, 0, sizeof mu_f4.teambox);
+        memset(mu_f4.toggle_put, 0, sizeof mu_f4.toggle_put);
+        memset(mu_f4.teambox_put, 0, sizeof mu_f4.teambox_put);
+        mu_f4.bounds_doors = mu_f4_doors_built();
+    }
     mu_f4_log_a(mine);
     mu_f4_sync_mode(css, mine);
     mu_f4_bounds(mine);
-    if (mu_f4.view_ok && (mu_f4.view.flags & MU_LOBBY_F_KNOWN) && mu_f4.view.my_seat < MU_LOBBY_SEATS) {
+    if (mu_f4.view_ok && (mu_f4.view.flags & MU_LOBBY_F_KNOWN) && mu_f4.view.my_seat < mu_f4_doors_built()) {
         mu_f4_pair_team(css, mine);    /* first: the pick and hover below carry the pair's colour */
         mu_f4_local(css, mine);
         if (mu_lobby_local_owned(&mu_f4.view) && mu_lobby_partner_want() == MU_LOBBY_WANT_PROAI) mu_f4_proai_door(css);
@@ -2348,11 +2417,24 @@ static void mu_friends4_css_frame(void)
         }
     }
     mu_f4_own_drawn(mine);
+    {
+        /* Tests only (MELEE_TEST_LOBBY_STAGE): the host starts by itself once START is offered for a second,
+         * so a hidden run's script never presses START (a press that lands as the match begins pauses it). */
+        static int ready_frames;
+        extern const char* mu_test_getenv(const char* name);
+        const char* test_stage = mu_test_getenv("MELEE_TEST_LOBBY_STAGE");
+        if (test_stage != NULL && *test_stage && mu_f4.view_ok && mu_f4_host() && !mu_f4.leaving &&
+            mu_f4.view.block_hint == MU_LOBBY_HINT_PRESS_START) {
+            if (++ready_frames == 60) (void) mu_friends4_css_start(HSD_PAD_START, mnCharSel_804D6CF2 == 0);
+        } else {
+            ready_frames = 0;
+        }
+    }
     if (mu_friends_css_frames >= 1) mu_f4_texts(mine);
     if (mu_friends_css_frames >= 1) mu_f4_partner_marks(mine);   /* after the portrait (mu_f4.art) */
     {
         int i;
-        for (i = 0; i < 4; ++i) mu_f4.kind_seen[i] = mnCharSel_803F0DFC.doors[i].p_kind;
+        for (i = 0; i < mu_f4_doors_built(); ++i) mu_f4.kind_seen[i] = mnCharSel_803F0DFC.doors[i].p_kind;
     }
     /* Doubles: two doors, where Melee puts them on the far left, from the first frame on (OnEnter's call,
      * before anything is drawn), after this frame's redraws; a read that failed leaves them as they are. */

@@ -72,7 +72,7 @@ int main() {
   const uint8_t enter[] = {MU_LOBBY_OP_ENTER}, read_view[] = {MU_LOBBY_OP_READ}, start[] = {MU_LOBBY_OP_START, 0};
   const uint8_t start21[] = {MU_LOBBY_OP_START, 21}, pick[] = {MU_LOBBY_OP_PICK, 25, 5, 2}, bad_pick[] = {MU_LOBBY_OP_PICK, 26, 0, 0};
   const uint8_t rules[] = {MU_LOBBY_OP_RULES, 1, 0, 0, 4, 8, 1}, bad_rules[] = {MU_LOBBY_OP_RULES, 1, 0, 0, 0, 8, 1};
-  const uint8_t seat[] = {MU_LOBBY_OP_SEAT, 3, 9}, bad_seat[] = {MU_LOBBY_OP_SEAT, 4, 1}, cpu_up[] = {MU_LOBBY_OP_CPU_PICK, 2, MU_LOBBY_NONE, 0, 0};
+  const uint8_t seat[] = {MU_LOBBY_OP_SEAT, 3, 9}, bad_seat[] = {MU_LOBBY_OP_SEAT, 6, 1}, cpu_up[] = {MU_LOBBY_OP_CPU_PICK, 2, MU_LOBBY_NONE, 0, 0};
   const uint8_t enter_long[] = {MU_LOBBY_OP_ENTER, 1}, unknown[] = {MU_LOBBY_OP_COUNT};
   CHECK(command_payload_valid(MU_LOBBY_COMMAND, enter, sizeof enter));
   CHECK(command_payload_valid(MU_LOBBY_COMMAND, read_view, sizeof read_view));

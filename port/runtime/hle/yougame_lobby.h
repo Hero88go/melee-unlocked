@@ -273,6 +273,8 @@ class Session {
   bool known() const { return known_; }
   const State& state() const { return state_; }
   int64_t rev() const { return state_.rev; }
+  // The room's seats: 4, or 6 once Rooms seats six (2 in Doubles).
+  int size() const { return state_.size; }
   int my_seat() const {
     for (const auto& s : state_.seats) if (s.kind == Kind::Human && s.id == opt_.me) return s.seat;
     return -1;
@@ -434,8 +436,8 @@ class Session {
   }
   void adopt(const State& s) {
     const int before = my_seat();
-    std::array<std::string, kSeats> old_ids;
-    for (int i = 0; i < kSeats; ++i) old_ids[i] = known_ && state_.seats[i].kind == Kind::Human ? state_.seats[i].id : "";
+    std::array<std::string, kSeatsMax> old_ids;
+    for (int i = 0; i < kSeatsMax; ++i) old_ids[i] = known_ && state_.seats[i].kind == Kind::Human ? state_.seats[i].id : "";
     if (state_.seats[1].kind != s.seats[1].kind || state_.seats[1].connection_id != s.seats[1].connection_id) {
       local_hover_has_sent_ = local_hover_pending_ = false;
     }
@@ -524,8 +526,8 @@ class Session {
     if (push(hello)) { hello_seat_ = seat; squad_hello_ = squad; }
   }
   bool host_can() const { return is_host() && lobby_open(); }
-  // A seat the host may change: any of the four, or in Doubles only the partner's (seat 1).
-  bool seat_ok(int seat) const { return doubles() ? seat == 1 : seat >= 0 && seat < kSeats; }
+  // A seat the host may change: any of the room's (four, or six), or in Doubles only the partner's (seat 1).
+  bool seat_ok(int seat) const { return doubles() ? seat == 1 : seat >= 0 && seat < state_.size; }
   bool cpu_seat(int seat) const { return seat_ok(seat) && state_.seats[seat].kind == Kind::Cpu; }
   static bool pick_ok(const Pick& p) {
     return p.ch >= 0 && p.ch <= kCharMax && p.color >= 0 && p.color <= kColorMax && p.team >= 0 && p.team <= kTeamMax;
@@ -621,14 +623,14 @@ class Control {
     StartBlock start = StartBlock::NotSeated;
     std::string refusal, refusal_action;   // Rooms' last refusal of this player's frame
     uint32_t refusal_count = 0;
-    std::array<LinkInfo, kSeats> links{};  // by seat; empty for this player's own seat and open seats
+    std::array<LinkInfo, kSeatsMax> links{};  // by seat; empty for this player's own seat and open seats
     std::string room;                      // the room's code once known (the invite picker's room)
   };
   void post(Intent f) { std::lock_guard<std::mutex> lock(mutex_); intents_.push_back(std::move(f)); }
   View view() const { std::lock_guard<std::mutex> lock(mutex_); return view_; }
   // The session's thread, each turn: the posted intents in order, then the new view. links and room are
   // what the caller knows of the room right now.
-  void run(Session& s, const std::array<LinkInfo, kSeats>& links = {}, const std::string& room = {}) {
+  void run(Session& s, const std::array<LinkInfo, kSeatsMax>& links = {}, const std::string& room = {}) {
     std::vector<Intent> todo;
     { std::lock_guard<std::mutex> lock(mutex_); todo.swap(intents_); }
     for (auto& f : todo) f(s);

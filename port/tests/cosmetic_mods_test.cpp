@@ -95,7 +95,7 @@ std::vector<uint8_t> fighter_sound_dat(bool modded) {
   const size_t reloc_start = 0x20 + data_size;
   const size_t root_table = reloc_start + reloc_count * 4;
   const size_t strings = root_table + 8;
-  const std::string root = "ftData";
+  const std::string root = "ftDataCaptain";   // named for the fighter, as on the disc (a bare "ftData" never matched one, 11-27)
   std::vector<uint8_t> bytes(strings + root.size() + 1, 0);
   be32(bytes, 0, (uint32_t)bytes.size()); be32(bytes, 4, data_size);
   be32(bytes, 8, reloc_count); be32(bytes, 12, 1); be32(bytes, 16, 0);
@@ -136,13 +136,15 @@ void test_fighter_sound_overlay() {
   const size_t script = 0x20 + 0x100 + 318 * 0x18;
   check(read_be32(merged.data() + script + 4) == 0x12345678, "direct sound ID copied");
   check(read_be32(merged.data() + script + 8) == 0x87654321, "sound volume and pan copied");
-  check(read_be32(merged.data() + script + 28) == 0x2468ACE5,
-        "hitbox sound kind copied without other hitbox flags");
+  // Word 4: the sound is strength bits 9..7 and kind bits 6..2; bits 1..0 (hits grounded / aerial) stay the clean file's.
+  check(read_be32(merged.data() + script + 28) == 0x2468AEA6,
+        "hitbox sound strength and kind copied without other hitbox flags");
   check(read_be32(merged.data() + script + 16) == 0xABCDEF01 &&
         read_be32(merged.data() + script + 24) == 0x2468ACE2,
         "non-sound hitbox words remain from clean file");
-  check(read_be32(merged.data() + script + 40) == 0x1122334C,
-        "throw hitbox sound kind is copied without gameplay bits");
+  // Throw word 2: strength bits 18..16 and kind bits 15..12.
+  check(read_be32(merged.data() + script + 40) == 0x1126D344,
+        "throw hitbox sound strength and kind are copied without gameplay bits");
   check(read_be32(merged.data() + script + 48) == 0xA0000001 &&
         read_be32(merged.data() + script + 68) == 0xA0000006,
         "randomized move sound IDs are copied");
@@ -792,7 +794,7 @@ int main(int argc, char** argv) {
     const size_t script = 0x20 + 0x100 + 318 * 0x18;
     check(result == host::cosmetics::OverrideRead::Success &&
           read_be32(served.data() + script + 4) == 0x12345678 &&
-          read_be32(served.data() + script + 28) == 0x2468ACE5,
+          read_be32(served.data() + script + 28) == 0x2468AEA6,
           "selected move sounds are served from the imported fighter DAT");
     check(read_be32(served.data() + script + 16) == 0xABCDEF01,
           "fighter DAT import leaves gameplay values from the clean game archive");

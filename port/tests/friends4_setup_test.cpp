@@ -308,6 +308,42 @@ int main() {
   CHECK(mu_friends_lobby_verdict(0, 0, 0, 0) == 0);               // still waiting
   CHECK(mu_friends_lobby_verdict(0, 0, 0, 1) == -1);              // never sent one
   CHECK(std::strlen(MU_FRIENDS_LOBBY_OLD_BUILD_TEXT) < 100);
+
+  // ---- six seats (Triples): a six-port plan, its block (players 5 and 6) and its finish ----
+  {
+    json s6 = setup_frame(true);
+    s6["seats"] = json::array();
+    const int chars[6] = {2, 20, 12, 19, 0, 15};
+    for (int k = 0; k < 4; ++k)
+      s6["seats"].push_back({{"seat", k}, {"port", k}, {"kind", "human"}, {"id", "h" + std::to_string(k)}, {"name", "P"},
+                             {"char", chars[k]}, {"color", 0}, {"team", k % 2}});
+    for (int k = 4; k < 6; ++k)
+      s6["seats"].push_back({{"seat", k}, {"port", k}, {"kind", "cpu"}, {"id", "cpu:" + std::to_string(k)}, {"name", "CPU"},
+                             {"char", chars[k]}, {"color", 0}, {"team", k % 2}, {"level", 9}});
+    Plan p6 = plan(setup_of(s6), "h3");
+    CHECK(p6.ok && p6.ports == 6 && p6.humans == 4 && p6.local_port == 3 && p6.port[5].kind == Kind::Cpu);
+    CHECK(!plan(setup_of(s6), "h3", {}, {}, Profile::Doubles).ok);   // Doubles is four
+    std::vector<uint8_t> block(kBlock, 0x5A);
+    CHECK(apply(p6, block.data(), block.size()));
+    CHECK(rec(block, 4)[1] == 1 && rec(block, 5)[1] == 1 && rec(block, 5)[0] == 15 && rec(block, 4)[0xF] == 9);
+    CHECK(rec(block, 4)[0x9] == 0 && rec(block, 5)[0x9] == 1 && rec(block, 3)[1] == 0);
+    std::vector<uint8_t> small(0x60 + 4 * 0x24, 0);
+    CHECK(!apply(p6, small.data(), small.size()));             // six ports need the six records
+    // Then a three-port match on the same block: players 5 and 6 are nobody again.
+    Plan p3 = plan(setup_of(setup_frame()), "human-b");
+    CHECK(apply(p3, block.data(), block.size()) && rec(block, 4)[1] == 3 && rec(block, 5)[1] == 3);
+    // The finish: six placements rank all six; Teams with only a winner put the winner's team first.
+    Outcome o;
+    o.has_placements = true;
+    const int places[6] = {3, 0, 2, 1, 5, 4};
+    for (int k = 0; k < 6; ++k) o.placements[k] = places[k];
+    json fin = finish_report(p6, o);
+    CHECK(!fin.value("void", false) && fin["ranking"] == json({"h1", "h3", "h2", "h0", "cpu:5", "cpu:4"}));
+    Outcome w;
+    w.winner = 3; w.end_method = 2;
+    fin = finish_report(p6, w);
+    CHECK(fin["ranking"] == json({"h1", "h3", "cpu:5", "h0", "h2", "cpu:4"}));
+  }
   std::printf("ok\n");
   return 0;
 }

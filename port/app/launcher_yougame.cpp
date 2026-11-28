@@ -1237,6 +1237,8 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
                 {"build", parse_or_empty(build_json)}};
       if (const std::string nb = listed_build_id(parse_or_empty(build_json).value("version", std::string())); !nb.empty())
         body["native_build"] = nb;
+      // Six seats (Triples, yougame_friends.h lobby_hold): passed on in the room's lobby for YouGame to grant or refuse.
+      if (players == 4 && q.value("seats", 0) == 6) body["lobby"]["seats"] = 6;
       // Launcher copies have no YouGame links of their own (the app's): said on the ticket for YouGame, and by
       // the game to the other seats (its word), so every seat of its match connects over direct UDP.
       body["links"] = false;

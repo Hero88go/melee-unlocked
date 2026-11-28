@@ -713,6 +713,33 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
                      : textures ? host::cosmetics::file_textures_only(clean, pack, &detail)
                              : skins::music_is_valid(pack, &detail);
       verdict.reason = host::cosmetics::online_reason_short(detail);
+      // A fighter's file whose changes include its move sounds (Bee 11-27: Falcon's knee with another hit
+      // sound): online the disc's own file with only the pack's sounds taken (cosmetic_mods.h
+      // fighter_sounds_merged). Sounds reach only the sound player, so the match plays the same for both
+      // players; when sounds are all the pack changed, its own file stays on.
+      std::vector<uint8_t> sounded;
+      std::string sounds;
+      const bool fighter_sounds = textures && !verdict.served && skins::is_fighter_data_file(file.path) &&
+                                  host::cosmetics::fighter_sounds_merged(file.path, clean, pack, &sounded, &sounds);
+      if (textures && !verdict.served && skins::is_fighter_data_file(file.path) && !fighter_sounds)
+        host::log("mods: %s keeps no sounds online (%s)", verdict.path.c_str(), sounds.c_str());
+      if (fighter_sounds) {
+        if (sounded == pack) {
+          verdict.served = true;
+          verdict.reason = sounds;
+        } else {
+          const uint32_t span = ((uint32_t)sounded.size() + 0xFFFFu) & ~0xFFFFu;
+          if ((uint64_t)g_pack_online_next + span <= 0x70000000ull) {
+            const int32_t grafted = (int32_t)g_fst.size();
+            g_fst.push_back({g_pack_online_next, (uint32_t)sounded.size(), false});
+            g_pack_online_files.push_back({g_pack_online_next, std::move(sounded)});
+            g_pack_online_next += span;
+            g_pack_online_entry[verdict.entry] = grafted;
+            verdict.served = true;
+            verdict.reason = sounds;
+          }
+        }
+      }
       // A stage that is not the same file may still be the same stage: the pack's look drawn over
       // the original's gameplay, as an installed stage skin gets. Served from memory in that view.
       std::vector<uint8_t> online;
@@ -5152,6 +5179,24 @@ uint32_t h_control_flags() {
   return word;
 }
 bool g_replay_written = false;
+// Triples (MuHostApi version 35): the five- and six-player options (VIDEO > "Five and six players"), and
+// pads 5 and 6 from the same poll as ports 1-4. MELEE_TEST_TRIPLES_FLAGS=<n> (tests) replaces the options.
+uint32_t h_triples_flags() {
+  static const int test = [] { const char* v = host::test_env::getenv("MELEE_TEST_TRIPLES_FLAGS"); return v && *v ? std::atoi(v) & 7 : -1; }();
+  return test >= 0 ? (uint32_t)test : gx::triples_flags_active();
+}
+void h_pad_read_extra(MuPadStatus out[2]) {
+  host::PadState pads[2];
+  host::input_poll_extra(pads);
+  for (int i = 0; i < 2; ++i) {
+    out[i].button = pads[i].button;
+    out[i].stick_x = pads[i].stick_x; out[i].stick_y = pads[i].stick_y;
+    out[i].sub_x = pads[i].sub_x; out[i].sub_y = pads[i].sub_y;
+    out[i].trigger_l = pads[i].trig_l; out[i].trigger_r = pads[i].trig_r;
+    out[i].analog_a = pads[i].analog_a; out[i].analog_b = pads[i].analog_b;
+    out[i].err = pads[i].err;
+  }
+}
 #if MU_SQUAD
 // Based on Squad Strike by Chris (x9x9x9x9x9), https://github.com/x9x9x9x9x9/squad-strike v1.0.0, used with the author's permission (11-03-2026)
 // Applies only to the recording begun by the last Game Start.
@@ -5677,6 +5722,18 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
       host::log("replay: recording online game %u", g_online_games);
     return;
   }
+  // Triples (5 or 6 players online) is not recorded yet: its Game End record comes alone, with six
+  // placements (mu_replay.c mu_replay_triples_game_end), for the Friends lobby's result.
+  if (!g_replay && command == 0x39 && size == 8 && !g_replay_stream.active()) {
+    int winner = -1;
+    if (payload[0] == 2)
+      for (int slot = 0; slot < 6; ++slot) if (payload[2 + slot] == 0) {
+        if (winner >= 0) { winner = -1; break; }
+        winner = slot;
+      }
+    host::publish_lobby_result(winner, payload[0], (int)(int8_t)payload[1], payload + 2, 6);
+    return;
+  }
   // Dolphin closes the file at the Game End event; what the game still sends is not recorded.
   if (!g_replay && (!g_replay_stream.active() || g_replay_stream.ended())) return;
   if (!g_replay_stream.append(command, payload, size))
@@ -5799,6 +5856,8 @@ MuHostApi make_host() {
   h.hud_combo = h_hud_combo;
   h.shield_color = h_shield_color;
   h.control_flags = h_control_flags;   // version 34: tap jump off and tilt stick
+  h.triples_flags = h_triples_flags;   // version 35: five and six players
+  h.pad_read_extra = h_pad_read_extra;
   controls::set_engine_supported(true);   // the Source Port runs them (the Static Recomp never sets this)
   h.grid_color = h_grid_color;
   h.screen_shake_scale = h_screen_shake_scale;

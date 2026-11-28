@@ -121,7 +121,9 @@ void parsers() {
   check(probe(p,14,out) && out.player == 1 && out.type == 0, "valid punch");
   for (size_t n = 0; n <= 32; ++n) if (n != 14) check(!probe(p,n,out), "punch exact size");
   p[4] = 2; check(!probe(p,14,out), "unknown punch type");
-  p[4] = 0; p[13] = 5; check(!probe(p,14,out), "invalid punch player");
+  p[4] = 0; p[13] = 6; check(probe(p,14,out) && out.player == 6, "six-seat punch player");   // a six-seat Friends room
+  p[13] = 7; check(!probe(p,14,out), "invalid punch player");
+  p[13] = 0; check(!probe(p,14,out), "invalid punch player 0");
   uint8_t req[20] = {0,1,0,0,0x21,0x12,0xa4,0x42};
   uint8_t reply[32] = {1,1,0,12,0x21,0x12,0xa4,0x42};
   reply[21] = 1; reply[23] = 8; reply[25] = 1; reply[26] = 0xc9; reply[27] = 0xa0; reply[28] = 10; reply[31] = 1;

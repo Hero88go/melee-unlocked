@@ -315,6 +315,9 @@ bool css_background_free_active();
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);
 bool player_tags_always_active();
+// Five and six players (RenderOptions::triples_flags, MU_TRIPLES_OPTION_*), published the same way.
+void set_triples_flags(uint32_t flags);
+uint32_t triples_flags_active();
 // "Shield colours" (VIDEO): the shield bubble and the KO blast of each in-game slot in a colour of the
 // player's choosing (0 the port's own, else 0x1000000 | RGB). Offline each port's own setting; in an
 // online match the player's "Online" colour on their own slot and, on an opponent's slot, the colour that

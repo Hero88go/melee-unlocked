@@ -439,6 +439,13 @@ std::string choose_portrait_file();
 // pack's recoloured items or menu pictures): drawing only, so it is served online too.
 bool file_textures_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate, std::string* detail);
 
+// A pack's fighter file ("PlCa.dat"): `merged` is the disc's own file with only the pack's move sounds
+// taken (hit sounds, sound commands), every other byte the disc's. True when the pack changes any sound;
+// `detail` is "sounds only" when `merged` is the pack's file itself. Online the merged file plays, so a
+// mod's sounds are heard against players who do not have it, and its moves stay the standard ones.
+bool fighter_sounds_merged(const std::string& path, const std::vector<uint8_t>& clean, const std::vector<uint8_t>& pack,
+                           std::vector<uint8_t>* merged, std::string* detail);
+
 namespace testing {
 struct DatInspection {
   bool ok = false;

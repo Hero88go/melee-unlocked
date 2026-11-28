@@ -1,6 +1,7 @@
 /* Console-style sessions: the game side of the pad scheduler; shim/mu_pad.c has the host side. Apart from
  * mu_pad.c because these need the game's controller and VI headers, and the game's C library collides with
  * the host's stdint (ssize_t) in a file that also includes mu_shim.h. */
+#include <string.h>
 #include <dolphin/vi.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/rumble.h>
@@ -16,9 +17,11 @@ void mu_console_replace_raw(void)
     PadLibData* p = &HSD_PadLibData;
     if (mu_console_rollback_active()) {
         HSD_PadData now = {0};
+        PADStatus pads[6] = {0};   /* the online renew fills six ports (Triples); a console session uses four */
         /* History injection is deliberately independent of SDK renewal: no rumble, polling,
          * reset/recalibration or other hardware side effects can precede the checkpoint. */
-        if (mu_online_pad_renew(now.stat)) return;
+        if (mu_online_pad_renew(pads)) return;
+        memcpy(now.stat, pads, sizeof now.stat);
         p->qread = p->qwrite;
         p->queue[p->qwrite] = now;
         p->qwrite = (p->qwrite + 1) % p->qnum;

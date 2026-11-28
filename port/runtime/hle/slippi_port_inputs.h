@@ -14,7 +14,7 @@ inline constexpr size_t kDropHistoryMax = 64;   // SLIPPI_DROP_REPORT_INPUT_COUN
 
 struct PortInputs {
   int main = 0, humans = 2;
-  std::array<int, PLAYER_COUNT_MAX> owner{{0,1,2,3}};
+  std::array<int, PLAYER_COUNT_MAX> owner{{0,1,2,3,4,5}};
   std::deque<std::unique_ptr<Pad>> pads[PLAYER_COUNT_MAX];
   std::deque<std::unique_ptr<Pad>> partner_send; // ACK retention is independent of the rollback frontier
   int port(int remote) const { return remote >= main ? remote + 1 : remote; }

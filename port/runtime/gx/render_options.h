@@ -180,6 +180,9 @@ struct RenderOptions {
   // off screen, or with a name tag). Display only, so it is each player's own online. Both engines
   // (if/ifnametag.c; host.cpp apply_player_tags_always).
   int player_tags_always = 0;
+  // Five and six players (Triples): MU_TRIPLES_OPTION_* bits, markers up and HUD transparency by default.
+  // Display only, each player's own (host: MuHostApi.triples_flags).
+  int triples_flags = 3;
   // "Arcade look" (Looks): attack hitboxes on every fighter with no hurtboxes, projectile hitboxes,
   // and the bubbles drawn behind the fighter. Display only and offline: the game ignores them in a
   // network match (MU_DISPLAY_OPTION_HITBOXES and the next two bits).

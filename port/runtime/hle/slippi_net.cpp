@@ -3309,12 +3309,13 @@ void Matchmaking::handleMatchmaking() {
 // reach each remote (LAN when on the same external IP), decider, stages and items. Everything is
 // read type-checked and the player list is checked against the fixed per-player arrays (see
 // ParsedTicket); a ticket that fails is refused whole.
-static Matchmaking::ParsedTicket parse_ticket(const json& resp) {
+// max_players: Slippi's server names at most four; a local test peering (local_peer_ticket) up to six (Triples).
+static Matchmaking::ParsedTicket parse_ticket(const json& resp, int max_players = SLIPPI_PLAYER_MAX) {
   Matchmaking::ParsedTicket t;
   t.match_id = str_or(resp, "matchId", "");
   const json* queue = json_member(resp, "players");
   if (!queue || !queue->is_array()) { t.error = "no player list"; return t; }
-  if (queue->size() < 2 || queue->size() > (size_t)PLAYER_COUNT_MAX) { t.error = std::to_string(queue->size()) + " players"; return t; }
+  if (queue->size() < 2 || queue->size() > (size_t)max_players) { t.error = std::to_string(queue->size()) + " players"; return t; }
   std::string local_external_ip;
   bool have_local = false, port_used[PLAYER_COUNT_MAX] = {};
   for (const auto& el : *queue) {
@@ -3335,7 +3336,7 @@ static Matchmaking::ParsedTicket parse_ticket(const json& resp) {
         p.ranked_regional_placement = (int)number("regionalPlacement");
         p.ranked_mmr = (float)number("mmr");
       }
-    if (p.port < 1 || p.port > PLAYER_COUNT_MAX) { t.error = "player port " + std::to_string(p.port); return t; }
+    if (p.port < 1 || p.port > max_players) { t.error = "player port " + std::to_string(p.port); return t; }
     if (port_used[p.port - 1]) { t.error = "port " + std::to_string(p.port) + " used twice"; return t; }
     port_used[p.port - 1] = true;
     if (const json* cm = json_member(el, "chatMessages"))
@@ -3384,7 +3385,9 @@ Matchmaking::ParsedTicket Matchmaking::ParseTicket(const std::string& json_text)
 }
 
 bool Matchmaking::ingest_ticket(const Ticket& ticket) {
-  ParsedTicket t = parse_ticket(ticket.resp);
+  // Slippi's server seats four; a local test peering, or a YouGame match (a six-seat Friends room: Triples), six.
+  const bool six = local_peer.enabled || display_provider_ == display::Provider::YouGame;
+  ParsedTicket t = parse_ticket(ticket.resp, six ? PLAYER_COUNT_MAX : SLIPPI_PLAYER_MAX);
   host::log("slippi: match id %s", t.match_id.c_str());
   remote_ips_.clear();
   public_fallbacks_.clear();
@@ -3648,7 +3651,7 @@ void Matchmaking::blendMatchmaking() {
         continue;
       }
       // Read whole before anything is decided: a refused or blocked ticket is not an opponent.
-      const ParsedTicket ticket = parse_ticket(resp);
+      const ParsedTicket ticket = parse_ticket(resp, local_peer.enabled ? PLAYER_COUNT_MAX : SLIPPI_PLAYER_MAX);
       if (!ticket.ok) {
         host::log("slippi: matchmaking ticket refused: %s", ticket.error.c_str());
         slippi_failed("Invalid match details from the mm server");

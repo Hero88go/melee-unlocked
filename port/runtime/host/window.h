@@ -43,6 +43,9 @@ void window_set_dpi_callback(DpiCallback cb);
 void window_pump();
 void window_set_fullscreen(bool enabled);
 bool window_is_fullscreen();
+// Before the game window is made: it opens where it was last closed (Windows; window-place.ini in the
+// settings file's folder). Only a visible game window uses it, never a hidden test window.
+void window_remember_place(const std::string& settings_path);
 // Windows: the game window (an HWND); and picture in picture for the warm-up room's two windows
 // (hle/slippi_arena.cpp): mode 1 small (borderless, on top, dragged and sized with the mouse, never
 // taking the focus), 2 big (borderless, filling what it is given), 0 back exactly as it was; mute

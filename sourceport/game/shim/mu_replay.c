@@ -354,7 +354,8 @@ void mu_replay_start_melee(StartMeleeData* data)
          * "1": recorded to a .slp (--record-native); "2": recorded for the spectator server only,
          * the host writes no file (an offline match broadcast, as Slippi Dolphin sends one). */
         if (mu_online_pending() || !record || (record[0] != '1' && record[0] != '2') || record[1] != '\0' ||
-            (gm_GetCurrentGameMode() != GM_VS && gm_GetCurrentGameMode() != GM_DEBUG_VS)) return;
+            (gm_GetCurrentGameMode() != GM_VS && gm_GetCurrentGameMode() != GM_DEBUG_VS) ||
+            mu_triples_active()) return;   /* Triples: replays hold four players, so 5 and 6 are not recorded yet */
         finished = 0;
         emitted_frame = FIRST_FRAME - 1;
         start_recording(data, NULL);
@@ -1074,6 +1075,30 @@ static void emit_game_end(int end_method)
     }
     mu_replay_abi_event(0x39, b, sizeof b);
     finished = 1;
+}
+
+/* Triples (5 or 6 players online) is not recorded yet (mu_replay_start_melee), but the Friends lobby's
+ * result comes from the Game End record: this sends that record alone, with all six placements, from the
+ * game report (mu_online.c report_game: once the game can no longer be rolled back). The host reads it in
+ * h_replay_event; a recorded match keeps its own record (emit_game_end). */
+void mu_replay_triples_game_end(int end_method)
+{
+    static MatchEnd standings;
+    VsSceneState* st = gmVs_GetSceneState();
+    u8 b[8];
+    int i;
+    if (recording_active) return;
+    b[0] = (u8) end_method;
+    b[1] = (u8) (end_method == 7 ? st->pauser : -1);
+    standings = *gm_8016B774();
+    standings.is_teams = gm_GetStartMeleeRules()->is_teams;
+    standings.outcome = (u8) end_method;
+    gm_80166378(&standings);
+    for (i = 0; i < 6; i++) {
+        b[2 + i] = standings.player_standings[i].pkind == 3 ? 0xFF
+                                                             : standings.player_standings[i].is_small_loser;
+    }
+    mu_replay_abi_event(0x39, b, sizeof b);
 }
 
 /* The scene's frame end callback (gm_Scene_Vs_OnFrame's end, where SendGameEnd sits). Online, a

@@ -327,22 +327,32 @@ inline constexpr const char* kArenaInviteFailed = "Couldn't send the invite. Pre
 inline bool doubles_kind_refusal(const std::string& code) {
   return code == "teams_lobby_off" || code == "bad_teams_lobby" || code == "teams_lobby_branch";
 }
-inline json lobby_hold(const std::string& compatibility) {
+// Six seats (Triples): the hold and the ticket also ask for "seats": 6 (the hold at its top, the ticket in
+// its lobby). A YouGame that seats six makes the room's Friends lobby six seats (its state then has six); one
+// that does not either leaves the key alone (the room stays four, as before) or refuses the request, and
+// the game then asks once more without it (yougame_link.cpp) and keeps to four for the rest of the run.
+inline constexpr int kLobbySeatsSix = 6;
+inline json lobby_hold(const std::string& compatibility, bool six = false) {
   if (!lobby_compatibility(compatibility)) throw std::runtime_error("Invalid Friends lobby compatibility");
-  return {{"type", "mpFriend"}, {"hold", true}, {"players", 4}, {"compatibility", compatibility}};
+  json q = {{"type", "mpFriend"}, {"hold", true}, {"players", 4}, {"compatibility", compatibility}};
+  if (six) q["seats"] = kLobbySeatsSix;
+  return q;
 }
-inline json lobby_invite(const std::string& code) {
+// players: the room's seats (the picker offers that many less one).
+inline json lobby_invite(const std::string& code, int players = 4) {
   if (room(json{{"room", code}}).empty()) throw std::runtime_error("Invalid YouGame friends room");
-  return {{"type", "mpFriend"}, {"room", code}, {"players", 4}, {"multi", true}};
+  return {{"type", "mpFriend"}, {"room", code}, {"players", players == kLobbySeatsSix ? kLobbySeatsSix : 4}, {"multi", true}};
 }
-inline json lobby_ticket(const std::string& compatibility, const std::string& code) {
+inline json lobby_ticket(const std::string& compatibility, const std::string& code, bool six = false) {
   if (room(json{{"room", code}}).empty()) throw std::runtime_error("Invalid YouGame friends room");
   if (!lobby_compatibility(compatibility)) throw std::runtime_error("Invalid Friends lobby compatibility");
-  return {{"type", "mpTicket"}, {"players", 4}, {"mode", "singles"},
+  json q = {{"type", "mpTicket"}, {"players", 4}, {"mode", "singles"},
           {"room", code}, {"ranked", false},
           // minPlayers 2: YouGame takes 1 only from a server game that fills its own seats (refused
           // "server_lobby" since 11-23, so the room never opened).
           {"lobby", {{"version", 1}, {"minPlayers", 2}, {"maxLocalPlayers", 1}, {"compatibility", compatibility}}}};
+  if (six) q["lobby"]["seats"] = kLobbySeatsSix;
+  return q;
 }
 inline bool native_ready(bool yougame, int, const std::string&, const std::string& invite) {
   return !(yougame && !invite.empty());

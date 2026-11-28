@@ -319,7 +319,7 @@ struct PADStatus { u16 button = 0; int stickX = 0; int err = 0; };
 constexpr int PAD_ERR_NO_CONTROLLER = -1, PAD_BUTTON_START = 0x1000, PAD_BUTTON_B = 0x200, PAD_BUTTON_A = 0x100;
 enum { MU_LOBBY_WANT_FIND = 0, MU_LOBBY_WANT_INVITE = 1, MU_LOBBY_WANT_P2 = 2, MU_LOBBY_WANT_CPU = 3,
        MU_LOBBY_WANT_PROAI = 4 };
-struct { int view_ok = 1, partner_source = -1, partner_b_held = 0, partner_want = 0, curtain = 0, cancel_held = 0, cancel_mask = 0; MuLobbyView view{}; } lobby;
+struct { int view_ok = 1, partner_source = -1, partner_b_held = 0, partner_want = 0, curtain = 0, cancel_held = 0, cancel_mask = 0; MuLobbyView view{}; PADStatus extra[2]{}; } lobby;
 int requests = 0, op = -1, arg = -1;
 int mu_lobby_css() { return 1; }
 int gm_801677F0() { return 0; }
@@ -336,6 +336,7 @@ void sample(int one, int two) {
 int main() {
     auto& v = lobby.view;
     v.flags = MU_LOBBY_F_ARMED | MU_LOBBY_F_KNOWN | MU_LOBBY_F_HOST; v.mode = MU_LOBBY_M_DOUBLES; v.my_seat = 0;
+    v.seat_count = MU_LOBBY_SEATS_V1;
     v.seats[0].kind = MU_LOBBY_KIND_HUMAN;
     // Controller 2's START never claims anything (the tab does): the seat stays open, its door gets no pad.
     for (int want : {MU_LOBBY_WANT_FIND, MU_LOBBY_WANT_INVITE, MU_LOBBY_WANT_P2, MU_LOBBY_WANT_CPU}) {

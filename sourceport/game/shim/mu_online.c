@@ -161,6 +161,22 @@ enum {
     EARLY_ENTRY = 4 + PAD_SIZE,
     RXB_EARLY = RXB_SIZE,
     RXB_EARLY_BYTES = REMOTES * (1 + EARLY_MAX * EARLY_ENTRY),
+    /* Triples (5 and 6 players, Melee Unlocked only): remotes 4 and 5 follow Slippi's reply and the
+     * early block, which then keeps its full size (no early pads in these matches). Per extra remote:
+     * the desync pair, the latest frame, its pads, its despawn frame and its predicted pads, as in the
+     * reply above. A 4-player match never gets this block, so Slippi's layout stays as it is. */
+    REMOTES_MAX = 5,
+    ONLINE_PORTS = 6,
+    TRI_DESYNC = 0,
+    TRI_FRAME_NUM = 8,
+    TRI_INPUTS = 12,
+    TRI_DESPAWN = TRI_INPUTS + PAD_SIZE * RXB_INPUTS_COUNT,
+    TRI_PREDICTED = TRI_DESPAWN + 4,
+    TRI_ENTRY = TRI_PREDICTED + PAD_SIZE * RXB_INPUTS_COUNT,
+    RXB_TRI = RXB_EARLY + RXB_EARLY_BYTES,
+    RXB_TRI_BYTES = (REMOTES_MAX - REMOTES) * TRI_ENTRY,
+    /* The match state's Triples byte, after Slippi's (only a Triples match has it): 6. */
+    MSRB_TRIPLES = MSRB_SIZE,
     /* The game report (Slippi's RGB without its command byte), byte offsets. */
     RGB_ONLINE_MODE = 0,
     RGB_FRAME_LENGTH = 1,
@@ -204,6 +220,7 @@ typedef struct MuOnlineState {
     int test;                 /* the harness entered this match without menus */
     int mode;                 /* Slippi mode id */
     u8 local_index;           /* the local player's in-game port */
+    u8 ports;                 /* in-game ports the match's pads cover: 4, or 6 in a Triples match */
     u8 remote_index;
     u8 input_source;          /* the physical port the local pad is read from */
     u8 delay;
@@ -213,17 +230,17 @@ typedef struct MuOnlineState {
     u8 last_local[PAD_SIZE];
     u8 delay_index;
     u8 delay_buffer[MAX_DELAY][PAD_SIZE];
-    u8 rxb[RXB_SIZE + RXB_EARLY_BYTES];
+    u8 rxb[RXB_TRI + RXB_TRI_BYTES];
     unsigned int rxb_size;    /* bytes the host answered the last inputs command with */
     int rollback_active, rollback_should_load, rollback_end_frame;
     u8 local_inputs_idx;
     u8 local_inputs[LOCAL_INPUTS_COUNT][PAD_SIZE];
-    u8 predicted_read[REMOTES], predicted_write[REMOTES];
-    u8 predicted[REMOTES][PREDICTED_INPUTS_COUNT][PAD_SIZE];
-    u8 predicted_early[REMOTES][PREDICTED_INPUTS_COUNT];   /* the prediction came from an early pad */
+    u8 predicted_read[REMOTES_MAX], predicted_write[REMOTES_MAX];
+    u8 predicted[REMOTES_MAX][PREDICTED_INPUTS_COUNT][PAD_SIZE];
+    u8 predicted_early[REMOTES_MAX][PREDICTED_INPUTS_COUNT];   /* the prediction came from an early pad */
     int savestate_predicting, savestate_frame;
-    int player_savestate_frame[REMOTES];
-    u8 player_predicting[REMOTES];
+    int player_savestate_frame[REMOTES_MAX];
+    u8 player_predicting[REMOTES_MAX];
     int latest_frame;
     int stable_rollback_active, stable_rollback_end_frame, stable_should_load, stable_savestate_frame;
     int stable_finalized, finalized;
@@ -253,7 +270,7 @@ typedef struct MuOnlineState {
      * self-test replays them, since the host drops remote pads once a frame is finalized. */
     int used_frame[USED_PADS_COUNT];
     u8 used_confirmed[USED_PADS_COUNT];
-    u8 used_pads[USED_PADS_COUNT][4][PAD_SIZE];
+    u8 used_pads[USED_PADS_COUNT][ONLINE_PORTS][PAD_SIZE];
     int selftest_rollback;    /* the running rollback is the self-test's */
     unsigned int resim_input_mismatches;
     unsigned int forced_renews, gated_alarms;
@@ -270,16 +287,16 @@ typedef struct MuOnlineState {
     unsigned int despawns;    /* remote fighters removed after a disconnect */
     /* Correction size: fighter positions when a rollback loaded, compared with the re-simulated
      * state at the same frame (the visible snap). */
-    float corr_pos[4][2];
-    u8 corr_valid[4];
+    float corr_pos[ONLINE_PORTS][2];
+    u8 corr_valid[ONLINE_PORTS];
     int corr_pending;
     double corr_sum;
     float corr_max;
     unsigned int corr_n, corr_over1, corr_over4;
     /* Per remote: early guesses scored, how many were wrong, and whether its early pads are ignored
      * for the rest of the match (more than 60% wrong after 64; honest play stays under 26%). */
-    unsigned int early_scored[REMOTES], early_missed[REMOTES];
-    u8 early_distrusted[REMOTES];
+    unsigned int early_scored[REMOTES_MAX], early_missed[REMOTES_MAX];
+    u8 early_distrusted[REMOTES_MAX];
     /* How long rollbacks take, trigger to done, in microseconds: the longest, the total, and how
      * many ran past 8 ms and past a whole frame (16.7 ms, a frame the player could see drop). */
     unsigned long long rollback_start_ticks;
@@ -295,6 +312,35 @@ typedef struct MuOnlineState {
 } MuOnlineState;
 
 static MuOnlineState mu_online;
+
+/* The match's ports and remote players: 4 and 3, or 6 and 5 in a Triples match. */
+static int online_ports(void)
+{
+    return mu_online.ports == ONLINE_PORTS && !mu_online.console_active ? ONLINE_PORTS : 4;
+}
+static int online_remotes(void)
+{
+    return online_ports() - 1;
+}
+/* A remote's part of the reply: Slippi's layout for remotes 1 to 3, the Triples block after it for
+ * remotes 4 and 5. */
+static const u8* rx_part(int count, unsigned int base, unsigned int stride, unsigned int tri)
+{
+    if (count < REMOTES) {
+        return mu_online.rxb + base + stride * (unsigned int) count;
+    }
+    return mu_online.rxb + RXB_TRI + TRI_ENTRY * (unsigned int) (count - REMOTES) + tri;
+}
+#define RX_DESYNC(c) rx_part((c), RXB_OPNT_DESYNC, 8, TRI_DESYNC)
+#define RX_FRAME_NUM(c) rx_part((c), RXB_OPNT_FRAME_NUMS, 4, TRI_FRAME_NUM)
+#define RX_INPUTS(c) rx_part((c), RXB_OPNT_INPUTS, PAD_SIZE * RXB_INPUTS_COUNT, TRI_INPUTS)
+#define RX_DESPAWN(c) rx_part((c), RXB_DESPAWN_FRAMES, 4, TRI_DESPAWN)
+#define RX_PREDICTED(c) rx_part((c), RXB_OPNT_PREDICTED_INPUTS, PAD_SIZE * RXB_INPUTS_COUNT, TRI_PREDICTED)
+
+int mu_online_ports(void)
+{
+    return mu_online.active ? online_ports() : 4;
+}
 
 /* These operations are the version-26 host ABI, private to console sessions. */
 enum { CONSOLE_QUERY, CONSOLE_MATCH_BEGIN, CONSOLE_FORWARD, CONSOLE_INPUTS,
@@ -474,7 +520,7 @@ static u32 compute_checksum(void)
     u32 acc = 0;
     float sum = 0.0F;
     int i, k;
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < online_ports(); i++) {
         for (k = 0; k < 2; k++) {
             HSD_GObj* gobj = player_slots[i].player_entity[k];
             Fighter* fp;
@@ -574,7 +620,7 @@ static int capture_state(int frame)
 static void correction_capture(void)
 {
     int p;
-    for (p = 0; p < 4; p++) {
+    for (p = 0; p < online_ports(); p++) {
         HSD_GObj* gobj = player_slots[p].player_entity[0];
         Fighter* fp = gobj != NULL ? gobj->user_data : NULL;
         mu_online.corr_valid[p] = (u8) (fp != NULL);
@@ -593,7 +639,7 @@ static void correction_measure(void)
         return;
     }
     mu_online.corr_pending = 0;
-    for (p = 0; p < 4; p++) {
+    for (p = 0; p < online_ports(); p++) {
         HSD_GObj* gobj = player_slots[p].player_entity[0];
         Fighter* fp = gobj != NULL ? gobj->user_data : NULL;
         float dx, dy, d;
@@ -791,14 +837,14 @@ static int early_checksums(void)
 
 static void trace_pads_line(const PADStatus* stat, int frame, const char* kind, int confirmed)
 {
-    char line[200];
+    char line[260];
     int p, at;
     if (!trace_pads()) {
         return;
     }
     at = snprintf(line, sizeof line, "pads f %d %s conf %d local %d:", frame, kind, confirmed,
                   (int) mu_online.local_index);
-    for (p = 0; p < 4; p++) {
+    for (p = 0; p < online_ports(); p++) {
         u8 w[PAD_SIZE];
         int k;
         pad_to_wire(w, &stat[p]);
@@ -812,14 +858,14 @@ static void trace_pads_line(const PADStatus* stat, int frame, const char* kind, 
 
 static void trace_state_line(int frame, u32 checksum)
 {
-    char line[240];
+    char line[360];
     int i, at;
     if (!trace_pads()) {
         return;
     }
     at = snprintf(line, sizeof line, "state f %d sum %08X seed %08X:", frame, (unsigned int) checksum,
                   (unsigned int) *HSD_RandSeedPtr);
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < online_ports(); i++) {
         HSD_GObj* gobj = player_slots[i].player_entity[0];
         Fighter* fp;
         if (gobj == NULL) {
@@ -911,8 +957,8 @@ static const u8* early_pad(int count, int frame, int latest)
     const u8* rxb = mu_online.rxb;
     unsigned int p = RXB_EARLY;
     int r;
-    if (count >= 0 && count < REMOTES && mu_online.early_distrusted[count]) {
-        return NULL;
+    if (count < 0 || count >= REMOTES || mu_online.early_distrusted[count] || online_ports() != 4) {
+        return NULL;   /* a Triples match has no early pads */
     }
     if (mu_online.rxb_size < RXB_EARLY + REMOTES) {
         return NULL;
@@ -979,7 +1025,7 @@ int mu_online_pad_renew(PADStatus* stat)
             return 1;
         }
         if (HSD_PadGetRawQueueCount() == 0) {
-            memset(stat, 0, 4 * sizeof *stat);
+            memset(stat, 0, (unsigned int) online_ports() * sizeof *stat);   /* pads 5 and 6 stay unplugged in a 4-port match */
             trace_pads_line(stat, 0, "first", 1);
             return 0;
         }
@@ -1001,11 +1047,11 @@ int mu_online_pad_renew(PADStatus* stat)
             logf_("renew resim frame %d retrace %d engine %d", frame, (int) mu_online_abi_retrace_count(),
                   global_frame());
         }
-        memset(stat, 0, 4 * sizeof *stat);
+        memset(stat, 0, (unsigned int) online_ports() * sizeof *stat);   /* pads 5 and 6 stay unplugged in a 4-port match */
         if (mu_online.selftest_rollback && known) {
             /* Self-test: exactly the pads this frame used the first time (kept with their RNG
              * bits, so section 11 gives the frame the same seed bits again). */
-            for (p = 0; p < 4; p++) {
+            for (p = 0; p < online_ports(); p++) {
                 wire_to_pad(&stat[p], mu_online.used_pads[slot][p]);
             }
             prepare_rng_bits(stat, frame, 0);
@@ -1021,7 +1067,7 @@ int mu_online_pad_renew(PADStatus* stat)
             if (known && mu_online.used_confirmed[slot]) {
                 /* Every pad of this frame was confirmed the first time: they must not change. */
                 u8 wire[PAD_SIZE];
-                for (p = 0; p < 4; p++) {
+                for (p = 0; p < online_ports(); p++) {
                     pad_to_wire(wire, &stat[p]);
                     if (memcmp(wire, mu_online.used_pads[slot][p], PAD_SIZE) != 0) {
                         if (mu_online.resim_input_mismatches++ < 8) {
@@ -1044,7 +1090,7 @@ int mu_online_pad_renew(PADStatus* stat)
     /* Section 1: every port is zero until shortly before the match unfreezes, so both players'
      * recordings agree on finalized frames. */
     if (frame < START_SYNC_FRAME - mu_online.delay) {
-        memset(stat, 0, 4 * sizeof *stat);
+        memset(stat, 0, (unsigned int) online_ports() * sizeof *stat);   /* pads 5 and 6 stay unplugged in a 4-port match */
     }
     source = &stat[mu_online.input_source];
     if (test_inputs_enabled() && frame >= START_SYNC_FRAME - mu_online.delay) {
@@ -1389,6 +1435,12 @@ static void report_game(void)
     if (mu_online.start_data != NULL) {
         mu_replay_game_info_block(b + RGB_GAME_INFO_BLOCK, mu_online.start_data);
     }
+    /* Triples: the six placements first (the report's winner reads ports 1 and 2 only), for the Friends
+     * lobby's result. */
+    if (online_ports() == ONLINE_PORTS) {
+        extern void mu_replay_triples_game_end(int end_method);
+        mu_replay_triples_game_end(end_method);
+    }
     command(CMD_REPORT_GAME, b, sizeof b, mu_online.match_state, NULL);
     logf_("online: game report sent: game %d, winner %d, end method %d", (int) online_game_index, winner,
           end_method);
@@ -1455,8 +1507,7 @@ void mu_online_frame_begin(void)
             frame = global_frame();
             mu_online.frame = mu_online.savestate_frame;
             mu_online.savestate_predicting = 0;
-            mu_online.player_predicting[0] = mu_online.player_predicting[1] =
-                mu_online.player_predicting[2] = 0;
+            memset(mu_online.player_predicting, 0, sizeof mu_online.player_predicting);
             mu_online.rollback_should_load = 0;
             mu_online.stable_should_load = 0;
         }
@@ -1502,9 +1553,9 @@ rollback_inputs_done:
         if (frame == 1 && first_compared == 1) {
             logf_("online: checksums compared from frame 1 (MELEE_ONLINE_EARLY_CHECKSUMS)");
         }
-        for (i = 0; i < remote_count && i < REMOTES; i++) {
-            int cf = (int) be32(rxb + RXB_OPNT_DESYNC + 8 * i);
-            u32 remote = be32(rxb + RXB_OPNT_DESYNC + 8 * i + 4);
+        for (i = 0; i < remote_count && i < online_remotes(); i++) {
+            int cf = (int) be32(RX_DESYNC(i));
+            u32 remote = be32(RX_DESYNC(i) + 4);
             int k;
             if (cf > mu_online.stable_finalized || cf < first_compared) {
                 continue;
@@ -1557,12 +1608,12 @@ desync_done:
      * itself only acts once (fn_8016EF98 does nothing without a fighter). */
     {
         int remote, port = 0;
-        for (remote = 0; remote < REMOTES; remote++, port++) {
+        for (remote = 0; remote < online_remotes(); remote++, port++) {
             int despawn_frame;
             if (port == mu_online.local_index) {
                 port++;
             }
-            despawn_frame = (int) be32(rxb + RXB_DESPAWN_FRAMES + 4 * remote);
+            despawn_frame = (int) be32(RX_DESPAWN(remote));
             if (despawn_frame == 0 || frame < despawn_frame) {
                 continue;
             }
@@ -1909,8 +1960,10 @@ void mu_online_start_melee(StartMeleeData* data)
     for (i = 0; i < USED_PADS_COUNT; i++) {
         mu_online.used_frame[i] = -1;
     }
-    mu_online.local_index = mu_online.match_state[MSRB_LOCAL_PLAYER_INDEX] & 3;
-    mu_online.remote_index = mu_online.match_state[MSRB_REMOTE_PLAYER_INDEX] & 3;
+    /* Triples: the host marks a match of 5 or 6 players after Slippi's match state. */
+    mu_online.ports = (u8) (size > MSRB_TRIPLES && mu_online.match_state[MSRB_TRIPLES] == ONLINE_PORTS ? ONLINE_PORTS : 4);
+    mu_online.local_index = (u8) (mu_online.match_state[MSRB_LOCAL_PLAYER_INDEX] % online_ports());
+    mu_online.remote_index = (u8) (mu_online.match_state[MSRB_REMOTE_PLAYER_INDEX] % online_ports());
     mu_online.rng_offset = be32(mu_online.match_state + MSRB_RNG_OFFSET);
     *HSD_RandSeedPtr = mu_online.rng_offset;
 #ifndef MU_NO_SLIPPI
@@ -1924,6 +1977,8 @@ void mu_online_start_melee(StartMeleeData* data)
     }
 #endif
     mu_replay_apply_game_info(data, mu_online.match_state + MSRB_GAME_INFO_BLOCK);
+    /* Triples: the scene counted its players before this match's game info was in; count again. */
+    mu_triples_match_enter(data);
 #if MU_SQUAD
     /* Based on Squad Strike by Chris (x9x9x9x9x9), https://github.com/x9x9x9x9x9/squad-strike v1.0.0, used with the author's permission (11-03-2026) */
     /* The harness skips gmVsMelee_EnterVs in debug VS. Run its production squad entry
@@ -1937,7 +1992,7 @@ void mu_online_start_melee(StartMeleeData* data)
      * colour is the wrong team's for two of them (all four played in red). The console's online code
      * sets the costume from the team here; the menus already do (mu_slippi_menu.c splash_prep). */
     if (data->rules.is_teams) {
-        for (i = 0; i < 4; i++) {
+        for (i = 0; i < online_ports(); i++) {
             data->players[i].color = mu_slippi_team_costume(data->players[i].team + 1, data->players[i].ckind);
         }
     }
@@ -1952,7 +2007,7 @@ void mu_online_start_melee(StartMeleeData* data)
     mu_online.delay = (u8) delay;
     mu_online.desync_last_frame = 0;
     /* No transformation from a held A: clear every port's copied buttons. */
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < online_ports(); i++) {
         HSD_PadCopyStatus[i].button = 0;
     }
     gobj = GObj_Create(4, 7, 0);
@@ -1966,8 +2021,16 @@ void mu_online_start_melee(StartMeleeData* data)
     mu_online_audio_match_start(mu_online.local_index, mu_online.input_source);
     logf_("online: match starts, local port %d, delay %d, rng offset %08X", mu_online.local_index,
           mu_online.delay, (int) mu_online.rng_offset);
+    if (online_ports() == ONLINE_PORTS) {
+        logf_("online: Triples match, pads for %d ports", online_ports(), 0, 0);
+    }
     /* SendGameInfo (8016E74C, right after InitOnlinePlay): every online match is recorded. */
-    mu_replay_online_start(data, mu_online.match_state);
+    /* Triples matches are not recorded yet: Slippi's replay format holds four ports. */
+    if (online_ports() != ONLINE_PORTS) {
+        mu_replay_online_start(data, mu_online.match_state);
+    } else {
+        logf_("online: Triples match, not recorded (replays hold four players)", 0, 0, 0);
+    }
     /* HANDLE_RANKED_MATCH_START: a Ranked game that is not a tiebreak tells the server it starts
      * (message 20 is game 1). Sent last, since the
      * reply buffer is the match state the lines above still read. */

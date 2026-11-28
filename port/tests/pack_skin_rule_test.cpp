@@ -68,6 +68,11 @@ int main() {
         !is_archive_file("/sdslchr.usd") && !is_archive_file("/audio/menu01.hps") && !is_archive_file("/opening.bnr"),
         "menus, music and the banner are not");
 
+  // Fighter data files: online they keep a pack's move sounds (cosmetic_mods fighter_sounds_merged).
+  using source_port::skins::is_fighter_data_file;
+  check(is_fighter_data_file("/plca.dat") && is_fighter_data_file("plfx.dat") && !is_fighter_data_file("/plco.dat") &&
+        !is_fighter_data_file("/plcanr.dat") && !is_fighter_data_file("/plcaaj.dat") && !is_fighter_data_file("/grps.dat"),
+        "fighter data files");
   if (failures) std::fprintf(stderr, "%d pack skin rule test(s) failed\n", failures);
   else std::puts("pack skin rule tests passed");
   return failures ? 1 : 0;

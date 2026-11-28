@@ -39,9 +39,10 @@
  *   u8 refusal_hint, u8 refusal_seq (bumps once per refusal Rooms sent this player),
  *   u8 arm (bumps each time a lobby is armed: the select that saw another one never leaves it),
  *   u8 note_seq (bumps once per drop recorded: the select shows each drop's note once, same text or not),
+ *   u8 seat_count (the room's seats: 4, or 6 once Rooms gives the Friends lobby six; seats past it are open),
  *   rules: u8 teams, u8 ff, u8 time, u8 stocks, u8 minutes, u8 pause,
  *   char note[MU_LOBBY_NOTE] (why the last match setup fell through, printable ASCII, NUL padded),
- *   4 seats * {u8 kind (MU_LOBBY_KIND_*), u8 level, u8 seat_flags (MU_LOBBY_S_*),
+ *   6 seats * {u8 kind (MU_LOBBY_KIND_*), u8 level, u8 seat_flags (MU_LOBBY_S_*),
  *              u8 hover ch, color, team, u8 pick ch, color, team,
  *              u8 route (MU_LOBBY_ROUTE_*), u8 rtt_hi, u8 rtt_lo (ms, big-endian),
  *              char name[MU_LOBBY_NAME] (printable ASCII, NUL padded),
@@ -52,7 +53,7 @@
 #include <string.h>
 
 #define MU_LOBBY_COMMAND 0xD9u          /* free on slippi_command: D0-D8 are Slippi's, E8-EF taken */
-#define MU_LOBBY_VERSION 6
+#define MU_LOBBY_VERSION 7
 
 #define MU_LOBBY_OP_ENTER 0
 #define MU_LOBBY_OP_READ 1
@@ -78,7 +79,8 @@
 #define MU_LOBBY_OP_SQUAD_ADMISSION 21 /* after the game passed the budget scan */
 #define MU_LOBBY_OP_COUNT 22
 
-#define MU_LOBBY_SEATS 4
+#define MU_LOBBY_SEATS 6            /* the most a Friends room seats (Triples); a v1 room has 4 */
+#define MU_LOBBY_SEATS_V1 4
 #define MU_LOBBY_NONE 0xFF
 #define MU_LOBBY_NAME 16
 #define MU_LOBBY_CHAR_MAX 25
@@ -162,7 +164,7 @@
 
 #define MU_LOBBY_RULES_SIZE 6
 #define MU_LOBBY_SEAT_SIZE (3 + 3 + 3 + 3 + MU_LOBBY_NAME + 9)
-#define MU_LOBBY_VIEW_HEAD 10
+#define MU_LOBBY_VIEW_HEAD 11
 #define MU_LOBBY_VIEW_SIZE \
     (MU_LOBBY_VIEW_HEAD + MU_LOBBY_RULES_SIZE + MU_LOBBY_NOTE + MU_LOBBY_SEATS * MU_LOBBY_SEAT_SIZE)
 
@@ -182,6 +184,7 @@ typedef struct MuLobbySeat {
 
 typedef struct MuLobbyView {
     unsigned char flags, mode, my_seat, host_seat, block_hint, refusal_hint, refusal_seq, arm, note_seq;
+    unsigned char seat_count;   /* MU_LOBBY_SEATS_V1 or MU_LOBBY_SEATS */
     MuLobbyRules rules;
     char note[MU_LOBBY_NOTE];
     MuLobbySeat seats[MU_LOBBY_SEATS];
@@ -336,6 +339,7 @@ static inline size_t mu_lobby_view_encode(const MuLobbyView* v, unsigned char* o
     out[at++] = v->flags; out[at++] = v->mode; out[at++] = v->my_seat; out[at++] = v->host_seat;
     out[at++] = v->block_hint; out[at++] = v->refusal_hint; out[at++] = v->refusal_seq; out[at++] = v->arm;
     out[at++] = v->note_seq;
+    out[at++] = v->seat_count;
     out[at++] = v->rules.teams; out[at++] = v->rules.ff; out[at++] = v->rules.time;
     out[at++] = v->rules.stocks; out[at++] = v->rules.minutes; out[at++] = v->rules.pause;
     for (i = 0; i < MU_LOBBY_NOTE; ++i) {
@@ -372,12 +376,15 @@ static inline int mu_lobby_view_decode(const unsigned char* b, size_t n, MuLobby
     v->flags = b[at++]; v->mode = b[at++]; v->my_seat = b[at++]; v->host_seat = b[at++];
     v->block_hint = b[at++]; v->refusal_hint = b[at++]; v->refusal_seq = b[at++]; v->arm = b[at++];
     v->note_seq = b[at++];
+    v->seat_count = b[at++];
     v->rules.teams = b[at++]; v->rules.ff = b[at++]; v->rules.time = b[at++];
     v->rules.stocks = b[at++]; v->rules.minutes = b[at++]; v->rules.pause = b[at++];
     memcpy(v->note, b + at, MU_LOBBY_NOTE); at += MU_LOBBY_NOTE;
     v->note[MU_LOBBY_NOTE - 1] = 0;
-    if ((v->my_seat >= MU_LOBBY_SEATS && v->my_seat != MU_LOBBY_NONE) ||
-        (v->host_seat >= MU_LOBBY_SEATS && v->host_seat != MU_LOBBY_NONE) ||
+    if ((v->seat_count != MU_LOBBY_SEATS_V1 && v->seat_count != MU_LOBBY_SEATS) ||
+        ((v->mode & MU_LOBBY_M_DOUBLES) && v->seat_count != MU_LOBBY_SEATS_V1) ||
+        (v->my_seat >= v->seat_count && v->my_seat != MU_LOBBY_NONE) ||
+        (v->host_seat >= v->seat_count && v->host_seat != MU_LOBBY_NONE) ||
         v->block_hint >= MU_LOBBY_HINT_COUNT || v->refusal_hint >= MU_LOBBY_HINT_COUNT ||
         (v->mode & ~(MU_LOBBY_M_DOUBLES | MU_LOBBY_M_SEARCHING | MU_LOBBY_M_STAGE_SELECT | MU_LOBBY_M_LOCAL_OWNER | MU_LOBBY_M_SQUAD | MU_LOBBY_M_SQUAD_AVAILABLE | MU_LOBBY_M_RANKED)) ||
         ((v->mode & MU_LOBBY_M_RANKED) && !(v->mode & MU_LOBBY_M_DOUBLES)) ||
@@ -411,6 +418,7 @@ static inline int mu_lobby_view_decode(const unsigned char* b, size_t n, MuLobby
         }
         if (s->kind > MU_LOBBY_KIND_LOCAL || s->route > MU_LOBBY_ROUTE_UNKNOWN) return 0;
         if (s->kind == MU_LOBBY_KIND_LOCAL && (!(v->mode & MU_LOBBY_M_DOUBLES) || i != 1)) return 0;
+        if (i >= v->seat_count && s->kind != MU_LOBBY_KIND_OPEN) return 0;
     }
     if ((v->mode & MU_LOBBY_M_LOCAL_OWNER) && v->seats[1].kind != MU_LOBBY_KIND_LOCAL) return 0;
     return 1;

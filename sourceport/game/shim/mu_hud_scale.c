@@ -235,7 +235,8 @@ void mu_hud_fade(HSD_GObj* gobj)
             break;
         }
     }
-    target = mu_code_feature(MU_DISPLAY_HUD_FADE) && mu_hud_covered(root) ? 0.4f : 1.0f;
+    /* Triples (transparent_hud): on in five- and six-player matches too. */
+    target = (mu_code_feature(MU_DISPLAY_HUD_FADE) || mu_triples_hud_fade()) && mu_hud_covered(root) ? 0.4f : 1.0f;
     if (f == NULL) {
         if (target >= 1.0f) {
             return;   /* never faded: the game's own alpha stays untouched */

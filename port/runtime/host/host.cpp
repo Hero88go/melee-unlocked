@@ -3305,7 +3305,7 @@ static void publish_lobby_status() {
   }
 }
 
-void publish_lobby_result(int winner_index, int end_method, int lras, const uint8_t* placements) {
+void publish_lobby_result(int winner_index, int end_method, int lras, const uint8_t* placements, int placement_count) {
   // session(): the app, or a YouGame row picked under Melee Unlocked's launcher (active() is the app only:
   // under the launcher no result ever reached the room, so Ranked sets went unrecorded).
   if (yougame::session() && slippi::online::session_mode() >= 0) {
@@ -3315,7 +3315,7 @@ void publish_lobby_result(int winner_index, int end_method, int lras, const uint
     end.lras = lras;
     if (placements) {
       end.has_placements = true;
-      for (int i = 0; i < 4; ++i) end.placements[i] = placements[i];
+      for (int i = 0; i < placement_count && i < 6; ++i) end.placements[i] = placements[i];
     }
     const auto facts = slippi::online::last_game_facts();
     end.stage = facts.stage;

@@ -785,20 +785,47 @@ int mu_test_classic_stage(void)
     return *v == '\0' ? n : -1;
 }
 
-/* MELEE_TEST_VS_TEAMS=<t1>,<t2>,<t3>,<t4> (tests only): VS Mode as a team match, each port on that team (0 red,
- * 1 blue, 2 green; '-' or missing leaves the port's team). Returns 0 when unset. */
-int mu_test_vs_teams(int teams[4])
+/* MELEE_TEST_VS_TEAMS=<t1>,<t2>,...,<t6> (tests only): VS Mode as a team match, each slot on that team (0 red,
+ * 1 blue, 2 green; '-' or missing leaves the slot's team). Returns 0 when unset. */
+int mu_test_vs_teams(int teams[6])
 {
     const char* v = mu_test_getenv("MELEE_TEST_VS_TEAMS");
     int i;
     if (v == NULL || *v == '\0') {
         return 0;
     }
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 6; i++) {
         teams[i] = *v >= '0' && *v <= '2' ? *v - '0' : -1;
         while (*v != '\0' && *v != ',') v++;
         if (*v == ',') v++;
     }
+    return 1;
+}
+
+/* MELEE_TEST_VS_EXTRA=<c3>,<c4>,<c5>,<c6>[;<level>] (tests only, the Triples probe): VS Mode fills slots 3 to 6
+ * with CPU fighters of those external character ids ('-' or missing leaves the slot as the menu set it),
+ * CPU level <level> (default 9). Returns 0 when unset. */
+int mu_test_vs_extra(int ckind[4], int* level)
+{
+    const char* v = mu_test_getenv("MELEE_TEST_VS_EXTRA");
+    int i;
+    if (v == NULL || *v == '\0') {
+        return 0;
+    }
+    *level = 9;
+    for (i = 0; i < 4; i++) {
+        int n = -1;
+        while (*v >= '0' && *v <= '9') {
+            n = (n < 0 ? 0 : n * 10) + (*v++ - '0');
+            if (n > 40) n = 40;
+        }
+        ckind[i] = n;
+        while (*v != '\0' && *v != ',' && *v != ';') v++;
+        if (*v == ',') v++;
+        else break;
+    }
+    for (++i; i < 4; i++) ckind[i] = -1;
+    if (*v == ';' && v[1] >= '1' && v[1] <= '9') *level = v[1] - '0';
     return 1;
 }
 
@@ -862,7 +889,7 @@ void mu_test_mex_icon_next(void)
  * picks any fighter with a plain A. One value applies to every port; '-' or an empty field leaves
  * that port's hand alone. Unset: -1, nothing moves. */
 static int css_char_visit = 1;
-static int css_char_done[4];
+static int css_char_done[6];   /* Triples: six hands */
 void mu_test_css_enter(void)
 {
     ++css_char_visit;
@@ -872,7 +899,7 @@ int mu_test_css_char(int port)
     const char* v;
     int field = 0, n = -1, single = 1;
     const char* p;
-    if (port < 0 || port > 3 || css_char_done[port] == css_char_visit) {
+    if (port < 0 || port > 5 || css_char_done[port] == css_char_visit) {
         return -1;
     }
     css_char_done[port] = css_char_visit;   /* asked once per visit: no environment read each frame */
@@ -914,15 +941,17 @@ int mu_test_css_char(int port)
  * first (MELEE_TEST_CSS_CHAR) when <after> leaves it the time. */
 int mu_test_css_hand(int port, float* x, float* y)
 {
-    static int parsed = 0, on = 0, after = 0, visit = 0, frames = 0;
-    static float hx = 0.0f, hy = 0.0f;
+    /* Up to 6 places, "x,y,after" each, separated by ';': each holds from its <after> on (the later wins). */
+    static int parsed = 0, count = 0, visit = 0, frames = 0, hand_port = 0;
+    static float hx[6], hy[6];
+    static int hafter[6];
+    int i, at = -1;
     if (!parsed) {
-        const char* v = mu_test_getenv("MELEE_TEST_CSS_HAND");
-        float field[3] = { 0.0f, 0.0f, 0.0f };
-        int n = 0;
+        const char* p = mu_test_getenv("MELEE_TEST_CSS_HAND");
         parsed = 1;
-        if (v != NULL && *v != '\0') {
-            const char* p = v;
+        while (p != NULL && *p != '\0' && count < 6) {
+            float field[3] = { 0.0f, 0.0f, 0.0f };
+            int n = 0;
             while (n < 3) {
                 float sign = 1.0f, value = 0.0f, scale = 0.0f;
                 int digits = 0;
@@ -950,24 +979,38 @@ int mu_test_css_hand(int port, float* x, float* y)
                 }
                 ++p;
             }
+            if (n >= 2) {
+                hx[count] = field[0];
+                hy[count] = field[1];
+                hafter[count++] = n >= 3 ? (int) field[2] : 0;
+            }
+            if (*p != ';') {
+                break;
+            }
+            ++p;
         }
-        on = n >= 2;
-        hx = field[0];
-        hy = field[1];
-        after = n >= 3 ? (int) field[2] : 0;
+        {
+            /* MELEE_TEST_CSS_HAND_PORT=<1-6>: whose hand (default player 1; 5 and 6 for Triples) */
+            const char* hp = mu_test_getenv("MELEE_TEST_CSS_HAND_PORT");
+            hand_port = hp != NULL && hp[0] >= '1' && hp[0] <= '6' ? hp[0] - '1' : 0;
+        }
     }
-    if (!on || port != 0) {
+    if (count == 0 || port != hand_port) {
         return 0;
     }
     if (visit != css_char_visit) {   /* a new CSS visit (mu_test_css_enter) counts from 0 again */
         visit = css_char_visit;
         frames = 0;
     }
-    if (frames++ < after) {
+    frames++;
+    for (i = 0; i < count; i++) {
+        if (frames > hafter[i]) at = i;
+    }
+    if (at < 0) {
         return 0;
     }
-    *x = hx;
-    *y = hy;
+    *x = hx[at];
+    *y = hy[at];
     return 1;
 }
 

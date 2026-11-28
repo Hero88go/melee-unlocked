@@ -82,7 +82,7 @@ inline std::map<int, unsigned> links_for(int me, std::vector<int> ports) {
   std::map<int, unsigned> out;
   unsigned next = kLink0;
   for (int p : ports)
-    if (p != me && p >= 1 && p <= 4 && next < kLink0 + kMaxLinks) out[p] = next++;
+    if (p != me && p >= 1 && p <= 6 && next < kLink0 + kMaxLinks) out[p] = next++;   // seats 1-6 (Triples)
   return out;
 }
 
@@ -124,7 +124,7 @@ inline bool entries_for(const json& m, int me, int& from, std::vector<std::strin
   const auto s = d.find("s"), p = d.find("p");
   if (s == d.end() || !s->is_number_integer() || p == d.end() || !p->is_array()) return false;
   from = s->get<int>();
-  if (from < 1 || from > 4 || from == me) return false;
+  if (from < 1 || from > 6 || from == me) return false;
   for (const auto& e : *p) {
     if (!e.is_array() || e.size() != 2 || !e[0].is_number_integer() || !e[1].is_string()) continue;
     if (e[0].get<int>() != me) continue;

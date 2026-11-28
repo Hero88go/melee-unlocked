@@ -210,6 +210,13 @@ void pad_to_wire(u8* a, const PADStatus* p) {
 }
 u32 be32(const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; }
 int Player_GetPlayerCharacter(int) { return 0; }   // no character rolls with B here
+// mu_online.c's port and reply helpers (Triples): a console session is always four ports, Slippi's layout.
+int online_ports() { return 4; }
+int online_remotes() { return REMOTES; }
+const u8* rx_part(int count, unsigned base, unsigned stride) { return mu_online.rxb + base + stride * (unsigned)count; }
+#define RX_FRAME_NUM(c) rx_part((c), RXB_OPNT_FRAME_NUMS, 4)
+#define RX_INPUTS(c) rx_part((c), RXB_OPNT_INPUTS, PAD_SIZE * RXB_INPUTS_COUNT)
+#define RX_PREDICTED(c) rx_part((c), RXB_OPNT_PREDICTED_INPUTS, PAD_SIZE * RXB_INPUTS_COUNT)
 #include "../../sourceport/game/shim/mu_online_prediction.inc"
 void camera_tasks() { ++current->cameras; }
 // Audio production execution is added below; these declarations match the game header.

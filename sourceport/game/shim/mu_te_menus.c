@@ -30,10 +30,14 @@ static signed char shield_choice[4] = {-1, -1, -1, -1};
 int mu_port_shield_color(int slot, unsigned int* rgb)
 {
     extern unsigned int mu_shield_color(int slot);   /* mu_entry.c */
+    extern int mu_triples_shield_color(int slot, unsigned int* rgb);   /* mu_triples.c */
     unsigned int chosen;
     /* Team matches too (owner 11-24): a player who chose a colour keeps it on any team; one who did not
      * shows the team colour. */
-    if (slot < 0 || slot >= 4) {
+    if (slot >= 4) {
+        return mu_triples_shield_color(slot, rgb);   /* Triples: players 5 and 6 */
+    }
+    if (slot < 0) {
         return 0;
     }
     chosen = mu_shield_color(slot);

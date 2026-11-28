@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace source_port::skins {
 
@@ -31,6 +32,10 @@ struct Verdict {
   bool served = false;      // stays on in online modes that play the standard game
   bool identical = false;   // byte for byte the standard costume
 };
+
+// True for a fighter's data file: "pl" + a two-letter fighter code + ".dat" ("plca.dat"), not the common
+// file ("plco.dat"). The path must already be lower case.
+bool is_fighter_data_file(const std::string& lower_path);
 
 // The entry number the game gets when it opens `entry`.
 // Offline, or in an online mode that keeps the mod (retail_view false): the entry itself.

@@ -49,8 +49,10 @@ int main() {
   CHECK(!hello_frame("a", "b").count("rev"));
   CHECK(frame_text(hover_frame(0, p)) == R"({"char":2,"color":1,"op":"hover","seat":0,"t":"yg.mu.lobby","team":0,"v":1})");
 
-  // Ranges: seat 0-3, char 0-25, color 0-5, team 0-2, level 1-9, stage 2-32 but 21 and 26, delay 1-9.
-  CHECK(frame_text(hover_frame(4, p)).empty());
+  // Ranges: seat 0-5 (a six-seat room's; a four-seat session never sends 4 or 5), char 0-25, color 0-5,
+  // team 0-2, level 1-9, stage 2-32 but 21 and 26, delay 1-9.
+  CHECK(!frame_text(hover_frame(5, p)).empty());
+  CHECK(frame_text(hover_frame(6, p)).empty());
   CHECK(frame_text(hover_frame(-1, p)).empty());
   CHECK(frame_text(hover_frame(0, Pick{26, 0, 0})).empty());
   CHECK(!frame_text(hover_frame(0, Pick{25, 5, 2})).empty());
@@ -227,6 +229,45 @@ int main() {
   threw = false;
   try { lobby_ticket("friends-lobby-1:mu", "ab"); } catch (const std::exception&) { threw = true; }
   CHECK(threw);
+  // ---- six seats (Triples): a six-seat state and setup, and the asks for six ----
+  {
+    json six = state_json();
+    six["seats"].push_back({{"seat", 4}, {"kind", "human"}, {"id", "human-e"}, {"name", "Player E"}});
+    six["seats"].push_back({{"seat", 5}, {"kind", "open"}});
+    Incoming i6 = decode(six);
+    CHECK(i6.op == Op::State && !i6.why && i6.state.size == kSeatsMax);
+    CHECK(i6.state.seats[4].kind == Kind::Human && i6.state.seats[4].id == "human-e" && i6.state.seats[5].seat == 5);
+    six["host"] = 5;
+    CHECK(!decode(six).why);                                   // any of the six may be the host
+    CHECK(decode(six, Profile::Doubles).why);                  // a Doubles home is never six
+    json five = state_json();
+    five["seats"].push_back({{"seat", 4}, {"kind", "open"}});
+    CHECK(decode(five).why);                                   // five seats: no room has that shape
+    Incoming i4 = decode(state_json());
+    CHECK(i4.state.size == kSeats && i4.state.seats[4].kind == Kind::Open && i4.state.seats[5].seat == 5);
+    json four_host = state_json();
+    four_host["host"] = 4;
+    CHECK(decode(four_host).why);                              // a four-seat room has no seat 4
+    json s6 = setup_json();
+    s6["seats"] = json::array();
+    for (int k = 0; k < 6; ++k)
+      s6["seats"].push_back({{"seat", k}, {"port", k}, {"kind", "human"}, {"id", "h" + std::to_string(k)}, {"name", "P"},
+                             {"char", k}, {"color", 0}, {"team", 0}});
+    Incoming is = decode(s6);
+    CHECK(is.op == Op::Setup && !is.why && is.setup.seats.size() == 6 && is.setup.seats[5].port == 5);
+    s6["seats"].push_back({{"seat", 5}, {"port", 6}, {"kind", "human"}, {"id", "h6"}, {"name", "P"}, {"char", 6}, {"color", 0}, {"team", 0}});
+    CHECK(decode(s6).why);                                     // seven: never
+  }
+  {
+    using namespace yougame::friends;
+    CHECK(lobby_hold("friends-lobby-1:mu", true)["seats"] == 6 && lobby_hold("friends-lobby-1:mu", true)["players"] == 4);
+    CHECK(!lobby_hold("friends-lobby-1:mu").count("seats"));
+    const json t6 = lobby_ticket("friends-lobby-1:mu", "abcdefghjkmn", true);
+    CHECK(t6["lobby"]["seats"] == 6 && t6["players"] == 4 && !t6.count("seats"));
+    CHECK(!lobby_ticket("friends-lobby-1:mu", "abcdefghjkmn")["lobby"].count("seats"));
+    CHECK(lobby_invite("abcdefghjkmn", 6)["players"] == 6);
+    CHECK(lobby_invite("abcdefghjkmn", 5)["players"] == 4);    // only four or six
+  }
   std::printf("ok\n");
   return 0;
 }

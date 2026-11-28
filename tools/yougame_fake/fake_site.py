@@ -7,6 +7,8 @@ Routes (the ones the launcher calls, see port/app/launcher_yougame.cpp):
   POST /api/multiplayer/ticket                             pairs two players into one room
   GET  /api/native/builds                                  the builds allowed (--allowed VERSION:EXE:GAME ...)
   GET  /room/<code>?ticket=...  (WebSocket)                welcome, join, and relays {t:"msg"} by "to"
+A private room whose ticket carries a friends-lobby-1 key also runs the Friends lobby (fake_lobby.py); its
+seats follow --lobby-seats (six, four, refuse) when the ticket asks for six.
 Every request is logged as one JSON line to --log. Nothing here talks to YouGame.
 
     py -3.12 tools/yougame_fake/fake_site.py --port 0 --log fake.jsonl --portfile fake.port
@@ -16,12 +18,17 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import socket
 import socketserver
 import struct
 import threading
 import time
+import sys
 from urllib.parse import urlsplit, parse_qs
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # run with -I: fake_lobby.py beside this file
+import fake_lobby  # noqa: E402
 
 GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
@@ -35,6 +42,7 @@ class State:
         self.rooms = {}          # code -> {'conns': [Conn], 'size': 2}
         self.next_room = 1
         self.allowed = None      # /api/native/builds: None answers 404 (YouGame said nothing)
+        self.lobby_seats = 'four'   # how a six-seat ask is answered (fake_lobby.py)
 
     def log(self, **entry):
         entry['at'] = round(time.time(), 3)
@@ -158,6 +166,23 @@ class Handler(socketserver.BaseRequestHandler):
         if path == '/api/multiplayer/ticket' and method == 'POST':
             q = json.loads(body or '{}')
             s.log(route='ticket', user=user['id'], body=q, cookie=cookie_ok, origin=headers.get('origin'))
+            lobby = q.get('lobby') or {}
+            friends = q.get('queue') == 'private' and isinstance(q.get('room'), str) and \
+                'friends-lobby-1' in str(lobby.get('compatibility', ''))
+            if friends:
+                asked = lobby.get('seats') == 6
+                if asked and s.lobby_seats == 'refuse':
+                    s.log(route='ticket-refused', user=user['id'], why='lobby seats')
+                    return 400, {'error': 'Invalid lobby', 'code': 'bad_lobby'}
+                seats = 6 if asked and s.lobby_seats == 'six' else 4
+                with s.lock:
+                    room = s.rooms.setdefault(q['room'], {'conns': []})
+                    if 'lobby' not in room:
+                        room['lobby'] = fake_lobby.Lobby(seats, s.log)
+                        s.log(route='lobby-room', room=q['room'], seats=seats, asked_six=asked)
+                host = headers.get('host', '127.0.0.1')
+                return 200, {'url': f'ws://{host}', 'ticket': 'tk-' + user['id'], 'room': q['room'], 'queue': 'private',
+                             'player': {'id': user['id']}, 'rank': 'Unranked'}
             with s.lock:
                 if 'direct' in q:   # Direct: both name each other's code
                     me = user['code']
@@ -196,10 +221,26 @@ class Handler(socketserver.BaseRequestHandler):
         def roster(cs):
             return [{'id': c.id, 'connectionId': c.id, 'slot': i, 'localIndex': 0, 'user': c.id, 'hn': True, 'name': c.id}
                     for i, c in enumerate(cs)]
-        conn.send({'t': 'welcome', 'me': conn.id, 'room': {'code': code}, 'participants': roster(conns), 'revision': len(conns)})
+        lobby = room.get('lobby')
+
+        def everyone(frames):
+            if not frames: return
+            with s.lock:
+                cs = list(s.rooms[code]['conns'])
+            for f in frames if isinstance(frames, list) else [frames]:
+                for c in cs:
+                    c.send(f)
+        welcome = {'t': 'welcome', 'me': conn.id, 'room': {'code': code}, 'participants': roster(conns), 'revision': len(conns)}
+        if lobby:
+            with s.lock:
+                seated = lobby.join(conn.id, conn.id.replace('c-user-', '').split('@')[0][:15])
+                welcome['muLobby'] = lobby.state()
+            s.log(route='lobby-join', room=code, conn=conn.id, seated=seated, seats=lobby.size)
+        conn.send(welcome)
         for other in conns:
             if other is not conn:
                 other.send({'t': 'join', 'participants': roster(conns), 'revision': len(conns)})
+                if lobby: other.send(welcome['muLobby'])
         sock.settimeout(None)
         try:
             while True:
@@ -212,6 +253,22 @@ class Handler(socketserver.BaseRequestHandler):
                     continue
                 m = json.loads(data.decode('utf-8', 'replace'))
                 t = m.get('t')
+                if lobby and t in ('yg.mu.lobby', 'finish', 'end-session'):
+                    with s.lock:
+                        if t == 'yg.mu.lobby':
+                            mine, out = lobby.frame(conn.id, m)
+                        else:
+                            mine, out = [], (lobby.finish if t == 'finish' else lobby.end_session)(conn.id, m)
+                    for f in mine:
+                        conn.send(f)
+                    everyone(out)
+                    continue
+                if lobby and t == 'leave':
+                    with s.lock:
+                        lobby.leave(conn.id)
+                        out = lobby.state()
+                    everyone(out)
+                    continue
                 if t == 'msg':
                     with s.lock:
                         targets = [c for c in s.rooms[code]['conns'] if c.id == m.get('to')]
@@ -224,6 +281,12 @@ class Handler(socketserver.BaseRequestHandler):
         except (ConnectionError, OSError, ValueError):
             pass
         s.log(route='room-close', room=code, conn=conn.id)
+        if lobby:
+            with s.lock:
+                s.rooms[code]['conns'] = [c for c in s.rooms[code]['conns'] if c is not conn]
+                lobby.leave(conn.id)
+                out = lobby.state()
+            everyone(out)
 
 
 class Server(socketserver.ThreadingTCPServer):
@@ -238,8 +301,11 @@ def main():
     ap.add_argument('--log', default='')
     ap.add_argument('--portfile', default='')
     ap.add_argument('--allowed', nargs='*', help='VERSION:EXE_SHA256:GAME_SHA256 entries for /api/native/builds')
+    ap.add_argument('--lobby-seats', choices=['six', 'four', 'refuse'], default='four',
+                    help='a Friends room ticket asking for six seats: grant six, keep four, or refuse the ticket')
     a = ap.parse_args()
     STATE = State(a.log)
+    STATE.lobby_seats = a.lobby_seats
     if a.allowed is not None:
         STATE.allowed = [dict(zip(('version', 'exe_sha256', 'game_sha256'), x.split(':'))) for x in a.allowed]
     srv = Server(('127.0.0.1', a.port), Handler)

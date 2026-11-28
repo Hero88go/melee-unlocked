@@ -102,6 +102,10 @@ TYPED_HEADERS = (
 DENY = set()
 # One object may become at most this many rows; a bigger one is refused whole.
 MAX_ROWS = 2048
+# Bounds the native game makes longer than the console's object: Triples keeps pads 5 and 6 after the
+# console's four in the pad status arrays (controller.h). The native object is declared with this bound
+# and Gecko codes see a view of its first console-sized part, so they write exactly the console's bytes.
+NATIVE_LONGER = {"HSD_PAD_STATUS_COUNT"}
 
 # Type name -> element widths of one object, in order. Every one is the same size and alignment on
 # the console and on the PC, and holds no pointer. `long` is left out on purpose (the decomp's s32
@@ -471,7 +475,8 @@ def classify_typed(s, types, ctype, dims, rel):
         # An enum of the int's size on the console: the native compiler's is an int too, and the
         # shim asserts it. As a member of a struct an enum stays refused (see Node).
         node = Node(node.size, node.align, "4", OK, header=node.header)
-    count = types.count(dims)
+    native_bound = dims[0].strip() if len(dims) == 1 and dims[0].strip() in NATIVE_LONGER else None
+    count = None if native_bound else types.count(dims)
     if count is None:
         # A named bound (a macro or an enum constant): the console's own size says how many.
         if len(dims) != 1 or node.size == 0 or s.size % node.size:
@@ -494,9 +499,11 @@ def classify_typed(s, types, ctype, dims, rel):
         s.kind = POINTERS if any(r.kind == POINTERS for r in rows) and len(rows) <= MAX_ROWS else LAYOUT
         s.note = "no member can be offered (%s)" % rel
         return
-    decl = "%s %s%s" % (ctype, s.name, "".join("[%s]" % d for d in shape))
+    decl = "%s %s%s" % (ctype, s.name, "".join("[%s]" % d for d in ([native_bound] if native_bound else shape)))
     for r in rows:
         r.decl, r.ctype, r.note = decl, ctype, rel
+        if native_bound and r.lvalue == s.name:
+            r.lvalue = "(*(%s(*)%s) &%s)" % (ctype, "".join("[%s]" % d for d in shape), s.name)
     s.kind, s.ctype, s.rows, s.includes = OK, ctype, rows, [node.header] if node.header else []
     if not node.header:
         s.kind, s.rows, s.note = LAYOUT, None, "type %s is not defined in a header (%s)" % (ctype, rel)

@@ -2078,11 +2078,28 @@ void tick() {
     else g_friend_menu_ticks = 0;
     // Tests only (MELEE_TEST_FRIENDS_LOBBY): the 4-door Friends lobby through the launcher's bridge, as the
     // Friends row opens it with the app's channel up, so a hidden run plays the lobby on YouGame.
+    // "file:<path>": a guest, joining the room whose code the harness writes there (as an accepted invite
+    // does; under the launcher there is no invite picker), once the file has it.
     static bool test_lobby_done = false;
-    if (!test_lobby_done && major == 1 && g_bridge && g_friend_menu_ticks >= 120 &&
-        host::test_env::getenv("MELEE_TEST_FRIENDS_LOBBY") && yougame::identity().ok) {
+    static std::string test_lobby_room;
+    const char* test_lobby = host::test_env::getenv("MELEE_TEST_FRIENDS_LOBBY");
+    if (!test_lobby_done && test_lobby && std::strncmp(test_lobby, "file:", 5) == 0 && test_lobby_room.empty() &&
+        major == 1 && g_friend_menu_ticks % 30 == 0) {
+      std::FILE* f = std::fopen(test_lobby + 5, "rb");
+      if (f) {
+        char code[64] = {};
+        const size_t n = std::fread(code, 1, sizeof code - 1, f);
+        std::fclose(f);
+        std::string room(code, n);
+        while (!room.empty() && (room.back() == '\n' || room.back() == '\r' || room.back() == ' ')) room.pop_back();
+        test_lobby_room = room;
+      }
+    }
+    if (!test_lobby_done && major == 1 && g_bridge && g_friend_menu_ticks >= 120 && test_lobby && yougame::identity().ok &&
+        (std::strncmp(test_lobby, "file:", 5) != 0 || !test_lobby_room.empty())) {
       test_lobby_done = true;
-      host::log("friends lobby test: the 4-door lobby through the launcher's bridge");
+      host::log("friends lobby test: the 4-door lobby through the launcher's bridge%s%s",
+                test_lobby_room.empty() ? "" : ", joining room ", test_lobby_room.c_str());
       yougame::set_menu_service(1);          // as the YouGame page's Friends row picks it
       yougame::set_launcher_session(true);
       yougame::friends::events.online_menu(false);
@@ -2096,7 +2113,7 @@ void tick() {
       g_practice.players[0].character = 0;
       write_event_backup();
       if (g_content_bridge) g_content_bridge(2, true);
-      slippi::online::arm_friends_lobby({});
+      slippi::online::arm_friends_lobby(test_lobby_room);
       request_major(kOnlineMajor);
       return;
     }

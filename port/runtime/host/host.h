@@ -214,7 +214,9 @@ void set_replay_viewing(bool on);
 // Only a normal completed game with one known winner contributes to W/L history.
 // Also YouGame's word that an online game ended (yougame::game_ended): `lras` is the port a No
 // Contest names (-1 none), `placements` the Game End record's four placement bytes when known.
-void publish_lobby_result(int winner_index, int end_method, int lras = -1, const uint8_t* placements = nullptr);
+// placements: the Game End record's (4, or 6 from a Triples match's record).
+void publish_lobby_result(int winner_index, int end_method, int lras = -1, const uint8_t* placements = nullptr,
+                          int placement_count = 4);
 // Relaunch this executable with the same command line, then shut down the way request_exit does,
 // so the replay is finalised and the pipeline cache written before the new process takes over.
 // Used for settings a running device cannot adopt, the graphics backend being the one that
@@ -363,6 +365,9 @@ void mmio_write(uint32_t addr, uint32_t value, int bytes);
 // ---- input ----
 struct PadState { uint16_t button; int8_t stick_x, stick_y, sub_x, sub_y; uint8_t trig_l, trig_r, analog_a, analog_b; int8_t err; };
 void input_poll(PadState out[4]);
+// Triples: pads 5 and 6 as the last input_poll found them (the next connected controllers no port 1-4
+// is set to, or a script's p=5 / p=6); err nonzero when there is none.
+void input_poll_extra(PadState out[2]);
 // The controllers as they are right now, routed to the game's ports exactly as input_poll routes
 // them, with none of input_poll's side effects (no overlay snapshot, no settings chord, no script):
 // for the early-input sampler, which reads between the game's polls on its own thread.

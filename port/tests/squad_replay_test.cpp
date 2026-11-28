@@ -27,7 +27,7 @@ namespace gx { struct RenderOptions { static unsigned live_te_options() { return
 namespace host {
 static struct { bool vanilla_game = true; } options;
 namespace gameplay { static bool vanilla_only() { return true; } }
-static void publish_lobby_result(int, int, int, const uint8_t*) {}
+static void publish_lobby_result(int, int, int, const uint8_t*, int = 4) {}
 template<class... T> void log(const char* line, T...) {
   if (std::strcmp(line, "replay: not kept: Squad Strike swaps cannot be played back yet") == 0) ++logs;
   if (std::strcmp(line, "spectate: not streamed: Squad Strike swaps cannot be watched yet") == 0) ++spectator_logs;

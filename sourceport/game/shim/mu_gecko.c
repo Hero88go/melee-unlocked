@@ -73,6 +73,8 @@ int mu_lagless_fod_begin(void)
 {
     lagless_fod = mu_general_codes() &&
                   (mu_online_active() || (mu_display_options() & MU_DISPLAY_FOD_REFLECTIONS) == 0);
+    /* Triples: five or six fighters always play Lagless FoD (the reflection draws every fighter twice). */
+    if (mu_triples_active()) lagless_fod = 1;
     return lagless_fod;
 }
 int mu_lagless_fod(void)

@@ -111,6 +111,29 @@ int mu_low_poly_fighters(void);
 /* "Always show player tags": the P1 / P2 markers stay up all match (if/ifnametag.c). */
 #define MU_DISPLAY_PLAYER_TAGS 0x2u
 int mu_player_tags_always(void);
+/* Triples: VS matches of five or six players (shim/mu_triples.c). MU_TRIPLES_* are the 5-6 player
+ * options (MuHostApi.triples_flags, values as MU_TRIPLES_OPTION_* in mu_host.h). */
+#define MU_TRIPLES_TAGS        0x1u   /* P1-P6 markers stay up while five or six are alive */
+#define MU_TRIPLES_HUD_FADE    0x2u   /* HUD Transparency in five- and six-player matches */
+#define MU_TRIPLES_WIDE_CAMERA 0x4u   /* the camera may pull further out (offline) */
+struct StartMeleeData;
+struct MatchEnd;
+unsigned int mu_triples_flags(void);
+int mu_triples_players(void);
+int mu_triples_active(void);
+void mu_triples_match_enter(const struct StartMeleeData* start);
+void mu_triples_match_exit(struct MatchEnd* end);
+int mu_triples_hud_layout(int kind);
+void mu_triples_indicators(unsigned int frame);
+int mu_triples_no_quake(void);
+int mu_triples_hud_fade(void);
+int mu_triples_spawn(int slot, int is_teams);
+void mu_triples_art_reset(void);
+void mu_triples_marker(int slot, void* marker_jobj);   /* if/ifnametag.c */
+void* mu_triples_digit(const void* image_desc, int digit);   /* "P5"/"P6" from a "P3" image (HSD_ImageDesc) */
+void mu_triples_tex_dump(void* root_jobj, const char* tag);   /* tests: MELEE_TEST_CSS_TEXDUMP */
+struct PADStatus;
+void mu_triples_pads(struct PADStatus* out);       /* pads 5 and 6, offline; unplugged otherwise */
 /* "Fountain of Dreams reflections": offline only; Lagless FoD stays on online (shim/mu_gecko.c). */
 #define MU_DISPLAY_FOD_REFLECTIONS 0x4u
 /* "Character select background plays through": the background is not sent back to its first frame. */
@@ -948,6 +971,7 @@ int mu_slippi_css_teams(void);               /* ... and the Teams mode */
 struct MuLobbyView;
 enum { MU_LOBBY_EXIT_NONE = 0, MU_LOBBY_EXIT_SSS = 1, MU_LOBBY_EXIT_SPLASH = 2 };
 int mu_lobby_css(void);                      /* the online major's select is the lobby's 4-door one */
+int mu_lobby_six(void);                      /* ...in a six-seat room (Triples): the six-door one */
 const struct MuLobbyView* mu_lobby_read(void);   /* this frame's view (READ), NULL when there is none */
 int mu_lobby_send(const unsigned char* request, unsigned int size);   /* 1 queued */
 void mu_lobby_css_exit(int where);           /* MU_LOBBY_EXIT_*: why the select is about to leave */

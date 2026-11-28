@@ -311,7 +311,7 @@ int main(void) {
             path.write_text(fixture)
             exe = Path(work) / 'continuation'
             target = ['-arch', 'x86_64'] if platform.system() == 'Darwin' else []
-            subprocess.run([os.environ.get('CC') or 'cc', *target, '-std=c11', '-O2', str(path), '-o', str(exe)], check=True)
+            subprocess.run([os.environ.get('CC') or __import__('shutil').which('cc') or 'gcc', *target, '-std=c11', '-O2', str(path), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
     @unittest.skipUnless(shutil.which('clang'), 'needs clang for cross-target syntax checks')

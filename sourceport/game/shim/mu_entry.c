@@ -62,6 +62,31 @@ unsigned int mu_control_flags(void)
     return mu_host && mu_host->version >= 34 && mu_host->control_flags ? mu_host->control_flags() : 0;
 }
 
+/* Version 35: the 5-6 player (Triples) options, MU_TRIPLES_*; without a host, the defaults. */
+unsigned int mu_triples_flags(void)
+{
+    return mu_host && mu_host->version >= 35 && mu_host->triples_flags ? mu_host->triples_flags()
+                                                                       : (MU_TRIPLES_TAGS | MU_TRIPLES_HUD_FADE);
+}
+
+/* Version 35: pads 5 and 6 (the player slots past the console's four ports), read with the pad queue's
+ * four (sysdolphin/baselib/controller.c); err nonzero when unplugged. Offline only: a network match and
+ * a replay bring every pad through their own queue, so a live read here would differ on a re-run frame. */
+void mu_triples_pads(struct PADStatus* out_pads)
+{
+    MuPadStatus* out = (MuPadStatus*) out_pads;   /* laid out as the game's PADStatus */
+    extern int mu_lobby_pads_extra(struct PADStatus * out);
+    if (mu_lobby_pads_extra(out_pads)) return;   /* a six-seat Friends room's select: its doors 5 and 6 */
+    if (mu_host && mu_host->version >= 35 && mu_host->pad_read_extra && !mu_online_active() &&
+        !mu_online_pending() && !mu_console_rollback_active()) {
+        mu_host->pad_read_extra(out);
+    } else {
+        static const MuPadStatus unplugged = { 0, 0, 0, 0, 0, 0, 0, 0, 0, -1 };
+        out[0] = unplugged;
+        out[1] = unplugged;
+    }
+}
+
 unsigned int mu_game_options2(void)
 {
     return mu_host && mu_host->version >= 14 && mu_host->game_options2 ? mu_host->game_options2() : 0;

@@ -235,16 +235,16 @@ class Screen(unittest.TestCase):
         self.assertIn('mu_f4.view.seats[i].kind != MU_LOBBY_KIND_OPEN', invite)
         self.assertIn('else if (mu_f4.view.flags & MU_LOBBY_F_STARTED) why = "a match is being set up";', invite)
         self.assertIn('else if (mu_f4.view.flags & MU_LOBBY_F_INVITING) why = "the invite picker is already open";', invite)
-        self.assertIn('for (i = 0; why == NULL && i < MU_LOBBY_SEATS; ++i) {', invite)
+        self.assertIn('for (i = 0; why == NULL && i < mu_f4_doors_open(); ++i) {', invite)
         # Only the door whose card opened the picker says "Inviting..."; the other open doors keep "Invite".
         self.assertIn('mu_f4.invite_door = (unsigned char) (i + 1);', invite)
         self.assertIn('i == mu_f4_inviting_door(v, mine) ? "Inviting..." : "Invite"', texts)
         door = body(self.inc, 'static int mu_f4_inviting_door(const MuLobbyView* v, int mine)')
         self.assertIn('if (!v || !(v->flags & MU_LOBBY_F_INVITING)) return -1;', door)
-        self.assertIn("if (d >= 0 && d < 4 && d != mine && v->seats[d].kind == MU_LOBBY_KIND_OPEN) return d;", door)
+        self.assertIn("if (d >= 0 && d < mu_f4_doors_open() && d != mine && v->seats[d].kind == MU_LOBBY_KIND_OPEN) return d;", door)
 
     def test_a_started_match_is_never_followed_back_to_the_stage_select(self):
-        self.assertIn('!(mu_f4.view.flags & (MU_LOBBY_F_HOST | MU_LOBBY_F_STARTED)) && mu_f4.view.my_seat < MU_LOBBY_SEATS', self.inc)
+        self.assertIn('!(mu_f4.view.flags & (MU_LOBBY_F_HOST | MU_LOBBY_F_STARTED)) && mu_f4.view.my_seat < mu_f4_doors_built()', self.inc)
 
     def test_lock_in_after_the_frozen_setup_then_the_splash(self):
         lock = body(self.inc, 'static void mu_f4_lock_in(int mine)')
@@ -257,7 +257,7 @@ class Screen(unittest.TestCase):
     def test_own_door_is_drawn_hmn_once_it_can_be(self):
         # The host's own door turned HMN before the screen could draw it and kept Melee's N/A.
         own = body(self.inc, 'static void mu_f4_own_drawn(int mine)')
-        self.assertIn('if (mu_friends_css_frames < 2 || mine < 0 || mine > 3 || mu_f4.own_drawn == mine + 1 ||', own)
+        self.assertIn('if (mu_friends_css_frames < 2 || mine < 0 || mine >= mu_f4_doors_built() || mu_f4.own_drawn == mine + 1 ||', own)
         self.assertIn('mnCharSel_8025DB34((u8) mine);', own)
         frame = self.inc[self.inc.index('mu_f4_own_drawn(mine);\n'):]
         self.assertLess(frame.index('mu_f4_own_drawn(mine);'), frame.index('mu_f4_texts(mine);'))
@@ -729,8 +729,8 @@ class MenuFlow(unittest.TestCase):
 
     def test_only_this_players_pad_on_its_own_door(self):
         pads = body(self.menu, 'void mu_lobby_pads(PADStatus* status)')
-        self.assertIn('status[i].err = person ? 0 : PAD_ERR_NO_CONTROLLER;', pads)
-        self.assertIn('status[seat] = mine;', pads)
+        self.assertIn('pad->err = person ? 0 : PAD_ERR_NO_CONTROLLER;', pads)
+        self.assertIn('*pad = mine;', pads)
         read_ = body(read('sourceport/game/shim/mu_pad.c'), 'PADRead(')
         hook = read_[read_.index('if (mu_lobby_css()) {'):]
         self.assertIn('mu_lobby_pads(status);', hook)
@@ -748,7 +748,7 @@ using u16 = uint16_t;
 struct PADStatus { u16 button = 0; int stickX = 0; int err = 0; };
 constexpr int PAD_ERR_NO_CONTROLLER = -1, PAD_BUTTON_START = 0x1000, PAD_BUTTON_B = 0x200, PAD_BUTTON_A = 0x100;
 constexpr int MU_LOBBY_WANT_FIND = 0, MU_LOBBY_WANT_P2 = 2, MU_LOBBY_WANT_PROAI = 4;
-struct { int view_ok = 1, partner_source = -1, partner_b_held = 0, partner_want = 0, curtain = 0, cancel_held = 0, cancel_mask = 0; MuLobbyView view{}; } lobby;
+struct { int view_ok = 1, partner_source = -1, partner_b_held = 0, partner_want = 0, curtain = 0, cancel_held = 0, cancel_mask = 0; MuLobbyView view{}; PADStatus extra[2]{}; } lobby;
 int screen = 1, requests = 0, op = -1, arg = -1;
 int mu_lobby_css() { return screen; }
 int gm_801677F0() { return 2; }
@@ -763,7 +763,7 @@ void sample(PADStatus* pads, int second_button) {
 int main() {
     PADStatus pads[4];
     auto& v = lobby.view;
-    v.flags = MU_LOBBY_F_ARMED | MU_LOBBY_F_KNOWN | MU_LOBBY_F_HOST;
+    v.flags = MU_LOBBY_F_ARMED | MU_LOBBY_F_KNOWN | MU_LOBBY_F_HOST; v.seat_count = MU_LOBBY_SEATS_V1;
     v.my_seat = 0; v.mode = MU_LOBBY_M_DOUBLES; v.seats[0].kind = MU_LOBBY_KIND_HUMAN;
     // Build 96: the tab claims Player 2's seat (mu_f4_p2_claim); controller 2's START never does, on any tab.
     sample(pads, PAD_BUTTON_START); assert(requests == 0 && lobby.partner_source == -1);
@@ -827,6 +827,13 @@ struct {
     int player_predicting[3]{}, player_savestate_frame[3]{}, savestate_predicting = 0, savestate_frame = 0, finalized = 0;
 } mu_online;
 uint32_t be32(const u8* p) { return slippi::PortInputs::u32(p); }
+// mu_online.c's reply readers as a four-port match has them (Triples adds remotes 4 and 5 after Slippi's layout).
+static int online_ports() { return 4; }
+static int online_remotes() { return online_ports() - 1; }
+static const u8* rx_part(int c, unsigned base, unsigned stride) { return mu_online.rxb + base + stride * (unsigned) c; }
+#define RX_FRAME_NUM(c) rx_part((c), RXB_OPNT_FRAME_NUMS, 4)
+#define RX_INPUTS(c) rx_part((c), RXB_OPNT_INPUTS, PAD_SIZE * RXB_INPUTS_COUNT)
+#define RX_PREDICTED(c) rx_part((c), RXB_OPNT_PREDICTED_INPUTS, PAD_SIZE * RXB_INPUTS_COUNT)
 int early_calls[3]{};
 const u8* early_pad(int port, int, int) { ++early_calls[port]; return nullptr; }
 void wire_to_pad(PADStatus* p, const u8* b) { std::memcpy(p->wire,b,12); p->analogA = b[8]; }

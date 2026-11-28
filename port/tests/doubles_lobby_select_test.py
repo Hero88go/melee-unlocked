@@ -102,7 +102,7 @@ class TwoDoors(unittest.TestCase):
     def test_mode_helpers(self):
         self.assertIn('return mu_f4.view_ok && (mu_f4.view.mode & MU_LOBBY_M_DOUBLES);', self.inc)
         self.assertIn('return mu_f4_doubles() && (mu_f4.view.mode & MU_LOBBY_M_SEARCHING);', self.inc)
-        self.assertIn('return mu_f4_doubles() ? MU_LOBBY_DOUBLES_SEATS : MU_LOBBY_SEATS;', self.inc)
+        self.assertIn('if (mu_f4_doubles()) return MU_LOBBY_DOUBLES_SEATS;', self.inc)
         self.assertIn('#define MU_LOBBY_DOUBLES_SEATS 2', read(WIRE))
 
     def test_doors_three_and_four_stay_shut(self):
@@ -118,7 +118,7 @@ class TwoDoors(unittest.TestCase):
         self.assertIn('if (s && i != mine && (v->flags & MU_LOBBY_F_KNOWN) && !doubles) {', texts)   # no labels
         # The runtime sends them as open, with no fighter (yougame_lobby_screen.h).
         screen = read('port/runtime/hle/yougame_lobby_screen.h')
-        self.assertIn('if (doubles && i >= kDoublesSeats) { d.hover_ch = d.pick_ch = MU_LOBBY_NONE; continue; }', screen)
+        self.assertIn('if ((doubles && i >= kDoublesSeats) || i >= seats) { d.hover_ch = d.pick_ch = MU_LOBBY_NONE; continue; }', screen)
 
     def test_partner_door_is_seat_zeros(self):
         # HOST in Doubles is seat 0 (yougame_lobby.h is_host); the switch and level slider ride on it.
@@ -186,8 +186,8 @@ class BCancels(unittest.TestCase):
         self.assertIn('if (!lobby.cancel_held) lobby.cancel_mask = 0;', rest)
         self.assertIn('if (lobby.cancel_mask) mine.button &= (u16) ~PAD_BUTTON_B;', rest)
         self.assertLess(rest.index('lobby.cancel_mask = 0;'), rest.index('mine.button &= (u16) ~PAD_BUTTON_B;'))
-        self.assertLess(rest.index('mine.button &= (u16) ~PAD_BUTTON_B;'), rest.index('status[seat] = mine;'))
-        self.assertLess(pads.index('MU_LOBBY_M_SEARCHING'), pads.index('status[seat] = mine;'))
+        self.assertLess(rest.index('mine.button &= (u16) ~PAD_BUTTON_B;'), rest.index('*pad = mine;'))
+        self.assertLess(pads.index('MU_LOBBY_M_SEARCHING'), pads.index('*pad = mine;'))
         wire = read(WIRE)
         self.assertIn('#define MU_LOBBY_OP_CANCEL 13', wire)
         self.assertIn('case MU_LOBBY_OP_PEEK: case MU_LOBBY_OP_CANCEL: case MU_LOBBY_OP_LOCAL_UNPICK: return 1;', wire)
@@ -542,7 +542,7 @@ class TwoDoorsOnTheLeft(unittest.TestCase):
         invite = body(self.inc, 'static void mu_f4_invite(int mine)')
         self.assertLess(invite.index('if (mu_f4_doubles()) return;'), invite.index('MU_LOBBY_OP_INVITE'))
         self.assertNotIn('opened no invite', self.inc)
-        self.assertIn('for (i = 0; why == NULL && i < MU_LOBBY_SEATS; ++i) {', invite)
+        self.assertIn('for (i = 0; why == NULL && i < mu_f4_doors_open(); ++i) {', invite)
 
 
 class TwoPortraitsHarness(unittest.TestCase):

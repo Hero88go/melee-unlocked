@@ -241,6 +241,9 @@ bool yougame_online_mod_content(int mode) {
 // past those comes from a build with more content (m-ex adds its fighters and stages after them).
 constexpr uint64_t kBuildWaitMs = 3000;   // how long a mod build waits for the opponent's build message
 static void (*g_plain_opponent_handler)(bool, const char*) = nullptr;   // see set_plain_opponent_handler
+// This Direct match's opponent sent no build (Slippi Dolphin): the match plays the retail game. Set where
+// the build wait ends, cleared by every new search. Game thread.
+static bool g_plain_opponent_match = false;
 
 // Command ids live in native_slippi_bridge.h, shared with the native game's call path.
 
@@ -391,7 +394,7 @@ struct SetupHashState {
   bool have = false, agreed = false;
   MuSetupHash local{};
   uint64_t since_ms = 0;   // when this setup was first built: the wait for every peer's hash
-  int logged[REMOTE_PLAYER_MAX] = {-1, -1, -1};   // the last decision logged per peer
+  int logged[REMOTE_PLAYER_MAX] = {-1, -1, -1, -1, -1};   // the last decision logged per peer
   uint64_t logged_setup[REMOTE_PLAYER_MAX] = {};
   MuSetupHashPending pending[REMOTE_PLAYER_MAX] = {};   // a mismatch that has not stood long enough yet
   MuSetupHashWait wait[REMOTE_PLAYER_MAX] = {};         // each peer's latest hash: the wait counts from it too
@@ -490,8 +493,8 @@ int32_t g_last_checksum_frame[REMOTE_PLAYER_MAX] = {};   // per remote: every pe
 // (yougame_lobby_setup.h finish_report).
 unsigned g_gone_ports = 0;
 int g_gone_own_frames = -1;   // -1 until the match's first leave, then whether every peer reads a player who left by their own frames
-static_assert(REMOTE_PLAYER_MAX == 3, "one entry each below");
-int32_t g_gone_last_frame[REMOTE_PLAYER_MAX] = {slippi::kNoFrame, slippi::kNoFrame, slippi::kNoFrame};   // per remote: its last frame, the first time it is read after leaving
+static_assert(REMOTE_PLAYER_MAX == 5, "one entry each below");
+int32_t g_gone_last_frame[REMOTE_PLAYER_MAX] = {slippi::kNoFrame, slippi::kNoFrame, slippi::kNoFrame, slippi::kNoFrame, slippi::kNoFrame};   // per remote: its last frame, the first time it is read after leaving
 static_assert(yougame::lobby::kSearchMode == Matchmaking::DIRECT, "the Friends lobby searches in Direct");
 
 // Real remote machines, bounded before indexing connection-scoped build and setup-hash arrays.
@@ -504,6 +507,33 @@ uint8_t bounded_remote_machine_count() {
 uint8_t bounded_remote_port_count() {
   return uint8_t(g_netplay ? std::min(g_netplay->RemotePortCount(), REMOTE_PLAYER_MAX) : bounded_remote_machine_count());
 }
+
+// Triples: P5 and P6's slot types (a human, or nobody past the players), then every port's costume
+// index (0x67) as mu_setup_ports gives the first four: same character and colour (or team) as an
+// earlier port counts up.
+void triples_setup_ports(std::vector<uint8_t>& block, size_t players, bool teams) {
+  if (block.size() < 0x60 + (size_t)PLAYER_COUNT_MAX * 0x24) return;
+  for (int i = SLIPPI_PLAYER_MAX; i < PLAYER_COUNT_MAX; ++i) block[0x61 + i * 0x24] = (size_t)i < players ? 0 : 3;
+  for (int i = 0; i < PLAYER_COUNT_MAX; ++i) {
+    const uint8_t* a = block.data() + 0x60 + i * 0x24;
+    uint8_t index = 0;
+    if (a[1] != 0) continue;
+    for (int j = 0; j < i; ++j) {
+      const uint8_t* b = block.data() + 0x60 + j * 0x24;
+      if (b[1] != 0) continue;
+      if ((a[0] == 0x13 ? 0x12 : a[0]) == (b[0] == 0x13 ? 0x12 : b[0]) && (teams ? a[9] == b[9] : a[3] == b[3])) ++index;
+    }
+    block[0x67 + i * 0x24] = index;
+  }
+}
+
+// A six-seat Friends room's match with 5 or 6 ports (people first, CPUs after: 4 people and 2 CPUs too).
+// Set with the match state from the room's frozen setup (prepare_online_match_state).
+static bool g_lobby_six = false;
+// Triples: a match of 5 or 6 players. Its game gets the reply's Triples block and the match state's
+// Triples byte, and its setup hash covers six ports; any smaller match is exactly as before.
+bool triples_match() { return bounded_remote_port_count() > SLIPPI_REMOTE_MAX || g_lobby_six; }
+int setup_hash_ports() { return triples_match() ? PLAYER_COUNT_MAX : SLIPPI_PLAYER_MAX; }
 
 bool is_disconnected() { return !g_netplay || g_netplay->GetSlippiConnectStatus() != NetplayClient::ConnectStatus::CONNECTED; }
 bool chat_enabled() { return g_last_search.mode == Matchmaking::DIRECT ? (g_config.chat == 0 || g_config.chat == 1) : g_config.chat == 0; }
@@ -643,6 +673,7 @@ bool discord_join_pending() {
 // `why` matters only to a YouGame ranked set (yougame_link.h Leave): the game's own cleanup command
 // is the player leaving, the checks below drop a connection that broke or a match they refuse.
 void cleanup_connection(yougame::Leave why = yougame::Leave::Lost) {
+  g_lobby_six = false;   // the next match's state sets it again
   g_slippi_link.cancel([](const char* line) { host::log("%s", line); });
   // The match-state poll sets it after this cleanup; a game that ended because the opponent went keeps it
   // through the game's own cleanup that follows (g_unranked_left_in_game). Anything else clears it.
@@ -979,6 +1010,10 @@ static int effective_delay() {
   return late_read::offer(chosen_delay());
 }
 
+// Slippi's reply has room for three remote players (RXB 0x22F); a Triples match's fourth and fifth
+// follow it.
+constexpr int kRxbRemotes = 3;
+
 void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_t>& q) {
   q.clear();
   uint8_t frame_result = 1;
@@ -1015,54 +1050,73 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
   // remap; the YouGame result still needs which ports left.
   for (int i = 0; i < remote_count; ++i)
     if (results[i]->is_disconnected && results[i]->player_idx < PLAYER_COUNT_MAX) g_gone_ports |= 1u << results[i]->player_idx;
-  for (int i = 0; i < remote_count; ++i) {
+  for (int i = 0; i < remote_count && i < kRxbRemotes; ++i) {
     if (!results[i]->is_disconnected) { append_u32(q, (uint32_t)results[i]->checksum_frame); append_u32(q, results[i]->checksum); continue; }
     // A dropped player's checksums stop: the game gets someone else's current one to compare. Their
     // frames need no such trick, FillDroppedPlayerInputs keeps them current.
     append_u32(q, last_checksum_frame); append_u32(q, last_checksum);
   }
-  for (int i = remote_count; i < REMOTE_PLAYER_MAX; ++i) { append_u32(q, 0); append_u32(q, 0); }
+  for (int i = remote_count; i < kRxbRemotes; ++i) { append_u32(q, 0); append_u32(q, 0); }
   int offset[REMOTE_PLAYER_MAX] = {};
   int32_t latest_read[REMOTE_PLAYER_MAX] = {};
   for (int i = 0; i < remote_count; ++i) {
     offset[i] = std::max(0, (results[i]->latest_frame - frame) * PAD_FULL_SIZE);
     int32_t latest = std::min(results[i]->latest_frame, frame);
     latest_read[i] = latest;
-    append_u32(q, (uint32_t)latest);
+    if (i < kRxbRemotes) append_u32(q, (uint32_t)latest);
   }
-  for (int i = remote_count; i < REMOTE_PLAYER_MAX; ++i) { latest_read[i] = frame; append_u32(q, (uint32_t)frame); }
+  for (int i = remote_count; i < REMOTE_PLAYER_MAX; ++i) { latest_read[i] = frame; if (i < kRxbRemotes) append_u32(q, (uint32_t)frame); }
   append_u32(q, (uint32_t)*std::min_element(std::begin(latest_read), std::end(latest_read)));
+  // Per remote: its pads (oldest frame last), what the game loads when it has none for the frame
+  // (the latest), and the pads to predict each frame after its latest with: the latest input, or a
+  // newer input suggestion from that player. The game checks every prediction against the real
+  // input and rolls back if they differ.
   uint8_t latest_inputs[REMOTE_PLAYER_MAX][PAD_FULL_SIZE] = {};
+  std::vector<uint8_t> pads[REMOTE_PLAYER_MAX];
+  std::vector<uint8_t> predicted[REMOTE_PLAYER_MAX];
   for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) {
-    std::vector<uint8_t> tx;
+    std::vector<uint8_t>& tx = pads[i];
     if (i < remote_count && offset[i] < (int)results[i]->data.size()) tx.assign(results[i]->data.begin() + offset[i], results[i]->data.end());
     tx.resize(PAD_FULL_SIZE * ROLLBACK_MAX_FRAMES, 0);
-    std::copy(tx.begin(), tx.begin() + PAD_FULL_SIZE, latest_inputs[i]);   // what the game loads when it has no input for the frame
-    q.insert(q.end(), tx.begin(), tx.end());
-  }
-  // Slippi 3.7.0. The frame each remote player's fighter despawns on, 0 if it does not: the game
-  // compares it with the frame it is processing, so it lands on the same frame for everyone, also in
-  // a rollback.
-  for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) append_u32(q, i < remote_count ? (uint32_t)results[i]->despawn_frame : 0);
-  // The input to predict with for each of the frames after each player's latest: the latest input,
-  // or a newer input suggestion from that player. The game checks every prediction against the real
-  // input and rolls back if they differ.
-  for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) {
+    std::copy(tx.begin(), tx.begin() + PAD_FULL_SIZE, latest_inputs[i]);
     uint8_t predictions[suggestions::kPredictedFrames][suggestions::kReportBytes];
     for (auto& p : predictions) std::memcpy(p, latest_inputs[i], PAD_FULL_SIZE);
     if (i < remote_count) suggestions::fill_predictions((size_t)i, latest_read[i], results[i]->is_disconnected, latest_inputs[i], predictions);
-    q.insert(q.end(), &predictions[0][0], &predictions[0][0] + sizeof predictions);
+    predicted[i].assign(&predictions[0][0], &predictions[0][0] + sizeof predictions);
   }
+  for (int i = 0; i < kRxbRemotes; ++i) q.insert(q.end(), pads[i].begin(), pads[i].end());
+  // Slippi 3.7.0. The frame each remote player's fighter despawns on, 0 if it does not: the game
+  // compares it with the frame it is processing, so it lands on the same frame for everyone, also in
+  // a rollback.
+  auto despawn = [&](int i) { return i < remote_count ? (uint32_t)results[i]->despawn_frame : 0u; };
+  for (int i = 0; i < kRxbRemotes; ++i) append_u32(q, despawn(i));
+  for (int i = 0; i < kRxbRemotes; ++i) q.insert(q.end(), predicted[i].begin(), predicted[i].end());
   // Random bits the game sends with its next pad and mixes into the RNG seed. Not from the match's
   // own generator: the opponent sees them and could work out that generator's state.
   { static std::random_device pad_rng_bits; q.push_back((uint8_t)(pad_rng_bits() & 0xFF)); }
+  // Triples (5 or 6 players, Source Port only): the early block at its full size with no entries
+  // (these matches take no early pads), then for remotes 4 and 5 their checksum pair, latest frame,
+  // pads, despawn frame and predicted pads, as Slippi's reply above has them for remotes 1 to 3.
+  if (host::game_image && triples_match()) {
+    q.insert(q.end(), (size_t)kRxbRemotes * (1 + host::early_input::kMaxEntries * (4 + PAD_FULL_SIZE)), 0);
+    for (int i = kRxbRemotes; i < REMOTE_PLAYER_MAX; ++i) {
+      if (i < remote_count && !results[i]->is_disconnected) { append_u32(q, (uint32_t)results[i]->checksum_frame); append_u32(q, results[i]->checksum); }
+      else if (i < remote_count) { append_u32(q, last_checksum_frame); append_u32(q, last_checksum); }
+      else { append_u32(q, 0); append_u32(q, 0); }
+      append_u32(q, (uint32_t)latest_read[i]);
+      q.insert(q.end(), pads[i].begin(), pads[i].end());
+      append_u32(q, despawn(i));
+      q.insert(q.end(), predicted[i].begin(), predicted[i].end());
+    }
+    return;
+  }
   // Early inputs, Source Port only (its online code is native and reads past Slippi's reply; the
   // Static Recomp's game code reads the fixed reply and must get exactly that): per remote, a count
   // and then entries of target pad frame + 12-byte pad, for frames after that remote's latest
   // confirmed one. The game predicts a not-yet-confirmed frame from the newest entry up to it.
   if (host::game_image && early_inputs_accept()) {
     std::vector<host::early_input::Entry> entries;
-    for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) {
+    for (int i = 0; i < kRxbRemotes; ++i) {
       entries.clear();
       if (i < remote_count && !results[i]->is_disconnected) g_netplay->EarlyPads(i, latest_read[i], entries);
       if (entries.size() > (size_t)host::early_input::kMaxEntries) entries.resize(host::early_input::kMaxEntries);
@@ -1179,7 +1233,8 @@ void handle_online_inputs(const uint8_t* payload, uint32_t size, std::vector<uin
     if (g_matchmaking) for (const auto& player : g_matchmaking->GetPlayerInfo()) bot_in_game |= player.is_bot;
     const bool suggest = early_inputs_enabled() && !bot_in_game;
     suggestions::start_game(suggest, bounded_remote_port_count());
-    if (early_inputs_enabled()) host::early_input::start(send_early_pad, suggest ? send_suggestion : nullptr);
+    // Triples matches take no early pads (the game reply has no room for five remotes' early pads).
+    if (early_inputs_enabled() && !triples_match()) host::early_input::start(send_early_pad, suggest ? send_suggestion : nullptr);
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_trace_desync_pending = false; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
     g_gone_ports = 0;
     g_gone_own_frames = -1;
@@ -1400,6 +1455,7 @@ void start_find_match(const uint8_t* payload, const std::string& friend_room = {
 #endif
   g_last_search = search;
   // A new search: whoever answers may be on this build with the same mod, so the mod shows again.
+  g_plain_opponent_match = false;
   if (g_plain_opponent_handler) g_plain_opponent_handler(false, nullptr);
   // Restoring the mod view may change the pool since CSS requested its random stage.
   if (use_ranked_rules(search.mode) && g_local_selections.is_stage_selected && g_local_random_stage)
@@ -1456,6 +1512,7 @@ bool start_lobby_search() {
   search.lobby_control = lobby.control;
   lobby.dropped = false;   // this search takes the parked room back (ENTER, or READ after a drop)
   g_last_search = search;
+  g_plain_opponent_match = false;
   if (g_plain_opponent_handler) g_plain_opponent_handler(false, nullptr);
   host::cosmetics::freeze_for_online_session();
   // A client whose last search ended (a refused ticket leaves it in the error state) still holds its
@@ -1697,6 +1754,7 @@ int build_verdict(uint8_t remote_count, std::string* why) {
   // in). Slippi Dolphin plays the retail game unless the player says it has the same mod, so the
   // match starts on the retail game: the host switches this side's files before any are loaded for it.
   static uint64_t logged_for = 0;
+  g_plain_opponent_match = true;
   if (logged_for != since) {
     logged_for = since;
     host::log("slippi: the opponent sent no build (Slippi Dolphin); this Direct match plays the retail game without %s",
@@ -1738,7 +1796,7 @@ uint64_t setup_inputs_hash(const std::vector<PlayerSelections>& sent, const int*
   }
   h = mu_fnv64_u8(h, room_teams_used);
   if (room_teams_used)
-    for (int i = 0; i < PLAYER_COUNT_MAX; ++i) h = mu_fnv64_u8(h, (unsigned)(room_teams[i] + 1));
+    for (int i = 0; i < setup_hash_ports(); ++i) h = mu_fnv64_u8(h, (unsigned)(room_teams[i] + 1));
   return mu_fnv64_bytes(h, squad.data(), squad.size());
 }
 
@@ -1758,7 +1816,7 @@ uint64_t setup_inputs_hash(const std::vector<PlayerSelections>& sent, const int*
 // hold different setups for one match refuse it.
 uint64_t setup_block_hash(std::vector<uint8_t> block, unsigned players, uint32_t rng, uint16_t alt_stage,
                           const std::vector<uint8_t>& squad, const std::string& squad_budget, uint64_t lobby = 0) {
-  for (int i = 0; i < PLAYER_COUNT_MAX; ++i) {
+  for (int i = 0; i < setup_hash_ports(); ++i) {
     const size_t record = 0x60 + (size_t)i * 0x24;
     if (record + 0x24 > block.size() || mu_setup_record_hashed(block[record + 1])) continue;   // 0x61: 0 human, 1 CPU
     const uint8_t type = block[record + 1];
@@ -1768,7 +1826,7 @@ uint64_t setup_block_hash(std::vector<uint8_t> block, unsigned players, uint32_t
   uint64_t h = mu_fnv64_bytes(MU_FNV64_OFFSET, "mu-setup-1", 10);
   h = mu_fnv64_u8(h, (unsigned)g_last_search.mode);
   h = mu_fnv64_u8(h, players);
-  for (int i = 0; i < PLAYER_COUNT_MAX; ++i) {
+  for (int i = 0; i < setup_hash_ports(); ++i) {
     h = mu_fnv64_u8(h, (unsigned)i);
     for (int field : {0x61, 0x60, 0x63, 0x67, 0x69}) h = mu_fnv64_u8(h, block[field + i * 0x24]);
   }
@@ -1882,8 +1940,11 @@ bool controls_expected() {
   if (remotes <= 0) return false;
   for (int i = 0; i < remotes; ++i) {
     const auto rb = g_netplay->GetRemoteBuild(i);
-    if (!rb.received || !rb.controls || !rb.setup_hash) return false;
+    // Players 5 and 6 (Triples) take no control options yet (controls_pump: the session never begins), so
+    // nothing is on its way: the start must not wait for it.
+    if (!rb.received || !rb.controls || !rb.setup_hash || rb.port > 3) return false;
   }
+  if (g_netplay->LocalPlayerPort() > 3) return false;
   return controls::policy::exchange((int)g_last_search.mode, controls_yougame());
 }
 // When the exchange began waiting to settle with both sides ready (0: not waiting).
@@ -2121,11 +2182,12 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   // The Friends lobby's frozen setup (yougame_lobby_setup.h): when there is one, it defines the match.
   const yougame::FriendsLobby lobby = yougame::friends_lobby();
   const yougame::lobby::Plan* lobby_plan = lobby.open && lobby.plan && lobby.plan->ok ? lobby.plan.get() : nullptr;
+  g_lobby_six = lobby_plan && lobby_plan->ports > SLIPPI_PLAYER_MAX;
   uint64_t setup_lobby = 0;
   uint64_t setup_inputs = 0;
   std::vector<uint8_t> setup_squad;   // the Squad Strike setup bytes, empty when it is not live
   std::string setup_budget;           // with them, this side's squad budget identity (setup hash only)
-  std::array<int, PLAYER_COUNT_MAX> lobby_colors;   // a Doubles lobby match: each machine's colour, by port
+  std::array<int, SLIPPI_PLAYER_MAX> lobby_colors;   // a Doubles lobby match: each machine's colour, by port
   lobby_colors.fill(-1);
   std::vector<PlayerSelections> code_picks;   // a code match: each port's selections as sent (people's picks)
   if (local_ready && remote_ready) {
@@ -2141,8 +2203,8 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     // A Doubles lobby match: each machine's team colour, by its own port (lobby::doubles_colors), from the
     // selections as they arrived (the frozen picks below replace them in `ordered`).
     if (lobby_plan) {
-      if (lps.player_idx < PLAYER_COUNT_MAX) lobby_colors[lps.player_idx] = lps.team_id;
-      for (int i = 0; i < remote_count; ++i) if (rps[i].player_idx < PLAYER_COUNT_MAX) lobby_colors[rps[i].player_idx] = rps[i].team_id;
+      if (lps.player_idx < SLIPPI_PLAYER_MAX) lobby_colors[lps.player_idx] = lps.team_id;
+      for (int i = 0; i < remote_count; ++i) if (rps[i].player_idx < SLIPPI_PLAYER_MAX) lobby_colors[rps[i].player_idx] = rps[i].team_id;
     }
     std::vector<PlayerSelections*> ordered(lobby_plan ? lobby_plan->humans : remote_count + 1, nullptr);
     if (lps.player_idx < ordered.size()) ordered[lps.player_idx] = &lps;
@@ -2269,7 +2331,11 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     bool all_same_team = true;
     for (auto* s : ordered) if (s->team_id != first_team) all_same_team = false;
     static const uint8_t perms[6][4] = {{0, 0, 1, 1}, {1, 1, 0, 0}, {0, 1, 1, 0}, {1, 0, 0, 1}, {0, 1, 0, 1}, {1, 0, 1, 0}};
-    const uint8_t* team_assign = perms[rng_offset % 6];
+    // Triples: 3 against 3 (or 3 against 2), dealt the same way from the match's RNG offset.
+    static const uint8_t perms6[6][6] = {{0, 0, 0, 1, 1, 1}, {1, 1, 1, 0, 0, 0}, {0, 1, 0, 1, 0, 1},
+                                         {1, 0, 1, 0, 1, 0}, {0, 1, 1, 0, 0, 1}, {1, 0, 0, 1, 1, 0}};
+    const bool triples = ordered.size() > (size_t)SLIPPI_PLAYER_MAX;
+    const uint8_t* team_assign = triples ? perms6[rng_offset % 6] : perms[rng_offset % 6];
     bool teams = g_last_search.mode == Matchmaking::TEAMS && !arena_ffa;
     std::array<int, PLAYER_COUNT_MAX> room_teams;
     room_teams.fill(-1);
@@ -2327,8 +2393,8 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     // The block is kept between matches, and a Friends lobby setup writes bytes no other match does
     // (P1/P2 slot types, CPU kind and level, the rules bit): back to the shipped block's first. They
     // are hashed, so two machines with different pasts would otherwise refuse the match.
-    for (int i = 0; i < 4; ++i) {
-      if (i < 2) block[0x61 + i * 0x24] = shipped[0x61 + i * 0x24];
+    for (int i = 0; i < PLAYER_COUNT_MAX; ++i) {
+      if (i < 2 || i >= SLIPPI_PLAYER_MAX) block[0x61 + i * 0x24] = shipped[0x61 + i * 0x24];
       block[0x6E + i * 0x24] = shipped[0x6E + i * 0x24];
       block[0x6F + i * 0x24] = shipped[0x6F + i * 0x24];
     }
@@ -2343,11 +2409,29 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
 #endif
       block[0x60 + s->player_idx * 0x24] = s->character_id;
       block[0x63 + s->player_idx * 0x24] = s->character_color;
+      // Direct against Slippi Dolphin plays the retail game (build_verdict), but the select showed the
+      // mod's costumes: ACE and Akaneia add two per fighter (Fox's 5th is PlFxYe.dat), a file the
+      // retail game does not have, and loading it stopped the game ("Cannot open file", lbfile.c,
+      // 11-27 reports). Dolphin's game has only Melee's own costumes: the default one is worn.
+      if (g_plain_opponent_match && s->character_id < MU_LOBBY_CHARS) {
+        const int own = mu_lobby_costumes_melee(s->character_id);
+        if (own > 0 && s->character_color >= own) {
+          block[0x63 + s->player_idx * 0x24] = 0;
+          host::log("slippi: P%d colour %u is a costume only the mod has; the retail game wears the default",
+                    s->player_idx + 1, (unsigned)s->character_color);
+        }
+      }
       block[0x67 + s->player_idx * 0x24] = 0;
       block[0x69 + s->player_idx * 0x24] = team;
     }
     // P3/P4's slot types, then the costume indices over this match's human ports (mu_setup_hash.h).
     mu_setup_ports(block.data(), block.size(), uint8_t(ordered.size() - 1), teams ? 1 : 0);
+    // Triples: P5/P6's slot types, and the costume indices over all six ports by the same rule.
+    if (triples) triples_setup_ports(block, ordered.size(), teams);
+    // Any other match: P5 and P6 as shipped (a Triples match before this one wrote them).
+    else if (block.size() >= 0x60 + (size_t)PLAYER_COUNT_MAX * 0x24 && shipped.size() == block.size())
+      std::copy(shipped.begin() + 0x60 + SLIPPI_PLAYER_MAX * 0x24, shipped.begin() + 0x60 + PLAYER_COUNT_MAX * 0x24,
+                block.begin() + 0x60 + SLIPPI_PLAYER_MAX * 0x24);
     block[0x8] = teams ? 1 : 0;
     block[0xE] = (uint8_t)(stage_id >> 8); block[0xF] = (uint8_t)stage_id;
     // Direct pauses (Slippi's rule) unless a player turned it off and every build reads that (PauseOff).
@@ -2364,14 +2448,14 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     bool stage_selection_mode = g_last_search.mode == Matchmaking::DIRECT || g_last_search.mode == Matchmaking::TEAMS;
     if (!stage_selection_mode) alt_stage_mode = 0;
     // Every game starts at 4 stocks and 0%; the timer is written below.
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < (triples ? PLAYER_COUNT_MAX : SLIPPI_PLAYER_MAX); ++i) {
       block[0x62 + i * 0x24] = 4;
       block[0x70 + i * 0x24] = 0; block[0x71 + i * 0x24] = 0;
     }
     // One line per distinct match setup (this runs every frame both sides are ready), so multi-
     // instance test logs show the teams, characters and stage every peer agreed on.
     {
-      char setup[160];
+      char setup[260];
       int len = std::snprintf(setup, sizeof setup, "%steams %d stage %u rng %08X:", arena_ffa ? "free-for-all " : "", teams ? 1 : 0,
                               (unsigned)stage_id, rng_offset);
       for (int i = 0; i < PLAYER_COUNT_MAX && len > 0 && len < (int)sizeof setup; ++i)
@@ -2574,9 +2658,10 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     if (logged != shown) { logged = shown; host::log("online: Both search, opponent shown as \"%s\"", shown.c_str()); }
   }
   q.insert(q.end(), opp_name.begin(), opp_name.end());
-  std::array<UserInfo, PLAYER_COUNT_MAX> identities;
-  for (const auto& player : players) if (player.port >= 1 && player.port <= PLAYER_COUNT_MAX) identities[player.port - 1] = player;
-  if (lobby_plan) for (int port = 0; port < lobby_plan->ports; ++port) identities[port].uid = lobby_plan->ids[port];
+  // Slippi's match state names four players (connect codes, then ids).
+  std::array<UserInfo, SLIPPI_PLAYER_MAX> identities;
+  for (const auto& player : players) if (player.port >= 1 && player.port <= SLIPPI_PLAYER_MAX) identities[player.port - 1] = player;
+  if (lobby_plan) for (int port = 0; port < lobby_plan->ports && port < SLIPPI_PLAYER_MAX; ++port) identities[port].uid = lobby_plan->ids[port];
   for (const auto& player : identities) { std::string c = convert_connect_code_for_game(player.connect_code); q.insert(q.end(), c.begin(), c.end()); }
   for (const auto& player : identities) { std::string uid = player.uid; uid.resize(29); q.insert(q.end(), uid.begin(), uid.end()); }
   std::string err = convert_string_for_game(!g_forced_error.empty() ? g_forced_error : g_matchmaking->GetErrorMessage(), 120);
@@ -2599,6 +2684,8 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     append_u32(q, mmr);
   }
   for (int i = 0; i < 4; ++i) q.push_back((uint8_t)(i < (int)players.size() && players[i].is_bot));
+  // Triples: after Slippi's match state, 6 (the game's pads then cover six ports).
+  if (triples_match()) q.push_back((uint8_t)PLAYER_COUNT_MAX);
 }
 
 void prepare_online_status(std::vector<uint8_t>& q) {
@@ -2853,6 +2940,8 @@ void controls_pump() {
     }
     if (!all && (since == 0 || now - since < kBuildWaitMs)) return;   // a build message may still come
     const bool yougame = controls_yougame();
+    // Players 5 and 6 take no control options yet: a match with one, on any machine, has no agreement.
+    if (g_netplay->LocalPlayerPort() > 3) capable = false;
     if (all && capable && controls::advertise()) {
       controls::session_begin(g_netplay->LocalPlayerPort(), others, (int)g_last_search.mode, yougame,
                               g_local_selections.is_character_selected != 0);
@@ -3063,7 +3152,7 @@ WarmupLink warmup_link() {
   const MatchInfo mi = g_netplay->GetMatchInfo();
   // Remote i is the i-th port other than this player's, in port order (PlayerIdxFromPort).
   int remote = 0;
-  for (int port = 0; port < 4 && remote < n; ++port) {
+  for (int port = 0; port < PLAYER_COUNT_MAX && remote < n; ++port) {
     if (port == (int)g_local_player_index) continue;
     WarmupPeer& p = out.peer[remote];
     p.name = g_matchmaking->GetPlayerName((uint8_t)port);
@@ -3741,10 +3830,11 @@ static bool lobby_command(const uint8_t* p, uint32_t n, std::vector<uint8_t>& q)
         lobby.inviting->store(true);
         lobby.invite_stop = std::make_shared<std::atomic<bool>>(false);
         const bool doubles = lobby.profile == lb::Profile::Doubles;   // the picker's invite names the Doubles home
-        std::thread([room, doubles, inviting = lobby.inviting, stop = lobby.invite_stop] {
+        const int seats = lobby.control->view().state.size;           // a six-seat room invites up to five
+        std::thread([room, doubles, seats, inviting = lobby.inviting, stop = lobby.invite_stop] {
           try {
             if (doubles) yougame::doubles_invite(room, [stop] { return stop->load(); });
-            else yougame::lobby_invite(room, [stop] { return stop->load(); });
+            else yougame::lobby_invite(room, [stop] { return stop->load(); }, seats);
           } catch (...) {}   // logged there
           inviting->store(false);
         }).detach();

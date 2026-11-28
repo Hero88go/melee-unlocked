@@ -157,7 +157,7 @@ struct WarmupLink {
   bool link_up = false;    // connected, with every opponent still there
   int mode = -1;           // Matchmaking::OnlinePlayMode
   int peers = 0;
-  WarmupPeer peer[3];
+  WarmupPeer peer[5];   // every other player of a Triples match (slippi_net.h REMOTE_PLAYER_MAX); the warm-up strip shows 3
 };
 // Whether the player can warm up now; `why` says why not (shown under the button).
 bool warmup_possible(std::string* why = nullptr);

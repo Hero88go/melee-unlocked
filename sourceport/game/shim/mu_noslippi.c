@@ -267,6 +267,8 @@ void mu_slippi_scene_install(void) {}
 
 int mu_slippi_css_online(void) { return 0; }
 int mu_lobby_css(void) { return 0; }
+int mu_lobby_six(void) { return 0; }
+int mu_lobby_pads_extra(struct PADStatus* out) { (void) out; return 0; }
 const struct MuLobbyView* mu_lobby_read(void) { return NULL; }
 int mu_lobby_send(const unsigned char* request, unsigned int size) { (void) request; (void) size; return 0; }
 void mu_lobby_css_exit(int where) { (void) where; }

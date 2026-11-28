@@ -93,6 +93,8 @@ using json = nlohmann::json;
 // was answered: the Online menu backed out of, a character select entered, a search cancelled
 // (yougame::withdraw_ask). Set until the next ask starts.
 static std::atomic<bool> g_yg_ask_left{false};
+// The Friends lobby asks for six seats (Triples) until a room service refuses them once this run (find_match).
+static std::atomic<bool> g_lobby_ask_six{true};
 #ifdef _WIN32
 // YouGame's small window runs its own loop on the asking thread and is topmost, so it stays up over
 // whatever the game moves on to. Its window is kept here as it shows (the header's YG__START_ON_SHOWN
@@ -1712,12 +1714,12 @@ void set_status(const std::string& s) {
 using transport::read_roster;
 
 // Each other human's door: the route and newest round trip of their link, once it is up (nothing before).
-std::array<lobby::LinkInfo, lobby::kSeats> lobby_link_info(const lobby::Session& s, const json& roster,
+std::array<lobby::LinkInfo, lobby::kSeatsMax> lobby_link_info(const lobby::Session& s, const json& roster,
                                                            const std::map<std::string, unsigned>& by_conn) {
-  std::array<lobby::LinkInfo, lobby::kSeats> out{};
+  std::array<lobby::LinkInfo, lobby::kSeatsMax> out{};
   const int mine = s.my_seat();
   for (const auto& seat : s.state().seats) {
-    if (seat.kind != lobby::Kind::Human || seat.seat == mine || seat.seat < 0 || seat.seat >= lobby::kSeats) continue;
+    if (seat.kind != lobby::Kind::Human || seat.seat == mine || seat.seat < 0 || seat.seat >= lobby::kSeatsMax) continue;
     std::string conn;
     if (roster.is_array())
       for (const auto& p : roster)
@@ -4755,10 +4757,10 @@ std::string pick_friend_room(const std::function<bool()>& cancelled, const std::
   }
 }
 
-void lobby_invite(const std::string& room, const std::function<bool()>& cancelled) {
-  host::log("friends lobby: invite picker requested");
+void lobby_invite(const std::string& room, const std::function<bool()>& cancelled, int seats) {
+  host::log("friends lobby: invite picker requested (%d seats)", seats);
   try {
-    const json answer = bridge(friends::lobby_invite(room), friends::kPickerTimeout, cancelled);
+    const json answer = bridge(friends::lobby_invite(room, seats), friends::kPickerTimeout, cancelled);
     const std::string code = answer.is_object() && answer.count("code") ? friends::picker_room(answer) : std::string();
     if (cancelled() || (!code.empty() && code != room)) throw std::runtime_error("Cancelled");
     host::log("friends lobby: invites sent");
@@ -5147,15 +5149,36 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
       // The host holds a room (the app picks its 12-character code); a guest joins its invite's code.
       // Renewals ask for the same room again, never a new hold.
       // The Doubles home holds a 2-seat teams home (doubles_hold) and its partner joins by code.
+      // Six seats (Triples): asked for first; a refusal asks again as before, and this run keeps to four
+      // (yougame_friends.h lobby_hold). A forced update or a cancel is never retried.
+      const auto six_or_four = [&](const json& six, const json& four, json* sent) -> json {
+        if (g_lobby_ask_six.load()) {
+          try { *sent = six; return ticket_bridge(six, 30000); }
+          catch (const update::Required&) { throw; }
+          catch (const std::exception& e) {
+            if (cancelled() || std::string(e.what()) == "Cancelled") throw;
+            g_lobby_ask_six = false;
+            g_bridge_refusal.clear();
+            host::log("friends lobby: six seats refused (%.100s); asking for the room as before", e.what());
+          }
+        }
+        *sent = four;
+        return ticket_bridge(four, 30000);
+      };
       if (lobby_room.empty()) {
-        ticket = ticket_bridge(doubles_home ? friends::doubles_hold(lobby_key) : friends::lobby_hold(lobby_key), 30000);
+        json sent;
+        ticket = doubles_home ? ticket_bridge(friends::doubles_hold(lobby_key), 30000)
+                              : six_or_four(friends::lobby_hold(lobby_key, true), friends::lobby_hold(lobby_key), &sent);
         const std::string held = ticket.is_object() && ticket.count("room") && ticket["room"].is_string()
                                      ? ticket["room"].get<std::string>() : std::string();
         if (held.empty()) throw std::runtime_error("YouGame did not return a Friends lobby room");
-        request = doubles_home ? friends::doubles_home_ticket(lobby_key, held) : friends::lobby_ticket(lobby_key, held);
-      } else {
-        request = doubles_home ? friends::doubles_home_ticket(lobby_key, lobby_room) : friends::lobby_ticket(lobby_key, lobby_room);
+        request = doubles_home ? friends::doubles_home_ticket(lobby_key, held)
+                               : friends::lobby_ticket(lobby_key, held, sent.value("seats", 0) == friends::kLobbySeatsSix);
+      } else if (doubles_home) {
+        request = friends::doubles_home_ticket(lobby_key, lobby_room);
         ticket = ticket_bridge(request, 30000);
+      } else {
+        ticket = six_or_four(friends::lobby_ticket(lobby_key, lobby_room, true), friends::lobby_ticket(lobby_key, lobby_room), &request);
       }
       std::lock_guard<std::mutex> lock(g_mutex);
       if (!g_search_generation.current(epoch) || cancelled()) throw std::runtime_error("Cancelled");
@@ -6453,9 +6476,11 @@ Match find_match(const Search& search, const std::function<bool()>& cancel_reque
     for (int slot = 0; slot < 4 && slot < (int)room->port_ids.size(); ++slot) room->port_ids[slot] = setup.id[slot];
     room->setup = setup;
   }
+  // A Friends lobby match plays its setup's ports (up to six in a six-seat room), the room's own size aside.
+  const int ports = lobby_match ? lobby_plan->ports : size;
   for (auto& p : participants) {
     int seat = p.value("slot", -1);
-    if (seat < 0 || seat >= size) continue;
+    if (seat < 0 || seat >= ports) continue;
     const std::string conn = p.value("connectionId", "");
     Player player;
     player.port = seat + 1;
@@ -6924,7 +6949,7 @@ void game_ended(const GameEnd& end) {
     // (or who quit) last, never left out; the frozen setup echoed (Rooms compares it).
     lobby::Outcome o;
     o.has_placements = end.has_placements;
-    for (int i = 0; i < 4; ++i) o.placements[i] = end.placements[i];
+    for (int i = 0; i < 6; ++i) o.placements[i] = end.placements[i];
     o.winner = end.winner; o.end_method = end.end_method; o.lras = end.lras; o.gone = end.gone;
     json result = lobby::finish_report(*g_room->lobby, o);
     const auto ranking = result.find("ranking");   // never result["ranking"]: that would add a null one

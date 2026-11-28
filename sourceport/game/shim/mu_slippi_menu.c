@@ -1718,6 +1718,7 @@ static struct {
     int cancel_held;      /* Doubles: B was down on the last pad read while the home searched */
     int cancel_mask;      /* Doubles: the B that cancelled the search is kept from the select until let go */
     GameRules rules;      /* the player's own rules, back when the lobby closes */
+    PADStatus extra[2];   /* a six-seat room: doors 5 and 6's pads (mu_lobby_pads), read as pads 5 and 6 */
 } lobby;
 
 static int lobby_view_op(unsigned char op, MuLobbyView* out)
@@ -1826,7 +1827,7 @@ void mu_lobby_pads(PADStatus* status)
     int src, seat, i;
     if (!mu_lobby_css()) return;
     src = gm_801677F0() & 3;
-    seat = lobby.view_ok && lobby.view.my_seat < MU_LOBBY_SEATS ? lobby.view.my_seat : src;
+    seat = lobby.view_ok && lobby.view.my_seat < lobby.view.seat_count ? lobby.view.my_seat : src;
     mine = status[src];
     memset(&partner, 0, sizeof partner);
     partner.err = PAD_ERR_NO_CONTROLLER;
@@ -1862,10 +1863,12 @@ void mu_lobby_pads(PADStatus* status)
             lobby.partner_b_held = b;
         }
     }
-    for (i = 0; i < 4; ++i) {
-        const int person = lobby.view_ok && (lobby.view.seats[i].kind == MU_LOBBY_KIND_HUMAN || lobby.view.seats[i].kind == MU_LOBBY_KIND_LOCAL);
-        memset(&status[i], 0, sizeof status[i]);
-        status[i].err = person ? 0 : PAD_ERR_NO_CONTROLLER;
+    for (i = 0; i < MU_LOBBY_SEATS; ++i) {
+        const int person = lobby.view_ok && i < lobby.view.seat_count &&
+                           (lobby.view.seats[i].kind == MU_LOBBY_KIND_HUMAN || lobby.view.seats[i].kind == MU_LOBBY_KIND_LOCAL);
+        PADStatus* pad = i < 4 ? &status[i] : &lobby.extra[i - 4];
+        memset(pad, 0, sizeof *pad);
+        pad->err = person ? 0 : PAD_ERR_NO_CONTROLLER;
     }
     if (lobby.view_ok && (lobby.view.mode & MU_LOBBY_M_SEARCHING)) {
         const int b = (mine.button & PAD_BUTTON_B) != 0;
@@ -1894,8 +1897,28 @@ void mu_lobby_pads(PADStatus* status)
     }
     if (lobby.curtain) memset(&mine, 0, sizeof mine);   /* nothing to act on while it is hidden */
     if (lobby.view_ok && mu_lobby_local_owned(&lobby.view)) status[1] = partner;
-    status[seat] = mine;
-    status[seat].err = 0;
+    {
+        PADStatus* pad = seat < 4 ? &status[seat] : &lobby.extra[seat - 4];   /* a six-seat room's door 5 or 6 */
+        *pad = mine;
+        pad->err = 0;
+    }
+}
+
+/* Pads 5 and 6 on the lobby's select (mu_triples_pads): a six-seat room's doors 5 and 6, as mu_lobby_pads
+ * left them this frame (this player's own pad when the seat is theirs, a still person's or nobody's else). */
+int mu_lobby_pads_extra(PADStatus* out)
+{
+    if (!mu_lobby_css() || !lobby.view_ok || lobby.view.seat_count != MU_LOBBY_SEATS) return 0;
+    out[0] = lobby.extra[0];
+    out[1] = lobby.extra[1];
+    return 1;
+}
+
+/* The room seats six (Triples): the select is the six-door one. */
+int mu_lobby_six(void)
+{
+    return mu_lobby_css() && lobby.view_ok && !(lobby.view.mode & MU_LOBBY_M_DOUBLES) &&
+           lobby.view.seat_count == MU_LOBBY_SEATS;
 }
 
 /* The physical controller that claimed door 2 stays fixed through this home's matches. */
@@ -1989,7 +2012,7 @@ static void lobby_css_prep(GameModeState* state)
     if (!lobby.vs_ready) {
         int i;
         lobby.vs = *gmVsMelee_GetVsData();
-        for (i = 0; i < 4; ++i) {
+        for (i = 0; i < 6; ++i) {   /* six: a six-seat room's players 5 and 6 too */
             lobby.vs.start.players[i].ckind = ChKind_None;
             lobby.vs.start.players[i].slot_type = Gm_PKind_NA;
         }
@@ -2402,14 +2425,19 @@ static void splash_prep(GameModeState* state)
     sp->x00 = is_teams;   /* the announcer says "Team ..." */
 
     local = last_match.local_index;
-    local_team = gi[0x60 + 0x24 * (local & 3) + 9];
-    for (i = 0; i < 4; i++) {
+    /* Triples: six players, this machine's on any of them. The splash has three places a side: this
+     * player (and its team) on the left, the first others on the right, as many as fit. */
+    local_team = gi[0x60 + 0x24 * (local % 6) + 9];
+    for (i = 0; i < 6; i++) {
         PlayerInitData* p = &start->players[i];
         int go_left;
         if (p->slot_type >= 3) {
             continue;
         }
         go_left = i == local || (is_teams && p->team == local_team);
+        if ((go_left && left >= 3) || (!go_left && right >= 3)) {
+            continue;
+        }
         /* The splash poses each fighter with its Classic intro motion, and the intro archive
          * (IrAls.dat) has those for the retail characters only: a mod's added fighter (ACE,
          * Akaneia) had none and the splash stopped the game as it built the model. Its place on

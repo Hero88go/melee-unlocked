@@ -693,6 +693,45 @@ int main() {
     links.forget_all(close);
     CHECK(links.by_peer.empty() && closes.back()["type"] == "directClose");
   }
+  // ---- six seats (Triples): the room's seats, not four, bound every seat the session acts on ----
+  {
+    Session s(opts("e"));
+    auto six = [](int64_t rev, int host, std::vector<json> seats) {
+      return state(rev, host, std::move(seats));
+    };
+    CHECK(s.receive(six(1, 4, {seat_human(0, "a", true), seat_human(1, "b", true), seat_human(2, "c", true),
+                               seat_human(3, "d", true), seat_human(4, "e"), seat_open(5)})));
+    CHECK(s.known() && s.size() == kSeatsMax && s.my_seat() == 4 && s.is_host());
+    (void) s.due(now);
+    CHECK(s.hover(Pick{2, 0, 0}));
+    auto out = lobby_frames(s.due(now + 1000));
+    CHECK(out.size() == 1 && out[0]["op"] == "hover" && out[0]["seat"] == 4);
+    CHECK(s.pick(Pick{2, 0, 0}));
+    out = lobby_frames(s.due(now + 2000));
+    CHECK(out.size() == 1 && out[0]["op"] == "pick" && out[0]["seat"] == 4);
+    CHECK(s.set_cpu(5, 7));                                    // the host's sixth seat
+    out = lobby_frames(s.due(now + 3000));
+    CHECK(out.size() == 1 && out[0]["op"] == "seat" && out[0]["seat"] == 5 && out[0]["level"] == 7);
+    CHECK(!s.set_cpu(6, 7));
+  }
+  {
+    // A four-seat room: seats 4 and 5 are nobody's, as before.
+    Session s(opts("a"));
+    CHECK(s.receive(state(1, 0, {seat_human(0, "a"), seat_open(1), seat_open(2), seat_open(3)})));
+    CHECK(s.size() == kSeats && s.is_host());
+    CHECK(!s.set_cpu(4, 3) && !s.set_cpu(5, 3) && s.set_cpu(3, 3));
+  }
+  {
+    // Six players picked, Teams on with three on each team: Start is offered; one team: not.
+    Session s(opts("a"));
+    std::vector<json> seats;
+    for (int k = 0; k < 6; ++k) seats.push_back(seat_human(k, std::string(1, char('a' + k)), true, k < 3 ? 0 : 1));
+    CHECK(s.receive(state(1, 0, seats, true)));
+    CHECK(s.can_start() == StartBlock::None);
+    for (auto& j : seats) j["pick"]["team"] = 0;
+    CHECK(s.receive(state(2, 0, seats, true)));
+    CHECK(s.can_start() == StartBlock::TeamsRequired);
+  }
   std::printf("ok\n");
   return 0;
 }

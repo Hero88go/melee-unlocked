@@ -84,7 +84,7 @@ struct Plan {
   int second_local_port = -1;
   int local_port = -1;                  // 0-based
   int input_delay = kInputDelayDefault; // the setup's, else the default
-  std::array<PortSpec, kSeats> port{};
+  std::array<PortSpec, kSeatsMax> port{};
   json frozen;                          // echoed in game-report and finish
   std::vector<std::string> ids;         // result ids by port (CPUs cpu:<seat>)
   std::string squad_budget;
@@ -125,7 +125,9 @@ inline Plan plan(const Setup& s, const std::string& me, const std::string& setti
     }
 #endif
   }
-  if (s.seats.size() > size_t(kSeats)) return refuse("too many ports");
+  // A Friends room seats up to six (Triples); Doubles' match room always four.
+  const int seat_max = profile == Profile::Friends4 ? kSeatsMax : kSeats;
+  if (s.seats.size() > size_t(seat_max)) return refuse("too many ports");
   if (s.seats.size() < 2) return refuse("fewer than 2 players");
   if (profile == Profile::Doubles) {
     if (s.seats.size() != (size_t)kSeats) return refuse("doubles needs 4 seats");
@@ -150,7 +152,7 @@ inline Plan plan(const Setup& s, const std::string& me, const std::string& setti
     if (profile == Profile::Doubles && i && x.kind == s.seats[i-1].kind && x.seat < s.seats[i-1].seat)
       return refuse("doubles seat order");
     if (x.port != (int)i) return refuse("ports not in order");
-    if (x.seat < 0 || x.seat >= kSeats || (seen & (1u << x.seat))) return refuse("seat repeated");
+    if (x.seat < 0 || x.seat >= seat_max || (seen & (1u << x.seat))) return refuse("seat repeated");
     seen |= 1u << x.seat;
     if (x.kind == Kind::Cpu) {
       if (x.local_index != 0 || !x.connection_id.empty()) return refuse("cpu connection");
@@ -295,13 +297,16 @@ inline std::array<uint8_t, 2> doubles_colors(const Plan& p, const std::array<int
 // room's team numbers as they are.
 inline bool apply(const Plan& p, uint8_t* block, size_t size, uint32_t timer_override = 0,
                   const uint8_t* costumes = nullptr, const std::array<uint8_t, 2>* colors = nullptr) {
-  if (!p.ok || !block || size < 0x60 + 4 * 0x24) return false;
+  if (!p.ok || !block || size < 0x60 + 4 * 0x24 || p.ports < 1 || p.ports > kSeatsMax) return false;
+  // A six-seat room's match (Triples) needs the block's six records.
+  const bool six = size >= 0x60 + (size_t)kSeatsMax * 0x24;
+  if (p.ports > kSeats && !six) return false;
   unsigned char kinds[4] = {3, 3, 3, 3};
-  for (int i = 0; i < kSeats; ++i) {
+  for (int i = 0; i < kSeatsMax; ++i) {
     uint8_t* r = block + 0x60 + i * 0x24;
     if (i >= p.ports) continue;
     const PortSpec& x = p.port[i];
-    kinds[i] = x.kind == Kind::Cpu ? 1 : 0;
+    if (i < kSeats) kinds[i] = x.kind == Kind::Cpu ? 1 : 0;
     r[0x0] = (uint8_t)x.pick.ch;
     r[0x2] = (uint8_t)(p.rules.time ? 4 : p.rules.stocks);
     r[0x3] = costume_for(x.pick.ch, x.pick.color, costumes);
@@ -314,6 +319,26 @@ inline bool apply(const Plan& p, uint8_t* block, size_t size, uint32_t timer_ove
     r[0x10] = 0; r[0x11] = 0;   // 0%
   }
   mu_setup_ports_kinds(block, size, kinds, p.rules.teams ? 1 : 0);
+  if (six) {
+    // Players 5 and 6: their slot types (a person, a CPU, or nobody past the match's ports: the block is
+    // kept between matches, so a Triples match before this one would otherwise still seat them), then
+    // every port's costume index over all six by mu_setup_ports_kinds' rule.
+    for (int i = kSeats; i < kSeatsMax; ++i)
+      block[0x61 + i * 0x24] = i < p.ports ? (p.port[i].kind == Kind::Cpu ? 1 : 0) : 3;
+    if (p.ports > kSeats)
+      for (int i = 0; i < kSeatsMax; ++i) {
+        const uint8_t* a = block + 0x60 + i * 0x24;
+        uint8_t index = 0;
+        if (a[1] != 0 && a[1] != 1) continue;
+        for (int j = 0; j < i; ++j) {
+          const uint8_t* b = block + 0x60 + j * 0x24;
+          if (b[1] != 0 && b[1] != 1) continue;
+          if ((a[0] == 0x13 ? 0x12 : a[0]) == (b[0] == 0x13 ? 0x12 : b[0]) &&
+              (p.rules.teams ? a[9] == b[9] : a[3] == b[3])) ++index;
+        }
+        block[0x67 + i * 0x24] = index;
+      }
+  }
   // Rules: match kind and the HUD byte as the shipped block's stock match, or as Party's timed one.
   // Stock with minutes 0 has no timer: the timer-enabled bit (0x02) clear and no time, as Melee's own
   // VS rules leave a stock match with no time limit (gm_1601.c).
@@ -372,7 +397,7 @@ inline json match_roster(const json& participants, const Plan& p) {
 // publish_lobby_result fills it from the game's result record and the netplay session).
 struct Outcome {
   bool has_placements = false;
-  int placements[kSeats] = {-1, -1, -1, -1};   // 0 first; anything else (0xFF) none
+  int placements[kSeatsMax] = {-1, -1, -1, -1, -1, -1};   // 0 first; anything else (0xFF) none
   int winner = -1;                             // the single winner's port when there are no placements
   int end_method = 0;                          // Slippi's: 1 TIME!, 2 GAME!, 7 No Contest
   int lras = -1;                               // the port a No Contest names (LRA-Start)
@@ -394,9 +419,9 @@ inline json finish_report(const Plan& p, const Outcome& o) {
   const json head = {{"t", "finish"}, {"matchId", p.match_id}, {"setup", p.frozen}};
   json out = head;
   out["void"] = true;
-  if (!p.ok || (int)p.ids.size() != p.ports || p.ports < 1 || p.ports > kSeats) return out;
+  if (!p.ok || (int)p.ids.size() != p.ports || p.ports < 1 || p.ports > kSeatsMax) return out;
   // A port's side: its team in Teams, itself otherwise.
-  const auto side = [&](int port) { return p.rules.teams ? p.port[port].pick.team : kSeats + port; };
+  const auto side = [&](int port) { return p.rules.teams ? p.port[port].pick.team : kSeatsMax + port; };
   unsigned forfeit = 0;
   for (int port = 0; port < p.ports; ++port) {
     if (p.port[port].kind != Kind::Human) continue;   // a CPU runs on every machine: never dropped
@@ -411,10 +436,10 @@ inline json finish_report(const Plan& p, const Outcome& o) {
     forfeit = team;
   }
   const auto placed = [&](int port) {
-    return o.has_placements && o.placements[port] >= 0 && o.placements[port] < kSeats ? o.placements[port] : kSeats;
+    return o.has_placements && o.placements[port] >= 0 && o.placements[port] < kSeatsMax ? o.placements[port] : kSeatsMax;
   };
   bool placements = false;
-  for (int port = 0; port < p.ports; ++port) placements = placements || placed(port) < kSeats;
+  for (int port = 0; port < p.ports; ++port) placements = placements || placed(port) < kSeatsMax;
   const bool winner = !placements && o.winner >= 0 && o.winner < p.ports;
   const auto ranked = [&](std::vector<int> order) {
     for (int port = 0; port < p.ports; ++port) if ((forfeit >> port) & 1u) order.push_back(port);
@@ -433,7 +458,7 @@ inline json finish_report(const Plan& p, const Outcome& o) {
   if (placements || winner) {
     std::stable_sort(left.begin(), left.end(), [&](int a, int b) {
       if (placements) return placed(a) < placed(b);
-      return a == o.winner && b != o.winner;
+      return side(a) == side(o.winner) && side(b) != side(o.winner);   // in Teams the winner's whole team first
     });
     return ranked(left);
   }

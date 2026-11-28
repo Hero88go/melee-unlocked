@@ -127,7 +127,7 @@ class StunIngress {
 };
 struct Probe { uint8_t type, player; uint64_t token; };
 inline bool probe(const uint8_t* data, size_t size, Probe& out) {
-  if (size != 14 || std::memcmp(data, "YGP2", 4) != 0 || data[4] > 1 || data[13] < 1 || data[13] > 4) return false;
+  if (size != 14 || std::memcmp(data, "YGP2", 4) != 0 || data[4] > 1 || data[13] < 1 || data[13] > 6) return false;   // players 1-6 (a six-seat Friends room)
   out.type = data[4]; out.player = data[13];
   std::memcpy(&out.token, data + 5, 8);
   return true;

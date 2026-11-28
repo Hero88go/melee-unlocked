@@ -152,7 +152,7 @@ class BlendWiringTest(unittest.TestCase):
                                 "ingest_ticket(Ticket{resp})", "state_ = OPPONENT_CONNECTING;", "handleConnecting();"])
         # A refused or blocked ticket never reaches the coordinator.
         queued = self.blend.split("if (slippi == Slippi::Queued) {", 1)[1]
-        self.assertLess(queued.index("parse_ticket(resp)"), queued.index("coord.matched(Side::Slippi"))
+        self.assertLess(queued.index("parse_ticket(resp"), queued.index("coord.matched(Side::Slippi"))
         self.assertLess(queued.index("IsBlockedMatch("), queued.index("coord.matched(Side::Slippi"))
         # Slippi's version is polled, never waited on, and a refusal stops only Slippi's side.
         check = self.blend.split("slippi_user_->PollOnlineCompatibility(&error)", 1)[1]

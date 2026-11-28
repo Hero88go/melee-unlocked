@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 34
+#define MU_HOST_API_VERSION 35
 #define MU_GAME_API_VERSION 10
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -446,7 +446,16 @@ typedef struct MuHostApi {
      * online match are set up) and kept for the whole match; the game applies a slot's bits only to a
      * human slot. 0 keeps every decision the game's own. */
     uint32_t (*control_flags)(void);
+    /* Version 35. Triples (five- and six-player VS, shim/mu_triples.c). The 5-6 player options,
+     * MU_TRIPLES_OPTION_* (display only, read live), and pads 5 and 6: the controllers assigned past
+     * the console's four ports, read once a frame beside pad_read; err nonzero when none is there. */
+    uint32_t (*triples_flags)(void);
+    void (*pad_read_extra)(MuPadStatus out[2]);
 } MuHostApi;
+
+#define MU_TRIPLES_OPTION_TAGS        0x1u   /* P1-P6 markers stay up while five or six are alive */
+#define MU_TRIPLES_OPTION_HUD_FADE    0x2u   /* HUD Transparency in five- and six-player matches */
+#define MU_TRIPLES_OPTION_WIDE_CAMERA 0x4u   /* the camera may pull further out (offline) */
 
 /* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):
  * the game's sound callback owed at the end of a frame runs at the top of the next one, before

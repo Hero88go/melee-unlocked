@@ -43,7 +43,7 @@ int main() {
 
     def test_only_imgui_feed_uses_filtered_copy(self):
         source = (ROOT / 'port/runtime/host/window.cpp').read_text()
-        self.assertIn('read_devices(out, debug, true, &ui.keyboard_navigation);', source)
+        self.assertIn('read_devices(out, debug, true, &ui.keyboard_navigation, false, g_extra_pads);', source)   # 1.0.34: pads 5 and 6 (Triples)
         self.assertIn('ui.keyboard_ports[i] = debug.feeding[i].kind == DeviceKind::Keyboard;', source)
         self.assertIn('g_ui_navigation_pads[i] = keyboard_ports[i] ? keyboard_navigation : pads[i];', source)
         self.assertIn('g_ui_navigation_pads[i].button &= pads[i].button;', source)

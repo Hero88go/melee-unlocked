@@ -48424,7 +48424,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..596a5bb1b 100644
+index 1a8206270..62069d16a 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -49315,7 +49315,7 @@ index 1a8206270..596a5bb1b 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4600,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4600,16 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -49324,11 +49324,15 @@ index 1a8206270..596a5bb1b 100644
 +        extern void mu_trace_native_quake_request(int kind, int have_model_set);
 +        mu_trace_native_quake_request(kind, stage_info.quake_model_set != NULL);
 +    }
++    /* Triples (disable_screen_shake): no quakes in a match of five or six. */
++    if (mu_triples_no_quake()) {
++        return;
++    }
 +#endif
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4834,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4838,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };
@@ -101311,7 +101315,7 @@ index bdc4d71b6..9df736bdd 100644
  typedef struct ChallengerData ChallengerData;
  typedef struct MatchEnd MatchEnd;
 diff --git a/src/melee/gm/gm_1601.c b/src/melee/gm/gm_1601.c
-index 7ad706ec1..273c04e6a 100644
+index 7ad706ec1..94f61aeb1 100644
 --- a/src/melee/gm/gm_1601.c
 +++ b/src/melee/gm/gm_1601.c
 @@ -1,3 +1,7 @@
@@ -101448,7 +101452,33 @@ index 7ad706ec1..273c04e6a 100644
  }
  
  u8 gm_SelKindToUnlockIndex(SelectableCharacterKind selkind)
-@@ -707,6 +758,23 @@ GXColor gm_80160968(u32 arg0)
+@@ -694,6 +745,12 @@ u32 gm_80160854(u8 slot, u8 team, u8 is_teams, u8 slot_type)
+             return 2U;
+         case 3:
+             return 3U;
++#ifdef MU_NATIVE
++        case 4:   /* Triples: players 5 and 6, their own colours (gm_80160968) */
++            return 9U;
++        case 5:
++            return 10U;
++#endif
+         }
+     }
+     return 0;
+@@ -701,12 +758,36 @@ u32 gm_80160854(u8 slot, u8 team, u8 is_teams, u8 slot_type)
+ 
+ GXColor gm_80160968(u32 arg0)
+ {
++#ifdef MU_NATIVE
++    /* Triples: player 5 orange, player 6 purple (the Triples patch's card colours); the table has 9 */
++    static const GXColor triples[2] = { { 0xFF, 0x98, 0x26, 0xFF }, { 0x98, 0x4C, 0xE5, 0xFF } };
++    if ((u8) arg0 == 9 || (u8) arg0 == 10) {
++        return triples[(u8) arg0 - 9];
++    }
++#endif
+     return lbl_803B7864[(u8) arg0];
+ }
+ 
  /// Get SJIS character name for a given CharacterKind
  const char* gm_80160980(u8 ckind)
  {
@@ -101472,7 +101502,7 @@ index 7ad706ec1..273c04e6a 100644
      if (lbLang_IsSavedLanguageUS()) {
          return lbl_803D4FDC[ckind];
      } else {
-@@ -716,6 +784,22 @@ const char* gm_80160980(u8 ckind)
+@@ -716,6 +797,22 @@ const char* gm_80160980(u8 ckind)
  
  const char* fn_801609E0(u8 ckind)
  {
@@ -101495,7 +101525,7 @@ index 7ad706ec1..273c04e6a 100644
      if (lbLang_IsSavedLanguageUS()) {
          if (lbl_803D50E4[ckind] != NULL) {
              return lbl_803D50E4[ckind];
-@@ -735,6 +819,11 @@ const char* gm_80160A60(int arg0)
+@@ -735,6 +832,11 @@ const char* gm_80160A60(int arg0)
  
      if (Player_GetPlayerSlotType(arg0) != Gm_PKind_NA) {
          ckind = Player_GetPlayerCharacter(arg0);
@@ -101507,7 +101537,7 @@ index 7ad706ec1..273c04e6a 100644
          if (ckind == CKind_Zelda || ckind == CKind_Seak) {
              if (Player_80036394(arg0) == Ft_Kind_Seak) {
                  if (lbLang_IsSavedLanguageUS()) {
-@@ -750,6 +839,12 @@ const char* gm_80160A60(int arg0)
+@@ -750,6 +852,12 @@ const char* gm_80160A60(int arg0)
                  }
              }
          }
@@ -101520,7 +101550,7 @@ index 7ad706ec1..273c04e6a 100644
          if (lbLang_IsSavedLanguageUS()) {
              return lbl_803D4FDC[ckind];
          } else {
-@@ -776,6 +871,12 @@ void gm_80160B40(HSD_Text* text, u8 ckind, u8 arg2)
+@@ -776,6 +884,12 @@ void gm_80160B40(HSD_Text* text, u8 ckind, u8 arg2)
  
      gm_80160B40_init_text(text, &tmp_text);
      str = arg2 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
@@ -101533,7 +101563,7 @@ index 7ad706ec1..273c04e6a 100644
      if (lbLang_IsSavedLanguageUS()) {
          bool tmp = arg2 && lbl_803D50E4[tmp_ckind] != NULL;
          var_f31 = tmp ? lbl_803B7784[tmp_ckind] : lbl_803B767C[tmp_ckind];
-@@ -800,6 +901,14 @@ void gm_80160C90(HSD_Text* text, u8 fighter_id, u8 arg2)
+@@ -800,6 +914,14 @@ void gm_80160C90(HSD_Text* text, u8 fighter_id, u8 arg2)
      }
      str = arg2 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
  
@@ -101548,7 +101578,7 @@ index 7ad706ec1..273c04e6a 100644
      if (lbLang_IsSavedLanguageUS() != 0) {
          f32 temp;
          use_alt_name = false;
-@@ -844,6 +953,13 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -844,6 +966,13 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
      }
      str = arg3 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
  
@@ -101562,7 +101592,7 @@ index 7ad706ec1..273c04e6a 100644
      if (lbLang_IsSavedLanguageUS() != 0) {
          f32 temp;
          use_alt_name = false;
-@@ -851,9 +967,9 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -851,9 +980,9 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
              use_alt_name = true;
          }
          if (use_alt_name) {
@@ -101574,7 +101604,7 @@ index 7ad706ec1..273c04e6a 100644
          }
          size = temp;
      } else {
-@@ -863,7 +979,7 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -863,7 +992,7 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
              use_alt_name = true;
          }
          if (use_alt_name) {
@@ -101583,7 +101613,7 @@ index 7ad706ec1..273c04e6a 100644
          } else {
              temp = lbl_803B75F8[tmp_ckind];
          }
-@@ -876,6 +992,11 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -876,6 +1005,11 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
  f32 fn_80160F58(u8 ckind)
  {
      f32 result;
@@ -101595,7 +101625,7 @@ index 7ad706ec1..273c04e6a 100644
      if (lbLang_IsSavedLanguageUS()) {
          result = lbl_803D50E4[ckind] != NULL ? lbl_803B7784[ckind]
                                               : lbl_803B767C[ckind];
-@@ -962,8 +1083,8 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -962,8 +1096,8 @@ s32 fn_80161154(MatchEnd* arg0)
          if (spC[i]) {
              if (idx == 4) {
                  idx = i;
@@ -101606,7 +101636,7 @@ index 7ad706ec1..273c04e6a 100644
              {
                  idx = i;
              }
-@@ -974,7 +1095,7 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -974,7 +1108,7 @@ s32 fn_80161154(MatchEnd* arg0)
      for (i = 0; i < 4; i++) {
          if (spC[i] && idx != i) {
              player = &arg0->player_standings[i];
@@ -101615,7 +101645,7 @@ index 7ad706ec1..273c04e6a 100644
                  cnt += 1;
              } else {
                  spC[i] = 0;
-@@ -1079,29 +1200,6 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -1079,29 +1213,6 @@ s32 fn_80161154(MatchEnd* arg0)
      }
  }
  
@@ -101645,7 +101675,7 @@ index 7ad706ec1..273c04e6a 100644
  static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
  {
      u32 count = 0;
-@@ -1115,31 +1213,23 @@ static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
+@@ -1115,31 +1226,23 @@ static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
      return count;
  }
  
@@ -101688,7 +101718,7 @@ index 7ad706ec1..273c04e6a 100644
      {
          if (arg1 == fn_80165548(arg0, fn_80165418(arg0), fn_801654A0(arg0))) {
              flag = 1;
-@@ -1147,7 +1237,7 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
+@@ -1147,7 +1250,7 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
              flag = 0;
          }
          if (flag != 0) {
@@ -101697,7 +101727,7 @@ index 7ad706ec1..273c04e6a 100644
          }
      }
      if (arg1 == fn_80161154(arg0)) {
-@@ -1156,36 +1246,21 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
+@@ -1156,36 +1259,21 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
          flag = 0;
      }
      if (flag != 0) {
@@ -101745,7 +101775,7 @@ index 7ad706ec1..273c04e6a 100644
      }
  }
  
-@@ -1203,12 +1278,22 @@ void fn_80162068(MatchEnd* match_end)
+@@ -1203,12 +1291,22 @@ void fn_80162068(MatchEnd* match_end)
          if (pdata_i->pkind == 3) {
              continue;
          }
@@ -101768,7 +101798,7 @@ index 7ad706ec1..273c04e6a 100644
              if (pdata_i->kills[j] +
                      fd->fighter_kos[gm_CKindToSelKind(pdata_j->ckind)] >
                  U16_MAX)
-@@ -1220,7 +1305,7 @@ void fn_80162068(MatchEnd* match_end)
+@@ -1220,7 +1318,7 @@ void fn_80162068(MatchEnd* match_end)
              }
              fd->fighter_kos[gm_CKindToSelKind(pdata_j->ckind)] = (u16) sum;
          }
@@ -101777,7 +101807,7 @@ index 7ad706ec1..273c04e6a 100644
      }
  }
  void fn_80162170(MatchEnd* arg0)
-@@ -1242,6 +1327,11 @@ void fn_80162170(MatchEnd* arg0)
+@@ -1242,6 +1340,11 @@ void fn_80162170(MatchEnd* arg0)
          if (p->x4 == 0x78) {
              continue;
          }
@@ -101789,7 +101819,7 @@ index 7ad706ec1..273c04e6a 100644
          {
              struct NameTagData* nt = GetPersistentNameData(p->x4);
              for (j = 0; j < 4; j++) {
-@@ -1269,7 +1359,7 @@ void fn_80162170(MatchEnd* arg0)
+@@ -1269,7 +1372,7 @@ void fn_80162170(MatchEnd* arg0)
                  nt->play_time_by_fighter[gm_CKindToSelKind(p->ckind)] =
                      play_time;
              }
@@ -101798,7 +101828,7 @@ index 7ad706ec1..273c04e6a 100644
          }
      }
  }
-@@ -1359,6 +1449,12 @@ void gm_80162574(u8 arg0, u8 arg1)
+@@ -1359,6 +1462,12 @@ void gm_80162574(u8 arg0, u8 arg1)
      u16* ptr;
      u32 val;
  
@@ -101811,7 +101841,7 @@ index 7ad706ec1..273c04e6a 100644
      if (arg1 == 7) {
          return;
      }
-@@ -1389,7 +1485,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1389,7 +1498,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
  
      if ((u8) (arg1 - 7) <= 1) {
          u32* p = gmMainLib_GetMatchResetCounter();
@@ -101820,7 +101850,7 @@ index 7ad706ec1..273c04e6a 100644
          return;
      }
      if (gm_GetCurrentGameMode() == GM_STAMINA_VS) {
-@@ -1406,7 +1502,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1406,7 +1515,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
              counter = gmMainLib_GetCoinMatchTotal();
              {
                  struct gmm_retval_EDBC* q = gmMainLib_8015EDBC();
@@ -101829,7 +101859,7 @@ index 7ad706ec1..273c04e6a 100644
              }
              break;
          case MatchKind_Bonus:
-@@ -1414,18 +1510,18 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1414,18 +1523,18 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
              break;
          }
      }
@@ -101852,7 +101882,7 @@ index 7ad706ec1..273c04e6a 100644
      }
  }
  
-@@ -1562,6 +1658,12 @@ bool fn_80162BFC(s8 ckind, int arg1)
+@@ -1562,6 +1671,12 @@ bool fn_80162BFC(s8 ckind, int arg1)
  {
      int* temp_r3;
  
@@ -101865,7 +101895,7 @@ index 7ad706ec1..273c04e6a 100644
      temp_r3 = (int*) gmMainLib_8015D0C0(gm_CKindToSelKind((u8) ckind));
      if ((u32) *temp_r3 < (u32) arg1) {
          *temp_r3 = arg1;
-@@ -1615,14 +1717,12 @@ u8 gm_80162D6C(void)
+@@ -1615,14 +1730,12 @@ u8 gm_80162D6C(void)
      s32 i;
      u8 min;
  
@@ -101882,7 +101912,7 @@ index 7ad706ec1..273c04e6a 100644
  
      return min;
  }
-@@ -1636,6 +1736,12 @@ s32 fn_80162DF8(u8 ckind, u32 arg1)
+@@ -1636,6 +1749,12 @@ s32 fn_80162DF8(u8 ckind, u32 arg1)
  {
      s32* temp_r3;
  
@@ -101895,7 +101925,7 @@ index 7ad706ec1..273c04e6a 100644
      temp_r3 = gmMainLib_8015D1E8(gm_CKindToSelKind(ckind));
      if (*temp_r3 < arg1) {
          *temp_r3 = arg1;
-@@ -1692,14 +1798,12 @@ u8 gm_80162F68(void)
+@@ -1692,14 +1811,12 @@ u8 gm_80162F68(void)
      s32 i;
      u8 min;
  
@@ -101912,7 +101942,7 @@ index 7ad706ec1..273c04e6a 100644
  
      return min;
  }
-@@ -1713,6 +1817,12 @@ bool fn_80162FF4(u8 ckind, u32 arg1)
+@@ -1713,6 +1830,12 @@ bool fn_80162FF4(u8 ckind, u32 arg1)
  {
      s32* temp_r3;
  
@@ -101925,7 +101955,7 @@ index 7ad706ec1..273c04e6a 100644
      temp_r3 = gmMainLib_8015D310(gm_CKindToSelKind(ckind));
      if (*temp_r3 < arg1) {
          *temp_r3 = arg1;
-@@ -1766,14 +1876,12 @@ u8 gm_80163164(void)
+@@ -1766,14 +1889,12 @@ u8 gm_80163164(void)
      s32 i;
      u8 min;
  
@@ -101942,7 +101972,7 @@ index 7ad706ec1..273c04e6a 100644
  
      return min;
  }
-@@ -1814,6 +1922,11 @@ bool gm_80163298(s8 c_kind, u16 arg1)
+@@ -1814,6 +1935,11 @@ bool gm_80163298(s8 c_kind, u16 arg1)
      u16* record;
      u16 score;
  
@@ -101954,7 +101984,7 @@ index 7ad706ec1..273c04e6a 100644
      index = gm_CKindToSelKind(c_kind);
      record = gmMainLib_8015D7EC(index);
      score = arg1;
-@@ -2136,6 +2249,11 @@ u8 gm_SelKindToCKind(u8 selkind)
+@@ -2136,6 +2262,11 @@ u8 gm_SelKindToCKind(u8 selkind)
  
  u8 gm_CKindToSelKind(u8 ckind)
  {
@@ -101966,7 +101996,7 @@ index 7ad706ec1..273c04e6a 100644
      return ckind_to_selkind_map[ckind];
  }
  
-@@ -2199,25 +2317,23 @@ bool gm_IsStageUnlocked(u16 stkind)
+@@ -2199,25 +2330,23 @@ bool gm_IsStageUnlocked(u16 stkind)
  
  bool fn_801642A0(void)
  {
@@ -102004,7 +102034,7 @@ index 7ad706ec1..273c04e6a 100644
          return false;
      }
      return true;
-@@ -2256,63 +2372,64 @@ bool gm_80164330(s32 arg0)
+@@ -2256,63 +2385,64 @@ bool gm_80164330(s32 arg0)
                                                                        : false;
  }
  
@@ -102101,7 +102131,7 @@ index 7ad706ec1..273c04e6a 100644
          gmMainLib_8015D818(notify_val);
          *stage_unlock_mask |= (1LL << (s32) unlock_idx);
      }
-@@ -2326,6 +2443,11 @@ bool gm_80164600(void)
+@@ -2326,6 +2456,11 @@ bool gm_80164600(void)
  
      for (i = 0; i < NUM_UNLOCKABLE_STAGES; i++) {
          if (!(*stage_unlock_mask & (1LL << i))) {
@@ -102113,7 +102143,7 @@ index 7ad706ec1..273c04e6a 100644
              return false;
          }
      }
-@@ -2351,6 +2473,17 @@ void gm_801647D0(void)
+@@ -2351,6 +2486,17 @@ void gm_801647D0(void)
  int gm_801647F8(u8 arg0)
  {
      struct lbl_803D5168_t* var_r5 = lbl_803D5168;
@@ -102131,7 +102161,7 @@ index 7ad706ec1..273c04e6a 100644
      if (arg0 == 0x20) {
          arg0 = 0xE;
      }
-@@ -2366,6 +2499,12 @@ int gm_801647F8(u8 arg0)
+@@ -2366,6 +2512,12 @@ int gm_801647F8(u8 arg0)
  /// Is a specific character unlocked?
  bool gm_IsCKindUnlocked(u8 ckind)
  {
@@ -102144,7 +102174,7 @@ index 7ad706ec1..273c04e6a 100644
      u16* unlocked_chars_bitmask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
      u8 selkind = ckind_to_selkind_map[ckind];
      u8 unlock_bit = gm_SelKindToUnlockIndex(selkind);
-@@ -2375,6 +2514,11 @@ bool gm_IsCKindUnlocked(u8 ckind)
+@@ -2375,6 +2527,11 @@ bool gm_IsCKindUnlocked(u8 ckind)
      {
          return true;
      }
@@ -102156,7 +102186,7 @@ index 7ad706ec1..273c04e6a 100644
      return false;
  }
  
-@@ -2386,6 +2530,11 @@ void gm_UnlockCKind(CharacterKind ckind)
+@@ -2386,6 +2543,11 @@ void gm_UnlockCKind(CharacterKind ckind)
      u8 unlock_idx;
      u8 notify_val;
  
@@ -102168,7 +102198,7 @@ index 7ad706ec1..273c04e6a 100644
      char_unlock_mask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
      selkind = ckind_to_selkind_map[(u8) ckind];
  
-@@ -2409,6 +2558,11 @@ void gm_UnlockCKind(CharacterKind ckind)
+@@ -2409,6 +2571,11 @@ void gm_UnlockCKind(CharacterKind ckind)
  /// Lock character?
  void gm_80164A0C(u8 ckind)
  {
@@ -102180,7 +102210,7 @@ index 7ad706ec1..273c04e6a 100644
      u16* unlockable_character_bitfield =
          gmMainLib_GetUnlockedCharactersBitmaskPtr();
      s32 selkind = ckind_to_selkind_map[ckind];
-@@ -2428,6 +2582,11 @@ bool gm_80164ABC(void)
+@@ -2428,6 +2595,11 @@ bool gm_80164ABC(void)
          if (!(*unlockable_character_bitfield & (1LL << i))) {
              /// @remarks Gekko codes which unlock all characters change this to
              ///          return @c true.
@@ -102192,7 +102222,7 @@ index 7ad706ec1..273c04e6a 100644
              return false;
          }
      }
-@@ -2697,8 +2856,8 @@ u32 fn_801656A8(MatchEnd* arg0, u32 arg1)
+@@ -2697,8 +2869,8 @@ u32 fn_801656A8(MatchEnd* arg0, u32 arg1)
          s32 j;
          for (j = 0; j < 6; j++) {
              if (arg0->player_standings[j].pkind != 3 &&
@@ -102203,7 +102233,7 @@ index 7ad706ec1..273c04e6a 100644
              {
                  cnt_gt += 1;
              }
-@@ -2738,35 +2897,37 @@ static inline s32 fn_8016588C_clamp(s32 v)
+@@ -2738,35 +2910,37 @@ static inline s32 fn_8016588C_clamp(s32 v)
      return result;
  }
  
@@ -102257,7 +102287,7 @@ index 7ad706ec1..273c04e6a 100644
      }
  }
  
-@@ -2940,10 +3101,10 @@ s32 fn_801661E0(MatchEnd* arg0)
+@@ -2940,10 +3114,10 @@ s32 fn_801661E0(MatchEnd* arg0)
      return (s32) arg0;
  }
  
@@ -102270,7 +102300,7 @@ index 7ad706ec1..273c04e6a 100644
      u64 stack_padding;
      f32 sp48_y;
      f32 sp48_x;
-@@ -2964,7 +3125,7 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
+@@ -2964,7 +3138,7 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
              arg0->player_standings[i].ckind = Player_GetPlayerCharacter(i);
              arg0->player_standings[i].ftkind = Player_80036394(i);
              arg0->player_standings[i].stocks = Player_GetStocks(i);
@@ -102279,7 +102309,7 @@ index 7ad706ec1..273c04e6a 100644
              arg0->player_standings[i].x4 = Player_GetNametagSlotID(i);
              arg0->player_standings[i].x1C = Player_GetCoins(i);
              arg0->player_standings[i].x28 = Player_GetMatchFrameCount(i);
-@@ -2972,12 +3133,12 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
+@@ -2972,12 +3146,12 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
                  arg0->player_standings[i].x28 = gm_GetFrameCount();
              }
              arg0->player_standings[i].self_destructs =
@@ -102295,7 +102325,7 @@ index 7ad706ec1..273c04e6a 100644
              arg0->player_standings[i].x9 = (s8) Player_GetRemainingHP(i);
              cnt = Player_GetJoystickCountByIndex(i, 0);
              sp48_y = (a = 0.031f) * ((f32) cnt * fn_8016B5B0());
-@@ -3082,6 +3243,20 @@ float fn_80166A8C(register Vec3* src, register Vec3* dst)
+@@ -3082,6 +3256,20 @@ float fn_80166A8C(register Vec3* src, register Vec3* dst)
      register float x = src->x;
      asm { psq_st x, Vec3.x(dst), 1, qr3 }
      return x;
@@ -102316,7 +102346,7 @@ index 7ad706ec1..273c04e6a 100644
  #endif
  }
  
-@@ -3112,7 +3287,7 @@ s32 gm_80166A98(MatchEnd* arg0, u8 arg1, s8 arg2, u8 arg3, s8 arg4, u8 arg5,
+@@ -3112,7 +3300,7 @@ s32 gm_80166A98(MatchEnd* arg0, u8 arg1, s8 arg2, u8 arg3, s8 arg4, u8 arg5,
  
      // Apply player color to all 4 players?
      for (i = 0; i < 4; i++) {
@@ -102325,7 +102355,7 @@ index 7ad706ec1..273c04e6a 100644
      }
  
      arg0->player_standings[0].score = score0;
-@@ -3274,12 +3449,16 @@ void fn_8016719C(s32 slot, s32 subchar)
+@@ -3274,12 +3462,16 @@ void fn_8016719C(s32 slot, s32 subchar)
  {
      Vec3 respawn_pos;
      Vec3 offset;
@@ -102344,7 +102374,7 @@ index 7ad706ec1..273c04e6a 100644
      stkind = gm_GetStKind();
      if (Stage_80224DC8(stkind) != 0) {
          var_r30 = Ground_801C5774();
-@@ -3305,11 +3484,12 @@ void fn_8016719C(s32 slot, s32 subchar)
+@@ -3305,11 +3497,12 @@ void fn_8016719C(s32 slot, s32 subchar)
      respawn_pos.y = Stage_GetCamBoundsTopOffset();
      Player_80032768(slot, &respawn_pos);
      Player_SetFacingDirection(slot, respawn_pos.x >= 0.0f ? -1.0f : 1.0f);
@@ -102359,7 +102389,7 @@ index 7ad706ec1..273c04e6a 100644
          if (temp_r4->b0) {
              temp_r4->b0 = true;
              Camera_800310E8();
-@@ -3386,22 +3566,22 @@ void gm_801674C4(s8 arg0, u8 arg1, s8 arg2, s8 arg3, GmRouteCallback arg4)
+@@ -3386,22 +3579,22 @@ void gm_801674C4(s8 arg0, u8 arg1, s8 arg2, s8 arg3, GmRouteCallback arg4)
  
  void fn_8016758C(void)
  {
@@ -102389,7 +102419,7 @@ index 7ad706ec1..273c04e6a 100644
              return i;
          }
      }
-@@ -3432,10 +3612,10 @@ s32 fn_80167638(s32 arg0, Vec3* arg1, Vec3* arg2)
+@@ -3432,10 +3625,10 @@ s32 fn_80167638(s32 arg0, Vec3* arg1, Vec3* arg2)
              arg2->y = 0.0f;
          }
          {
@@ -102403,7 +102433,7 @@ index 7ad706ec1..273c04e6a 100644
          }
      }
      return tmp;
-@@ -3463,7 +3643,7 @@ u8 gm_801677F0(void)
+@@ -3463,7 +3656,7 @@ u8 gm_801677F0(void)
  bool gm_RumbleEnabledForPlayer(int port, int nametag)
  {
      bool result = false;
@@ -102412,7 +102442,7 @@ index 7ad706ec1..273c04e6a 100644
          if (GetRumbleSettingOfPort(port)) {
              result = true;
          }
-@@ -3500,7 +3680,7 @@ void gm_SetupPlayerDefaults(struct PlayerInitData* player)
+@@ -3500,7 +3693,7 @@ void gm_SetupPlayerDefaults(struct PlayerInitData* player)
      player->handicap = 9;
      player->team = 0;
      player->rumble_enabled = false;
@@ -102421,7 +102451,7 @@ index 7ad706ec1..273c04e6a 100644
      player->xC_b1 = true;
      player->cpu_kind = 4;
      player->cpu_level = 0;
-@@ -3627,6 +3807,14 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3627,6 +3820,14 @@ void gm_80167BC8(VsModeData* vs_data)
              }
              break;
          case 2:
@@ -102436,7 +102466,7 @@ index 7ad706ec1..273c04e6a 100644
              vs_data->start.players[i].attack_ratio =
                  lbl_803B7930[(u8) vs_data->start.players[i].handicap - 1].x;
              vs_data->start.players[i].defense_ratio =
-@@ -3639,8 +3827,7 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3639,8 +3840,7 @@ void gm_80167BC8(VsModeData* vs_data)
      vs_data->start.rules.x30 = 0.1f * rules->damage_ratio;
      vs_data->start.rules.item_freq = (s8) prefs->item_freq;
      prefs = gmMainLib_GetGamePrefs();
@@ -102446,7 +102476,7 @@ index 7ad706ec1..273c04e6a 100644
          u8 item = lbl_803B7844[(u8) i];
          if ((s32) item != 0x23) {
              if (prefs->item_mask & (1LL << i)) {
-@@ -3649,8 +3836,7 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3649,8 +3849,7 @@ void gm_80167BC8(VsModeData* vs_data)
                  vs_data->start.rules.x20 &= ~(1LL << item);
              }
          }
@@ -102456,7 +102486,7 @@ index 7ad706ec1..273c04e6a 100644
  
      switch (gmMainLib_8015ED30()) {
      case 1:
-@@ -3669,6 +3855,12 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3669,6 +3868,12 @@ void gm_80167BC8(VsModeData* vs_data)
      } else {
          vs_data->start.rules.disable_pausing = 1;
      }
@@ -102469,7 +102499,7 @@ index 7ad706ec1..273c04e6a 100644
      if ((rules->score_display != 0) && (rules->mode == 0)) {
          vs_data->start.rules.x3_0 = 1;
          return;
-@@ -3715,6 +3907,25 @@ void gm_80167FC4(SSSData* arg0)
+@@ -3715,6 +3920,25 @@ void gm_80167FC4(SSSData* arg0)
      PAD_STACK(8);
  
      temp_r3 = gmMainLib_GetGameRules();
@@ -102495,7 +102525,7 @@ index 7ad706ec1..273c04e6a 100644
      if (temp_r3->stage_sel == 1) {
          arg0->force_stage_id = mnSelStageRandom();
          return;
-@@ -3850,54 +4061,69 @@ int gm_80168940(MatchEnd* match_end)
+@@ -3850,54 +4074,69 @@ int gm_80168940(MatchEnd* match_end)
  
  void gm_8016895C(HSD_JObj* arg0, DynamicModelDesc* arg1, int idx)
  {
@@ -102585,7 +102615,7 @@ index 7ad706ec1..273c04e6a 100644
      if (ckind == CKind_GKoops) {
          return 58.0F;
      }
-@@ -3930,11 +4156,51 @@ float gm_80168BF8(int arg0)
+@@ -3930,11 +4169,51 @@ float gm_80168BF8(int arg0)
  {
      CharacterKind ckind = Player_GetPlayerCharacter(arg0);
      u32 costume = Player_GetCostumeId(arg0);
@@ -102638,7 +102668,7 @@ index 7ad706ec1..273c04e6a 100644
      switch (arg0) {
      case 0:
          lbAudioAx_800243F4(0x7C830);
-@@ -4164,14 +4430,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
+@@ -4164,14 +4443,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
          HSD_Randi(0);
          HSD_Randi(0);
      }
@@ -102671,7 +102701,7 @@ index 7ad706ec1..273c04e6a 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4180,6 +4464,11 @@ u8 gm_80169264(u8 ckind)
+@@ -4180,6 +4477,11 @@ u8 gm_80169264(u8 ckind)
  
  u8 gm_80169290(u8 ckind)
  {
@@ -102683,7 +102713,7 @@ index 7ad706ec1..273c04e6a 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4188,6 +4477,11 @@ u8 gm_80169290(u8 ckind)
+@@ -4188,6 +4490,11 @@ u8 gm_80169290(u8 ckind)
  
  u8 gm_801692BC(u8 ckind)
  {
@@ -120258,7 +120288,7 @@ index 2adba8159..1d2b33edb 100644
  
      gm_InitVsMode(temp_r31);
 diff --git a/src/melee/gm/gmvs.c b/src/melee/gm/gmvs.c
-index b2fc84a75..5dbd71b2c 100644
+index b2fc84a75..7ef18047b 100644
 --- a/src/melee/gm/gmvs.c
 +++ b/src/melee/gm/gmvs.c
 @@ -1,4 +1,13 @@
@@ -120315,9 +120345,8 @@ index b2fc84a75..5dbd71b2c 100644
  {
 -    return &controller;
 +    controller.start.xD = (u8) frames;
- }
- 
--VsSceneController* gmVs_GetController_1(void)
++}
++
 +/* InitPause (every mode but Ranked): Start does not pause. A human port with stocks holding
 + * L+R+A+Start ends the match as LRAS; a local Start tap only toggles the pause display. In Party
 + * (Slippi 3.7.0) an L+R+A+Start only takes the local player out (mu_online_leave: the host then
@@ -120387,8 +120416,9 @@ index b2fc84a75..5dbd71b2c 100644
 +        lbAudioAx_80024030(5);
 +    }
 +    return -1;
-+}
-+
+ }
+ 
+-VsSceneController* gmVs_GetController_1(void)
 +static void mu_online_init_pause(void)
 +{
 +    int mode = mu_online_rules_mode();
@@ -121078,10 +121108,10 @@ index b2fc84a75..5dbd71b2c 100644
 +#ifdef MU_NATIVE
 +    /* Instant Melee, "Pause During Game Start" (offline): pausing does not wait for the HUD. */
 +    if (arg0->state.unpause_timer == 0 && (arg0->state.hud_enabled != 0 || mu_instant_melee()) &&
-         !arg0->start.disable_pausing)
++        !arg0->start.disable_pausing)
 +#else
 +    if (arg0->state.unpause_timer == 0 && arg0->state.hud_enabled != 0 &&
-+        !arg0->start.disable_pausing)
+         !arg0->start.disable_pausing)
 +#endif
      {
          if (arg0->start.check_for_pauser_override != NULL) {
@@ -121152,11 +121182,15 @@ index b2fc84a75..5dbd71b2c 100644
  {
      s32 temp_r3_4;
      s32 var_r3;
-@@ -1239,43 +1460,45 @@ void fn_8016CD98(VsSceneController* arg0)
+@@ -1239,43 +1460,49 @@ void fn_8016CD98(VsSceneController* arg0)
      int i;
      PAD_STACK(4);
  
 -    if (arg0->hud_enabled == 0) {
++#ifdef MU_NATIVE
++    /* Triples: the P1-P6 markers while five or six are alive (always_show_player_indicator). */
++    mu_triples_indicators(scene->state.frame_count);
++#endif
 +    if (scene->state.hud_enabled == 0) {
          return;
      }
@@ -121217,7 +121251,7 @@ index b2fc84a75..5dbd71b2c 100644
                      } else {
                          var_r3 = 0x7C865;
                      }
-@@ -1291,16 +1514,16 @@ void fn_8016CD98(VsSceneController* arg0)
+@@ -1291,16 +1518,16 @@ void fn_8016CD98(VsSceneController* arg0)
  void fn_8016CF4C(int slot, MatchOutcome matchResult)
  {
      gm_801A10FC(slot);
@@ -121237,7 +121271,7 @@ index b2fc84a75..5dbd71b2c 100644
          return;
      }
      fn_8016C7F0();
-@@ -1328,9 +1551,9 @@ static inline void fn_8016CFE0_inline(void)
+@@ -1328,9 +1555,9 @@ static inline void fn_8016CFE0_inline(void)
  
      tmp = &controller;
      for (i = 0; i < 6; i++) {
@@ -121250,7 +121284,7 @@ index b2fc84a75..5dbd71b2c 100644
              }
          }
      }
-@@ -1344,6 +1567,12 @@ void fn_8016CFE0(void)
+@@ -1344,6 +1571,12 @@ void fn_8016CFE0(void)
      int unpauser_slot;
      PAD_STACK(0x10);
  
@@ -121263,7 +121297,7 @@ index b2fc84a75..5dbd71b2c 100644
      fn_8016CFE0_inline();
  
      fn_8016A4C8();
-@@ -1357,13 +1586,21 @@ void fn_8016CFE0(void)
+@@ -1357,13 +1590,21 @@ void fn_8016CFE0(void)
                         PAD_BUTTON_START;
          }
          no_contest_buttons = tmp_btns;
@@ -121288,7 +121322,7 @@ index b2fc84a75..5dbd71b2c 100644
                          fn_8016CF4C_dontinline(unpauser_slot,
                                                 OUTCOME_NO_CONTEST);
                          return;
-@@ -1371,39 +1608,58 @@ void fn_8016CFE0(void)
+@@ -1371,39 +1612,58 @@ void fn_8016CFE0(void)
                  }
              }
          }
@@ -121358,7 +121392,7 @@ index b2fc84a75..5dbd71b2c 100644
          fn_8016CD98(tmp);
      }
  }
-@@ -1447,18 +1703,18 @@ void gm_Scene_Training_OnFrame(void)
+@@ -1447,18 +1707,18 @@ void gm_Scene_Training_OnFrame(void)
      if (gm_GetDbPauseFlag(2) != 0) {
          fn_8016CBE8_inline();
          gm_DoUnpauseChecksAndRoutine(tmp, 2);
@@ -121383,7 +121417,7 @@ index b2fc84a75..5dbd71b2c 100644
          fn_8016C7F0();
          gm_801A4B60();
      }
-@@ -1489,58 +1745,71 @@ bool fn_8016D538(void)
+@@ -1489,58 +1749,71 @@ bool fn_8016D538(void)
  void fn_8016D634(void)
  {
      VsSceneController* tmp = &controller;
@@ -121472,7 +121506,7 @@ index b2fc84a75..5dbd71b2c 100644
      case 0:
          fn_8016CFE0();
          break;
-@@ -1549,10 +1818,15 @@ void gm_Scene_Vs_OnFrame(void)
+@@ -1549,10 +1822,15 @@ void gm_Scene_Vs_OnFrame(void)
          break;
      case 2:
          if (fn_80180AC0() != 0) {
@@ -121489,7 +121523,7 @@ index b2fc84a75..5dbd71b2c 100644
          gm_801A4B60();
          break;
      }
-@@ -1563,25 +1837,28 @@ void gm_Scene_Vs_OnFrame(void)
+@@ -1563,25 +1841,28 @@ void gm_Scene_Vs_OnFrame(void)
  
  void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
  {
@@ -121525,7 +121559,7 @@ index b2fc84a75..5dbd71b2c 100644
          (Player_GetPlayerCharacter(arg0) == CKind_Zelda ||
           Player_GetPlayerCharacter(arg0) == CKind_Seak))
      {
-@@ -1590,19 +1867,28 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1590,19 +1871,28 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
          } else {
              Player_SetPlayerCharacter(arg0, CKind_Zelda);
          }
@@ -121558,7 +121592,7 @@ index b2fc84a75..5dbd71b2c 100644
      }
      Player_SetPlayerAndEntityCpuType(arg0, arg1->cpu_kind);
      Player_SetPlayerAndEntityCpuLevel(arg0, arg1->cpu_level);
-@@ -1612,7 +1898,7 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1612,7 +1902,7 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
          Player_SetHUDDamage(arg0, arg1->damage1);
      }
  
@@ -121567,7 +121601,7 @@ index b2fc84a75..5dbd71b2c 100644
  
      if (arg1->xC_b7) {
          Player_SetMoreFlagsBit2(arg0, 1);
-@@ -1629,14 +1915,14 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1629,14 +1919,14 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
          Player_SetMoreFlagsBit1(arg0, 0);
      }
  
@@ -121585,7 +121619,7 @@ index b2fc84a75..5dbd71b2c 100644
      if (arg1->vs_invisible) {
          Player_SetFlagsBit6(arg0, 1);
          Player_SetFlagsBit7(arg0, 0);
-@@ -1660,10 +1946,10 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
+@@ -1660,10 +1950,10 @@ void fn_8016D8AC(int arg0, struct PlayerInitData* arg1)
      } else {
          Player_SetMoreFlagsBit5(arg0, 0);
      }
@@ -121598,7 +121632,7 @@ index b2fc84a75..5dbd71b2c 100644
  }
  
  void fn_8016DCC0(StartMeleeData* arg0)
-@@ -1671,59 +1957,59 @@ void fn_8016DCC0(StartMeleeData* arg0)
+@@ -1671,59 +1961,59 @@ void fn_8016DCC0(StartMeleeData* arg0)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -121680,7 +121714,7 @@ index b2fc84a75..5dbd71b2c 100644
      case 0:
      case 2:
      case 3:
-@@ -1740,6 +2026,11 @@ void fn_8016DCC0(StartMeleeData* arg0)
+@@ -1740,6 +2030,11 @@ void fn_8016DCC0(StartMeleeData* arg0)
              fn_8016A09C();
          }
      }
@@ -121692,7 +121726,7 @@ index b2fc84a75..5dbd71b2c 100644
  }
  
  static float direction(float x)
-@@ -1754,10 +2045,10 @@ static float direction(float x)
+@@ -1754,10 +2049,10 @@ static float direction(float x)
  static inline void getSpawnPoint(int i, Vec3* v)
  {
      VsSceneController* tmp = &controller;
@@ -121705,7 +121739,7 @@ index b2fc84a75..5dbd71b2c 100644
      }
  }
  
-@@ -1765,7 +2056,7 @@ static inline void setPlayerUnk45(int i)
+@@ -1765,7 +2060,7 @@ static inline void setPlayerUnk45(int i)
  {
      bool is_teams = controller.start.is_teams == true;
      Player_SetUnk45(
@@ -121714,7 +121748,7 @@ index b2fc84a75..5dbd71b2c 100644
                                     is_teams, Player_GetPlayerSlotType(i))));
  }
  
-@@ -1879,9 +2170,169 @@ void fn_8016E124(void)
+@@ -1879,9 +2174,169 @@ void fn_8016E124(void)
              }
          }
      }
@@ -121884,7 +121918,7 @@ index b2fc84a75..5dbd71b2c 100644
  void fn_8016E2BC(void)
  {
      UNUSED u8 pad[8];
-@@ -1896,7 +2347,7 @@ void fn_8016E2BC(void)
+@@ -1896,7 +2351,7 @@ void fn_8016E2BC(void)
      PAD_STACK(0xC);
  
      Player_80036DA4();
@@ -121893,7 +121927,7 @@ index b2fc84a75..5dbd71b2c 100644
          var_r0 = true;
      } else {
          var_r0 = false;
-@@ -1913,10 +2364,10 @@ void fn_8016E2BC(void)
+@@ -1913,10 +2368,10 @@ void fn_8016E2BC(void)
          Player_80032768(0, &sp24);
          single_is_teams = controller.start.is_teams == true;
          Player_SetUnk45(0, fn_80160840(gm_80160854(
@@ -121906,12 +121940,15 @@ index b2fc84a75..5dbd71b2c 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_80169C54(Player_GetPlayerCharacter(0), Player_GetCostumeId(0));
-@@ -1940,13 +2391,18 @@ void fn_8016E2BC(void)
+@@ -1940,13 +2395,21 @@ void fn_8016E2BC(void)
                      }
                  }
                  Player_80032768(i, &sp18);
 +#ifdef MU_NATIVE
-+                if (mu_general_codes() && mu_replay_allows(MU_RC_NEUTRAL_SPAWN)) {
++                /* Triples: five or six players start at the Triples neutral points (always, as
++                 * the Triples build did); four or fewer keep the General Codes' own. */
++                if (mu_triples_spawn(i, controller.start.is_teams)) {
++                } else if (mu_general_codes() && mu_replay_allows(MU_RC_NEUTRAL_SPAWN)) {
 +                    mu_neutral_spawn(i, controller.start.is_teams);
 +                }
 +#endif
@@ -121927,7 +121964,7 @@ index b2fc84a75..5dbd71b2c 100644
                      lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
                  }
              }
-@@ -1989,6 +2445,24 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1989,6 +2452,24 @@ void fn_8016E730(StartMeleeData* arg0)
      VsSceneController* r30;
  
      db_Setup();
@@ -121952,7 +121989,7 @@ index b2fc84a75..5dbd71b2c 100644
      gm_SetDbPauseInputHandlers(gm_AnyControllerPressedStart,
                                 gm_AnyControllerPressedZ);
      gm_SetPreGObjProcCallback(db_RunEveryFrame);
-@@ -1997,6 +2471,9 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1997,6 +2478,9 @@ void fn_8016E730(StartMeleeData* arg0)
      Camera_Init(70);
      Camera_Create();
      fn_8016DCC0(arg0);
@@ -121962,7 +121999,7 @@ index b2fc84a75..5dbd71b2c 100644
      lbRefract_800222A4();
      lb_8000FCDC();
      efLib_Init();
-@@ -2010,7 +2487,7 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2010,7 +2494,7 @@ void fn_8016E730(StartMeleeData* arg0)
  
      r30 = &controller;
  
@@ -121971,7 +122008,7 @@ index b2fc84a75..5dbd71b2c 100644
      Item_80266F70();
      Item_80266FCC();
      it_8026D018();
-@@ -2022,13 +2499,20 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2022,13 +2506,20 @@ void fn_8016E730(StartMeleeData* arg0)
      Ground_EnableMatchCamera();
      Camera_8002F3AC();
      fn_801A1134();
@@ -121994,7 +122031,18 @@ index b2fc84a75..5dbd71b2c 100644
      if (arg0->rules.on_match_start != NULL) {
          arg0->rules.on_match_start();
      }
-@@ -2052,6 +2536,17 @@ void gm_Scene_Vs_OnEnter(void* arg0)
+@@ -2045,6 +2536,10 @@ void fn_8016E730(StartMeleeData* arg0)
+ void gm_Scene_Vs_OnEnter(void* arg0)
+ {
+     StartMeleeData* tmp = arg0;
++#ifdef MU_NATIVE
++    /* Triples (shim/mu_triples.c): five or six players. Counted before the fighters are placed. */
++    mu_triples_match_enter(tmp);
++#endif
+     fn_8016E730(tmp);
+     if (tmp->rules.x1_2) {
+         ifStatus_802F6EA4(8, -1, -1, 0, (void*) fn_8016B7B4, fn_8016B7F8);
+@@ -2052,6 +2547,20 @@ void gm_Scene_Vs_OnEnter(void* arg0)
          ifStatus_802F6EA4(3, -1, -1, 0, (void*) fn_8016B7B4, fn_8016B7F8);
      }
      ifTime_CreateTimers();
@@ -122008,11 +122056,14 @@ index b2fc84a75..5dbd71b2c 100644
 +        ifStatus_802F665C(2);
 +        return;
 +    }
++    /* Triples: the game's own six-player HUD layout for five or six players. */
++    ifStatus_802F665C(mu_triples_hud_layout(tmp->rules.x0_3));
++    return;
 +#endif
      ifStatus_802F665C(tmp->rules.x0_3);
  }
  
-@@ -2059,7 +2554,7 @@ struct EndMeleeData {
+@@ -2059,7 +2568,7 @@ struct EndMeleeData {
      /* 00 */ u32 x0;
      /* 04 */ u32 x4;
      /* 08 */ u32 x8;
@@ -122021,7 +122072,7 @@ index b2fc84a75..5dbd71b2c 100644
  };
  
  static inline bool gm_8016E9C8_inline(void)
-@@ -2086,43 +2581,69 @@ void gm_Scene_Vs_OnExit(void* user_data)
+@@ -2086,43 +2595,71 @@ void gm_Scene_Vs_OnExit(void* user_data)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -122097,11 +122148,13 @@ index b2fc84a75..5dbd71b2c 100644
 +    if (mu_general_codes()) {
 +        gmMainLib_8015ECBC();
 +    }
++    /* Triples: the results screen's four panels (fix_results_screen). */
++    mu_triples_match_exit(&data->xC);
 +#endif
  }
  
  void gm_Scene_SuddenDeath_OnEnter(void* user_data)
-@@ -2145,7 +2666,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
+@@ -2145,7 +2682,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
      grStadium_801D410C();
      un_802FD404();
      tmp2 = &controller;
@@ -122110,7 +122163,7 @@ index b2fc84a75..5dbd71b2c 100644
      Stage_802252E4(tmp2->start.stkind, NULL);
      grStadium_801D4040();
      if (!controller.start.x1_3) {
-@@ -2187,7 +2708,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2187,7 +2724,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
      float var_f1;
      PAD_STACK(8);
  
@@ -122119,7 +122172,7 @@ index b2fc84a75..5dbd71b2c 100644
          Player_GetPlayerSlotType(arg0) == Gm_PKind_NA &&
          Player_GetEntity(arg0) == NULL)
      {
-@@ -2211,7 +2732,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2211,7 +2748,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
          Player_80032768(arg0, &sp18);
          setPlayerUnk45(arg0);
          Player_80031AD0(arg0);
@@ -122128,7 +122181,7 @@ index b2fc84a75..5dbd71b2c 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_8016E124();
-@@ -2225,7 +2746,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2225,7 +2762,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
  
  bool fn_8016EF98(int arg0)
  {
@@ -122139,7 +122192,7 @@ index b2fc84a75..5dbd71b2c 100644
          ifStatus_802F6788(arg0);
          Player_80031EBC(arg0);
          Player_SetSlottype(arg0, Gm_PKind_NA);
-@@ -2281,10 +2804,20 @@ int gm_8016F120(int arg0)
+@@ -2281,10 +2820,20 @@ int gm_8016F120(int arg0)
  
  void fn_8016F140(int arg0)
  {
@@ -140944,7 +140997,7 @@ index 5f9685905..4d33bc699 100644
  {
      stage_info.unk8C.b4 = false;
 diff --git a/src/melee/gr/stage.c b/src/melee/gr/stage.c
-index 5a63015df..6035a2639 100644
+index 5a63015df..1f15f974b 100644
 --- a/src/melee/gr/stage.c
 +++ b/src/melee/gr/stage.c
 @@ -9,6 +9,11 @@
@@ -140959,7 +141012,21 @@ index 5a63015df..6035a2639 100644
  /// One #stage_id_map entry: the #GrKind for a #StKind.
  struct StageIdMapEntry {
      GrKind grkind;
-@@ -328,6 +333,10 @@ s32 Stage_80225074(s32 arg0)
+@@ -54,7 +59,13 @@ f32 Stage_GetCamPanAngleRadians(void)
+ 
+ f32 Stage_GetCamMaxDepth(void)
+ {
++#ifdef MU_NATIVE
++    /* Triples "wider camera" (shim/mu_triples.c): offline 5-6 player matches may pull further out. */
++    extern float mu_triples_camera_depth_scale(void);
++    return stage_info.cam_info.cam_max_depth * mu_triples_camera_depth_scale();
++#else
+     return stage_info.cam_info.cam_max_depth;
++#endif
+ }
+ 
+ f32 Stage_GetCamZoomRate(void)
+@@ -328,6 +339,10 @@ s32 Stage_80225074(s32 arg0)
      lbAudioAx_80023F28(spC);
      Ground_801C5A84(spC);
      Ground_801C5AA4(tmp);
@@ -140970,7 +141037,7 @@ index 5a63015df..6035a2639 100644
      return arg0;
  }
  
-@@ -483,14 +492,75 @@ struct StageIdMapEntry stage_id_map[] = {
+@@ -483,14 +498,75 @@ struct StageIdMapEntry stage_id_map[] = {
      { Gr_Kind_Shrine, 0, 0 },       { Gr_Kind_Battle, 0, 0 },
  };
  
@@ -141048,7 +141115,7 @@ index 5a63015df..6035a2639 100644
  }
  
  void Stage_802251E8(StKind stkind, s32* _)
-@@ -498,7 +568,7 @@ void Stage_802251E8(StKind stkind, s32* _)
+@@ -498,7 +574,7 @@ void Stage_802251E8(StKind stkind, s32* _)
      StageIdPair local_data;
  
      selected_stage.stkind = stkind;
@@ -145479,7 +145546,7 @@ index 6d7000275..d67b9cf18 100644
  /* 2FC3BC */ void ifMagnify_802FC3BC(void);
  /* 2FC3C0 */ void ifMagnify_802FC3C0(s32 slot);
 diff --git a/src/melee/if/ifnametag.c b/src/melee/if/ifnametag.c
-index f8c4573e8..a207f4b8b 100644
+index f8c4573e8..96fc0c379 100644
 --- a/src/melee/if/ifnametag.c
 +++ b/src/melee/if/ifnametag.c
 @@ -100,8 +100,8 @@
@@ -145493,7 +145560,7 @@ index f8c4573e8..a207f4b8b 100644
      0.0f,
      NULL,
      0.1f,
-@@ -124,41 +124,45 @@
+@@ -124,41 +124,50 @@
  /* 4D6D78 */ static HSD_Text* un_804D6D78;
  /* 4D6D7C */ static int un_804D6D7C;
  
@@ -145511,6 +145578,11 @@ index f8c4573e8..a207f4b8b 100644
 +    {
 +        extern int mu_port_colour(int slot, int pad_port);   /* online port colours (shim/mu_online_abi.c) */
 +        controller_index = (u8) mu_port_colour(slot, controller_index);
++    }
++    /* Triples: the table has four controllers' rows (and a CPU row after them). Pads 5 and 6 take player 3's
++     * row (its team colours); mu_triples_marker then writes P5/P6 over its P3. */
++    if (controller_index >= 4) {
++        controller_index = 2;
 +    }
 +#endif
      if (arg2) {
@@ -145554,7 +145626,7 @@ index f8c4573e8..a207f4b8b 100644
  {
      if (ifAll_IsHUDHidden() || un_804D6D6C) {
          int i;
-@@ -182,35 +186,38 @@ void fn_802FCAC4(HSD_GObj* gobj, int pass)
+@@ -182,35 +191,38 @@ void fn_802FCAC4(HSD_GObj* gobj, int pass)
      }
  }
  
@@ -145610,7 +145682,7 @@ index f8c4573e8..a207f4b8b 100644
      if (Player_GetPlayerSlotType(slot) != Gm_PKind_Human ||
          Player_GetNametagSlotID(slot) == NAMETAG_DISABLED)
      {
-@@ -220,6 +227,32 @@ static inline bool has_nametag(int slot)
+@@ -220,6 +232,34 @@ static inline bool has_nametag(int slot)
      }
  }
  
@@ -145625,7 +145697,9 @@ index f8c4573e8..a207f4b8b 100644
 +{
 +    HSD_GObj* entity;
 +    Fighter* fp;
-+    if (!mu_general_codes() || gmVs_GetSceneController()->start.is_teams == 1) {
++    /* Triples (hide_nametag_when_invisible): in five- and six-player matches, team matches too. */
++    if (mu_triples_active()) {
++    } else if (!mu_general_codes() || gmVs_GetSceneController()->start.is_teams == 1) {
 +        return false;
 +    }
 +    entity = Player_GetEntity(slot);
@@ -145643,7 +145717,13 @@ index f8c4573e8..a207f4b8b 100644
  void fn_802FCC44(HSD_GObj* gobj)
  {
      Vec3 vec;
-@@ -230,7 +263,16 @@ void fn_802FCC44(HSD_GObj* gobj)
+@@ -227,10 +267,22 @@ void fn_802FCC44(HSD_GObj* gobj)
+     u8* slot = HSD_GObjGetUserData(gobj);
+     HSD_JObj* jobj = gobj->hsd_obj;
+     PAD_STACK(8);
++#ifdef MU_NATIVE
++    mu_triples_marker(*slot, jobj);   /* Triples: P5/P6, once the match timer is up */
++#endif
      if (Player_GetPlayerSlotType(*slot) != Gm_PKind_NA &&
          Player_GetPlayerState(*slot) && Player_GetStocks(*slot) &&
          (un_804D6D70[*slot] || Player_GetNametagSlotID(*slot) != 'x' ||
@@ -145661,7 +145741,7 @@ index f8c4573e8..a207f4b8b 100644
      {
          HSD_JObjClearFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
      } else {
-@@ -244,12 +286,32 @@ void fn_802FCC44(HSD_GObj* gobj)
+@@ -244,12 +296,32 @@ void fn_802FCC44(HSD_GObj* gobj)
      Player_LoadPlayerCoords(*slot, &vec);
      vec.y += Player_800360D8(*slot);
      vec.y -= 2.5f;
@@ -145694,7 +145774,7 @@ index f8c4573e8..a207f4b8b 100644
      }
  }
  
-@@ -263,31 +325,106 @@ static inline float inlineA1(float var_f31)
+@@ -263,35 +335,114 @@ static inline float inlineA1(float var_f31)
      }
  }
  
@@ -145812,7 +145892,15 @@ index f8c4573e8..a207f4b8b 100644
              }
              HSD_JObjReqAnimAll(jobj, f);
          }
-@@ -301,20 +438,105 @@ void NameTag_Create(int slot)
+         HSD_JObjAnimAll(jobj);
++#ifdef MU_NATIVE
++        if (slot == 0) mu_triples_tex_dump(jobj, "marker");
++        mu_triples_marker(slot, jobj);
++#endif
+     }
+     {
+         unsigned char* user_data = HSD_MemAlloc(sizeof(*user_data));
+@@ -301,23 +452,111 @@ void NameTag_Create(int slot)
      HSD_GObj_SetupProc(gobj, fn_802FCC44, 17);
  }
  
@@ -145923,7 +146011,30 @@ index f8c4573e8..a207f4b8b 100644
      }
      HSD_JObjReqAnimAll(jobj, f);
      HSD_JObjAnimAll(jobj);
-@@ -361,10 +583,28 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
++#ifdef MU_NATIVE
++    mu_triples_marker(slot, jobj);
++#endif
+ }
+ 
+ void un_802FD404(void)
+@@ -335,6 +574,16 @@ void un_802FD428(void)
+     memzero(un_804D6D70, sizeof(un_804D6D70));
+ }
+ 
++#ifdef MU_NATIVE
++/* Triples (always_show_player_indicator): the per-slot "show the marker" flag, written each match frame. */
++void mu_ifnametag_force(int slot, int on)
++{
++    if (slot >= 0 && slot < Gm_Player_NumMax) {
++        un_804D6D70[slot] = (u8) (on != 0);
++    }
++}
++#endif
++
+ void un_802FD450(void)
+ {
+     un_804D6D6C = 1;
+@@ -361,10 +610,28 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
      return GObj_Create(0xE, arg0, 0);
  }
  
@@ -145953,7 +146064,7 @@ index f8c4573e8..a207f4b8b 100644
      int i;
      PAD_STACK(0x10);
      for (i = 0; i < Gm_Player_NumMax; i++) {
-@@ -374,18 +614,20 @@ void un_802FD4C8(void)
+@@ -374,18 +641,20 @@ void un_802FD4C8(void)
      un_804D6D6C = 0;
      memzero(un_804D6D70, i = sizeof(un_804D6D70));
      un_804D6D68 = (gobj = un_802FD4C8_inline(15));
@@ -146617,7 +146728,7 @@ index 4fa8c0fce..4e2796f35 100644
  /* 2F6508 */ void ifStatus_802F6508(s32);
  /* 2F665C */ void ifStatus_802F665C(int);
 diff --git a/src/melee/if/ifstock.c b/src/melee/if/ifstock.c
-index 5096c7826..3ca5d7aa5 100644
+index 5096c7826..4b71b6409 100644
 --- a/src/melee/if/ifstock.c
 +++ b/src/melee/if/ifstock.c
 @@ -1,3 +1,7 @@
@@ -146822,7 +146933,7 @@ index 5096c7826..3ca5d7aa5 100644
      HSD_JObj* icon_jobj;
      GXColor c2;
      GXColor c1;
-@@ -599,14 +668,31 @@ void ifStock_802F98E8(u8 player, u8 b)
+@@ -599,14 +668,32 @@ void ifStock_802F98E8(u8 player, u8 b)
          gobj = GObj_Create(14, 15, 0);
          gobj->user_data = ifStock_802F98E8_get_data(stock, player);
          if (gobj != NULL) {
@@ -146847,7 +146958,8 @@ index 5096c7826..3ca5d7aa5 100644
 +#ifdef MU_NATIVE
 +                /* Native equivalent of the Legacy "PAL Stock Icons" port code: the stock row's
 +                 * root joint at PAL's 0.85 scale and height -21. */
-+                if (mu_game_options() & MU_OPTION_PAL_STOCK_ICONS) {
++                /* Triples (pal_stock_icons): the same for five or six players. */
++                if ((mu_game_options() & MU_OPTION_PAL_STOCK_ICONS) || mu_triples_active()) {
 +                    HSD_JObjSetScaleX(jobj, 0.85f);
 +                    HSD_JObjSetScaleY(jobj, 0.85f);
 +                    HSD_JObjSetTranslateY(jobj, -21.0f);
@@ -146856,7 +146968,7 @@ index 5096c7826..3ca5d7aa5 100644
                  lb_80011E24(jobj, ifStock_804A1378.player[player].x4, 0, 1, 2,
                              3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
                              -1);
-@@ -722,10 +808,10 @@ void ifStock_802F98E8(u8 player, u8 b)
+@@ -722,10 +809,10 @@ void ifStock_802F98E8(u8 player, u8 b)
                      break;
                  }
                  HSD_JObjAnimAll(jobj);
@@ -146869,7 +146981,7 @@ index 5096c7826..3ca5d7aa5 100644
                      if (match_info->x4_b1) {
                          GXColor* color;
                          c1 = ifStock_802F98E8_color1;
-@@ -746,15 +832,16 @@ void ifStock_802F98E8(u8 player, u8 b)
+@@ -746,15 +833,16 @@ void ifStock_802F98E8(u8 player, u8 b)
      }
  }
  
@@ -146889,7 +147001,7 @@ index 5096c7826..3ca5d7aa5 100644
      lb_80011E24(jobj, &jobj2, 1, -1);
      if (!arg) {
          HSD_GObj_SetupProc(gobj, fn_802F8E08, 17);
-@@ -762,6 +849,22 @@ static inline HSD_GObj* ifStock_802F9F48_inline(int arg)
+@@ -762,6 +850,22 @@ static inline HSD_GObj* ifStock_802F9F48_inline(int arg)
      HSD_JObjSetTranslateZ(jobj, 10000.0f);
      HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
      HSD_JObjClearFlags(jobj2, JOBJ_HIDDEN);
@@ -146912,7 +147024,7 @@ index 5096c7826..3ca5d7aa5 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_TObjReqAnimAll(
          jobj2->u.dobj->mobj->tobj,
-@@ -770,20 +873,17 @@ static inline HSD_GObj* ifStock_802F9F48_inline(int arg)
+@@ -770,20 +874,17 @@ static inline HSD_GObj* ifStock_802F9F48_inline(int arg)
      HSD_JObjAnimAll(jobj);
      return gobj;
  }
@@ -146936,7 +147048,7 @@ index 5096c7826..3ca5d7aa5 100644
      lb_80011E24(jobj, &jobj2, 1, -1);
      if (arg == 0) {
          HSD_GObj_SetupProc(gobj, fn_802F916C, 17);
-@@ -829,7 +929,7 @@ void ifStock_802FA5BC(int arg)
+@@ -829,7 +930,7 @@ void ifStock_802FA5BC(int arg)
  {
      struct ifStock_804A1378* q = &ifStock_804A1378;
      HSD_GObj* gobj = GObj_Create(14, 15, 0);
@@ -146945,7 +147057,7 @@ index 5096c7826..3ca5d7aa5 100644
      HSD_GObjObject_80390A70(gobj, HSD_GObj_JObjKind, jobj);
      GObj_SetupGXLink(gobj, fn_802F9598, 11, 0);
      if (arg) {
-@@ -842,9 +942,6 @@ void ifStock_802FA5BC(int arg)
+@@ -842,9 +943,6 @@ void ifStock_802FA5BC(int arg)
      lb_80011E24(jobj, &ifStock_804A1378.jobj, 0, 1, 2, 3, 4, 5, -1);
  }
  
@@ -146955,7 +147067,7 @@ index 5096c7826..3ca5d7aa5 100644
  void fn_802FA6C4(HSD_GObj* arg)
  {
      int i;
-@@ -887,9 +984,6 @@ void fn_802FA6C4(HSD_GObj* arg)
+@@ -887,9 +985,6 @@ void fn_802FA6C4(HSD_GObj* arg)
          ifStock_804A1774.x0 = 0;
      }
  }
@@ -146965,7 +147077,7 @@ index 5096c7826..3ca5d7aa5 100644
  
  void fn_802FA8C0(HSD_GObj* arg)
  {
-@@ -1014,7 +1108,7 @@ static inline void ifStock_CreateStockGObjs(HSD_GObj** slots)
+@@ -1014,7 +1109,7 @@ static inline void ifStock_CreateStockGObjs(HSD_GObj** slots)
      }
      if (gm_IsMultimanSmashMode()) {
          gobj = GObj_Create(14, 15, 0);
@@ -146974,7 +147086,7 @@ index 5096c7826..3ca5d7aa5 100644
          HSD_GObjObject_80390A70(gobj, HSD_GObj_JObjKind, jobj);
          GObj_SetupGXLink(gobj, fn_802F9598, 11, 0);
          gm_8016895C(jobj, stock->x4, 0);
-@@ -1028,16 +1122,16 @@ static inline void ifStock_CreateStockGObjs(HSD_GObj** slots)
+@@ -1028,16 +1123,16 @@ static inline void ifStock_CreateStockGObjs(HSD_GObj** slots)
  void ifStock_802FAEC4(void)
  {
      struct ifStock_804A1378* stock = &ifStock_804A1378;
@@ -147017,10 +147129,10 @@ index 84dec076a..85e51409b 100644
  /* 2F98E8 */ void ifStock_802F98E8(u8, u8);
  /* 2F9F48 */ HSD_GObj* ifStock_802F9F48(int);
 diff --git a/src/melee/if/iftime.c b/src/melee/if/iftime.c
-index 01a904b92..4a2714437 100644
+index 01a904b92..53ffbf784 100644
 --- a/src/melee/if/iftime.c
 +++ b/src/melee/if/iftime.c
-@@ -23,25 +23,25 @@ static struct ifTime_data {
+@@ -23,27 +23,43 @@ static struct ifTime_data {
      HSD_JObj* digits[10];
      unsigned char countdown_seconds;
      char pad31[0x38 - 0x31];
@@ -147054,8 +147166,26 @@ index 01a904b92..4a2714437 100644
 +    return DP(*ScInfTim_scene_models) != NULL ? true : false;
  }
  
++#ifdef MU_NATIVE
++/* Triples (shim/mu_triples.c): the timer's own image of digit `d` (its texture table has 0-9), for the P5/P6
++ * player markers. NULL before the match timer is made. */
++const void* mu_iftime_digit_image(int d)
++{
++    HSD_JObj* j = ifTime_data.digits[4];   /* IFTIME_MINUTE_TEN */
++    HSD_TObj* t;
++    if (d < 0 || d > 9 || j == NULL || (j->flags & (JOBJ_PTCL | JOBJ_SPLINE)) || j->u.dobj == NULL ||
++        j->u.dobj->mobj == NULL || (t = j->u.dobj->mobj->tobj) == NULL || t->imagetbl == NULL)
++    {
++        return NULL;
++    }
++    return DP(((DISC_PTR(HSD_ImageDesc)*) (void*) t->imagetbl)[d]);
++}
++#endif
++
  static inline void ifTime_SetDigit(HSD_JObj* jobj, unsigned int frame)
-@@ -173,7 +173,7 @@ void ifTime_UpdateCountdown(HSD_GObj* arg0)
+ {
+     HSD_AObjReqAnim(jobj->u.dobj->mobj->tobj->aobj, frame & 0xFF);
+@@ -173,7 +189,7 @@ void ifTime_UpdateCountdown(HSD_GObj* arg0)
      if (f != x->countdown_seconds) {
          x->countdown_seconds = f;
          HSD_JObjRemoveAnimAll(jobj);
@@ -147064,7 +147194,7 @@ index 01a904b92..4a2714437 100644
          HSD_JObjReqAnimAll(jobj, 0.0f);
          HSD_JObjAnimAll(jobj);
      }
-@@ -204,7 +204,7 @@ void ifTime_UpdateTimers(HSD_GObj* arg0)
+@@ -204,7 +220,7 @@ void ifTime_UpdateTimers(HSD_GObj* arg0)
      ifTime_SetTime(jobj, seconds, centiseconds);
      if (gm_8016B110() == 0 && centiseconds == 0 && seconds == 5) {
          HSD_JObj* jobj2 =
@@ -147073,7 +147203,7 @@ index 01a904b92..4a2714437 100644
          if (jobj2 == NULL) {
              OSReport("Error : jobj dont't get (ifAddTimeDownModel)\n");
              OSPanic("iftime.c", 300, "");
-@@ -213,7 +213,7 @@ void ifTime_UpdateTimers(HSD_GObj* arg0)
+@@ -213,7 +229,7 @@ void ifTime_UpdateTimers(HSD_GObj* arg0)
          HSD_GObjObject_80390A70(x->countdown_timer, tmp, jobj2);
          GObj_SetupGXLink(x->countdown_timer, HSD_GObj_JObjCallback, 11, 0);
          x->countdown_seconds = ifTime_GetCountdownSeconds_dontinline();
@@ -147082,7 +147212,7 @@ index 01a904b92..4a2714437 100644
          HSD_JObjReqAnimAll(jobj2, 0.0f);
          HSD_JObjAnimAll(jobj2);
          HSD_JObjSetTranslate(jobj2, ifAll_GetTimerPosition());
-@@ -249,16 +249,16 @@ void ifTime_CreateTimers(void)
+@@ -249,19 +265,22 @@ void ifTime_CreateTimers(void)
              OSReport("Error : gobj dont't get (ifAddTime)\n");
              OSPanic("iftime.c", 383, "");
          }
@@ -147103,6 +147233,12 @@ index 01a904b92..4a2714437 100644
          lb_8000C07C(jobj, 0, anims, matanims, shapeanims);
          HSD_JObjReqAnimAll(jobj, 0.0f);
          HSD_GObj_SetupProc(gobj, ifTime_UpdateTimers, 17);
++#ifdef MU_NATIVE
++        mu_triples_tex_dump(jobj, "timer");   /* tests: MELEE_TEST_CSS_TEXDUMP */
++#endif
+         HSD_JObjSetTranslate(jobj, ifAll_GetTimerPosition());
+         digit = HSD_JObjGetChild(jobj);
+         ifTime_data.digits[0] = digit;
 diff --git a/src/melee/if/soundtest.c b/src/melee/if/soundtest.c
 index e2ceb9eb3..9685f3ed1 100644
 --- a/src/melee/if/soundtest.c
@@ -179396,7 +179532,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..c32128cb3 100644
+index d580c0aa4..3e3febaad 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -1,4 +1,14 @@
@@ -179423,11 +179559,12 @@ index d580c0aa4..c32128cb3 100644
  #include <sysdolphin/baselib/dobj.h>
  #include <sysdolphin/baselib/fog.h>
  #include <sysdolphin/baselib/gobj.h>
-@@ -41,6 +53,47 @@
+@@ -41,8 +53,50 @@
  #include <sysdolphin/baselib/mobj.h>
  #include <sysdolphin/baselib/random.h>
  #include <sysdolphin/baselib/sislib.h>
 +#include <sysdolphin/baselib/sislib_font.h>
++#include <sysdolphin/baselib/texp.h>
 +#ifdef MU_NATIVE
 +#include <melee/gm/gm_1A3F.h>
 +#include <melee/gm/gmvs.h>
@@ -179469,9 +179606,12 @@ index d580c0aa4..c32128cb3 100644
 +#define MU_CSS_CAMERA_RENDER HSD_GObj_803910D8
 +#endif
  
- static u8 mnCharSel_804D50C8[4] = { 1, 2, 4, 8 };
+-static u8 mnCharSel_804D50C8[4] = { 1, 2, 4, 8 };
++static u8 mnCharSel_804D50C8[MU_CSS_DOORS] = { 1, 2, 4, 8 };   /* Triples: 0x10 and 0x20 set at enter */
  static u8 mnCharSel_804D50CC[4] = { 1, 0, 0, 2 };
-@@ -61,14 +114,18 @@ typedef struct MnSelectChrModels {
+ static u8 mnCharSel_804D50D0[8] = { 2, 0, 1, 0, 5, 3, 4, 0 };
+ static u8 mnCharSel_804D50D8[8] = { 2, 0, 8, 1, 7, 7, 7, 7 };
+@@ -61,14 +115,18 @@ typedef struct MnSelectChrModels {
  } MnSelectChrModels;
  
  typedef struct MnSelectChrDataTable {
@@ -179495,7 +179635,27 @@ index d580c0aa4..c32128cb3 100644
  static MnSelectChrDataTable* css_data_table;
  static HSD_GObj* mnCharSel_804D6CB8;
  static HSD_GObj* mnCharSel_804D6CBC;
-@@ -90,10 +147,18 @@ static u8 mnCharSel_804D6CF2;
+@@ -84,16 +142,38 @@ static HSD_Text* mnCharSel_804D6CE0;
+ static HSD_Text* mnCharSel_804D6CE4;
+ static HSD_Text* mnCharSel_804D6CE8;
+ static u32 mnCharSel_804D6CEC;
++#ifdef MU_NATIVE
++static int mu_css6;   /* Triples: six doors (mu_css6_build) */
++#define MU_CSS_SIX_DOORS (mnCharSel_804D6CF5 == 6)
++static int mu_css_hide[64], mu_css_hide_n;   /* tests only: MELEE_TEST_CSS_HIDE */
++static void mu_css6_tint(int door);
++static float mu_css6_hand_x(int port);
++static void mu_css6_own_materials(HSD_JObj* j);
++static const GXColor mu_css6_colour[2] = { { 0xFF, 0x98, 0x26, 0xFF }, { 0x98, 0x4C, 0xE5, 0xFF } };   /* P5 orange, P6 purple (the patch's) */
++/* css_text_update.asm STR_NAME_TABLE, by the retail select's icon order */
++static const char* const mu_css6_short_names[0x19] = {
++    "Dr. Mario", "Mario", "Luigi", "Bowser", "Peach", "Yoshi", "DK", "Falcon", "Ganon", "Falco", "Fox", "Ness",
++    "Wobblers", "Kirby", "Samus", "Zelda", "Link", "smol", "Pichu", "Pikachu", "Puff", "Mewtwo", "Mr G", "Marth", "Roy",
++};
++#endif
+ static s8 mnCharSel_804D6CF0;
+ static s8 mnCharSel_804D6CF1;
+ static u8 mnCharSel_804D6CF2;
  static u8 mnCharSel_804D6CF3;
  static s8 mnCharSel_804D6CF4;
  static u8 mnCharSel_804D6CF5; ///< number of (open? valid?) CSS doors
@@ -179514,7 +179674,7 @@ index d580c0aa4..c32128cb3 100644
  
  /// Can't be enum bc float, but reused values
  #define ICONROWHT_TOP_TOP 20.0F
-@@ -158,7 +223,14 @@ static CSSIconsData mnCharSel_803F0A48 = {
+@@ -158,7 +238,14 @@ static CSSIconsData mnCharSel_803F0A48 = {
      },
  };
  
@@ -179529,7 +179689,7 @@ index d580c0aa4..c32128cb3 100644
      // -------- Icons Top Row --------
  
      { // Dr. Mario -                      0x803F0B24
-@@ -268,6 +340,39 @@ static CSSIcon icons[25 + 1] = {
+@@ -268,6 +355,39 @@ static CSSIcon icons[25 + 1] = {
        ICONJOINT_EMBLEM, 0x000000DA, ICONBNDS_COL7_L, 23.6, ICONROWHT_BTM_TOP,
        ICONROWHT_BTM_BTM }
  };
@@ -179569,7 +179729,16 @@ index d580c0aa4..c32128cb3 100644
  
  static CSSDoorsData mnCharSel_803F0DFC = {
      { { 0x2E, 0x33, 0x38, 0x85, 0x29,  0xA6,  0x3D,  0x41,
-@@ -295,6 +400,200 @@ static struct CSSDoorsMisc mnCharSel_803F0EBC = {
+@@ -283,7 +403,7 @@ static CSSDoorsData mnCharSel_803F0DFC = {
+         0x00, 0x00, 0x00, 0x00, 11.0F, 17.0F, 19.0F, 24.6 } },
+ };
+ 
+-static CSSTag mnCharSel_803F0E8C[4] = {
++static CSSTag mnCharSel_803F0E8C[MU_CSS_DOORS] = {
+     { NULL, 0x70, 0x73, 0x74, 0x72, 0x71 },
+     { NULL, 0x75, 0x78, 0x79, 0x77, 0x76 },
+     { NULL, 0x7A, 0x7D, 0x7E, 0x7C, 0x7B },
+@@ -295,6 +415,200 @@ static struct CSSDoorsMisc mnCharSel_803F0EBC = {
      0x2F, 0x01, 0, 0, 0,    NULL, -10.9, -4.2, 12.5, 19.6, -6.8, -12.1,
  };
  
@@ -179770,7 +179939,7 @@ index d580c0aa4..c32128cb3 100644
  static struct CSSDoorsData2 data2 = {
      { 0x35, 0x39, 0x36, 0x38, 0x37 },
      0,
-@@ -314,47 +613,47 @@ static struct CSSDoorsData2 data2 = {
+@@ -314,47 +628,47 @@ static struct CSSDoorsData2 data2 = {
      },
  };
  
@@ -179845,7 +180014,7 @@ index d580c0aa4..c32128cb3 100644
  
      match_type = mnCharSel_804D6CB0->match_type;
  
-@@ -368,9 +667,9 @@ void mnCharSel_8025BD30(void)
+@@ -368,9 +682,9 @@ void mnCharSel_8025BD30(void)
      }
      if (lbLang_IsSavedLanguageJP()) {
          if (gmMainLib_GetGameRules()->mode == 1) {
@@ -179857,7 +180026,7 @@ index d580c0aa4..c32128cb3 100644
              HSD_SisLib_803A660C(0, 0x4A, 0x53);
          } else {
              HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -393,8 +692,7 @@ void mnCharSel_8025BD30(void)
+@@ -393,8 +707,7 @@ void mnCharSel_8025BD30(void)
          switch (gmMainLib_GetGameRules()->mode) {
          case Mode_Time:
              if (gmMainLib_GetGameRules()->time_limit != 0) {
@@ -179867,7 +180036,7 @@ index d580c0aa4..c32128cb3 100644
                  HSD_SisLib_803A660C(0, 0x4A, 0x53);
              } else {
                  HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -402,7 +700,7 @@ void mnCharSel_8025BD30(void)
+@@ -402,7 +715,7 @@ void mnCharSel_8025BD30(void)
              HSD_SisLib_803A660C(0, 0x4A, 0x4B);
              return;
          case Mode_Stock:
@@ -179876,7 +180045,7 @@ index d580c0aa4..c32128cb3 100644
              if (gmMainLib_GetGameRules()->stock_count < 2U) {
                  HSD_SisLib_803A660C(0, 0x4A, 0x55);
              } else {
-@@ -412,8 +710,7 @@ void mnCharSel_8025BD30(void)
+@@ -412,8 +725,7 @@ void mnCharSel_8025BD30(void)
              return;
          case Mode_Coin:
              if (gmMainLib_GetGameRules()->time_limit != 0) {
@@ -179886,7 +180055,7 @@ index d580c0aa4..c32128cb3 100644
                  HSD_SisLib_803A660C(0, 0x4A, 0x53);
              } else {
                  HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -422,8 +719,7 @@ void mnCharSel_8025BD30(void)
+@@ -422,8 +734,7 @@ void mnCharSel_8025BD30(void)
              return;
          case Mode_Bonus:
              if (gmMainLib_GetGameRules()->time_limit != 0) {
@@ -179896,7 +180065,7 @@ index d580c0aa4..c32128cb3 100644
                  HSD_SisLib_803A660C(0, 0x4A, 0x53);
              } else {
                  HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -874,12 +1170,12 @@ void mnCharSel_8025D1C4(int port, int mode)
+@@ -874,12 +1185,12 @@ void mnCharSel_8025D1C4(int port, int mode)
                  text->text_color.a = 0xA0;
              }
              {
@@ -179912,7 +180081,7 @@ index d580c0aa4..c32128cb3 100644
              HSD_JObjSetFlags(sp10 = HSD_JObjGetChild(sp10), JOBJ_HIDDEN);
              HSD_JObjSetFlags(sp10 = HSD_JObjGetNext(sp10), JOBJ_HIDDEN);
              HSD_JObjSetFlags(sp10 = HSD_JObjGetNext(HSD_JObjGetNext(sp10)),
-@@ -973,9 +1269,14 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -973,9 +1284,14 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
      int i;
  
      if (mnCharSel_804D6CF5 == 1) {
@@ -179928,7 +180097,7 @@ index d580c0aa4..c32128cb3 100644
              sethidden(sp5C, hidden);
  
              sp58 =
-@@ -984,7 +1285,7 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -984,7 +1300,7 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
              return;
          }
          sp54 =
@@ -179937,7 +180106,7 @@ index d580c0aa4..c32128cb3 100644
          sethidden(sp54, hidden);
  
          sp50 =
-@@ -995,7 +1296,12 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -995,7 +1311,12 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
          }
          for (i = 0; i < 5; i++) {
              u8 tmp = data2.xf0[i];
@@ -179950,7 +180119,7 @@ index d580c0aa4..c32128cb3 100644
          }
          mnCharSel_8025C020(hidden);
          return;
-@@ -1006,6 +1312,11 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -1006,6 +1327,11 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
                          TOBJ_MASK, (float) frame);
      sethidden(sp48, hidden);
  
@@ -179962,7 +180131,7 @@ index d580c0aa4..c32128cb3 100644
      sp44 = animateJoint(mnCharSel_804D6CC0,
                          mnCharSel_803F0DFC.doors[door].emblem_joint, TOBJ_MASK,
                          (float) frame);
-@@ -1028,7 +1339,7 @@ static inline bool isDuplicateCostumeWith(int door, CSSData* css,
+@@ -1028,7 +1354,7 @@ static inline bool isDuplicateCostumeWith(int door, CSSData* css,
      for (j = 0; j < num_doors; j++) {
          CSSDoor* other_door = &mnCharSel_803F0DFC.doors[j];
          if (door != j && other_door->p_kind != 3 &&
@@ -179971,7 +180140,7 @@ index d580c0aa4..c32128cb3 100644
              other_door->sel_icon == base_door->sel_icon &&
              base_door->costume == other_door->costume)
          {
-@@ -1071,7 +1382,7 @@ static inline bool isDuplicateCostumeCached(int door)
+@@ -1071,7 +1397,7 @@ static inline bool isDuplicateCostumeCached(int door)
      (void) cost;
      for (j = 0; j < num_doors; j++) {
          if (door != j && mnCharSel_803F0DFC.doors[j].p_kind != 3 &&
@@ -179980,7 +180149,7 @@ index d580c0aa4..c32128cb3 100644
              equalU8(mnCharSel_803F0DFC.doors[j].sel_icon, sel) &&
              cost == mnCharSel_803F0DFC.doors[j].costume)
          {
-@@ -1098,7 +1409,7 @@ static inline bool isDuplicateCostumeExact(int door)
+@@ -1098,7 +1424,7 @@ static inline bool isDuplicateCostumeExact(int door)
      for (j = 0; j < num_doors; j++) {
          CSSDoor* other_door = &mnCharSel_803F0DFC.doors[j];
          if (door != j && other_door->p_kind != 3 &&
@@ -179989,7 +180158,7 @@ index d580c0aa4..c32128cb3 100644
              other_door->sel_icon == base_door->sel_icon &&
              base_door->costume == other_door->costume)
          {
-@@ -1123,7 +1434,7 @@ static inline bool isDuplicateCostume(int door)
+@@ -1123,7 +1449,7 @@ static inline bool isDuplicateCostume(int door)
      for (j = 0; j < num_doors; j++) {
          CSSDoor* other_door = &mnCharSel_803F0DFC.doors[j];
          if (door != j && other_door->p_kind != 3 &&
@@ -179998,7 +180167,7 @@ index d580c0aa4..c32128cb3 100644
              other_door->sel_icon == base_door->sel_icon &&
              base_door->costume == other_door->costume)
          {
-@@ -1133,9 +1444,6 @@ static inline bool isDuplicateCostume(int door)
+@@ -1133,9 +1459,6 @@ static inline bool isDuplicateCostume(int door)
      return false;
  }
  
@@ -180008,7 +180177,7 @@ index d580c0aa4..c32128cb3 100644
  bool mnCharSel_8025DAA0(int door)
  {
      int num_doors;
-@@ -1149,7 +1457,7 @@ bool mnCharSel_8025DAA0(int door)
+@@ -1149,7 +1472,7 @@ bool mnCharSel_8025DAA0(int door)
  
      for (j = 0; j < num_doors; j++) {
          if (door != j && mnCharSel_803F0DFC.doors[j].p_kind != 3 &&
@@ -180017,7 +180186,7 @@ index d580c0aa4..c32128cb3 100644
              mnCharSel_803F0DFC.doors[j].sel_icon ==
                  mnCharSel_803F0DFC.doors[door].sel_icon &&
              mnCharSel_803F0DFC.doors[door].costume ==
-@@ -1160,9 +1468,6 @@ bool mnCharSel_8025DAA0(int door)
+@@ -1160,9 +1483,6 @@ bool mnCharSel_8025DAA0(int door)
      }
      return false;
  }
@@ -180027,7 +180196,7 @@ index d580c0aa4..c32128cb3 100644
  
  static inline void pickUniqueCostume(int door)
  {
-@@ -1207,9 +1512,9 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1207,9 +1527,9 @@ void mnCharSel_8025DB34(u8 arg0)
      mnCharSel_8025D5AC((int) arg0, 0, 1);
  
      /* Name display */
@@ -180039,7 +180208,7 @@ index d580c0aa4..c32128cb3 100644
              HSD_SisLib_803A70A0(mnCharSel_803F0E8C[arg0].data->text, 0,
                                  (char*) mnCharSel_803F0A48.gnw_name);
          } else {
-@@ -1253,7 +1558,7 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1253,7 +1573,7 @@ void mnCharSel_8025DB34(u8 arg0)
              animateJoint(mnCharSel_804D6CC0, 0x2B, MOBJ_MASK, anim_frame);
          }
          if (mnCharSel_803F0E8C[arg0].data->use_tag == 0 &&
@@ -180048,7 +180217,39 @@ index d580c0aa4..c32128cb3 100644
          {
              mnCharSel_803F0E8C[arg0].data->text->hidden = 1;
          } else {
-@@ -1516,7 +1821,7 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1480,6 +1800,13 @@ void mnCharSel_8025DB34(u8 arg0)
+             if (mnCharSel_803F0DFC.doors[arg0].p_kind != 0) {
+                 port_color_idx += 4;
+             }
++#ifdef MU_NATIVE
++            if (arg0 >= 4) {
++                /* Triples: cards 5 and 6 tinted below, on a bright card (yellow under orange, blue under
++                 * purple) as a human, the grey one as a CPU. */
++                port_color_idx = mnCharSel_803F0DFC.doors[arg0].p_kind != 0 ? 4 : arg0 == 4 ? 2 : 1;
++            }
++#endif
+ 
+             anim_frame = (f32) mnCharSel_804D50D8[port_color_idx];
+             joint = mnCharSel_803F0DFC.doors[arg0].bg_joint;
+@@ -1488,6 +1815,9 @@ void mnCharSel_8025DB34(u8 arg0)
+             anim_frame = (f32) mnCharSel_804D50D8[port_color_idx];
+             joint = mnCharSel_803F0DFC.doors[arg0].emblem_joint;
+             animateJoint(mnCharSel_804D6CC0, joint, MOBJ_MASK, anim_frame);
++#ifdef MU_NATIVE
++            mu_css6_tint(arg0);
++#endif
+         } else {
+             /* Teams mode */
+             HSD_JObjClearFlags(sp90, JOBJ_HIDDEN);
+@@ -1511,12 +1841,15 @@ void mnCharSel_8025DB34(u8 arg0)
+             }
+             mnCharSel_804D6CB0->vs.start.players[arg0].team =
+                 mnCharSel_803F0DFC.doors[arg0].team;
++#ifdef MU_NATIVE
++            mu_css6_tint(arg0);   /* Triples: cards 5 and 6 in the team colour, as the others */
++#endif
+         }
+ 
          /* Hide/show nametag text */
          if (mnCharSel_803F0DFC.doors[arg0].p_kind == 3 ||
              (mnCharSel_803F0E8C[arg0].data->use_tag == 0 &&
@@ -180057,7 +180258,7 @@ index d580c0aa4..c32128cb3 100644
          {
              mnCharSel_803F0E8C[arg0].data->text->hidden = 1;
          } else {
-@@ -1527,7 +1832,7 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1527,7 +1860,7 @@ void mnCharSel_8025DB34(u8 arg0)
      /* Final: costume color assignment */
      {
          u8 final_icon = mnCharSel_803F0DFC.doors[arg0].sel_icon;
@@ -180066,7 +180267,7 @@ index d580c0aa4..c32128cb3 100644
              if (mnCharSel_804D6CF5 == 1 ||
                  mnCharSel_804D6CB0->vs.start.rules.is_teams == 0)
              {
-@@ -1557,10 +1862,39 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1557,10 +1890,39 @@ void mnCharSel_8025DB34(u8 arg0)
                  } else {
                      port = arg0;
                  }
@@ -180106,7 +180307,7 @@ index d580c0aa4..c32128cb3 100644
          }
      }
  }
-@@ -1588,6 +1922,9 @@ void mnCharSel_8025EE8C(u8 idx)
+@@ -1588,6 +1950,9 @@ void mnCharSel_8025EE8C(u8 idx)
          HSD_JObjAnimAll(sp14);
          HSD_ForeachAnim(sp14, JOBJ_TYPE, TOBJ_MASK, HSD_AObjStopAnim,
                          AOBJ_ARG_AOV, 0, 0);
@@ -180116,7 +180317,25 @@ index d580c0aa4..c32128cb3 100644
          mnCharSel_8025DB34(0);
          if (mnCharSel_804D6CB0->match_type == TRAINING_MODE) {
              mnCharSel_8025DB34(1);
-@@ -1684,21 +2021,21 @@ void fn_8025F0E0(HSD_GObj* gobj)
+@@ -1622,7 +1987,7 @@ void mnCharSel_8025EE8C(u8 idx)
+     (void) 7.5f;
+ }
+ 
+-static struct CSSCursorData* mnCharSel_804A0BC0[4];
++static struct CSSCursorData* mnCharSel_804A0BC0[MU_CSS_DOORS];
+ static struct CSSCharModel {
+     /* 0x00 */ HSD_GObj* gobj;
+     /* 0x04 */ u8 x4;
+@@ -1633,7 +1998,7 @@ static struct CSSCharModel {
+     /* 0x0C */ float xC;
+     /* 0x10 */ float x10;
+     /* 0x14 */ float x14;
+-}* mnCharSel_804A0BD0[4];
++}* mnCharSel_804A0BD0[MU_CSS_DOORS];
+ 
+ static inline void updateStockIcons(struct CSSDoorsData2* stock_data,
+                                     HSD_JObj** stock_jobj, s32 i)
+@@ -1684,21 +2049,21 @@ void fn_8025F0E0(HSD_GObj* gobj)
                          AOBJ_ARG_AF, 0.0f);
      }
  
@@ -180141,7 +180360,19 @@ index d580c0aa4..c32128cb3 100644
                      HSD_ForeachAnim(sp48, JOBJ_TYPE, TOBJ_MASK,
                                      HSD_AObjReqAnim, AOBJ_ARG_AF, 0.0f);
                      HSD_JObjAnimAll(sp48);
-@@ -2022,6 +2359,73 @@ static inline s32 getPlayerForDoor(u8 door)
+@@ -1709,7 +2074,11 @@ void fn_8025F0E0(HSD_GObj* gobj)
+         }
+     }
+ 
++#ifdef MU_NATIVE
++    if (mnCharSel_804D6CF5 == 4 || mnCharSel_804D6CF5 == 6) {   /* Triples: six doors too */
++#else
+     if (mnCharSel_804D6CF5 == 4) {
++#endif
+         doors = mnCharSel_803F0DFC.doors;
+         i = 0;
+         while (i < (s32) mnCharSel_804D6CF5) {
+@@ -2022,6 +2391,73 @@ static inline s32 getPlayerForDoor(u8 door)
      return door;
  }
  
@@ -180215,7 +180446,7 @@ index d580c0aa4..c32128cb3 100644
  void mnCharSel_8025FB50(u8 door, s32 arg1)
  {
      s32 icon_idx;
-@@ -2029,7 +2433,7 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2029,7 +2465,7 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
      HSD_JObj* icon_jobj;
  
      do {
@@ -180224,7 +180455,7 @@ index d580c0aa4..c32128cb3 100644
          icon_idx = temp;
          icon_offset = getIconOffset(icon_idx);
      } while (icons[icon_idx].state == 0);
-@@ -2061,11 +2465,11 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2061,11 +2497,11 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
                              mnCharSel_804A0BC0[mnCharSel_804D6CF5 - 1]->gobj);
  
      if (mnCharSel_804D6CF5 == 1) {
@@ -180240,7 +180471,7 @@ index d580c0aa4..c32128cb3 100644
      }
      HSD_ForeachAnim(icon_jobj, JOBJ_TYPE, TOBJ_MASK, HSD_AObjReqAnim,
                      AOBJ_ARG_AF, 10.0);
-@@ -2080,9 +2484,6 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2080,9 +2516,6 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
      }
  }
  
@@ -180250,7 +180481,7 @@ index d580c0aa4..c32128cb3 100644
  s32 mnCharSel_8025FDEC(u8 door)
  {
      CSSData* css;
-@@ -2104,7 +2505,20 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2104,7 +2537,20 @@ s32 mnCharSel_8025FDEC(u8 door)
      css = mnCharSel_804D6CB0;
      c_kind = css->vs.start.players[player].ckind;
  
@@ -180271,7 +180502,7 @@ index d580c0aa4..c32128cb3 100644
          if (c_kind != icons[mnCharSel_803F0DFC.doors[door].sel_icon].char_kind)
          {
              mnCharSel_803F0DFC.doors[door].costume = 0;
-@@ -2112,7 +2526,7 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2112,7 +2558,7 @@ s32 mnCharSel_8025FDEC(u8 door)
  
          {
              CSSIcon* icon = icons;
@@ -180280,7 +180511,7 @@ index d580c0aa4..c32128cb3 100644
                  if (css->vs.start.players[player].ckind ==
                      icon[icon_idx].char_kind)
                  {
-@@ -2134,30 +2548,18 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2134,30 +2580,18 @@ s32 mnCharSel_8025FDEC(u8 door)
          mnCharSel_804A0BD0[door]->x5 = 0;
  
          if (mnCharSel_804D6CF5 == 1) {
@@ -180316,7 +180547,7 @@ index d580c0aa4..c32128cb3 100644
  
          if (mnCharSel_804D6CF6 != 3 && mnCharSel_804D6CF6 != 4) {
              int sel = mnCharSel_803F0DFC.doors[door].sel_icon;
-@@ -2168,21 +2570,267 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2168,21 +2602,267 @@ s32 mnCharSel_8025FDEC(u8 door)
      }
      return 1;
  }
@@ -180588,7 +180819,24 @@ index d580c0aa4..c32128cb3 100644
      if (input & HSD_PAD_X) {
          do {
              mnCharSel_803F0DFC.doors[door].costume =
-@@ -2270,6 +2918,12 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
+@@ -2256,6 +2936,9 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
+                         port = mnCharSel_804D6CF0;
+                     }
+                 }
++#ifdef MU_NATIVE
++                if (port >= 4) port = 0;   /* Triples: the table has P1-P4; 5 and 6 take P1's frames, labelled over */
++#endif
+                 color_idx = (mnCharSel_804D6CEC & 3) + (port * 4);
+             } else {
+                 s32 port = cursor->x4;
+@@ -2266,10 +2949,19 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
+                         port = mnCharSel_804D6CF0;
+                     }
+                 }
++#ifdef MU_NATIVE
++                if (port >= 4) port = 0;   /* Triples: as above (in a team battle the colour is the team's) */
++#endif
+                 color_idx = color_idx + (port * 4);
              }
  
              lb_80011E24(jobj, color_jobj, 3, -1);
@@ -180601,7 +180849,7 @@ index d580c0aa4..c32128cb3 100644
              {
                  HSD_JObj* anim_jobj = *color_jobj;
                  HSD_ForeachAnim(anim_jobj, JOBJ_TYPE, TOBJ_MASK,
-@@ -2395,6 +3049,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2395,6 +3087,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
      f32 dy;
      int door;
  
@@ -180611,7 +180859,7 @@ index d580c0aa4..c32128cb3 100644
      if (mnCharSel_804D6CB0->match_type == TRAINING_MODE) {
          n_doors = 2;
      } else {
-@@ -2402,6 +3059,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2402,6 +3097,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
      }
  
      if (mnCharSel_804D6CF6 == 0) {
@@ -180624,7 +180872,7 @@ index d580c0aa4..c32128cb3 100644
          cursor->x8 = 0;
  
          if (mnCharSel_804D6CF5 == 1) {
-@@ -2430,9 +3093,20 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2430,25 +3131,36 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
              getStickDelta(port, &dx, &dy);
  
              if (HSD_PadCopyStatus[cursor->x4].err != 0) {
@@ -180634,8 +180882,9 @@ index d580c0aa4..c32128cb3 100644
 +                if (cursor->x5 != 3 && !mu_te2(MU_TE2_SPOOF_PLUGINS)) {
 +#else
                  if (cursor->x5 != 3) {
+-                    cursor->xC = (f32) ((15.0f * cursor->x4) - 31.0f);
 +#endif
-                     cursor->xC = (f32) ((15.0f * cursor->x4) - 31.0f);
++                    cursor->xC = mu_css6 ? mu_css6_hand_x(cursor->x4) : (f32) ((15.0f * cursor->x4) - 31.0f);   /* Triples: on its HMN button */
 +#ifdef MU_NATIVE
 +                    /* General Codes, "CSS Player Hands Default to HMN Button". */
 +                    cursor->x10 = (mu_general_codes() && !mu_lag_test()) ? -2.5f : -21.5f;
@@ -180645,7 +180894,18 @@ index d580c0aa4..c32128cb3 100644
                      cursor->xA = 0;
                      if (cursor->x5 == 1) {
                          door = cursor->x6;
-@@ -2448,7 +3122,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+-                        if (door <= 3U) {
++                        if (door < (u32) MU_CSS_DOORS) {   /* Triples: coins 0-5, sliders after */
+                             cursor->x5 = 2;
+                             if (mnCharSel_8025FDEC(door & 0xFF) != 0) {
+                                 mnCharSel_8025FB50(door & 0xFF, 1);
+                             }
+-                        } else if (door <= 7U) {
+-                            cpu_door = door - 4;
++                        } else if (door < 2U * MU_CSS_DOORS) {
++                            cpu_door = door - MU_CSS_DOORS;
+                             mnCharSel_803F0DFC.doors[cpu_door]
+                                 .is_hold_cpu_slider = 0;
                          }
                      } else {
                          if (mnCharSel_803F0DFC.doors[cursor->x4].sel_icon >=
@@ -180654,7 +180914,7 @@ index d580c0aa4..c32128cb3 100644
                              mnCharSel_803F0DFC.doors[cursor->x4].p_kind != 3 &&
                              mnCharSel_8025FDEC(cursor->x4) != 0)
                          {
-@@ -2456,9 +3130,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2456,9 +3168,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                          }
                      }
                      if (mnCharSel_803F0DFC.doors[cursor->x4].p_kind == 0) {
@@ -180672,7 +180932,7 @@ index d580c0aa4..c32128cb3 100644
                          mnCharSel_804D6CB0->vs.start.players[cursor->x4]
                              .nametag = 0x78;
                          mnCharSel_803F0E8C[cursor->x4].data->use_tag = 0;
-@@ -2536,6 +3218,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2536,6 +3256,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                  if (-22.0f > cursor->x10) {
                      cursor->x10 = -22.0f;
                  }
@@ -180687,7 +180947,7 @@ index d580c0aa4..c32128cb3 100644
                  if (26.0f < cursor->xC) {
                      cursor->xC = 26.0f;
                  }
-@@ -2544,6 +3234,31 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2544,6 +3272,31 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                  }
              }
          }
@@ -180719,19 +180979,23 @@ index d580c0aa4..c32128cb3 100644
  
          {
              u8 port = cursor->x4;
-@@ -2551,6 +3266,11 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2551,7 +3304,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
              if (tag->state == 0) {
                  if (cursor->x5 == 1) {
                      door = cursor->x6;
+-                    switch (door) {
 +#ifdef MU_NATIVE
 +                    /* Friends: another player's door is drawn from the lobby view and their hand
 +                     * stays parked, so the hover test below would blank that door every frame. */
 +                    if (mu_friends4_view_hand(port)) goto update_display;
 +#endif
-                     switch (door) {
++                    /* Triples: the held thing is a coin (0-5), a CPU slider (door + MU_CSS_DOORS) or a
++                     * handicap slider (door + 2 * MU_CSS_DOORS); the cases below are those three. */
++                    switch (door < MU_CSS_DOORS ? 0 : door < 2 * MU_CSS_DOORS ? 4 : door < 3 * MU_CSS_DOORS ? 8 : 0xFF) {
                      case 0:
                      case 1:
-@@ -2565,7 +3285,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                     case 2:
+@@ -2565,7 +3325,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
                              } else {
                                  mnCharSel_804A0BD0[door]->x5 = 0;
@@ -180740,7 +181004,7 @@ index d580c0aa4..c32128cb3 100644
                                  {
                                      s32 player_idx;
                                      if (mnCharSel_804D6CF5 == 1) {
-@@ -2586,7 +3306,15 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2586,7 +3346,15 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                              cursor->x5 = 2;
                          } else {
                              a_press = trigger & HSD_PAD_A;
@@ -180757,7 +181021,7 @@ index d580c0aa4..c32128cb3 100644
                                  struct CSSCharModel* m =
                                      mnCharSel_804A0BD0[door];
                                  if (m->xC < 6.0f && m->xC > -1.0f &&
-@@ -2594,14 +3322,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2594,14 +3362,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                       (m->x8 > 24.4f && m->x8 < 30.2f)))
                                  {
                                      s32 icon_count;
@@ -180774,7 +181038,7 @@ index d580c0aa4..c32128cb3 100644
                                          mnCharSel_8025FB50(door, 0);
                                          while (true) {
                                              mnCharSel_803F0DFC.doors[door]
-@@ -2617,6 +3345,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2617,6 +3385,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                  break;
                                              }
                                          }
@@ -180785,7 +181049,7 @@ index d580c0aa4..c32128cb3 100644
                                          mnCharSel_8025DB34(door);
                                          cursor->x5 = 2;
                                          lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
-@@ -2629,13 +3361,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2629,13 +3401,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  struct CSSCharModel* m2 =
                                      mnCharSel_804A0BD0[door];
                                  s32 i;
@@ -180804,7 +181068,7 @@ index d580c0aa4..c32128cb3 100644
                                          mnCharSel_803F0DFC.doors[door]
                                              .sel_icon = (u8) i;
                                          mnCharSel_8025DB34(door);
-@@ -2652,6 +3388,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2652,6 +3428,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              } else {
                                                  player_idx = door;
                                              }
@@ -180819,7 +181083,7 @@ index d580c0aa4..c32128cb3 100644
                                              mnCharSel_804D6CB0->vs.start
                                                  .players[player_idx]
                                                  .ckind =
-@@ -2661,12 +3405,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2661,12 +3445,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                      .char_kind;
                                              if (mnCharSel_804D6CF5 == 1) {
                                                  lb_80011E24(
@@ -180836,7 +181100,7 @@ index d580c0aa4..c32128cb3 100644
                                              }
                                              HSD_ForeachAnim(sp98, JOBJ_TYPE,
                                                              TOBJ_MASK,
-@@ -2709,15 +3453,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2709,15 +3493,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                      }
                                  }
                                  mnCharSel_803F0DFC.doors[door].sel_icon_prev =
@@ -180868,7 +181132,25 @@ index d580c0aa4..c32128cb3 100644
                                          }
                                      } else {
                                          mnCharSel_CostumeChange((s32) door,
-@@ -2879,6 +3636,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2731,7 +3528,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                     case 5:
+                     case 6:
+                     case 7: {
+-                        s32 slider_door = door - 4;
++                        s32 slider_door = door - MU_CSS_DOORS;
+                         updateGrabbedSlider(
+                             cursor, &mnCharSel_803F0DFC.doors[slider_door],
+                             slider_door, trigger, &sp98, &sp88, false);
+@@ -2740,7 +3537,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                     case 9:
+                     case 0xA:
+                     case 0xB: {
+-                        s32 hc_door = door - 8;
++                        s32 hc_door = door - 2 * MU_CSS_DOORS;
+                         updateGrabbedSlider(
+                             cursor, &mnCharSel_803F0DFC.doors[hc_door],
+                             hc_door, trigger, &sp98, &sp88, true);
+@@ -2879,6 +3676,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                          cursor->x8 = 1;
                          if (trigger & HSD_PAD_A) {
                              s32 loop_i;
@@ -180878,7 +181160,7 @@ index d580c0aa4..c32128cb3 100644
                              mnCharSel_804D6CF6 = 3;
                              for (loop_i = 0; loop_i < (s32) mnCharSel_804D6CF5;
                                   loop_i++)
-@@ -2910,6 +3670,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2910,6 +3710,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                      case VS_SLOWMO:
                          cursor->x8 = 1;
                          if (trigger & HSD_PAD_A) {
@@ -180888,7 +181170,7 @@ index d580c0aa4..c32128cb3 100644
                              sfxMove();
                              {
                                  u8* is_teams = &mnCharSel_804D6CB0->vs.start
-@@ -2999,9 +3762,23 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2999,9 +3802,23 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          /* Retail nudges both toggle-box
                                           * bounds outward by 1/10485760. */
                                          if (cy4 < 0.20000009536743146 &&
@@ -180913,7 +181195,7 @@ index d580c0aa4..c32128cb3 100644
                                              {
                                                  u8 new_kind;
                                                  new_kind = mnCharSel_803F0DFC
-@@ -3019,9 +3796,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3019,9 +3836,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                          .p_kind = 3;
                                                      break;
                                                  case 4:
@@ -180933,17 +181215,18 @@ index d580c0aa4..c32128cb3 100644
                                                      {
                                                          mnCharSel_803F0DFC
                                                              .doors[door]
-@@ -3042,11 +3829,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3042,11 +3869,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              if (mnCharSel_803F0DFC.doors[door]
                                                      .p_kind == 1)
                                              {
+-                                                mnCharSel_804D6CB0->vs.start
 +#ifdef MU_NATIVE
 +                                                /* General Codes, "Closing CSS
 +                                                 * Door Preserves Nametag". */
 +                                                if (!mu_general_codes())
 +#endif
 +                                                {
-                                                 mnCharSel_804D6CB0->vs.start
++                                                mnCharSel_804D6CB0->vs.start
                                                      .players[door]
                                                      .nametag = 0x78;
                                                  mnCharSel_803F0E8C[door]
@@ -180952,7 +181235,25 @@ index d580c0aa4..c32128cb3 100644
                                                  if (mnCharSel_803F0DFC
                                                              .doors[door]
                                                              .selected_since_load ==
-@@ -3186,6 +3980,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3101,7 +3935,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                                                 cursor->x10 - (1.7f + sp88.y);
+                                             if ((dx * dx + dy * dy) < 5.0f) {
+                                                 cursor->x5 = 1;
+-                                                cursor->x6 = (u8) (door + 4);
++                                                cursor->x6 = (u8) (door + MU_CSS_DOORS);
+                                                 cursor->xC =
+                                                     (f32) (-2.9f + sp88.x);
+                                                 cursor->x10 =
+@@ -3145,7 +3979,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                                                     {
+                                                         cursor->x5 = 1;
+                                                         cursor->x6 =
+-                                                            (u8) (door + 8);
++                                                            (u8) (door + 2 * MU_CSS_DOORS);
+                                                         cursor->xC =
+                                                             (f32) (-2.9f +
+                                                                    sp88.x);
+@@ -3186,6 +4020,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          -1);
                                  }
                                  lb_8000B1CC(sp98, NULL, (&sp88));
@@ -180963,7 +181264,7 @@ index d580c0aa4..c32128cb3 100644
                                  {
                                      if (cursor->xC > (sp88.x - 4.7f) &&
                                          cursor->xC < (5.2f + sp88.x))
-@@ -3232,7 +4030,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3232,7 +4070,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          mnCharSel_803F0DFC.doors[ci].p_kind;
                                      if (pk2 != 3 &&
                                          mnCharSel_803F0DFC.doors[ci].sel_icon <
@@ -180972,7 +181273,7 @@ index d580c0aa4..c32128cb3 100644
                                          (pk2 != 0 || (s32) cursor->x4 == ci))
                                      {
                                          struct CSSCharModel* mc =
-@@ -3252,7 +4050,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3252,7 +4090,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  }
                              }
  
@@ -180988,7 +181289,7 @@ index d580c0aa4..c32128cb3 100644
                                  u8 cport4 = cursor->x4;
                                  s32 closest_door = (u8) closest;
                                  mnCharSel_804A0BD0[(u8) closest]->x5 =
-@@ -3273,12 +4078,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3273,12 +4118,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             -2.0f);
                              }
                          }
@@ -181008,7 +181309,7 @@ index d580c0aa4..c32128cb3 100644
                          {
                              f32 cy8 = cursor->x10;
                              if (cy8 > 0.2f && cy8 < 22.0f) {
-@@ -3306,7 +4116,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3306,7 +4156,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  mnCharSel_804D6CB0->match_type != 1)
                              {
                                  if (mnCharSel_803F0DFC.doors[cport6].p_kind ==
@@ -181028,7 +181329,7 @@ index d580c0aa4..c32128cb3 100644
                                  {
                                      mnCharSel_803F0DFC.doors[cport6].p_kind =
                                          0;
-@@ -3320,7 +4141,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3320,7 +4181,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  {
                                      u8 cport7 = cursor->x4;
                                      if (mnCharSel_803F0DFC.doors[cport7]
@@ -181037,7 +181338,7 @@ index d580c0aa4..c32128cb3 100644
                                      {
                                          mnCharSel_804A0BD0[cport7]->x5 =
                                              (u8) (next_port = cport7 + 1);
-@@ -3408,7 +4229,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3408,7 +4269,7 @@ void fn_80262648(HSD_GObj* gobj)
          u8 door = model->x4;
  
          if ((p_kind = mnCharSel_803F0DFC.doors[door].p_kind) == 3 ||
@@ -181046,7 +181347,7 @@ index d580c0aa4..c32128cb3 100644
          {
              HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
              return;
-@@ -3435,6 +4256,12 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3435,6 +4296,12 @@ void fn_80262648(HSD_GObj* gobj)
                  mnCharSel_804D50E0[mnCharSel_803F0DFC.doors[door].team];
          }
      }
@@ -181059,7 +181360,20 @@ index d580c0aa4..c32128cb3 100644
  
      HSD_JObjClearFlagsAll(jobj, JOBJ_HIDDEN);
      model->x7 = (u8) (model->x7 + 1);
-@@ -3474,7 +4301,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3446,7 +4313,12 @@ void fn_80262648(HSD_GObj* gobj)
+                 if (mnCharSel_804D6CF5 == 1) {
+                     animateCharModel(jobj, (f32) (mnCharSel_804D6CF0 * 4));
+                 } else {
++#ifdef MU_NATIVE
++                    /* Triples: coins 5 and 6 take P1's frames (16 is the CPU's grey coin); their label is drawn over */
++                    animateCharModel(jobj, (f32) ((model->x4 >= 4 ? 0 : model->x4) * 4));
++#else
+                     animateCharModel(jobj, (f32) (model->x4 * 4));
++#endif
+                 }
+             } else {
+                 animateCharModel(jobj, 16.0f);
+@@ -3474,7 +4346,7 @@ void fn_80262648(HSD_GObj* gobj)
  
                  for (j = 0; j < (s32) n_doors; j++) {
                      if (j != (s32) model->x4 && (*bdp)->x5 == 0 &&
@@ -181068,7 +181382,7 @@ index d580c0aa4..c32128cb3 100644
                      {
                          f32 dx;
                          f32 dy;
-@@ -3624,6 +4451,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3624,6 +4496,7 @@ void fn_80262F44(HSD_GObj* gobj)
  {
      HSD_JObj* jobj = GET_JOBJ(gobj);
      int i;
@@ -181076,7 +181390,7 @@ index d580c0aa4..c32128cb3 100644
      PAD_STACK(0x8);
  
      if (mnCharSel_804D6CB0->match_type == VS_CAMERA) {
-@@ -3640,7 +4468,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3640,7 +4513,7 @@ void fn_80262F44(HSD_GObj* gobj)
  
      if (mnCharSel_804D6CF5 == 1) {
          if (mnCharSel_804A0BC0[0]->x5 == 1 ||
@@ -181085,7 +181399,7 @@ index d580c0aa4..c32128cb3 100644
          {
              mnCharSel_804D6CF7 = 0;
          } else {
-@@ -3648,18 +4476,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3648,18 +4521,23 @@ void fn_80262F44(HSD_GObj* gobj)
          }
          HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
      } else {
@@ -181111,7 +181425,7 @@ index d580c0aa4..c32128cb3 100644
              if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                  for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
                      s32 j;
-@@ -3721,6 +4554,41 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3721,6 +4599,41 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
  
@@ -181153,7 +181467,7 @@ index d580c0aa4..c32128cb3 100644
          if (mnCharSel_804D6CF2 == 0 && (trigger & HSD_PAD_START)) {
              if (mnCharSel_804D6CF7 != 0) {
                  mnCharSel_804D6CF6 = 1;
-@@ -3750,12 +4618,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3750,12 +4663,23 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
      }
@@ -181178,7 +181492,7 @@ index d580c0aa4..c32128cb3 100644
          HSD_JObjReqAnimAll(jobj, 0.0F);
      }
      HSD_JObjAnimAll(jobj);
-@@ -3820,6 +4699,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3820,6 +4744,12 @@ void fn_802633B0(HSD_GObj* gobj)
      } else {
          num_entries = num_entries - 7;
      }
@@ -181191,7 +181505,7 @@ index d580c0aa4..c32128cb3 100644
  
      if (mnCharSel_804D6CF5 == 1) {
          lb_80011E24(mnCharSel_804D6CC0, &list_jobj, mnCharSel_803F0EBC.xc4,
-@@ -3834,9 +4719,9 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3834,9 +4764,9 @@ void fn_802633B0(HSD_GObj* gobj)
      switch ((s32) tag->state) {
      case 1:
          mnCharSel_8025D1C4((s32) tag->port, 1);
@@ -181203,7 +181517,7 @@ index d580c0aa4..c32128cb3 100644
              {
                  HSD_SisLib_803A70A0(tag->name_ls, 0,
                                      (char*) mnCharSel_803F0A48.gnw_name);
-@@ -3939,13 +4824,25 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3939,13 +4869,25 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          HSD_SisLib_803A746C(tag->name_ls, 0, 0.0f, tag->x8);
@@ -181229,7 +181543,7 @@ index d580c0aa4..c32128cb3 100644
              for (j = 0; j < 9; j++) {
                  row_idx = j - page_off;
                  if (row_idx < 0) {
-@@ -3977,6 +4874,10 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3977,6 +4919,10 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          if (trigger & HSD_PAD_A) {
@@ -181240,7 +181554,7 @@ index d580c0aa4..c32128cb3 100644
              if (mnCharSel_804D6CF5 == 1) {
                  lb_80011E24(mnCharSel_804D6CC0, &list_origin_jobj,
                              mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -3992,7 +4893,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3992,11 +4938,18 @@ void fn_802633B0(HSD_GObj* gobj)
  
              if ((s32) cursor_row == 0) {
                  if (lbLang_IsSavedLanguageUS() != 0 &&
@@ -181249,7 +181563,18 @@ index d580c0aa4..c32128cb3 100644
                  {
                      HSD_SisLib_803A70A0(tag->text, 0,
                                          (char*) mnCharSel_803F0A48.gnw_name);
-@@ -4004,7 +4905,7 @@ void fn_802633B0(HSD_GObj* gobj)
+                 } else {
++#ifdef MU_NATIVE
++                    if (mu_css6 && mex_select == NULL && mnCharSel_803F0DFC.doors[tag->port].sel_icon < 0x19) {
++                        /* Triples: the patch's short names, which fit a card at 0.66 of its width */
++                        HSD_SisLib_803A70A0(tag->text, 0,
++                                            (char*) mu_css6_short_names[mnCharSel_803F0DFC.doors[tag->port].sel_icon]);
++                    } else
++#endif
+                     HSD_SisLib_803A70A0(
+                         tag->text, 0,
+                         (char*) gm_80160980(
+@@ -4004,7 +4957,7 @@ void fn_802633B0(HSD_GObj* gobj)
                                  .char_kind));
                  }
                  tag->text->default_kerning = 1;
@@ -181258,7 +181583,7 @@ index d580c0aa4..c32128cb3 100644
                      tag->text->hidden = 0;
                  } else {
                      tag->text->hidden = 1;
-@@ -4039,7 +4940,14 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4039,7 +4992,14 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -181273,7 +181598,7 @@ index d580c0aa4..c32128cb3 100644
                  if (IsNameListFull() == 0) {
                      if (mnCharSel_804D6CF5 == 1) {
                          mnCharSel_804D6CF9 = mnCharSel_804D6CF0;
-@@ -4063,7 +4971,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4063,7 +5023,12 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -181286,7 +181611,19 @@ index d580c0aa4..c32128cb3 100644
                  {
                      s32 p;
                      for (p = 0; p < (s32) mnCharSel_804D6CF5; p++) {
-@@ -4178,6 +5091,40 @@ void fn_8026407C(HSD_GObj* gobj)
+@@ -4125,7 +5090,11 @@ void fn_802633B0(HSD_GObj* gobj)
+         HSD_ForeachAnim(list_jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjReqAnim,
+                         AOBJ_ARG_AF, 20.0f);
+         tag->name_ls->hidden = 1;
++#ifdef MU_NATIVE
++        if (gmMainLib_GetGameRules()->handicap != 0 && (mnCharSel_804D6CF5 == 4 || mnCharSel_804D6CF5 == 6))
++#else
+         if (gmMainLib_GetGameRules()->handicap != 0 && mnCharSel_804D6CF5 == 4)
++#endif
+         {
+             {
+                 s32 hval;
+@@ -4178,6 +5147,40 @@ void fn_8026407C(HSD_GObj* gobj)
      HSD_FogSet(GET_FOG(gobj));
  }
  
@@ -181327,7 +181664,7 @@ index d580c0aa4..c32128cb3 100644
  static const GXColor mnCharSel_804DC580 = { 255, 255, 0, 255 };
  static const GXColor mnCharSel_804DC584 = { 20, 80, 160, 255 };
  static const GXColor mnCharSel_804DC588 = { 60, 140, 80, 255 };
-@@ -4185,6 +5132,157 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
+@@ -4185,6 +5188,750 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
  static const GXColor mnCharSel_804DC590 = { 180, 80, 0, 255 };
  static const GXColor mnCharSel_804DC594 = { 220, 0, 0, 255 };
  
@@ -181482,10 +181819,603 @@ index d580c0aa4..c32128cb3 100644
 +}
 +#endif
 +
++#ifdef MU_NATIVE
++/* ---- Triples: six doors (shim/mu_triples.c) ----
++ * Port of digicannon's Triples character select (ssbm-triples-asm, asm/css_load_rescale_ui.asm, GPL-3.0):
++ * every card at 0.66 of its width and 10.25 apart (the patch moves cards 2-4 left by 5.15 a card), the
++ * HMN/CPU and team buttons at the patch's bounds, cards 5 and 6 made from player 1's and player 2's own
++ * card parts. The patch drew 5 and 6 as copies of 1 and 2; here they are whole doors: their parts are
++ * cloned from the panel model and appended to the panel tree, so every lookup by joint index (the door,
++ * name tag and KO star tables) reaches them as it reaches doors 1-4. */
++static int mu_css6;
++int mu_css6_active(void) { return mu_css6; }
++static CSSDoorsData mu_css_doors_retail;
++static CSSTag mu_css_tags_retail[4];
++static CSSKOStar mu_css_kostars_retail[4];
++static int mu_css_retail_saved;
++
++typedef struct MuCss6Part { u8 root, count, stride; } MuCss6Part;
++/* Player 1's card parts (subtree root, joints in it); player 2's are one stride on. */
++static const MuCss6Part mu_css6_parts[] = {
++    { 0x29, 1, 1 }, { 0x2E, 1, 1 }, { 0x33, 1, 1 }, { 0x38, 1, 1 }, { 0x3D, 6, 6 }, { 0x57, 6, 6 },
++    { 0x70, 3, 5 }, { 0x73, 1, 5 }, { 0x74, 1, 5 }, { 0x85, 7, 8 }, { 0xA5, 2, 2 },
++};
++#define MU_CSS6_NPARTS ((int) (sizeof mu_css6_parts / sizeof mu_css6_parts[0]))
++static int mu_css6_base[6][MU_CSS6_NPARTS];   /* each door's part's first joint (a clone's, or the model's) */
++static HSD_JObj* mu_css6_hidden[4];
++static HSD_JObj* mu_css6_boxes56;   /* the copy of the name boxes that serves cards 5 and 6 */            /* cards 1-4's own plates, hidden for their clones */
++static HSD_JObj* mu_css6_part[6][MU_CSS6_NPARTS];
++/* Where the layout put each part. The game's own animations (a door opening, the name tag sliding in) write a
++ * part's place and size from the model's keys, so the frame step puts the layout's back after them. kind 1:
++ * x, y and both scales (the plates); kind 2: x and the width. */
++typedef struct MuCss6Hold { int kind; float x, y, sx, sy; } MuCss6Hold;
++static MuCss6Hold mu_css6_hold[6][MU_CSS6_NPARTS];
++/* The patch's button bounds (KSCSS hitboxes), cards 5 and 6 one card on. */
++static const float mu_css6_toggle[6][2] = { { -35.0f, -31.0f }, { -24.6f, -20.9f }, { -14.8f, -11.0f },
++                                            { -4.5f, -0.5f }, { 5.75f, 9.75f }, { 16.0f, 20.0f } };
++static float mu_css6_hand_x(int port);
++static const float mu_css6_team[6][2] = { { -30.0f, -25.5f }, { -20.0f, -15.5f }, { -9.5f, -5.5f },
++                                          { 0.0f, 4.75f }, { 10.25f, 15.0f }, { 20.5f, 25.25f } };
++/* Where a hand starts: on its door's HMN/CPU button (as the game's start places them), in the six-card layout. */
++static float mu_css6_hand_x(int port)
++{
++    return port >= 0 && port < 6 ? 0.5f * (mu_css6_toggle[port][0] + mu_css6_toggle[port][1]) : 0.0f;
++}
++#define MU_CSS6_SCALE 0.66f
++#define MU_CSS6_SPACING 10.25f
++#define MU_CSS6_LEFT (-30.2f)
++#define MU_CSS_RETAIL_SPACING 15.4f
++
++typedef struct MuCss6Desc {
++    HSD_Joint* j;
++    HSD_AnimJoint* a;
++    HSD_MatAnimJoint* m;
++    HSD_ShapeAnimJoint* s;
++} MuCss6Desc;
++
++/* The descriptions at preorder index `target` (the order lb_80011E24 counts in), with the animation trees
++ * walked alongside. */
++static int mu_css6_find(HSD_Joint* j, HSD_AnimJoint* a, HSD_MatAnimJoint* m, HSD_ShapeAnimJoint* s,
++                        int* idx, int target, MuCss6Desc* out)
++{
++    for (; j != NULL; j = DP(j->next), a = a != NULL ? DP(a->next) : NULL, m = m != NULL ? DP(m->next) : NULL,
++                      s = s != NULL ? DP(s->next) : NULL)
++    {
++        if (*idx == target) {
++            out->j = j;
++            out->a = a;
++            out->m = m;
++            out->s = s;
++            return 1;
++        }
++        (*idx)++;
++        if (!(j->flags & JOBJ_INSTANCE) && !DISC_NULL(j->child)) {
++            if (mu_css6_find(DP(j->child), a != NULL ? DP(a->child) : NULL, m != NULL ? DP(m->child) : NULL,
++                             s != NULL ? DP(s->child) : NULL, idx, target, out))
++            {
++                return 1;
++            }
++        }
++    }
++    return 0;
++}
++
++/* A copy of one description with no next sibling, so loading it makes only that subtree. */
++static void* mu_css6_alone(const void* desc, size_t size, size_t next_offset)
++{
++    u8* copy;
++    if (desc == NULL) {
++        return NULL;
++    }
++    copy = HSD_MemAlloc((u32) size);
++    memcpy(copy, desc, size);
++    memset(copy + next_offset, 0, 4);
++    return copy;
++}
++
++static float mu_css6_world_x(HSD_JObj* jobj, HSD_JObj* root, float* y, float* z)
++{
++    float x = 0.0f;
++    *y = 0.0f;
++    *z = 0.0f;
++    for (; jobj != NULL && jobj != root; jobj = jobj->parent) {
++        x += jobj->translate.x;
++        *y += jobj->translate.y;
++        *z += jobj->translate.z;
++    }
++    return x;
++}
++
++static int mu_css6_count(HSD_JObj* j)
++{
++    int n = 0;
++    while (j != NULL) {
++        n++;
++        if (!(j->flags & JOBJ_INSTANCE) && j->child != NULL) {
++            j = j->child;
++        } else {
++            while (j != NULL && j->next == NULL) {
++                j = j->parent;
++            }
++            if (j != NULL) j = j->next;
++        }
++    }
++    return n;
++}
++
++/* Joint `joint` of player `src`'s card, as door `door` has it (a clone's index, or the model's own). */
++static u8 mu_css6_map(int door, int src, u8 joint)
++{
++    int p;
++    for (p = 0; p < MU_CSS6_NPARTS; p++) {
++        const int r = mu_css6_parts[p].root + src * mu_css6_parts[p].stride;
++        if (joint >= r && joint < r + mu_css6_parts[p].count) {
++            const int at = mu_css6_base[door][p] + (joint - r);
++            if (at > 255) {
++                OSReport("[triples] css: joint %d past a byte\n", at);
++                return joint;
++            }
++            return (u8) at;
++        }
++    }
++    OSReport("[triples] css: joint 0x%02X of player %d is no card part\n", joint, src + 1);
++    return joint;
++}
++
++static void mu_css_restore_retail(void)
++{
++    if (!mu_css_retail_saved) {
++        mu_css_doors_retail = mnCharSel_803F0DFC;
++        memcpy(mu_css_tags_retail, mnCharSel_803F0E8C, sizeof mu_css_tags_retail);
++        memcpy(mu_css_kostars_retail, data2.ko_stars, sizeof mu_css_kostars_retail);
++        mu_css_retail_saved = 1;
++    }
++    mnCharSel_803F0DFC = mu_css_doors_retail;
++    memcpy(mnCharSel_803F0E8C, mu_css_tags_retail, sizeof mu_css_tags_retail);
++    memcpy(data2.ko_stars, mu_css_kostars_retail, sizeof mu_css_kostars_retail);
++}
++
++/* One card part cloned from the panel model and added at the end of the panel tree, where the source part is;
++ * NULL when the model has no such joint. `base` gets its first joint's index. */
++static HSD_JObj* mu_css6_clone(HSD_JObj* root, StaticModelDesc* model, int orig, int with_own_materials, int* base)
++{
++    MuCss6Desc d = { NULL, NULL, NULL, NULL };
++    int idx = 0;
++    HSD_JObj* src = NULL;
++    HSD_JObj* clone;
++    float x, y, z;
++    lb_80011E24(root, &src, orig, -1);
++    if (src == NULL || !mu_css6_find(DP(model->joint), DP(model->animjoint), DP(model->matanim_joint),
++                                     DP(model->shapeanim_joint), &idx, orig, &d))
++    {
++        OSReport("[triples] css: card part 0x%02X not found\n", orig);
++        return NULL;
++    }
++    *base = mu_css6_count(root);
++    clone = HSD_JObjLoadJoint(mu_css6_alone(d.j, sizeof *d.j, offsetof(HSD_Joint, next)));
++    HSD_JObjAddAnimAll(clone, mu_css6_alone(d.a, sizeof *d.a, offsetof(HSD_AnimJoint, next)),
++                       mu_css6_alone(d.m, sizeof *d.m, offsetof(HSD_MatAnimJoint, next)),
++                       mu_css6_alone(d.s, sizeof *d.s, offsetof(HSD_ShapeAnimJoint, next)));
++    x = mu_css6_world_x(src, root, &y, &z);
++    HSD_JObjSetTranslateX(clone, x);
++    HSD_JObjSetTranslateY(clone, y);
++    HSD_JObjSetTranslateZ(clone, z);
++    HSD_JObjAddChild(root, clone);
++    if (with_own_materials) {
++        /* The card background: its own materials, so the tint leaves player 1's and 2's alone. */
++        mu_css6_own_materials(clone);
++    }
++    return clone;
++}
++
++static void mu_css6_build(HSD_JObj* root, StaticModelDesc* model)
++{
++    int dup, p, k;
++    for (k = 0; k < 6; k++) {
++        for (p = 0; p < MU_CSS6_NPARTS; p++) {
++            mu_css6_base[k][p] = mu_css6_parts[p].root + (k & 3) * mu_css6_parts[p].stride;
++            mu_css6_part[k][p] = NULL;
++        }
++    }
++    /* Doors 5 and 6: player 1's and 2's card parts, cloned. The name tag list (0x73) stays player 1's and 2's:
++     * a door's joints are bytes, and with it the panel would pass 255 joints. */
++    for (dup = 0; dup < 2; dup++) {
++        for (p = 0; p < MU_CSS6_NPARTS; p++) {
++            const int orig = mu_css6_parts[p].root + dup * mu_css6_parts[p].stride;
++            int base = orig;
++            if (mu_css6_parts[p].root == 0x73) continue;
++            mu_css6_part[4 + dup][p] = mu_css6_clone(root, model, orig, p == 0, &base);
++            mu_css6_base[4 + dup][p] = base;
++        }
++    }
++    /* Cards 1-4's name plates: the plate is drawn skinned to its bones and does not follow its own root when
++     * moved in place, so each is cloned (as 5's and 6's are) and the model's own is hidden. */
++    for (k = 0; k < 4; k++) {
++        const int orig = 0x3D + k * 6;
++        HSD_JObj* old = NULL;
++        int base = orig;
++        mu_css6_part[k][4] = mu_css6_clone(root, model, orig, 0, &base);
++        mu_css6_base[k][4] = base;
++        lb_80011E24(root, &old, orig, -1);
++        if (old != NULL && mu_css6_part[k][4] != NULL) {
++            HSD_JObjSetFlagsAll(old, JOBJ_HIDDEN);
++            mu_css6_hidden[k] = old;
++        }
++    }
++    for (k = 0; k < 6; k++) {
++        const int src = k & 3;
++        const CSSDoor* from = &mu_css_doors_retail.doors[k < 4 ? k : k - 4];
++        CSSDoor* to = &mnCharSel_803F0DFC.doors[k];
++        *to = *from;
++        to->emblem_joint = mu_css6_map(k, src, from->emblem_joint);
++        to->costume_joint = mu_css6_map(k, src, from->costume_joint);
++        to->team_joint = mu_css6_map(k, src, from->team_joint);
++        to->door_joint = mu_css6_map(k, src, from->door_joint);
++        to->bg_joint = mu_css6_map(k, src, from->bg_joint);
++        to->player_indicator_joint = mu_css6_map(k, src, from->player_indicator_joint);
++        to->slidername_joint = mu_css6_map(k, src, from->slidername_joint);
++        to->cpuslider_joint = mu_css6_map(k, src, from->cpuslider_joint);
++        to->cpuslider2_joint = mu_css6_map(k, src, from->cpuslider2_joint);
++        if (k >= 4) {
++            const CSSTag* tag = &mu_css_tags_retail[k - 4];
++            mnCharSel_803F0E8C[k] = *tag;
++            mnCharSel_803F0E8C[k].data = NULL;
++            mnCharSel_803F0E8C[k].x4 = mu_css6_map(k, src, tag->x4);
++            mnCharSel_803F0E8C[k].list_joint = mu_css6_map(k, src, tag->list_joint);
++            mnCharSel_803F0E8C[k].name_jointl = mu_css6_map(k, src, tag->name_jointl);
++            mnCharSel_803F0E8C[k].x7 = mu_css6_map(k, src, tag->x7);
++            mnCharSel_803F0E8C[k].kostar_text_joint = mu_css6_map(k, src, tag->kostar_text_joint);
++            data2.ko_stars[k] = mu_css_kostars_retail[k - 4];
++            data2.ko_stars[k].text = NULL;
++            data2.ko_stars[k].joint = mu_css6_map(k, src, mu_css_kostars_retail[k - 4].joint);
++        }
++    }
++    /* The name boxes: one joint (0x55) holds all four, one mesh each, at the four cards' places. A second one
++     * gives cards 5 and 6 theirs (its third and fourth stay hidden). */
++    {
++        int base = 0;
++        HSD_DObj* d;
++        int n = 0;
++        mu_css6_boxes56 = mu_css6_clone(root, model, 0x55, 0, &base);
++        for (d = mu_css6_boxes56 != NULL ? mu_css6_boxes56->u.dobj : NULL; d != NULL; d = d->next, n++) {
++            if (n >= 2) d->flags |= DOBJ_HIDDEN;
++        }
++    }
++    OSReport("[triples] css: six doors, %d joints\n", mu_css6_count(root));
++}
++
++/* The layout, after the panel's first animation frame (which puts every part where the model has it): each
++ * part keeps its place on its card, at 0.66 of the width, around the card's new middle. */
++static void mu_css6_layout(HSD_JObj* root)
++{
++    int p, k;
++    float star_x[4];
++    for (k = 0; k < 4; k++) star_x[k] = data2.ko_stars[k].x4;
++    for (k = 0; k < 6; k++) {
++        const int src = k < 4 ? k : k - 4;
++        const float old_mid = MU_CSS6_LEFT + MU_CSS_RETAIL_SPACING * (float) src;
++        const float new_mid = MU_CSS6_LEFT + MU_CSS6_SPACING * (float) k;
++        for (p = 0; p < MU_CSS6_NPARTS; p++) {
++            HSD_JObj* j = NULL;
++            float y, z, wx, parent_x;
++            j = mu_css6_part[k][p];
++            if (j == NULL && k < 4) {
++                lb_80011E24(root, &j, mu_css6_parts[p].root + k * mu_css6_parts[p].stride, -1);
++                mu_css6_part[k][p] = j;
++            }
++            if (j == NULL) continue;
++            wx = mu_css6_world_x(j, root, &y, &z);
++            parent_x = wx - j->translate.x;
++            if (mu_css6_parts[p].root == 0x3D) {
++                /* the name plate: the patch's own place and size ("Text Label BG"; 5 and 6 a little lower) */
++                static const float plate_x[6] = { -25.5f, -15.2f, -4.9f, 5.3f, 15.5f, 25.7f };
++                /* the patch's -21 is under the plates' parent (-3), its -24 for 5 and 6 is absolute: both 24 down */
++                HSD_JObjSetTranslateX(j, plate_x[k] - parent_x);
++                HSD_JObjSetTranslateY(j, -24.0f - (y - j->translate.y));
++                HSD_JObjSetScaleX(j, 0.69f);
++                HSD_JObjSetScaleY(j, 0.42f);
++                mu_css6_hold[k][p] = (MuCss6Hold) { 1, j->translate.x, j->translate.y, j->scale.x, j->scale.y };
++                HSD_JObjSetMtxDirtySub(j);   /* its bones too: the plate is drawn skinned to them */
++                continue;
++            }
++            HSD_JObjSetTranslateX(j, new_mid + (wx - old_mid) * MU_CSS6_SCALE - parent_x);
++            HSD_JObjSetScaleX(j, j->scale.x * MU_CSS6_SCALE);
++            mu_css6_hold[k][p] = (MuCss6Hold) { 2, j->translate.x, j->translate.y, j->scale.x, j->scale.y };
++            HSD_JObjSetMtxDirtySub(j);
++        }
++        mnCharSel_803F0DFC.doors[k].togglebtn_left = mu_css6_toggle[k][0];
++        mnCharSel_803F0DFC.doors[k].togglebtn_right = mu_css6_toggle[k][1];
++        mnCharSel_803F0DFC.doors[k].teambtn_left = mu_css6_team[k][0];
++        mnCharSel_803F0DFC.doors[k].teambtn_right = mu_css6_team[k][1];
++        data2.ko_stars[k].x4 = new_mid + (star_x[src] - old_mid) * MU_CSS6_SCALE;
++    }
++    /* The name boxes, squeezed to the six-card spacing: the model's four from card 1 on, the copy from card 5. */
++    {
++        const float s = MU_CSS6_SPACING / MU_CSS_RETAIL_SPACING;
++        HSD_JObj* boxes = NULL;
++        lb_80011E24(root, &boxes, 0x55, -1);
++        if (boxes != NULL) {
++            boxes->translate.x = MU_CSS6_LEFT * (1.0f - s);
++            boxes->scale.x = s;
++            HSD_JObjSetMtxDirtySub(boxes);
++        }
++        if (mu_css6_boxes56 != NULL) {
++            mu_css6_boxes56->translate.x = MU_CSS6_LEFT + 4.0f * MU_CSS6_SPACING - MU_CSS6_LEFT * s;
++            mu_css6_boxes56->scale.x = s;
++            HSD_JObjSetMtxDirtySub(mu_css6_boxes56);
++        }
++    }
++}
++
++/* Six doors in plain VS mode with a controller in port 5 or 6 (tests: MELEE_TEST_CSS6=1 or 0). */
++static int mu_css6_wanted(int match_type)
++{
++    extern const char* mu_test_getenv(const char* name);
++    const char* v = mu_test_getenv("MELEE_TEST_CSS6");
++    extern int mu_lobby_six(void);
++    /* The Friends lobby's select: six doors in a six-seat room (shim/mu_slippi_menu.c), whatever is plugged in. */
++    if (match_type == VS_MELEE && mu_lobby_css()) {
++        return mu_lobby_six();
++    }
++    if (match_type != VS_MELEE || mu_slippi_css_online()) {
++        return 0;
++    }
++    if (v != NULL && *v != '\0') {
++        return *v == '1';
++    }
++    return HSD_PadMasterStatus[4].err == 0 || HSD_PadMasterStatus[5].err == 0;
++}
++
++/* Cards 5 and 6 in free-for-all: the game's grey card frame in the patch's colours, player 5 orange and
++ * player 6 purple (css_load_rescale_ui.asm, "Color P5" / "Color P6"); a CPU keeps the grey. */
++static void mu_css6_tint(int door)
++{
++    static const GXColor colour[2] = { { 0xFF, 0x98, 0x26, 0x00 }, { 0x98, 0x4C, 0xE5, 0x00 } };
++    static const GXColor inner = { 0x2C, 0x2C, 0x2C, 0x00 };   /* "Gray for inner line" */
++    static GXColor plain_ambient, plain_diffuse;
++    static int plain_saved;
++    HSD_JObj* bg = NULL;
++    HSD_DObj* dobj;
++    if (!mu_css6 || door < 4 || door > 5) {
++        return;
++    }
++    lb_80011E24(mnCharSel_804D6CC0, &bg, mnCharSel_803F0DFC.doors[door].bg_joint, -1);
++    if (bg == NULL) {
++        return;
++    }
++    for (dobj = bg->u.dobj; dobj != NULL; dobj = dobj->next) {
++        if (dobj->mobj != NULL && dobj->mobj->mat != NULL) {
++            HSD_Material* mat = dobj->mobj->mat;
++            const int first = dobj == bg->u.dobj;
++            if (!plain_saved) {
++                plain_ambient = mat->ambient;
++                plain_diffuse = mat->diffuse;
++                plain_saved = 1;
++            }
++            /* the patch's two colours: the card in the player's colour, its inner line grey; a team battle's
++             * card is the team's, as cards 1-4 are */
++            if (mnCharSel_803F0DFC.doors[door].p_kind == 0 && !mnCharSel_804D6CB0->vs.start.rules.is_teams) {
++                mat->diffuse = first ? colour[door - 4] : inner;
++            } else {
++                mat->ambient = plain_ambient;
++                mat->diffuse = plain_diffuse;
++            }
++        }
++    }
++}
++#endif
++
++
++
++#ifdef MU_NATIVE
++/* ---- Triples: P5 and P6 on the cards, hands and coins ----
++ * The game's art goes to P4. "P5" and "P6" are made at run time from the same texture's own "P3", in its own
++ * strokes: a 5 is a 3 with its upper right side on the left, a 6 is that 5 with the lower left side too. Nothing
++ * is drawn that the game did not draw: rows of the 3 are mirrored within the digit's box. Players 5 and 6 are
++ * orange and purple, the Triples patch's colours (css_load_rescale_ui.asm). */
++/* Frame `k` of a texture's animation table (the table holds no count: the caller knows the frames). */
++static HSD_ImageDesc* mu_css6_frame_image(HSD_TObj* tobj, int k)
++{
++    DISC_PTR(HSD_ImageDesc)* tbl;
++    if (tobj == NULL || tobj->imagetbl == NULL) return NULL;
++    tbl = (void*) tobj->imagetbl;
++    return DP(tbl[k]);
++}
++static HSD_TObj* mu_css6_tobj(HSD_JObj* root, int joint, int dobj_index)
++{
++    HSD_JObj* j = NULL;
++    HSD_DObj* d;
++    int i;
++    if (root == NULL) return NULL;
++    lb_80011E24(root, &j, joint, -1);
++    if (j == NULL || (j->flags & (JOBJ_PTCL | JOBJ_SPLINE))) return NULL;
++    for (d = j->u.dobj, i = 0; d != NULL && i < dobj_index; d = d->next, i++) {}
++    return d != NULL && d->mobj != NULL ? d->mobj->tobj : NULL;
++}
++/* A joint's materials as its own (they start out shared with every copy loaded from the same model). */
++static void mu_css6_own_materials(HSD_JObj* j)
++{
++    HSD_DObj* d;
++    if (j == NULL || (j->flags & (JOBJ_PTCL | JOBJ_SPLINE))) return;
++    for (d = j->u.dobj; d != NULL; d = d->next) {
++        HSD_Material* old_mat;
++        HSD_Material* mat;
++        HSD_TExp* t;
++        if (d->mobj == NULL || (old_mat = d->mobj->mat) == NULL) continue;
++        mat = HSD_MemAlloc(sizeof *mat);
++        memcpy(mat, old_mat, sizeof *mat);
++        d->mobj->mat = mat;
++        for (t = d->mobj->texp; t != NULL; t = t->comm.next) {
++            if (t->type == HSD_TE_CNST && (u8*) t->cnst.val >= (u8*) old_mat && (u8*) t->cnst.val < (u8*) (old_mat + 1)) {
++                t->cnst.val = (u8*) mat + ((u8*) t->cnst.val - (u8*) old_mat);
++            }
++        }
++    }
++}
++static void mu_css6_paint(HSD_JObj* j, GXColor c)
++{
++    HSD_DObj* d;
++    if (j == NULL || (j->flags & (JOBJ_PTCL | JOBJ_SPLINE))) return;
++    for (d = j->u.dobj; d != NULL; d = d->next) {
++        if (d->mobj != NULL && d->mobj->mat != NULL) d->mobj->mat->diffuse = c;
++    }
++}
++
++static int mu_css6_owned;   /* the hands' and coins' materials of players 5 and 6 are their own */
++/* Each coin's body and label materials as the model has them, and whether the last frame was a team battle. */
++static HSD_Material mu_css6_coin_plain[2][2];
++static int mu_css6_coin_saved[2][2], mu_css6_was_teams;
++static void mu_css6_keep_material(HSD_JObj* j, int door, int part)
++{
++    if (j == NULL || (j->flags & (JOBJ_PTCL | JOBJ_SPLINE)) || j->u.dobj == NULL || j->u.dobj->mobj == NULL ||
++        j->u.dobj->mobj->mat == NULL)
++    {
++        return;
++    }
++    mu_css6_coin_plain[door][part] = *j->u.dobj->mobj->mat;
++    mu_css6_coin_saved[door][part] = 1;
++}
++static void mu_css6_restore_material(HSD_JObj* j, int door, int part)
++{
++    HSD_DObj* d;
++    if (j == NULL || (j->flags & (JOBJ_PTCL | JOBJ_SPLINE)) || !mu_css6_coin_saved[door][part]) return;
++    for (d = j->u.dobj; d != NULL; d = d->next) {
++        if (d->mobj != NULL && d->mobj->mat != NULL) *d->mobj->mat = mu_css6_coin_plain[door][part];
++    }
++}
++
++/* Each frame of a six-door select, after the game's own animation: players 5 and 6's labels and colours. */
++static void mu_css6_frame(HSD_GObj* gobj)
++{
++    int k;
++    (void) gobj;
++    if (!mu_css6) return;
++    for (k = 0; k < 4; k++) {
++        if (mu_css6_hidden[k] != NULL && !(mu_css6_hidden[k]->flags & JOBJ_HIDDEN)) {
++            HSD_JObjSetFlagsAll(mu_css6_hidden[k], JOBJ_HIDDEN);   /* cards 1-4's own plates stay hidden */
++        }
++    }
++    {
++        int h;
++        for (h = 0; h < mu_css_hide_n; h++) {
++            HSD_JObj* jj = NULL;
++            lb_80011E24(mnCharSel_804D6CC0, &jj, mu_css_hide[h], -1);
++            if (jj != NULL) HSD_JObjSetFlagsAll(jj, JOBJ_HIDDEN);
++        }
++    }
++    if (!mu_css6) return;
++    for (k = 0; k < 6; k++) {
++        int p;
++        for (p = 0; p < MU_CSS6_NPARTS; p++) {
++            HSD_JObj* j = mu_css6_part[k][p];
++            const MuCss6Hold* h = &mu_css6_hold[k][p];
++            if (j == NULL || h->kind == 0) continue;
++            if (j->translate.x != h->x || j->scale.x != h->sx ||
++                (h->kind == 1 && (j->translate.y != h->y || j->scale.y != h->sy)))
++            {
++                j->translate.x = h->x;
++                j->scale.x = h->sx;
++                if (h->kind == 1) {
++                    j->translate.y = h->y;
++                    j->scale.y = h->sy;
++                }
++                HSD_JObjSetMtxDirtySub(j);   /* the part and everything under it (skinned plates read their bones) */
++            }
++        }
++    }
++    {
++        /* doors 5 and 6 in the state log's terms (the game's log has four doors) */
++        static int last[2][3] = { { -1, -1, -1 }, { -1, -1, -1 } };
++        for (k = 4; k < 6; k++) {
++            const CSSDoor* dd = &mnCharSel_803F0DFC.doors[k];
++            const int fighter = dd->sel_icon < css_icon_count ? (int) icons[dd->sel_icon].char_kind : -1;
++            const int locked = mnCharSel_804A0BD0[k] != NULL && mnCharSel_804A0BD0[k]->x5 == 0 && fighter >= 0;
++            if (last[k - 4][0] != dd->p_kind || last[k - 4][1] != fighter || last[k - 4][2] != locked) {
++                last[k - 4][0] = dd->p_kind;
++                last[k - 4][1] = fighter;
++                last[k - 4][2] = locked;
++                OSReport("[triples] css-door %d kind %s fighter %d locked %d\n", k + 1,
++                         dd->p_kind == 0 ? "HMN" : dd->p_kind == 1 ? "CPU" : dd->p_kind == 3 ? "closed" : "other", fighter, locked);
++            }
++        }
++    }
++    /* cards 5 and 6's name boxes sit after the doors in the tree, so they would be drawn over a closed
++     * door: each is shown only while its door is open (the model's own four are drawn before the doors) */
++    if (mu_css6_boxes56 != NULL) {
++        HSD_DObj* box = mu_css6_boxes56->u.dobj;
++        for (k = 4; k < 6 && box != NULL; k++, box = box->next) {
++            if (mnCharSel_803F0DFC.doors[k].p_kind == 3) box->flags |= DOBJ_HIDDEN;
++            else box->flags &= ~DOBJ_HIDDEN;
++        }
++    }
++    for (k = 4; k < 6; k++) {
++        const int digit = k + 1;
++        const int human = mnCharSel_803F0DFC.doors[k].p_kind == 0;
++        const int teams = mnCharSel_804D6CB0->vs.start.rules.is_teams != 0;
++        struct CSSCursorData* cursor = mnCharSel_804A0BC0[k];
++        struct CSSCharModel* coin = mnCharSel_804A0BD0[k];
++        HSD_JObj* hand = cursor != NULL && cursor->gobj != NULL ? cursor->gobj->hsd_obj : NULL;
++        HSD_JObj* token = coin != NULL && coin->gobj != NULL ? coin->gobj->hsd_obj : NULL;
++        HSD_TObj* t;
++        HSD_ImageDesc* img;
++        if (!mu_css6_owned && hand != NULL && token != NULL) {
++            HSD_JObj* j = NULL;
++            lb_80011E24(hand, &j, 3, -1);
++            mu_css6_own_materials(j);
++            j = NULL;
++            lb_80011E24(token, &j, 3, -1);
++            mu_css6_own_materials(j);
++            mu_css6_keep_material(j, k - 4, 0);
++            j = NULL;
++            lb_80011E24(token, &j, 4, -1);
++            mu_css6_own_materials(j);
++            mu_css6_keep_material(j, k - 4, 1);
++            if (k == 5) mu_css6_owned = 1;
++        }
++        /* the card: its "P1"/"P2" label (frame 0 of the player indicator's second part) as P5/P6 */
++        t = mu_css6_tobj(mnCharSel_804D6CC0, mnCharSel_803F0DFC.doors[k].player_indicator_joint, 2);
++        img = (HSD_ImageDesc*) mu_triples_digit(mu_css6_frame_image(mu_css6_tobj(mnCharSel_804D6CC0,
++                                                             mnCharSel_803F0DFC.doors[2].player_indicator_joint, 2), 0),
++                            digit);
++        if (t != NULL && img != NULL && human) t->imagedesc = img;
++        /* the hand: label P5/P6, in the player's colour outside team battles */
++        if (hand != NULL) {
++            HSD_JObj* label = NULL;
++            t = mu_css6_tobj(hand, 3, 0);
++            img = (HSD_ImageDesc*) mu_triples_digit(mu_css6_frame_image(t, 2), digit);
++            if (t != NULL && img != NULL) t->imagedesc = img;
++            (void) label;
++            /* the label's colour is its texture colour (P1 FF3232 ... P4 00CB4C), set by the colour animation */
++            if (!teams && t != NULL && t->tev != NULL) t->tev->konst = mu_css6_colour[k - 4];
++        }
++        /* the coin: label P5/P6 and its colour, for a human */
++        if (token != NULL && human) {
++            HSD_JObj* body = NULL;
++            HSD_JObj* label = NULL;
++            t = mu_css6_tobj(token, 4, 0);
++            img = (HSD_ImageDesc*) mu_triples_digit(mu_css6_frame_image(t, 2), digit);
++            if (t != NULL && img != NULL) t->imagedesc = img;
++            lb_80011E24(token, &body, 3, -1);
++            lb_80011E24(token, &label, 4, -1);
++            if (!teams) {
++                mu_css6_paint(body, mu_css6_colour[k - 4]);
++                mu_css6_paint(label, mu_css6_colour[k - 4]);
++                if (t != NULL && t->tev != NULL) t->tev->konst = mu_css6_colour[k - 4];
++            } else if (!mu_css6_was_teams) {
++                /* a team battle starts: the coin as the model has it, coloured by the game as cards 1-4's are */
++                mu_css6_restore_material(body, k - 4, 0);
++                mu_css6_restore_material(label, k - 4, 1);
++            }
++        }
++    }
++    mu_css6_was_teams = mnCharSel_804D6CB0->vs.start.rules.is_teams != 0;
++}
++#endif
++
  s32 mnCharSel_802640A0(void)
  {
      HSD_JObj* sp108;
-@@ -4220,9 +5318,18 @@ s32 mnCharSel_802640A0(void)
+@@ -4220,9 +5967,18 @@ s32 mnCharSel_802640A0(void)
      u8 match_type = mnCharSel_804D6CB0->match_type;
  
      if (match_type != 0) {
@@ -181504,7 +182434,7 @@ index d580c0aa4..c32128cb3 100644
          switch (gmMainLib_GetGameRules()->mode) {
          case 0:
              lbAudioAx_800237A8(0x7535, 0x7F, 0x40);
-@@ -4239,11 +5346,21 @@ s32 mnCharSel_802640A0(void)
+@@ -4239,11 +5995,21 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -181526,7 +182456,35 @@ index d580c0aa4..c32128cb3 100644
      mnCharSel_804D6CF3 = 0;
      {
          u8* mt_p = &mnCharSel_804D6CB0->match_type;
-@@ -4272,25 +5389,34 @@ s32 mnCharSel_802640A0(void)
+@@ -4255,6 +6021,27 @@ s32 mnCharSel_802640A0(void)
+             mnCharSel_804D6CF5 = 4;
+             num_players = 4;
+         }
++#ifdef MU_NATIVE
++        /* Triples: six doors with a controller in port 5 or 6 (mu_css6_wanted). */
++        mu_css_restore_retail();
++#if MU_CSS_DOORS > 4
++        mnCharSel_804D50C8[4] = 0x10;
++        mnCharSel_804D50C8[5] = 0x20;
++#endif
++        mu_css6 = mu_css6_wanted(*mt_p);
++        mu_triples_art_reset();
++        mu_css6_owned = 0;
++        mu_css6_was_teams = 0;
++        mu_css_hide_n = 0;
++        memset(mu_css6_hold, 0, sizeof mu_css6_hold);
++        memset(mu_css6_part, 0, sizeof mu_css6_part);
++        memset(mu_css6_hidden, 0, sizeof mu_css6_hidden);
++        mu_css6_boxes56 = NULL;
++        if (mu_css6) {
++            mnCharSel_804D6CF5 = 6;
++            num_players = 6;
++        }
++#endif
+         if (*mt_p == TRAINING_MODE) {
+             num_players = 2;
+         }
+@@ -4272,25 +6059,34 @@ s32 mnCharSel_802640A0(void)
      if ((u8) mnCharSel_804D6CF4 != 0) {
          mnCharSel_804D6CF4 = 0;
          for (i = 0; i < num_players; i++) {
@@ -181565,7 +182523,7 @@ index d580c0aa4..c32128cb3 100644
          HSD_LObjSetNext(lobj0, lobj1);
          HSD_GObjObject_80390A70(gobj, HSD_GObj_LightKind, lobj0);
      }
-@@ -4298,35 +5424,57 @@ s32 mnCharSel_802640A0(void)
+@@ -4298,48 +6094,152 @@ s32 mnCharSel_802640A0(void)
  
      gobj = GObj_Create(0xE, 2, 0);
      {
@@ -181626,6 +182584,41 @@ index d580c0aa4..c32128cb3 100644
 +        HSD_JObjAddAnimAll(mnCharSel_804D6CC0, DP(css_models->menu.animjoint),
 +                           DP(css_models->menu.matanim_joint),
 +                           DP(css_models->menu.shapeanim_joint));
++#ifdef MU_NATIVE
++        if (mu_css6) {
++            mu_css6_build(mnCharSel_804D6CC0, &css_models->menu);
++        }
++        {
++            extern const char* mu_test_getenv(const char* name);
++            const char* v = mu_test_getenv("MELEE_TEST_CSS_TREE");
++            {
++                /* MELEE_TEST_CSS_HIDE=<hex joint>[,...]: those joints hidden (tests only) */
++                const char* hv = mu_test_getenv("MELEE_TEST_CSS_HIDE");
++                while (hv != NULL && *hv) {
++                    int q = 0;
++                    HSD_JObj* jj = NULL;
++                    while ((*hv >= '0' && *hv <= '9') || (*hv >= 'A' && *hv <= 'F')) {
++                        q = q * 16 + (*hv <= '9' ? *hv - '0' : *hv - 'A' + 10);
++                        hv++;
++                    }
++                    if (mu_css_hide_n < 64) mu_css_hide[mu_css_hide_n++] = q;
++                    if (*hv == ',') hv++; else break;
++                }
++            }
++            if (v != NULL && *v == '2') {
++                int q;
++                for (q = 0x29; q <= 0xAC; q++) {
++                    HSD_JObj* jj = NULL;
++                    float yy, zz, xx;
++                    lb_80011E24(mnCharSel_804D6CC0, &jj, q, -1);
++                    if (jj == NULL) continue;
++                    xx = mu_css6_world_x(jj, mnCharSel_804D6CC0, &yy, &zz);
++                    OSReport("[csstree2] 0x%02X world %.2f %.2f scale %.2f %.2f hidden %d\n", q, xx, yy, jj->scale.x, jj->scale.y, (jj->flags & JOBJ_HIDDEN) != 0);
++                }
++            }
++        }
++        mu_triples_tex_dump(mnCharSel_804D6CC0, "menu");
++#endif
 +    }
 +#ifdef MU_NATIVE
 +    /* TM-CE, Toggle CSS Icon Visibility (mnCharSel_802640A0+0x4D8) */
@@ -181636,9 +182629,51 @@ index d580c0aa4..c32128cb3 100644
      {
          u8 obj_kind = HSD_GObj_JObjKind;
          HSD_GObjObject_80390A70(mnCharSel_804D6CBC, obj_kind,
-@@ -4339,7 +5487,17 @@ s32 mnCharSel_802640A0(void)
+                                 mnCharSel_804D6CC0);
+     }
++#ifdef MU_NATIVE
++    {
++        /* Tests only: MELEE_TEST_CSS_TREE=1 logs the select screen's joint tree in lookup order. */
++        extern const char* mu_test_getenv(const char* name);
++        const char* v = mu_test_getenv("MELEE_TEST_CSS_TREE");
++        if (v != NULL && *v == '1') {
++            HSD_JObj* j = mnCharSel_804D6CC0;
++            int idx = 0, depth = 0;
++            while (j != NULL) {
++                int nd = 0;
++                HSD_DObj* d;
++                if (!(j->flags & (JOBJ_PTCL | JOBJ_SPLINE))) {
++                    for (d = j->u.dobj; d != NULL; d = d->next) nd++;
++                }
++                OSReport("[csstree] %d d%d t %.2f %.2f %.2f s %.2f %.2f f %08X dobj %d aobj %d\n", idx, depth,
++                         j->translate.x, j->translate.y, j->translate.z, j->scale.x, j->scale.y,
++                         (unsigned) j->flags, nd, j->aobj != NULL);
++                idx++;
++                if (!(j->flags & JOBJ_INSTANCE) && j->child != NULL) {
++                    j = j->child;
++                    depth++;
++                } else {
++                    while (j != NULL && j->next == NULL) {
++                        j = j->parent;
++                        depth--;
++                    }
++                    if (j != NULL) j = j->next;
++                }
++            }
++        }
++    }
++#endif
+     GObj_SetupGXLink(mnCharSel_804D6CBC, HSD_GObj_JObjCallback, 1, 0x80);
+     HSD_GObj_SetupProc(mnCharSel_804D6CBC, fn_8025F0E0, 4);
+     HSD_JObjReqAnimAll(mnCharSel_804D6CC0, 0.0f);
+     HSD_JObjAnimAll(mnCharSel_804D6CC0);
      HSD_ForeachAnim(mnCharSel_804D6CC0, JOBJ_TYPE, ALL_TYPE_MASK,
                      HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
++#ifdef MU_NATIVE
++    if (mu_css6) {
++        mu_css6_layout(mnCharSel_804D6CC0);   /* Triples: after frame 0 put the parts back where the model has them */
++    }
++#endif
  
 +#ifdef MU_NATIVE
 +    if (mex_select != NULL) {
@@ -181654,7 +182689,7 @@ index d580c0aa4..c32128cb3 100644
          row_a = 2;
          row_b = 0x13;
      } else {
-@@ -4363,8 +5521,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4363,8 +6263,12 @@ s32 mnCharSel_802640A0(void)
      icons[row_b].bound_u = ICONROWHT_TOP_TOP;
      icons[row_b].bound_d = ICONROWHT_MID_TOP;
  
@@ -181668,7 +182703,7 @@ index d580c0aa4..c32128cb3 100644
          icons[icon].anim_timer = 0;
          if (mnCharSel_804D6CF5 == 1) {
              lb_80011E24(mnCharSel_804D6CC0, &sp108, icons[icon].joint_id_1p,
-@@ -4404,21 +5566,24 @@ s32 mnCharSel_802640A0(void)
+@@ -4404,21 +6308,24 @@ s32 mnCharSel_802640A0(void)
              break;
          }
      }
@@ -181697,7 +182732,7 @@ index d580c0aa4..c32128cb3 100644
              HSD_JObjReqAnimAll(mnCharSel_804D6CC8, 0.0f);
              HSD_ForeachAnim(mnCharSel_804D6CC8, JOBJ_TYPE, ALL_TYPE_MASK,
                              HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
-@@ -4428,22 +5593,31 @@ s32 mnCharSel_802640A0(void)
+@@ -4428,22 +6335,31 @@ s32 mnCharSel_802640A0(void)
      if (mnCharSel_804D6CB0->match_type == 0x17) {
          u8 ck;
          gobj = GObj_Create(4, 5, 0x80);
@@ -181734,7 +182769,7 @@ index d580c0aa4..c32128cb3 100644
              } while (icons[i].state == 0);
              char_kinds = &icons[0].char_kind;
              icon_off = getIconOffset(i);
-@@ -4457,14 +5631,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4457,14 +6373,14 @@ s32 mnCharSel_802640A0(void)
  
      if (mnCharSel_804D6CB0->match_type == 1) {
          gobj = GObj_Create(4, 5, 0x80);
@@ -181753,7 +182788,7 @@ index d580c0aa4..c32128cb3 100644
          HSD_JObjReqAnimAll(mnCharSel_804D6CCC, 0.0f);
      }
  
-@@ -4472,15 +5646,15 @@ s32 mnCharSel_802640A0(void)
+@@ -4472,19 +6388,22 @@ s32 mnCharSel_802640A0(void)
          HSD_GObj* cursor_gobj;
          struct CSSCursorData* cursor;
          cursor_gobj = GObj_Create(4, 5, 0x80);
@@ -181773,10 +182808,19 @@ index d580c0aa4..c32128cb3 100644
          HSD_JObjReqAnimAll(jobj, 0.0f);
          HSD_JObjAnimAll(jobj);
          HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
-@@ -4494,13 +5668,18 @@ s32 mnCharSel_802640A0(void)
+                         AOBJ_ARG_AOV, 0, 0);
++#ifdef MU_NATIVE
++        if (i == 0) mu_triples_tex_dump(jobj, "hand");
++#endif
+         mnCharSel_804A0BC0[i] = cursor;
+         cursor->gobj = cursor_gobj;
+         cursor->x4 = i;
+@@ -4493,14 +6412,19 @@ s32 mnCharSel_802640A0(void)
+         cursor->x7 = 0;
          cursor->x6 = 0;
          cursor->x5 = 2;
-         cursor->xC = (f32) ((15.0f * (f32) i) - 31.0f);
+-        cursor->xC = (f32) ((15.0f * (f32) i) - 31.0f);
++        cursor->xC = mu_css6 ? mu_css6_hand_x(i) : (f32) ((15.0f * (f32) i) - 31.0f);   /* Triples: on its HMN button */
 +#ifdef MU_NATIVE
 +        /* The Lossless adapter's lag test plays a fixed input sequence timed from vanilla's start (shim/mu_lagtest.c). */
 +        cursor->x10 = (mu_general_codes() && !mu_lag_test()) ? -2.5f : -21.5f;
@@ -181793,7 +182837,7 @@ index d580c0aa4..c32128cb3 100644
              {
                  int player;
                  struct CSSCharModel* model = HSD_MemAlloc(sizeof(*model));
-@@ -4508,9 +5687,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4508,15 +6432,21 @@ s32 mnCharSel_802640A0(void)
                  GObj_InitUserData(model_gobj, 4, HSD_Free, model);
                  GObj_SetupGXLink(model_gobj, HSD_GObj_JObjCallback, 2, 0x80);
                  HSD_GObj_SetupProc(model_gobj, fn_80262648, 2);
@@ -181806,7 +182850,19 @@ index d580c0aa4..c32128cb3 100644
                  HSD_JObjReqAnimAll(jobj, 0.0f);
                  {
                      HSD_JObj* anim_jobj = jobj;
-@@ -4532,17 +5711,34 @@ s32 mnCharSel_802640A0(void)
+                     HSD_ForeachAnim(anim_jobj, JOBJ_TYPE, TOBJ_MASK,
+                                     HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
+                 }
++#ifdef MU_NATIVE
++                if (i == 0) mu_triples_tex_dump(jobj, "coin");
++                if (mu_css6 && i == 0) {
++                    HSD_GObj_SetupProc(GObj_Create(4, 5, 0x80), mu_css6_frame, 5);   /* Triples: P5/P6 art */
++                }
++#endif
+                 mnCharSel_804A0BD0[slot] = model;
+                 model->gobj = model_gobj;
+                 model->x4 = i;
+@@ -4532,17 +6462,34 @@ s32 mnCharSel_802640A0(void)
                  } else {
                      player = i;
                  }
@@ -181843,8 +182899,22 @@ index d580c0aa4..c32128cb3 100644
                      u8* slot_type;
                      mnCharSel_804D6CB0->vs.start.players[player].ckind =
                          CKind_Playable_Count;
-@@ -4650,6 +5846,12 @@ s32 mnCharSel_802640A0(void)
-             HSD_SisLib_803A6B98(td->text, 80.0f, 0.0f,
+@@ -4647,9 +6594,25 @@ s32 mnCharSel_802640A0(void)
+             text = td->text;
+             text->box_size_x = 160.0f;
+             text->box_size_y = 32.0f;
+-            HSD_SisLib_803A6B98(td->text, 80.0f, 0.0f,
++#ifdef MU_NATIVE
++            if (mu_css6) {
++                /* Triples: the name under the card where the card now is, in a box of its width */
++                float wy, wz;
++                const float wx = mu_css6_world_x(tag_name_jobj, mnCharSel_804D6CC0, &wy, &wz);
++                text->pos_x = 0.5f + wx;
++                text->pos_y = -0.4f - wy;
++                text->box_size_x = 160.0f * MU_CSS6_SCALE;
++            }
++#endif
++            HSD_SisLib_803A6B98(td->text, mu_css6 ? 80.0f * MU_CSS6_SCALE : 80.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
 +#ifdef MU_NATIVE
@@ -181856,7 +182926,7 @@ index d580c0aa4..c32128cb3 100644
          if (mnCharSel_804D6CF5 == 1) {
              lb_80011E24(mnCharSel_804D6CC0, &sp108,
                          mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -4661,6 +5863,10 @@ s32 mnCharSel_802640A0(void)
+@@ -4661,6 +6624,10 @@ s32 mnCharSel_802640A0(void)
              }
          }
          lb_8000B1CC(sp108, NULL, &spEC);
@@ -181867,7 +182937,7 @@ index d580c0aa4..c32128cb3 100644
          td->name_ls = HSD_SisLib_803A6754(0, ctx);
          td->name_ls->default_fitting = 1;
          text = td->name_ls;
-@@ -4697,6 +5903,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4697,6 +6664,9 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->name_ls, 10.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -181877,7 +182947,7 @@ index d580c0aa4..c32128cb3 100644
          for (found = 0; found < 0x78; found++) {
              if (GetNameText((u8) found) == NULL) {
                  break;
-@@ -4745,10 +5954,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4745,10 +6715,14 @@ s32 mnCharSel_802640A0(void)
                  mnCharSel_804D6CF8 - 1;
              mnCharSel_804D6CF8 = td->next_tag;
          }
@@ -181892,7 +182962,7 @@ index d580c0aa4..c32128cb3 100644
              td->use_tag = 1;
              HSD_SisLib_803A70A0(
                  td->text, 0,
-@@ -5156,6 +6369,33 @@ s32 mnCharSel_802640A0(void)
+@@ -5156,6 +7130,33 @@ s32 mnCharSel_802640A0(void)
          u8 mt;
          s32 clear;
          mnCharSel_803F0EBC.scroll_flag = 0;
@@ -181926,7 +182996,7 @@ index d580c0aa4..c32128cb3 100644
          text =
              HSD_SisLib_803A5ACC(0, ctx, -12.0f, -23.3f, 0.0f, 450.0f, 32.0f);
          text->default_alignment = 1;
-@@ -5164,6 +6404,10 @@ s32 mnCharSel_802640A0(void)
+@@ -5164,6 +7165,10 @@ s32 mnCharSel_802640A0(void)
          text->font_size.x = 0.07f;
          text->font_size.y = 0.07f;
          HSD_SisLib_803A6368(text, 0x4A);
@@ -181937,7 +183007,7 @@ index d580c0aa4..c32128cb3 100644
          mnCharSel_8025BD30();
          mt = mnCharSel_804D6CB0->match_type;
          if ((s32) mt < 3) {
-@@ -5190,6 +6434,26 @@ s32 mnCharSel_802640A0(void)
+@@ -5190,6 +7195,26 @@ s32 mnCharSel_802640A0(void)
                  text->font_size.x = 0.07f;
                  text->font_size.y = 0.07f;
                  mnCharSel_8025D1C4(i, 0);
@@ -181964,7 +183034,7 @@ index d580c0aa4..c32128cb3 100644
              }
          } else {
              for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
-@@ -5203,13 +6467,13 @@ s32 mnCharSel_802640A0(void)
+@@ -5203,13 +7228,13 @@ s32 mnCharSel_802640A0(void)
      (void) ((u8*) text)[num_players];
      (void) icons[num_players];
      gobj = GObj_Create(4, 5, 0x80);
@@ -181982,7 +183052,7 @@ index d580c0aa4..c32128cb3 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
                      AOBJ_ARG_AOV, 0, 0);
-@@ -5296,6 +6560,12 @@ s32 mnCharSel_802640A0(void)
+@@ -5296,6 +7321,12 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -181995,7 +183065,7 @@ index d580c0aa4..c32128cb3 100644
      mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
      PAD_STACK(0x20);
      return lbAudioAx_80023F28(gmMainLib_8015ECB0());
-@@ -5305,9 +6575,22 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5305,9 +7336,22 @@ void mnCharSel_Scene_OnEnter(void* arg0)
  {
      PAD_STACK(8);
  
@@ -182018,7 +183088,7 @@ index d580c0aa4..c32128cb3 100644
  
      mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
  
-@@ -5341,6 +6624,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5341,6 +7385,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      css_data_table = HSD_ArchiveGetPublicAddress(mnCharSel_804D6CD0,
                                                   "MnSelectChrDataTable");
      css_models = &css_data_table->models;
@@ -182043,7 +183113,7 @@ index d580c0aa4..c32128cb3 100644
      if (lbLang_IsSavedLanguageJP() != 0) {
          HSD_SisLib_803A62A0(0, "SdSlChr.dat", "SIS_SelCharData");
      } else {
-@@ -5348,10 +6649,26 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5348,10 +7410,26 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      }
      mnCharSel_804D6CF4 = 0;
      mnCharSel_802640A0();
@@ -182070,7 +183140,7 @@ index d580c0aa4..c32128cb3 100644
      int num_slots;
      u8 slot_type;
      struct GameCache* cache;
-@@ -5359,6 +6676,20 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5359,6 +7437,20 @@ void mnCharSel_Scene_OnFrame(void)
  
      PAD_STACK(8);
  
@@ -182091,7 +183161,19 @@ index d580c0aa4..c32128cb3 100644
      mnCharSel_804D6CEC += 1;
      if (mnCharSel_804D6CF6 <= 1) {
          cache = &lbDvd_GetPreloadCacheScene()->game_cache;
-@@ -5415,9 +6746,45 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5400,6 +7492,11 @@ void mnCharSel_Scene_OnFrame(void)
+             } else {
+                 num_slots = 4;
+             }
++#ifdef MU_NATIVE
++            if (mu_css6) {
++                num_slots = 6;   /* Triples: preload fighters 5 and 6 too */
++            }
++#endif
+ 
+             for (i = 0; i < num_slots; i++) {
+                 slot_type = mnCharSel_804D6CB0->vs.start.players[i].slot_type;
+@@ -5415,9 +7512,45 @@ void mnCharSel_Scene_OnFrame(void)
                  }
              }
          }
@@ -182138,8 +183220,15 @@ index d580c0aa4..c32128cb3 100644
          sfxBack();
          lb_800145F4();
          mn_8022F138(1, 8);
-@@ -5444,6 +6811,22 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5441,9 +7574,29 @@ void mnCharSel_Scene_OnFrame(void)
+         }
+         if (mnCharSel_804D6CF6 != 0) {
+             gm_801A4B60();
++#ifdef MU_NATIVE
++            if (mnCharSel_804D6CF5 == 4 || MU_CSS_SIX_DOORS) {   /* Triples: six doors too */
++#else
              if (mnCharSel_804D6CF5 == 4) {
++#endif
                  lbAudioAx_8002411C(0x147);
              }
 +#ifdef MU_NATIVE
@@ -182161,7 +183250,7 @@ index d580c0aa4..c32128cb3 100644
              sfxForward();
          }
          break;
-@@ -5466,16 +6849,41 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5466,16 +7619,41 @@ void mnCharSel_Scene_OnFrame(void)
          sfxForward();
          break;
      }
@@ -182203,7 +183292,7 @@ index d580c0aa4..c32128cb3 100644
      if (mnCharSel_804D6CD0 != NULL) {
          lbArchive_80016EFC(mnCharSel_804D6CD0);
          mnCharSel_804D6CD0 = NULL;
-@@ -5526,3 +6934,35 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5526,3 +7704,35 @@ void mnCharSel_Scene_OnExit(void* unused)
      lbAudioAx_8002702C(4, tmp);
      lbAudioAx_80027168();
  }
@@ -190067,7 +191156,7 @@ index e03ab11ef..488225f8d 100644
      proc = HSD_GObj_SetupProc(GObj_Create(0U, 1U, 0x80U), fn_8024B2B0, 0U);
      proc->flags_3 = (u16) HSD_GObj_804D783C;
 diff --git a/src/melee/mn/mnstagesel.c b/src/melee/mn/mnstagesel.c
-index dfb2b5510..6378e415c 100644
+index dfb2b5510..876234150 100644
 --- a/src/melee/mn/mnstagesel.c
 +++ b/src/melee/mn/mnstagesel.c
 @@ -2,9 +2,9 @@
@@ -191405,7 +192494,7 @@ index dfb2b5510..6378e415c 100644
              jobj = gobj->hsd_obj;
              temp_r3_16 = HSD_MemAlloc(sizeof(*temp_r3_16));
              GObj_InitUserData(gobj, 4, HSD_Free, temp_r3_16);
-@@ -763,18 +1633,61 @@ static inline HSD_PadStatus* get_pad(u8 i)
+@@ -763,18 +1633,85 @@ static inline HSD_PadStatus* get_pad(u8 i)
  /// OnFrame
  void mnStageSel_Scene_OnFrame(void)
  {
@@ -191414,11 +192503,35 @@ index dfb2b5510..6378e415c 100644
 +     * 128 and up, SUPA DIDDY BROS. check 11-24), straight to that stage here. */
 +    {
 +        /* Tests only: MELEE_TEST_VS_TEAMS, a team match with the ports on those teams. */
-+        extern int mu_test_vs_teams(int teams[4]);
-+        int teams[4], i;
++        extern int mu_test_vs_teams(int teams[6]);
++        extern int mu_test_vs_extra(int ckind[4], int* level);
++        int teams[6], extra[4], level, i;
++        /* Tests only: MELEE_TEST_VS_EXTRA, CPU fighters in slots 3 to 6 (the Triples probe). */
++        if (mu_test_vs_extra(extra, &level)) {
++            for (i = 0; i < 4; i++) {
++                PlayerInitData* p = &sss_data->vs.start.players[2 + i];
++                if (extra[i] < 0) continue;
++                *p = sss_data->vs.start.players[0];
++                p->ckind = (s8) extra[i];
++                p->slot_type = Gm_PKind_Cpu;
++                p->cpu_level = (u8) level;
++                p->color = 0;
++                p->slot = (u8) (2 + i);
++                p->spawn_pos = -1;
++                p->team = (u8) (i & 1);
++            }
++            {
++                /* MELEE_TEST_VS_HUD=<n>: the HUD layout kind (rules.x0_3, 4 for VS, 6 the game's 6-player one). */
++                extern const char* mu_test_getenv(const char* name);
++                const char* hud = mu_test_getenv("MELEE_TEST_VS_HUD");
++                if (hud != NULL && hud[0] >= '1' && hud[0] <= '6') {
++                    sss_data->vs.start.rules.x0_3 = hud[0] - '0';
++                }
++            }
++        }
 +        if (mu_test_vs_teams(teams)) {
 +            sss_data->vs.start.rules.is_teams = true;
-+            for (i = 0; i < 4; i++) {
++            for (i = 0; i < 6; i++) {
 +                if (teams[i] >= 0) sss_data->vs.start.players[i].team = (u8) teams[i];
 +            }
 +        }
@@ -191467,7 +192580,7 @@ index dfb2b5510..6378e415c 100644
          gm_801A4B60();
          return;
      }
-@@ -819,15 +1732,58 @@ void mnStageSel_Scene_OnFrame(void)
+@@ -819,15 +1756,58 @@ void mnStageSel_Scene_OnFrame(void)
          mnStageSel_804D6CA4 -= 1;
          return;
      }
@@ -191526,7 +192639,7 @@ index dfb2b5510..6378e415c 100644
          gm_801A4B60();
      }
  }
-@@ -838,6 +1794,10 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
+@@ -838,6 +1818,10 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
          lbArchive_80016EFC(mnStageSel_804D6C94);
          mnStageSel_804D6C94 = NULL;
      }
@@ -191537,7 +192650,7 @@ index dfb2b5510..6378e415c 100644
      {
          SSSData* sss = sss_data;
          sss->start_game = mnStageSel_804D6CAF == 2 ? true : false;
-@@ -851,10 +1811,22 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
+@@ -851,10 +1835,22 @@ void mnStageSel_Scene_OnExit(UNUSED void* exit_data)
  
  int mnSelStageRandom(void)
  {
@@ -192182,7 +193295,7 @@ index 9f39cd178..000000000
 - * @see #ckind_to_selkind_map
 - */
 diff --git a/src/melee/mn/types.h b/src/melee/mn/types.h
-index aa03013dd..80a80d32d 100644
+index aa03013dd..97e99cab0 100644
 --- a/src/melee/mn/types.h
 +++ b/src/melee/mn/types.h
 @@ -94,11 +94,6 @@ struct Menu_GObj {
@@ -192220,7 +193333,31 @@ index aa03013dd..80a80d32d 100644
  typedef enum SelectableCharacterKind {
      /* 00 */ SELKIND_CAPTAIN,    // Captain Falcon (Captain)
      /* 01 */ SELKIND_DONKEY,     // Donkey Kong (Donkey)
-@@ -564,13 +575,6 @@ struct MenuKindData {
+@@ -473,8 +484,13 @@ struct CSSKOStar {
+     int x1c;        // 0x1C
+ };
+ 
++#ifdef MU_NATIVE
++#define MU_CSS_DOORS 6   /* Triples: doors 5 and 6 (mncharsel.c, mu_css6_build) */
++#else
++#define MU_CSS_DOORS 4
++#endif
+ struct CSSDoorsData {
+-    CSSDoor doors[4]; // 0x00
++    CSSDoor doors[MU_CSS_DOORS]; // 0x00
+ };
+ 
+ struct CSSDoorsMisc {
+@@ -515,7 +531,7 @@ struct CSSDoorsData2 {
+     float x104;
+     float x108;
+     float x10c;
+-    CSSKOStar ko_stars[4]; // 0x110
++    CSSKOStar ko_stars[MU_CSS_DOORS]; // 0x110
+ };
+ 
+ struct mnSnap_804A0B90_t {
+@@ -564,13 +580,6 @@ struct MenuKindData {
      void (*think)(HSD_GObj*);
  };
  
@@ -210245,10 +211382,36 @@ index 4985b6164..e29881c86 100644
  typedef struct _cobj_Unk1 cobj_Unk1;
  
 diff --git a/src/sysdolphin/baselib/controller.c b/src/sysdolphin/baselib/controller.c
-index e058eba71..5a77f98e5 100644
+index e058eba71..d5aacd37e 100644
 --- a/src/sysdolphin/baselib/controller.c
 +++ b/src/sysdolphin/baselib/controller.c
-@@ -57,15 +57,37 @@ void HSD_PadRenewRawStatus(bool err_check)
+@@ -12,9 +12,9 @@ PadLibData default_libinfo_data = { 0,    0,    0, 0,    0, 0,    0x2D, 8,
+                                     0,    0x1E, 0, 0,    0, 0x7F, 0,    0,
+                                     0xFF, 0,    0, 0xFF, 0, 0x7F, 0xFF, 0xFF };
+ PadLibData HSD_PadLibData;
+-HSD_PadStatus HSD_PadMasterStatus[4];
+-HSD_PadStatus HSD_PadCopyStatus[4];
+-HSD_PadStatus HSD_PadGameStatus[4];
++HSD_PadStatus HSD_PadMasterStatus[HSD_PAD_STATUS_COUNT];
++HSD_PadStatus HSD_PadCopyStatus[HSD_PAD_STATUS_COUNT];
++HSD_PadStatus HSD_PadGameStatus[HSD_PAD_STATUS_COUNT];
+ const u32 pad_bit[4] = { PAD_CHAN0_BIT, PAD_CHAN1_BIT, PAD_CHAN2_BIT,
+                          PAD_CHAN3_BIT };
+ 
+@@ -39,6 +39,12 @@ s32 HSD_PadGetResetSwitch(void)
+     return (p->reset_switch != 0) ? true : false;
+ }
+ 
++#ifdef MU_NATIVE
++/* Triples: pads 5 and 6 of each raw queue entry, by entry index. The queue holds four; these
++ * travel beside it so they are queued, rewound (online rollback) and read exactly as the four. */
++static PADStatus mu_triples_raw_queue[256][2];
++#endif
++
+ static void HSD_PadRawQueueShift(u8 qnum, u8* qptr)
+ {
+     *qptr = (*qptr + 1) % qnum;
+@@ -57,15 +63,48 @@ void HSD_PadRenewRawStatus(bool err_check)
      int i;
      u32 mask;
      PadLibData* p = &HSD_PadLibData;
@@ -210256,8 +211419,12 @@ index e058eba71..5a77f98e5 100644
 +    HSD_PadData* qwrite;
      PADStatus* qread;
 -    PADStatus now[4];
+-
 +    HSD_PadData now;
- 
++#ifdef MU_NATIVE
++    PADStatus six[6];   /* the four ports, then pads 5 and 6 (Triples) */
++#endif
++
 +#ifdef MU_NATIVE
 +    /* Console rollback steps scripts once per body, after its checkpoint, never on alarms. */
 +    if (!mu_console_rumble_owned())
@@ -210275,10 +211442,18 @@ index e058eba71..5a77f98e5 100644
 +    } else {
 +        PADRead(now.stat);
 +    }
++    /* Triples: pads 5 and 6 from the host (unplugged online, where the renew below fills them). */
++    for (i = 0; i < 4; i++) {
++        six[i] = now.stat[i];
++    }
++    mu_triples_pads(&six[4]);
 +    /* Slippi online, TriggerSendInput: send this frame's pad, take the remote ones (or skip the
 +     * sample while the two games wait for each other). */
-+    if (mu_online_pad_renew(now.stat)) {
++    if (mu_online_pad_renew(six)) {
 +        return;
++    }
++    for (i = 0; i < 4; i++) {
++        now.stat[i] = six[i];
 +    }
 +#else
 +    PADRead(now.stat);
@@ -210290,7 +211465,7 @@ index e058eba71..5a77f98e5 100644
                  break;
              }
          }
-@@ -74,16 +96,16 @@ void HSD_PadRenewRawStatus(bool err_check)
+@@ -74,16 +113,16 @@ void HSD_PadRenewRawStatus(bool err_check)
          }
      }
  
@@ -210310,7 +211485,7 @@ index e058eba71..5a77f98e5 100644
              }
              break;
          case 1:
-@@ -96,18 +118,13 @@ void HSD_PadRenewRawStatus(bool err_check)
+@@ -96,18 +135,17 @@ void HSD_PadRenewRawStatus(bool err_check)
          p->qcount += 1;
      }
  
@@ -210321,6 +211496,10 @@ index e058eba71..5a77f98e5 100644
 -        *(struct a*) qwrite = *(struct a*) now;
 -    }
 +    *qwrite = now;
++#ifdef MU_NATIVE
++    mu_triples_raw_queue[p->qwrite][0] = six[4];
++    mu_triples_raw_queue[p->qwrite][1] = six[5];
++#endif
      HSD_PadRawQueueShift(p->qnum, &p->qwrite);
  
  skip:
@@ -210331,7 +211510,7 @@ index e058eba71..5a77f98e5 100644
              mask |= pad_bit[i];
          }
      }
-@@ -173,7 +190,7 @@ static void HSD_PadClampCheck1(u8* val, u8 shift, u8 min, u8 max)
+@@ -173,7 +211,7 @@ static void HSD_PadClampCheck1(u8* val, u8 shift, u8 min, u8 max)
      *val = *val - min;
  }
  
@@ -210340,6 +211519,88 @@ index e058eba71..5a77f98e5 100644
  {
      f32 r;
  
+@@ -355,6 +393,9 @@ void HSD_PadRenewMasterStatus(void)
+     HSD_PadStatus* mp;
+     PADStatus* qread;
+     int i;
++#ifdef MU_NATIVE
++    PADStatus* triples_pads;
++#endif
+ 
+     bool intr;
+ 
+@@ -363,10 +404,20 @@ void HSD_PadRenewMasterStatus(void)
+     intr = OSDisableInterrupts();
+     if (p->qcount != 0) {
+         qread = &p->queue->stat[p->qread * 4];
++#ifdef MU_NATIVE
++        triples_pads = mu_triples_raw_queue[p->qread];
++#endif
+         HSD_PadRawQueueShift(p->qnum, &p->qread);
+         p->qcount -= 1;
+ 
+-        for (i = 0; i < 4; i++, mp += 1, qread += 1) {
++        for (i = 0; i < HSD_PAD_STATUS_COUNT; i++, mp += 1, qread += 1) {
++#ifdef MU_NATIVE
++            /* Triples: pads 5 and 6 come from the host beside the queue's four, and go through the
++             * same conversion (clamp, AD convert, scale, cross direction, trigger and repeat). */
++            if (i == 4) {
++                qread = triples_pads;
++            }
++#endif
+             mp->last_button = mp->button;
+             mp->err = qread->err;
+             if (mp->err == 0) {
+@@ -477,7 +528,7 @@ void HSD_PadRenewCopyStatus(void)
+     int i;
+ 
+     p = &HSD_PadLibData;
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         mp = &HSD_PadMasterStatus[i];
+         cp = &HSD_PadCopyStatus[i];
+ 
+@@ -516,7 +567,7 @@ void HSD_PadRenewGameStatus(void)
+     int i;
+ 
+     p = &HSD_PadLibData;
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         mp = &HSD_PadMasterStatus[i];
+         gs = &HSD_PadGameStatus[i];
+ 
+@@ -586,7 +637,7 @@ void HSD_PadInit(u8 qnum, HSD_PadData* queue, u16 nb_list,
+     p->qnum = qnum;
+     p->queue = queue;
+     HSD_PadRumbleInit(nb_list, listdatap);
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         HSD_PadMasterStatus[i] = default_status_data;
+         HSD_PadCopyStatus[i] = default_status_data;
+         HSD_PadGameStatus[i] = default_status_data;
+diff --git a/src/sysdolphin/baselib/controller.h b/src/sysdolphin/baselib/controller.h
+index e786dab95..c76afcd37 100644
+--- a/src/sysdolphin/baselib/controller.h
++++ b/src/sysdolphin/baselib/controller.h
+@@ -104,9 +104,15 @@ struct PadLibData {
+     /*0x2C*/ struct RumbleInfo rumble_info;
+ };
+ 
+-extern HSD_PadStatus HSD_PadMasterStatus[4];
+-extern HSD_PadStatus HSD_PadGameStatus[4];
+-extern HSD_PadStatus HSD_PadCopyStatus[4];
++#ifdef MU_NATIVE
++/* Triples (shim/mu_triples.c): six entries, pads 5 and 6 after the console's four ports. */
++#define HSD_PAD_STATUS_COUNT 6
++#else
++#define HSD_PAD_STATUS_COUNT 4
++#endif
++extern HSD_PadStatus HSD_PadMasterStatus[HSD_PAD_STATUS_COUNT];
++extern HSD_PadStatus HSD_PadGameStatus[HSD_PAD_STATUS_COUNT];
++extern HSD_PadStatus HSD_PadCopyStatus[HSD_PAD_STATUS_COUNT];
+ 
+ static inline float HSD_PadGetNmlStickY(u8 slot)
+ {
 diff --git a/src/sysdolphin/baselib/hsd_3B2E.c b/src/sysdolphin/baselib/crypt.c
 similarity index 73%
 rename from src/sysdolphin/baselib/hsd_3B2E.c
@@ -224605,13 +225866,17 @@ index 5d06d7ebb..46532b74c 100644
  void _HSD_RObjForgetMemory(void* low, void* high);
  void HSD_RObjInitAllocData(void);
 diff --git a/src/sysdolphin/baselib/rumble.c b/src/sysdolphin/baselib/rumble.c
-index 9536d2a35..8140345a0 100644
+index 9536d2a35..a67869cdd 100644
 --- a/src/sysdolphin/baselib/rumble.c
 +++ b/src/sysdolphin/baselib/rumble.c
-@@ -9,6 +9,20 @@
+@@ -7,7 +7,22 @@
+ #include <dolphin/os.h>
+ #include <dolphin/pad.h>
  
- HSD_RumbleData HSD_Rumble_804C22E0[4];
- 
+-HSD_RumbleData HSD_Rumble_804C22E0[4];
++/* Triples: six, as the pad status arrays (controller.h); rumble reaches pads 5 and 6 too. */
++HSD_RumbleData HSD_Rumble_804C22E0[HSD_PAD_STATUS_COUNT];
++
 +#ifdef MU_NATIVE
 +/* Rumble scripts are big-endian u16 words from LbRb.dat, op in the top three bits and the
 + * frame count in the low thirteen. The bitfield view packs from the bottom on this target. */ inline u16 rumble_word(const HSD_Rumble* r)
@@ -224625,11 +225890,37 @@ index 9536d2a35..8140345a0 100644
 +#define RUMBLE_OP(r) ((r)->command.op)
 +#define RUMBLE_FRAME(r) ((r)->command.frame)
 +#endif
-+
+ 
  void HSD_PadRumbleOn(u8 no)
  {
-     bool intrEnabled = OSDisableInterrupts();
-@@ -167,8 +181,16 @@ int HSD_PadRumbleInterpret1(HSD_PadRumbleListData* a, u8* b)
+@@ -59,7 +74,7 @@ void HSD_PadRumbleRemoveAll(void)
+ {
+     int i;
+ 
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         HSD_PadRumbleRemove(i);
+     }
+ }
+@@ -99,7 +114,7 @@ void HSD_PadRumblePauseAll(void)
+     u8 _[8];
+ 
+     int i;
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         HSD_PadRumblePause(i, 1);
+     }
+ }
+@@ -109,7 +124,7 @@ void HSD_PadRumbleUnpauseAll(void)
+     u8 _[8];
+ 
+     int i;
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         HSD_PadRumblePause(i, 0);
+     }
+ }
+@@ -167,8 +182,16 @@ int HSD_PadRumbleInterpret1(HSD_PadRumbleListData* a, u8* b)
      if (a->pause == 1) {
          return 0;
      }
@@ -224647,7 +225938,7 @@ index 9536d2a35..8140345a0 100644
          case 0:
              if (a->frame == -2) {
                  return 1;
-@@ -177,21 +199,21 @@ int HSD_PadRumbleInterpret1(HSD_PadRumbleListData* a, u8* b)
+@@ -177,21 +200,21 @@ int HSD_PadRumbleInterpret1(HSD_PadRumbleListData* a, u8* b)
              break;
          case 1:
              a->status = 2;
@@ -224673,7 +225964,16 @@ index 9536d2a35..8140345a0 100644
              a->listp++;
              a->stack = a->listp;
              break;
-@@ -230,7 +252,7 @@ void HSD_PadRumbleInterpret(void)
+@@ -222,7 +245,7 @@ void HSD_PadRumbleInterpret(void)
+     HSD_PadRumbleListData* r28;
+ 
+     int i;
+-    for (i = 0; i < 4; i++, r30++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++, r30++) {
+         r30->status = 0;
+         if (r31->unk2 == 0) {
+             r30->status = r30->direct_status;
+@@ -230,7 +253,7 @@ void HSD_PadRumbleInterpret(void)
              while (r29 != NULL) {
                  r28 = r29->next;
  
@@ -224682,6 +225982,15 @@ index 9536d2a35..8140345a0 100644
                      HSD_PadRumbleFree(r30, r29);
                  }
                  r29 = r28;
+@@ -269,7 +292,7 @@ void HSD_PadRumbleInit(u16 a, void* b)
+         }
+         r6->listdatap[i].next = 0;
+     }
+-    for (i = 0; i < 4; i++) {
++    for (i = 0; i < HSD_PAD_STATUS_COUNT; i++) {
+         HSD_Rumble_804C22E0[i] = HSD_Rumble_80406DE0;
+     }
+ }
 diff --git a/src/sysdolphin/baselib/rumble.h b/src/sysdolphin/baselib/rumble.h
 index e37c4974b..95495a76b 100644
 --- a/src/sysdolphin/baselib/rumble.h

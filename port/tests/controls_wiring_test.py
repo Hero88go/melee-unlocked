@@ -126,7 +126,7 @@ class HostWiring(unittest.TestCase):
         self.assertIn('controls::session_end();', online)
 
     def test_host_api_and_replays(self):
-        self.assertIn('#define MU_HOST_API_VERSION 34', (HOST / 'abi/mu_host.h').read_text(encoding='utf-8'))
+        self.assertIn('#define MU_HOST_API_VERSION 35', (HOST / 'abi/mu_host.h').read_text(encoding='utf-8'))
         host = (ROOT / 'port/app/source_host.cpp').read_text(encoding='utf-8')
         self.assertIn('h.control_flags = h_control_flags;', host)
         self.assertIn('if (g_replaying) word = g_replay_controls;', host)

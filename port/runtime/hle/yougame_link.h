@@ -239,7 +239,7 @@ std::string pick_friend_room(const std::function<bool()>& cancelled, const std::
 // The Friends lobby's invite (the empty door's A): the app's multi-invite picker for the lobby's room,
 // up to three friends, who take seats in the order they accept. Off the simulation thread; throws on
 // cancellation, a page error (RoomFull: the site's own words) or an invalid room.
-void lobby_invite(const std::string& room, const std::function<bool()>& cancelled);
+void lobby_invite(const std::string& room, const std::function<bool()>& cancelled, int seats = 4);   // seats: the room's (4 or 6)
 // The Doubles home's invite (the partner door's A): the app's single-friend Teams picker for the home.
 void doubles_invite(const std::string& room, const std::function<bool()>& cancelled);
 std::string slippi_link_status(const std::string& status);
@@ -369,8 +369,8 @@ struct GameEnd {
   int winner = -1;              // 0-based port of the single winner as the caller read it, -1 none
   int end_method = 0;           // Slippi's: 1 TIME!, 2 GAME!, 7 No Contest (LRA-Start, disconnect, desync)
   int lras = -1;                // the port a No Contest names, -1 none
-  bool has_placements = false;  // placements[]: the record's four placement bytes (0 first, 0xFF none)
-  int placements[4] = {-1, -1, -1, -1};
+  bool has_placements = false;  // placements[]: the record's placement bytes (0 first, 0xFF none): four, six in Triples
+  int placements[6] = {-1, -1, -1, -1, -1, -1};
   int teams[4] = {-1, -1, -1, -1}; // actual negotiated match teams, by Slippi player index
   int stage = -1, frames = -1;  // the game's stage id and length, for the ranked report's detail
   int characters[2] = {-1, -1};

@@ -1354,6 +1354,9 @@ void set_css_background_free(bool on) { g_css_background_free.store(on, std::mem
 bool css_background_free_active() { return g_css_background_free.load(std::memory_order_relaxed); }
 void set_player_tags_always(bool on) { g_player_tags_always.store(on, std::memory_order_relaxed); }
 bool player_tags_always_active() { return g_player_tags_always.load(std::memory_order_relaxed); }
+static std::atomic<uint32_t> g_triples_flags{3};
+void set_triples_flags(uint32_t flags) { g_triples_flags.store(flags, std::memory_order_relaxed); }
+uint32_t triples_flags_active() { return g_triples_flags.load(std::memory_order_relaxed); }
 const uint8_t kShieldColorRgb[kShieldColorCount][3] = {
     {0xF2, 0x59, 0x59}, {0x66, 0x66, 0xFF}, {0xFF, 0xBF, 0x40}, {0x4D, 0xE6, 0x4D}, {0x4D, 0xE6, 0xE6},
     {0xF2, 0x59, 0xF2}, {0xFF, 0x9C, 0x00}, {0xAF, 0xFF, 0x25}, {0xFF, 0x76, 0xFA}, {0xA0, 0x49, 0xE2},

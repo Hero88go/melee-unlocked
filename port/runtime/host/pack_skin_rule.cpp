@@ -26,6 +26,14 @@ std::string display_name(const std::string& lower_path) {
   return name;
 }
 
+bool is_fighter_data_file(const std::string& lower_path) {
+  const size_t slash = lower_path.find_last_of("/\\");
+  const std::string name = slash == std::string::npos ? lower_path : lower_path.substr(slash + 1);
+  if (name.size() != 8 || name.compare(0, 2, "pl") != 0 || name.compare(4, 4, ".dat") != 0) return false;
+  if (name[2] < 'a' || name[2] > 'z' || name[3] < 'a' || name[3] > 'z') return false;
+  return name != "plco.dat";
+}
+
 int32_t resolve_open(bool retail_view, int32_t entry,
                      const std::unordered_map<int32_t, int32_t>& view_alias,
                      const std::unordered_set<int32_t>& served_online) {

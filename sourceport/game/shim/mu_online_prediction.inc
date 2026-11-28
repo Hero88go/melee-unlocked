@@ -7,14 +7,14 @@ static int load_opponent_inputs(PADStatus* stat, int frame, int predicting_allow
     int count, remote_port = 0, have_all = 1;
     u8* rxb = mu_online.rxb;
     *predicted_players = 0;
-    for (count = 0; count < REMOTES; count++, remote_port++) {
+    for (count = 0; count < online_remotes(); count++, remote_port++) {
         int latest;
-        const u8* slots = rxb + RXB_OPNT_INPUTS + count * RXB_INPUTS_COUNT * PAD_SIZE;
+        const u8* slots = RX_INPUTS(count);
         const u8* src = slots;   /* entry k is the pad of frame (latest - k) */
         if (remote_port == mu_online.local_index) {
             remote_port++;
         }
-        latest = (int) be32(rxb + RXB_OPNT_FRAME_NUMS + 4 * count);
+        latest = (int) be32(RX_FRAME_NUM(count));
         if (latest - frame >= 0) {
             src = slots + (latest - frame) * PAD_SIZE;
         } else if (predicting_allowed && (mu_online.console_active || frame >= START_SYNC_FRAME - mu_online.delay) &&
@@ -32,7 +32,7 @@ static int load_opponent_inputs(PADStatus* stat, int frame, int predicting_allow
             have_all = 0;
             /* Console rollback fills no host predictions: it keeps predicting the latest pad. */
             if (!mu_online.console_active && ahead < RXB_INPUTS_COUNT) {
-                src = rxb + RXB_OPNT_PREDICTED_INPUTS + count * RXB_INPUTS_COUNT * PAD_SIZE + ahead * PAD_SIZE;
+                src = RX_PREDICTED(count) + ahead * PAD_SIZE;
             }
             if (early != NULL) {
                 src = early;
@@ -52,7 +52,7 @@ static int load_opponent_inputs(PADStatus* stat, int frame, int predicting_allow
                 }
             }
         }
-        if (remote_port < 4) {
+        if (remote_port < online_ports()) {
             wire_to_pad(&stat[remote_port], src);
             /* A slot with no player has no pad to load, and on the oldest frame of the longest
              * rollback the index above runs past its inputs. Section 11 reads every slot's RNG
@@ -80,13 +80,13 @@ static void prepare_rng_bits(PADStatus* stat, int frame, unsigned int predicted_
     unsigned int prev_b_held =
         mu_online.b_held_history[(unsigned int) (frame - 1) & (RNG_HISTORY_COUNT - 1)];
     unsigned int b_held = 0, rolling = 0, ports_used, seed_bits = 0;
-    u32 pad_bits = 0;   /* 8 bits per port, port 1 at the bottom */
+    unsigned long long pad_bits = 0;   /* 8 bits per port, port 1 at the bottom */
     int port, count;
 
-    for (port = 0; port < 4; port++) {
+    for (port = 0; port < online_ports(); port++) {
         PADStatus* pad = &stat[port];
         int x;
-        pad_bits |= (u32) pad->analogA << (8 * port);
+        pad_bits |= (unsigned long long) pad->analogA << (8 * port);
         pad->analogA = 0;
         if (!(pad->button & 0x200)) {
             continue;
@@ -122,20 +122,20 @@ static void prepare_rng_bits(PADStatus* stat, int frame, unsigned int predicted_
         /* Everyone's bits but the rolling player's, or everyone's when several roll. With one
          * player rolling, that player's opponent always has the bits this needs even when
          * predicting a press, so a correctly predicted press needs no rollback. */
-        ports_used = 0xF;
+        ports_used = (1u << online_ports()) - 1;
         if (((rolling - 1) & rolling) == 0) {
             ports_used &= ~rolling;
         }
-        for (port = 0; port < 4; port++) {
+        for (port = 0; port < online_ports(); port++) {
             if (ports_used & (1u << port)) {
-                seed_bits ^= (pad_bits >> (8 * port)) & 0xFF;
+                seed_bits ^= (unsigned int) (pad_bits >> (8 * port)) & 0xFF;
             }
         }
         mu_online.rng_bit_frames++;
         /* A predicted player whose bits were just used had no real bits for this frame, and
          * section 9 only compares inputs: mark the kept prediction so that it forces a rollback.
          * The write index is one past the prediction kept for this frame. */
-        for (count = 0; count < REMOTES; count++) {
+        for (count = 0; count < online_remotes(); count++) {
             int p = count < mu_online.local_index ? count : count + 1;
             int idx;
             if (!(predicted_players & (1u << count)) || !(ports_used & (1u << p))) {
@@ -163,7 +163,7 @@ static void record_used_pads(const PADStatus* stat, int frame, int confirmed)
     int slot = used_slot(frame), p;
     mu_online.used_frame[slot] = frame;
     mu_online.used_confirmed[slot] = (u8) confirmed;
-    for (p = 0; p < 4; p++) {
+    for (p = 0; p < online_ports(); p++) {
         pad_to_wire(mu_online.used_pads[slot][p], &stat[p]);
     }
 }
@@ -269,7 +269,7 @@ static int early_rb_any(void)
 
 static int early_contradicts(int count)
 {
-    int latest = (int) be32(mu_online.rxb + RXB_OPNT_FRAME_NUMS + 4 * count);
+    int latest = (int) be32(RX_FRAME_NUM(count));
     int f = mu_online.player_savestate_frame[count];
     u8 r = mu_online.predicted_read[count];
     if (early_trace_on()) {
@@ -307,13 +307,12 @@ static int check_predictions(int frame)
     int count, savestate, values_set = 0;
 
     if (!mu_online.savestate_predicting) {
-        mu_online.player_predicting[0] = mu_online.player_predicting[1] =
-            mu_online.player_predicting[2] = 0;
+        memset(mu_online.player_predicting, 0, sizeof mu_online.player_predicting);
         return 0;
     }
-    for (count = 0; count < REMOTES; count++) {
+    for (count = 0; count < online_remotes(); count++) {
         while (mu_online.player_predicting[count]) {
-            int latest = (int) be32(rxb + RXB_OPNT_FRAME_NUMS + 4 * count);
+            int latest = (int) be32(RX_FRAME_NUM(count));
             int ss = mu_online.player_savestate_frame[count];
             int offset = latest - ss;
             const u8* actual;
@@ -328,7 +327,7 @@ static int check_predictions(int frame)
                 }
                 break;
             }
-            actual = rxb + RXB_OPNT_INPUTS + count * RXB_INPUTS_COUNT * PAD_SIZE + offset * PAD_SIZE;
+            actual = RX_INPUTS(count) + offset * PAD_SIZE;
             predicted = mu_online.predicted[count][mu_online.predicted_read[count]];
             /* Slippi 3.7.0: section 11 marks a prediction when that frame's RNG used this player's
              * bits before they arrived. The frame is redone with them, even if the inputs match. */
@@ -393,7 +392,7 @@ static int check_predictions(int frame)
         }
     }
     if (!mu_online.console_active && !rollback_required && early_rollback_on() && mu_online.rxb_size > RXB_SIZE) {
-        for (count = 0; count < REMOTES; count++) {
+        for (count = 0; count < online_remotes(); count++) {
             if (mu_online.player_predicting[count] == 1 && early_contradicts(count)) {
                 rollback_required = 1;
                 mu_online.early_rollbacks++;
@@ -403,7 +402,7 @@ static int check_predictions(int frame)
     }
     /* The savestate frame is the lowest frame any remote is still predicted from. */
     savestate = mu_online.stable_finalized;
-    for (count = 0; count < REMOTES; count++) {
+    for (count = 0; count < online_remotes(); count++) {
         if (mu_online.player_predicting[count] != 1) {
             continue;
         }
@@ -438,14 +437,14 @@ static int check_predictions(int frame)
         }
         return 1;
     }
-    for (count = 0; count < REMOTES; count++) {
+    for (count = 0; count < online_remotes(); count++) {
         if (mu_online.player_predicting[count] == 1 &&
             mu_online.predicted_read[count] == mu_online.predicted_write[count])
         {
             mu_online.player_predicting[count] = 0;
         }
     }
-    for (count = 0; count < REMOTES; count++) {
+    for (count = 0; count < online_remotes(); count++) {
         if (mu_online.player_predicting[count] == 1) {
             return 0;
         }

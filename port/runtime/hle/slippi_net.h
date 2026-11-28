@@ -42,7 +42,11 @@ constexpr int ROLLBACK_MAX_FRAMES = 7;
 // waits for every peer's setup hash before that peer counts as disconnected.
 constexpr uint64_t kConnectTimeoutMs = 8000;
 constexpr int ONLINE_LOCKSTEP_INTERVAL = 30;
-constexpr int REMOTE_PLAYER_MAX = 3;
+// Five remote players: Triples (6 players, Melee Unlocked only). Slippi's own layouts (the game's
+// reply, the match state) keep their room for 3 remotes and 4 players; Triples adds to them.
+constexpr int REMOTE_PLAYER_MAX = 5;
+constexpr int SLIPPI_REMOTE_MAX = 3;
+constexpr int SLIPPI_PLAYER_MAX = SLIPPI_REMOTE_MAX + 1;
 constexpr int PLAYER_COUNT_MAX = REMOTE_PLAYER_MAX + 1;
 constexpr int PAD_FULL_SIZE = 0xC;
 constexpr int PAD_DATA_SIZE = 0x8;   // buttons, sticks and triggers
@@ -573,9 +577,9 @@ class NetplayClient {
   std::deque<std::vector<uint8_t>> gecko_inbox_;
   std::mutex controls_mutex_;                    // controls_inbox_ (network thread in, game thread out)
   std::deque<std::vector<uint8_t>> controls_inbox_;
-  std::atomic<int8_t> remote_warmup_[REMOTE_PLAYER_MAX] = {-1, -1, -1};   // NP_MSG_MU_WARMUP, by remote index
+  std::atomic<int8_t> remote_warmup_[REMOTE_PLAYER_MAX] = {-1, -1, -1, -1, -1};   // NP_MSG_MU_WARMUP, by remote index
   std::atomic<bool> yougame_peer_{false};
-  std::atomic<int32_t> remote_pick_[REMOTE_PLAYER_MAX] = {-1, -1, -1};    // and the pick it carried
+  std::atomic<int32_t> remote_pick_[REMOTE_PLAYER_MAX] = {-1, -1, -1, -1, -1};    // and the pick it carried
   void SendBuild();
   // Pick previews. pick_mutex_ is a leaf: never held while taking another lock (SendAsync and
   // build_mutex_ included). It guards everything below it here.

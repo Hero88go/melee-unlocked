@@ -85,9 +85,11 @@ class YouGameMergeTest(unittest.TestCase):
 
     def test_game_end_keeps_placements_and_casual_winner(self):
         host = source("port/app/source_host.cpp")
-        result = host.split("host::publish_lobby_result(winner,", 1)[1].split(";", 1)[0]
-        self.assertIn("(int)(int8_t)payload[1]", result)
-        self.assertIn("size >= 6 ? payload + 2 : nullptr", result)
+        # The recorded match's Game End (four placements) and a Triples match's alone (six, not recorded yet).
+        calls = [c.split(";", 1)[0] for c in host.split("host::publish_lobby_result(winner,")[1:]]
+        self.assertTrue(all("(int)(int8_t)payload[1]" in c for c in calls))
+        self.assertTrue(any("size >= 6 ? payload + 2 : nullptr" in c for c in calls))
+        self.assertTrue(any("payload + 2, 6)" in c for c in calls))
         bridge = source("port/runtime/host/host.cpp")
         self.assertIn("end.placements[i] = placements[i]", bridge)
         self.assertIn("yougame::game_ended(end);", bridge)

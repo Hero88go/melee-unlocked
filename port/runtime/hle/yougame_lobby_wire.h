@@ -10,6 +10,10 @@
 //   hello {settingsDigest, cardDigest}  each [A-Za-z0-9_-]{1,64}, own seat, no rev
 //   start {inputDelay 1-9}              frozen into setup (default 2 when absent)
 //   setup seats[].settingsDigest/cardDigest, setup.inputDelay
+//
+// Six seats (Triples, also optional): the room hold and the guest's ticket ask for lobby.seats 6
+// (yougame_friends.h). A Rooms that seats six answers with a state of six seats; one that does not
+// keeps four, exactly as before. Every Friends state is read as 4 or 6 seats; seats and ports 0-5.
 #pragma once
 #include <nlohmann/json.hpp>
 #include <array>
@@ -23,7 +27,8 @@ using json = nlohmann::json;
 inline constexpr const char* kType = "yg.mu.lobby";
 inline constexpr int kVersion = 1;
 inline constexpr size_t kFrameMax = 1024;   // Rooms refuses a longer frame as `shape`
-inline constexpr int kSeats = 4;
+inline constexpr int kSeats = 4;      // a v1 Friends room's seats (and the Doubles match room's)
+inline constexpr int kSeatsMax = 6;   // a six-seat Friends room's (Triples)
 inline constexpr int kCharMax = 25, kColorMax = 5, kTeamMax = 2, kLevelMin = 1, kLevelMax = 9;
 inline constexpr int kRuleMin = 1, kRuleMax = 99;   // stocks and minutes
 // Stock's minutes may be 0: no timer (Rooms validMuRules, 11-06). Time mode keeps 1-99.
@@ -198,7 +203,7 @@ inline bool valid_outgoing(const json& v) {
     return only_keys(v, {"t", "v", "op", "settingsDigest", "cardDigest", "squadVersion", "squadBudget"}) &&
         digest_at(v, "settingsDigest") && digest_at(v, "cardDigest") && read_squad_capability(v, &version, &budget);
   }
-  if (!integer_at(v, "seat", 0, kSeats - 1)) return false;
+  if (!integer_at(v, "seat", 0, kSeatsMax - 1)) return false;
   if (op == "lineup") return only_keys(v, {"t", "v", "op", "rev", "seat", "members"}) && v.count("rev") &&
       v.count("members") && read_lineup(v["members"], nullptr);
   if (op == "seat") {
@@ -295,7 +300,8 @@ struct State {
   bool squad_protocol = false;
   int64_t rev = 0;
   int host = -1;                        // the host's seat, -1 when Rooms names none
-  std::array<Seat, kSeats> seats{};
+  int size = kSeats;                    // the room's seats: kSeats, or kSeatsMax in a six-seat room (Doubles: 2)
+  std::array<Seat, kSeatsMax> seats{};
   Rules rules;
   json setup;                           // the frozen setup during a match, else null
   // A refusal (sent only to the sender): error, action and the refused seat when there is one.
@@ -358,7 +364,7 @@ inline void read_digests(const json& o, std::string* settings, std::string* card
   if (digest_at(o, "cardDigest")) *card = o["cardDigest"].get<std::string>();
 }
 inline const char* read_seat(const json& v, Seat* out) {
-  if (!v.is_object() || !integer_at(v, "seat", 0, kSeats - 1) || !v.count("kind") || !v["kind"].is_string()) return "seat";
+  if (!v.is_object() || !integer_at(v, "seat", 0, kSeatsMax - 1) || !v.count("kind") || !v["kind"].is_string()) return "seat";
   Seat s;
   s.seat = (int)v["seat"].get<int64_t>();
   const std::string kind = v["kind"].get<std::string>();
@@ -405,10 +411,10 @@ inline const char* read_setup_object(const json& o, Setup* out) {
     if (!integer(o["inputDelay"], kInputDelayMin, kInputDelayMax)) return "inputDelay";
     s.input_delay = (int)o["inputDelay"].get<int64_t>();
   }
-  if (!o.count("seats") || !o["seats"].is_array() || o["seats"].size() < 1 || o["seats"].size() > (size_t)kSeats) return "seats";
+  if (!o.count("seats") || !o["seats"].is_array() || o["seats"].size() < 1 || o["seats"].size() > (size_t)kSeatsMax) return "seats";
   for (const auto& v : o["seats"]) {
     SetupSeat x;
-    if (!v.is_object() || !integer_at(v, "seat", 0, kSeats - 1) || !integer_at(v, "port", 0, kSeats - 1)) return "setup seat";
+    if (!v.is_object() || !integer_at(v, "seat", 0, kSeatsMax - 1) || !integer_at(v, "port", 0, kSeatsMax - 1)) return "setup seat";
     x.seat = (int)v["seat"].get<int64_t>();
     x.port = (int)v["port"].get<int64_t>();
     const std::string kind = v.value("kind", json()).is_string() ? v["kind"].get<std::string>() : std::string();
@@ -448,8 +454,12 @@ struct Incoming {
 };
 // welcome.muLobby or a broadcast. Anything that is not a v1 lobby frame is Op::None, why == nullptr.
 // A Doubles home's state has 2 seats: the rest of State::seats stays Open (each with its own index).
+// A Friends state has 4 seats, or 6 from a Rooms that seats six (State::size says which).
 inline Incoming decode(const json& m, Profile profile = Profile::Friends4) {
-  const int n = seats_of(profile);
+  int n = seats_of(profile);
+  if (profile == Profile::Friends4 && m.is_object() && m.count("seats") && m["seats"].is_array() &&
+      m["seats"].size() == (size_t)kSeatsMax)
+    n = kSeatsMax;
   Incoming in;
   if (!m.is_object() || m.value("t", json()) != kType) return in;
   if (!integer_at(m, "v", kVersion, kVersion) || !m.count("op") || !m["op"].is_string()) { in.why = "envelope"; return in; }
@@ -467,7 +477,8 @@ inline Incoming decode(const json& m, Profile profile = Profile::Friends4) {
       s.host = (int)m["host"].get<int64_t>();
     }
     if (!m.count("seats") || !m["seats"].is_array() || m["seats"].size() != (size_t)n) { in.why = "seats"; return in; }
-    for (int i = n; i < kSeats; ++i) s.seats[i].seat = i;
+    s.size = n;
+    for (int i = n; i < kSeatsMax; ++i) s.seats[i].seat = i;
     for (size_t i = 0; i < (size_t)n; ++i) {
       if (const char* why = read_seat(m["seats"][i], &s.seats[i])) { in.why = why; return in; }
       if (s.seats[i].kind == Kind::Local && profile != Profile::Doubles) { in.why = "local outside doubles"; return in; }
