@@ -579,7 +579,7 @@ void rail(HDC dc, const launcher::yglobby::Data& d, int W, int H) {
     const bool build = pl.build > 0 && pl.build < 4;
     const double block = 13.26 + 3 + 16 + (build ? 16 : 0), content = std::max({33.0, block, g_elo ? 40.0 : 0.0}), h = content + 12;
     if (y + h > bottom - 4) return false;
-    hit(R(x0, y, 247, h), A_PLAYER_MENU, (int)(&pl - &d.players[0]));   // the player: friend menu (the eye, added later, wins)
+    if (!pl.you) hit(R(x0, y, 247, h), A_PLAYER_MENU, (int)(&pl - &d.players[0]));   // the player: friend menu (the eye, added later, wins)
     if (is_hot(A_PLAYER_MENU, (int)(&pl - &d.players[0]))) fill_box(dc, x0, y + 1, 247, h - 2, 7, P.raised);
     const double ay = y + (h - 33) / 2;
     avatar(dc, pl.main, x0 + 6, ay, 30, pl.avatar);
@@ -587,13 +587,13 @@ void rail(HDC dc, const launcher::yglobby::Data& d, int W, int H) {
     const double ty = y + 6 + (content - block) / 2;
     double nx = x0 + 42;
     if (pl.friend_) { icon(dc, I_FRIEND, nx, ty + 0.6, 12, P.accent); nx += 18; }
-    mt(dc, pl.name, nx, ty, 17, RGB(240, 240, 240), x0 + 177 - nx);
+    mt(dc, pl.you ? pl.name + L" (you)" : pl.name, nx, ty, 17, RGB(240, 240, 240), x0 + 177 - nx);
     const int t = launcher::yglobby::tier_of_rating(pl.rating);
     double sx = x0 + 42; const double sy = ty + 16.26;
     sx += tx(dc, pl.in_match ? L"In match" : L"Online", sx, sy, g_f12, pl.in_match ? kAmber : P.dim) * 96.0 / dpi();
     if (!g_elo || t < 0) { sx += tx(dc, kDot, sx, sy, g_f12, P.dim) * 96.0 / dpi(); tx(dc, t >= 0 ? kTierName[t] : L"No rank yet", sx, sy, g_f12, t >= 0 ? kTier[t] : P.dim); }   // no rating: "No rank yet" (owner 11-27: "Unranked" beside "In match" read as the queue), Elo on or off
     if (build) tx(dc, kBuild[pl.build], x0 + 42, sy + 16, g_f12, kBuildCol[pl.build], 135);
-    if (pl.in_match) { icon(dc, I_EYE, x0 + 184, y + (h - 16) / 2, 16, P.accent); hit(R(x0 + 180, y + (h - 24) / 2, 24, 24), A_WATCH_PLAYER); }
+    if (pl.in_match && !pl.you) { icon(dc, I_EYE, x0 + 184, y + (h - 16) / 2, 16, P.accent); hit(R(x0 + 180, y + (h - 24) / 2, 24, 24), A_WATCH_PLAYER); }
     const double by = g_elo ? y + 6 + (content - 40) / 2 : y + (h - 22) / 2;
     launcher::yglobby::draw_badge(dc, pl.rating, X(x0 + 213), X(by), X(22));
     if (g_elo) tx(dc, pl.rating >= 0 ? std::to_wstring(pl.rating) : L"\u2013", x0 + 207, by + 23, g_f11b, t >= 0 ? kTier[t] : P.dim, 34, DT_CENTER);

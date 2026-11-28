@@ -177,6 +177,15 @@ int main(int argc, char** argv) {
       std::string escaped;
       for (char c : latest + numbered) { if (c == '"') escaped += '\\'; escaped += c; }
       CHECK(native_build_from_listing(escaped, "1.0.19", "windows") == w103);
+      // 11-27: "latest":null; the page names its current release as the game's version ("v1.0.34").
+      const std::string named = R"("latest":null,"nativeListing":false,{"version":"v1.0.34"})";
+      CHECK(native_build_from_listing(named + numbered, "1.0.34", "windows") == w103);
+      CHECK(native_build_from_listing(named + numbered, "1.0.34", "linux") == l103);
+      CHECK(native_build_from_listing(named + numbered, "1.0.33", "windows") == "");     // another release: no record
+      CHECK(native_build_from_listing(named + numbered, "1.0.3", "windows") == "");      // "v1.0.34" is not "v1.0.3"
+      std::string named_escaped;
+      for (char c : named + numbered) { if (c == '"') named_escaped += '\\'; named_escaped += c; }
+      CHECK(native_build_from_listing(named_escaped, "1.0.34", "windows") == w103);
     }
   }
   // The YouGame app's hello answer, read as the game reads it (launcher_yougame_app.h): signed in with a

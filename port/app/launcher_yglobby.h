@@ -18,7 +18,8 @@ namespace launcher::yglobby {
 // What YouGame says (or the sample data with lobbypreview=1). build: 0 vanilla, 1 Akaneia 1.0.1, 2 ACE 2.0.1, 3 another mod.
 // main: the character's index (stock icon), -1 when YouGame does not say. rating -1: unranked.
 struct Player { std::wstring name, code; int main = -1; bool in_match = false, friend_ = false; int rating = -1; int build = 0; std::string avatar;
-                int link = 0; };   // 0 not friends, 1 friends, 2 you asked them, 3 they asked you
+                int link = 0;      // 0 not friends, 1 friends, 2 you asked them, 3 they asked you
+                bool you = false; };   // this player's own row (owner 11-27: see yourself online, game open or not)
 struct Room { std::wstring name, host, rules; std::vector<int> members; int mode = 0; int players = 1, size = 2; bool in_game = false; int viewers = 0; int build = 0; std::wstring code; };
 struct Side { int main; std::wstring name; };
 struct Live { std::vector<Side> a, b; int kind = 0; std::wstring what, game; int viewers = 0; int build = 0; std::wstring code; };
@@ -30,6 +31,7 @@ struct Data {
   std::vector<Live> live;
   Player me;
   bool me_known = false;
+  bool me_listed = false;       // YouGame's players list had you in it (your game is open): Online counts you then
   bool players_known = false;   // the list of who is online came (it needs a sign-in, or the YouGame app)
   int me_matches = -1, me_wins = -1, me_losses = -1;   // ranked matches YouGame counted (-1 unknown); wins and losses when known
   std::wstring me_label;                               // YouGame's rank label ("Placements 0/5", "Gold II")

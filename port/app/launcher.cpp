@@ -1434,14 +1434,20 @@ void show_look_menu() {
   // The pointer in the Melee looks (owner 11-25): the 3D hand, the first flat hand, or the Windows pointer;
   // the hand can point left as a mouse pointer does. The Classic look always has the Windows pointer.
   const int ptr = launcher::melee_look::pointer();
-  const UINT melee_only = now == 0 ? MF_GRAYED : 0;
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING | MF_GRAYED, 0, launcher::lang::txw(L"Pointer").c_str());
-  AppendMenuW(m, MF_STRING | melee_only | (ptr == 0 ? MF_CHECKED : 0), 5, launcher::lang::txw(L"Melee hand").c_str());
-  AppendMenuW(m, MF_STRING | melee_only | (ptr == 1 ? MF_CHECKED : 0), 6, launcher::lang::txw(L"Melee hand, flat").c_str());
-  AppendMenuW(m, MF_STRING | melee_only | (ptr == 2 ? MF_CHECKED : 0), 7, launcher::lang::txw(L"Windows pointer").c_str());
-  AppendMenuW(m, MF_STRING | (now == 0 || ptr == 2 ? MF_GRAYED : 0) | (launcher::melee_look::pointer_left() ? MF_CHECKED : 0), 8,
-              launcher::lang::txw(L"Hand points left").c_str());
+  if (now == 0) {
+    // Classic: one plain line, not four grayed choices with old checks on them (owner 11-27: "i broke it", the
+    // Windows pointer and Hand points left both checked and nothing pickable). The hand comes with the Melee looks.
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, launcher::lang::txw(L"Pointer: Windows (pick a Melee look for the hand)").c_str());
+  } else {
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, launcher::lang::txw(L"Pointer").c_str());
+    AppendMenuW(m, MF_STRING | (ptr == 0 ? MF_CHECKED : 0), 5, launcher::lang::txw(L"Melee hand").c_str());
+    AppendMenuW(m, MF_STRING | (ptr == 1 ? MF_CHECKED : 0), 6, launcher::lang::txw(L"Melee hand, flat").c_str());
+    AppendMenuW(m, MF_STRING | (ptr == 2 ? MF_CHECKED : 0), 7, launcher::lang::txw(L"Windows pointer").c_str());
+    // Pointing left is the hand's: with the Windows pointer it is neither offered nor shown as on.
+    AppendMenuW(m, MF_STRING | (ptr == 2 ? MF_GRAYED : (launcher::melee_look::pointer_left() ? MF_CHECKED : 0)), 8,
+                launcher::lang::txw(L"Hand points left").c_str());
+  }
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, 4, launcher::lang::txw(L"Launcher color").c_str());
   RECT b{}; GetWindowRect(GetDlgItem(g_main, ID_THEME), &b);

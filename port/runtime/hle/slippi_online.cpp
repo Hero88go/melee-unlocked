@@ -3733,6 +3733,16 @@ static bool lobby_command(const uint8_t* p, uint32_t n, std::vector<uint8_t>& q)
       if (failed) lobby.closed = true;
       host::log("doubles: the match fell through before it started%s", failed ? "; the home closed" : "; back to the home");
     }
+    if (failed && lobby.profile == lb::Profile::Doubles && lobby.note.empty() && !g_forced_error.empty() && !yougame::lobby_parked()) {
+      // The home itself never opened (YouGame refused its ticket): the select says why on its red line, short
+      // enough to read there (about 30 letters); the whole reason is in the log. Before, it said "Waiting for
+      // players" for good while START only buzzed (a player's 1.0.34 log, 11-27).
+      ++lobby.note_seq;
+      lobby.note = g_forced_error.find("opens once YouGame lists") != std::string::npos ? "Not on YouGame yet. Try later"
+                   : g_forced_error.size() <= 30                                         ? g_forced_error
+                                                                                         : "Could not open Doubles";
+      host::log("doubles: the home did not open (%s)", g_forced_error.c_str());
+    }
     const lb::Control::View cv = lobby.armed && lobby.control ? lobby.control->view() : lb::Control::View{};
     // A stale started view may survive cleanup until the search thread adopts the parked room.
     // Keep its refusal note until actual gameplay begins.

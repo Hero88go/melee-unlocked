@@ -889,12 +889,18 @@ std::string native_build_from_listing(const std::string& page, const std::string
   std::string b;
   for (char c : page) if (c != '\\') b += c;
   static const std::string kLatest = "\"latest\":{", kTitle = "\"title\":\"Melee Unlocked ";
-  const size_t latest = b.find(kLatest);
-  if (latest == std::string::npos) return found;
-  const size_t close = b.find('}', latest), title = b.find(kTitle, latest);
-  if (title == std::string::npos || (close != std::string::npos && title > close)) return found;
-  const size_t v = title + kTitle.size(), v_end = b.find('"', v);
-  if (v_end == std::string::npos || b.compare(v, v_end - v, version) != 0) return found;
+  // 11-27: the page says "latest":null and names its current release as the game's version instead
+  // ("version":"v1.0.34", the release tag); its numbered builds are still that release's records. Read only the
+  // old way, every launcher Doubles home was refused as "not listed yet" (a player's 1.0.34 log, 11-27).
+  const bool named_as_version = b.find("\"version\":\"v" + version + "\"") != std::string::npos;
+  if (!named_as_version) {
+    const size_t latest = b.find(kLatest);
+    if (latest == std::string::npos) return found;
+    const size_t close = b.find('}', latest), title = b.find(kTitle, latest);
+    if (title == std::string::npos || (close != std::string::npos && title > close)) return found;
+    const size_t v = title + kTitle.size(), v_end = b.find('"', v);
+    if (v_end == std::string::npos || b.compare(v, v_end - v, version) != 0) return found;
+  }
   long best = -1;
   for (const ListedBuild& r : builds) {
     if (r.platform != platform || r.version.empty() || r.version.size() > 9 ||

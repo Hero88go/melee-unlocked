@@ -1726,6 +1726,12 @@ static void mu_f4_panel_text(const MuLobbyView* v, unsigned hint, int noted, int
     int host, open;
     memset(p, 0, sizeof *p);
     p->gray = "";
+    /* The home never opened (YouGame refused it): why, in red, rather than "Waiting for players" forever (a
+     * player's 1.0.34 log, 11-27: START only buzzed and a second pad could not sit down, with nothing said). */
+    if (v && note && note[0] && (!(v->flags & MU_LOBBY_F_KNOWN) || v->my_seat >= MU_LOBBY_DOUBLES_SEATS)) {
+        mu_f4_panel_copy(p->error, sizeof p->error, note);
+        return;
+    }
     if (!v || !(v->flags & MU_LOBBY_F_KNOWN) || v->my_seat >= MU_LOBBY_DOUBLES_SEATS) {
         strcpy(p->line[0], "Waiting for players");   /* the room's state hasn't arrived yet */
         p->spin[0] = 1;
@@ -2022,6 +2028,8 @@ static void mu_f4_texts(int mine)
         if (mu_f4.note_text_frames > 0) {
             if (!mu_lobby_curtain()) --mu_f4.note_text_frames;
             note = mu_f4.note_text;   /* why the last setup fell through, 4 s */
+        } else if (v && v->note[0] && !(v->flags & MU_LOBBY_F_KNOWN)) {
+            note = v->note;   /* the home never opened: why, for as long as that lasts */
         }
         mu_f4_panel(v, 1, hint, noted, note, mine);
     } else

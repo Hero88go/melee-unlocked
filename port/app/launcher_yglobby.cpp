@@ -285,10 +285,13 @@ void maybe_visit_mains(bool staging, const std::string& version) {
 void parse_players(const json& players, Data& d) {
   if (!players.is_array()) return;
   d.players.clear();
+  d.me_listed = false;
   for (const auto& q : players) {
     if (q.is_object() && str(q, "friend") == "you") {
       note_my_username(str(q, "username"));
       if (!d.me_known) { d.me_known = true; d.me.name = wide(str(q, "name").empty() ? str(q, "username") : str(q, "name")); }
+      d.me.in_match = str(q, "status") == "in_match";   // your own row says it (data())
+      d.me_listed = true;                                // and YouGame's Online count has you already
     }
     if (!q.is_object() || str(q, "friend") == "you") continue;   // you are on your own card, not in the list
     Player x; x.name = wide(str(q, "name")); x.code = wide(str(q, "username"));
@@ -721,6 +724,14 @@ Data data_raw() {
 Data data() {
   Data d = data_raw();
   std::stable_sort(d.live.begin(), d.live.end(), [](const Live& a, const Live& b) { return a.viewers > b.viewers; });
+  // You, first in the Online list while signed in, with the launcher open whether or not the game is (YouGame lists
+  // players only while their game is open, owner 11-27: "I want to see myself here"). Counted in Online then.
+  if (d.me_known && !d.me.name.empty() && !g_preview) {
+    Player you = d.me;
+    you.you = true; you.friend_ = false; you.link = 0;
+    d.players.insert(d.players.begin(), you);
+    if (!d.me_listed) ++d.online;
+  }
   return d;
 }
 int lobby_state() { if (g_preview) return SRC_OK; std::lock_guard<std::mutex> lock(g_live_mx); return g_live_state.lobby; }
@@ -951,12 +962,12 @@ void online_list(HDC dc, const Data& d, RECT p) {
     if (q.main >= 0 || !draw_avatar(dc, q.avatar, x0 + S(4), midY, S(24))) stock(dc, q.main, x0 + S(4), midY, 24);
     int nx = x0 + S(38), ny = y + (lines == 3 ? S(4) : S(4));
     if (q.friend_) { text(dc, kFriend, rc(nx, ny, S(16), S(18)), g_f.icon_small, C_FRIEND); nx += S(18); }
-    text(dc, q.name, RECT{nx, ny, nameR, ny + S(18)}, g_f.name, C_TEXT);
+    text(dc, q.you ? q.name + L" (you)" : q.name, RECT{nx, ny, nameR, ny + S(18)}, g_f.name, C_TEXT);
     const int t = tier_of(q.rating);
     runs(dc, {{q.in_match ? L"In match" : L"Online", g_f.sm, q.in_match ? C_AMBER : C_OK}, {L" \u00B7 ", g_f.sm, C_DIM},
               {t >= 0 ? kTierName[t] : L"No rank yet", g_f.sm, t >= 0 ? kTierColor[t] : RGB(0xAE, 0xB8, 0xC8)}}, x0 + S(38), ny + S(18), S(16), nameR);
     if (q.build) text(dc, kBuildName[q.build], RECT{x0 + S(38), ny + S(34), nameR, ny + S(50)}, g_f.sm, kBuildColor[q.build]);
-    if (q.in_match) {
+    if (q.in_match && !q.you) {
       RECT e = rc(eyeX, midY, S(20), S(24)); text(dc, kEye, e, g_f.icon, C_WATCH, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       hit(e, A_PLAYER_WATCH, index);
     }
