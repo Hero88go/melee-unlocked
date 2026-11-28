@@ -555,4 +555,13 @@ class LobbySessionEnd(unittest.TestCase):
         src=(ROOT/'port/runtime/hle/native_practice.cpp').read_text()
         self.assertIn('session_watch.tick(session, match_running, slippi::online::friends_lobby_armed())',src)
 
+    def test_leaving_the_home_tells_the_page_the_room_is_gone(self):
+        # The home's report is recorded like the Friends lobby's, so its leave sends mpRoom code null and the
+        # YouGame app drops its Lobby and Invite page (the public held-room contract).
+        src=(ROOT/'port/runtime/hle/yougame_link.cpp').read_text()
+        self.assertIn('report_lobby(room_code, lobby::doubles_room_report(room_code, room_code, false, doubles_epoch',src)
+        gone=src[src.index('void report_lobby_gone('):src.index('void shutdown_room(')]
+        self.assertIn('{"type", "mpRoom"}, {"code", nullptr}, {"players", json::array()}',gone)
+        self.assertIn('if (r->lobby_session) report_lobby_gone(r->code);',src)
+
 if __name__=='__main__':unittest.main()
