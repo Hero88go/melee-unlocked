@@ -69,7 +69,10 @@ uintptr_t import(const char* name) {
     IMPORT(fprintf), IMPORT(atoi),
     {"fabs",reinterpret_cast<uintptr_t>(static_cast<double(*)(double)>(&::fabs))},
     IMPORT(snprintf), IMPORT(memmove),
-    IMPORT(sqrtf), IMPORT(fwrite)
+    IMPORT(sqrtf), IMPORT(fwrite),
+    // The game's own C shims (mu_css_state.c, mu_rank_badge.c, mu_ranked_rank.c): a host-heap line
+    // buffer it frees itself, and string concatenation. Same ABI on Darwin and glibc.
+    IMPORT(malloc), IMPORT(free), IMPORT(strcat)
   };
   // fabs[f] is exact sign-bit clearing; sqrtf is IEEE single precision on x86.
   // Simulation's other math stays bound to its own ELF definitions (DT_SYMBOLIC).
