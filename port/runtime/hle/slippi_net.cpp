@@ -33,6 +33,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <cerrno>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -3028,7 +3029,16 @@ std::string Matchmaking::openSlippiTicket(const UserInfo& me, const std::functio
     });
     if (forced_port && host_port_ == forced_port)
       host::log(client_ ? "slippi: forced port %d bound" : "slippi: forced port %d bind failed", host_port_);
-    if (!client_) return "Failed to create mm client";
+    if (!client_) {
+      // Every try failed: the last port and the socket error say why (11-27: an Arena search failed this way between
+      // two linked members and the log could not tell a busy port from a refused socket).
+#ifdef _WIN32
+      host::log("slippi: the search could not open its network port (last tried %d, socket error %d)", host_port_, WSAGetLastError());
+#else
+      host::log("slippi: the search could not open its network port (last tried %d, errno %d)", host_port_, errno);
+#endif
+      return "Failed to create mm client";
+    }
     std::vector<ENetAddress> stun_addrs;
     native([&] {
       for (const auto& server : kStunServers) {

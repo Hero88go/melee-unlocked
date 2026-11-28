@@ -5186,8 +5186,13 @@ static void draw_arena_panel(RenderOptions& options, const host::PadState* pads,
   // Ranked and Unranked have no rooms: no ARENA tab or "Push the hand here" box on their selects.
   // The YouGame Friends lobby's select too: its ARENA card takes the player to the arena (FromFriends).
   const bool friends_lobby = slippi::arena::css_friends_lobby() && slippi::online::friends_lobby_armed() && yougame::session();
+  // Not once the online scene has left its select (08/04 the splash and loading, 08/02 the match): the select's
+  // last match-state poll and hand report outlive it by a few frames, so the WARM UP and ARENA cards stayed up into
+  // the match's start and flickered on the loading screen (owner 11-27).
+  const auto scene_now = slippi::native_practice::snapshot();
+  const bool select_left = scene_now.scene_major == 0x08 && scene_now.scene_minor != 0;
   f.on_online_menus = ((slippi::online::in_online_menus() || friends_lobby) && slippi::arena::css_hand(&hand_x, &hand_y) &&
-                       !slippi::arena::css_ranked_or_unranked()) ||
+                       !slippi::arena::css_ranked_or_unranked() && !select_left) ||
                       slippi::arena::test_fixture_active();
   {
     // Logged on a change: whether the room panel is offered on this select, and what decided it.

@@ -27,9 +27,14 @@ static double g_goto_flash = -10.0;
 static std::string g_goto_flash_label;
 static const char* const kSearchPages[] = {"Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes", "Mods"};
 
+// The content's lowest point before a hidden run began: the hidden rows still lay out (clipped), and ImGui keeps
+// the lowest point they reached as the window's content height, so a closed section left its own height as empty
+// scroll room at the bottom of the page (owner 11-27: "why is there a huge gap here" under L-cancel).
+static float g_shown_max_y = 0.0f;
 static void settings_hide_begin() {
   if (g_hidden++ == 0) {
     g_shown_y = ImGui::GetCursorPosY();
+    g_shown_max_y = ImGui::GetCurrentWindow()->DC.CursorMaxPos.y;
     ImGui::PushClipRect(ImVec2(0, 0), ImVec2(0, 0), false);
     ImGui::BeginDisabled();
   }
@@ -40,6 +45,7 @@ static void settings_hide_end() {
     ImGui::EndDisabled();
     ImGui::PopClipRect();
     ImGui::SetCursorPosY(g_shown_y);
+    ImGui::GetCurrentWindow()->DC.CursorMaxPos.y = g_shown_max_y;   // the hidden rows leave no height behind
   }
 }
 static std::string settings_lower(const char* s) {

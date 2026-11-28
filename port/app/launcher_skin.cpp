@@ -50,7 +50,7 @@ bool g_tracking = false;
 std::wstring g_toast; ULONGLONG g_toast_until = 0;
 ULONG_PTR g_gdiplus = 0;
 
-enum Act { A_BUILD_MENU, A_PLAYER_MENU, A_ADD_TYPED, A_SIGN_IN, A_STATUS, A_RAIL_ART, A_WATCH_PLAYER, A_NAV, A_PLAY_OFFLINE, A_QUEUE, A_JOIN_CODE, A_CREATE, A_ROOM, A_WATCH, A_RAIL_TAB, A_ELO, A_TOOL, A_ME, A_MY_MAIN };
+enum Act { A_BUILD_MENU, A_PLAYER_MENU, A_ADD_TYPED, A_SIGN_IN, A_STATUS, A_RAIL_ART, A_WATCH_PLAYER, A_NAV, A_PLAY_OFFLINE, A_QUEUE, A_JOIN_CODE, A_CREATE, A_ROOM, A_WATCH, A_RAIL_TAB, A_ELO, A_TOOL, A_ME, A_MY_MAIN, A_LEAVE_ROOM };
 struct Hit { RECT r; int act, arg; };
 std::vector<Hit> g_hits;
 
@@ -375,8 +375,12 @@ void play_page(HDC dc, const launcher::yglobby::Data& d, double bottom) {
   const double rt = 226, rb = bottom - (g_cb.status ? 50 : 18);   // room for the status line
   line_box(dc, 244, rt, 720, rb - rt, 10, P.line_strong);
   mt(dc, L"Public rooms", 261, 247, 23, RGB(255, 255, 255));
-  const double cw = mw(dc, L"Create room", 20) * 96.0 / dpi() + 32, cx = 947 - cw;
-  frame_button(dc, cx, 239, cw, 34, L"Create room", 20, A_CREATE);
+  // In a room (made here or joined): the button leaves it, so a host can always close their room (owner 11-27: a
+  // friend's room stayed listed with no way out of it short of closing the launcher).
+  const bool in_room = !launcher::room::current().code.empty();
+  const wchar_t* room_label = in_room ? L"Leave room" : L"Create room";
+  const double cw = mw(dc, room_label, 20) * 96.0 / dpi() + 32, cx = 947 - cw;
+  frame_button(dc, cx, 239, cw, 34, room_label, 20, in_room ? A_LEAVE_ROOM : A_CREATE);
   const double kx = cx - 10 - 200;
   line_box(dc, kx, 239, 200, 34, 7, P.line_strong);
   { const double jw = text_w(dc, g_f13b, L"Join") * 96.0 / dpi() + 20, jx = kx + 200 - 5 - jw; const RECT j = R(jx, 243, jw, 26); hit(j, A_JOIN_CODE);
@@ -686,6 +690,7 @@ void act(int a, int arg) {
     case A_PLAY_OFFLINE: if (launcher::yglobby::repeat_press()) return; if (g_cb.play_offline) g_cb.play_offline(); return;
     case A_QUEUE: if (launcher::yglobby::repeat_press()) return; launcher::yglobby::play(arg); toast(L"Starting the game..."); return;
     case A_CREATE: if (launcher::yglobby::repeat_press()) return; launcher::yglobby::create_room(true); return;
+    case A_LEAVE_ROOM: launcher::room::leave(); toast(L"You left the room."); InvalidateRect(g_window, nullptr, FALSE); return;
     case A_JOIN_CODE: { wchar_t b[32] = {}; if (g_code) GetWindowTextW(g_code, b, 31); if (!b[0]) { toast(L"Type a room code first."); return; }
       const std::wstring code = launcher::yglobby::room_code(b);
       if (code.empty()) { toast(L"A room code is 6 to 12 letters or numbers."); return; }

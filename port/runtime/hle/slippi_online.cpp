@@ -3096,7 +3096,12 @@ bool warmup_possible(std::string* why) {
   if (!g_user || !g_matchmaking || !g_netplay) return no("Not connected");
   if (g_last_search.mode != Matchmaking::DIRECT && g_last_search.mode != Matchmaking::TEAMS)
     return no("Direct and Teams only");
-  if (yougame::session()) return no("Not between games of a set");
+  // Under YouGame, a room YouGame's server runs (the Friends lobby, Doubles) keeps its own start and ready
+  // steps: no warm-up there. Friends who met by connect code under the launcher (YouGame Friends without the
+  // app, an Arena room) are a plain Direct link, as on Slippi: warm-up works between their games (owner 11-27:
+  // "need to be able to warm up in between sets").
+  if (yougame::session() && (g_friends_lobby.armed || g_last_search.friends_lobby || g_last_search.mode == Matchmaking::TEAMS))
+    return no("Not between games of a set");
   if (!warmup_link_complete()) return no("Not connected");
   if (!in_online_menus()) return no("From the character select");
   // A lock-in is final on the wire (Slippi's selections only ever add one), so a player who has
@@ -4216,6 +4221,15 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
       // 0x4A: only asks whether a Squad Strike search the player chose to keep is running (the online
       // menu then keeps the select's lineup for the way back; native_practice.cpp).
       if (payload_len == 1 && payload[0] == 0x4A) { q.assign(1, slippi::native_practice::keep_search_squad() ? 1 : 0); return true; }
+      // 0x4B: the player's YouGame connect code in the game's encoding (10 bytes, as the status's Slippi code), for
+      // a YouGame character select's "Connect Code" line; empty outside a YouGame session (the Slippi code shows).
+      if (payload_len == 1 && payload[0] == 0x4B) {
+        const std::string mine = yougame::session() ? yougame::identity().code : std::string();
+        if (mine.empty()) { q.clear(); return true; }
+        const std::string code = convert_connect_code_for_game(mine);
+        q.assign(code.begin(), code.end());
+        return true;
+      }
       // 0x22: a YouGame row pressed while the launcher is not signed in to YouGame: the launcher's own Connect
       // (sign-in) window opens, or comes to the front (yougame::open_launcher_connect). Answers 1 when the launcher
       // was asked, 0 when there is no launcher to ask; the menu then waits on the row and goes on into it once the

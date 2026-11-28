@@ -530,7 +530,25 @@ int mu_slippi_menu_label_kind(int row)
 
 int mu_slippi_app_state(void) { return slp.app_state; }
 const char* mu_slippi_user_name(void) { return (const char*) user_name; }
-const char* mu_slippi_user_code(void) { return (const char*) user_code; }
+/* The code the character select shows under the name: a YouGame select (YouGame Friends, Doubles) shows the
+ * player's YouGame connect code, which is the one a friend types there; a Slippi select shows the Slippi one.
+ * 11-27: the YouGame Friends select showed the Slippi code, so a friend was given ATOM#279 instead of ADAM#303
+ * and the search said no player had it. The host answers CMD_YOUGAME_MENU 0x4B (empty when not signed in). */
+const char* mu_slippi_user_code(void)
+{
+    static char yg_code[12];
+    if (mu_slippi_pick_service() == 1) {
+        u8 ask = 0x4B;
+        char got_code[12] = {0};
+        unsigned int got = 0;
+        if (mu_slippi_cmd(CMD_YOUGAME_MENU, &ask, 1, got_code, 10, &got) == 0 && got >= 1 && got_code[0]) {
+            memcpy(yg_code, got_code, 10);
+            yg_code[10] = 0;
+            return yg_code;
+        }
+    }
+    return (const char*) user_code;
+}
 
 /* LoadMatchState: B3 into a Match State Response Buffer. */
 static void parse_match_state(MuMatchState* m, const u8* r)

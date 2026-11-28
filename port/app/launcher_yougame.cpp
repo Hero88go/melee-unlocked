@@ -1329,6 +1329,11 @@ std::string sdk_request(const std::string& request_json, const std::string& vers
     const auto response = app::social(staging_env(), version, {request}, timeout_ms);
     const auto found = response.answers.find(request.value("type", std::string()));
     if (found == response.answers.end()) throw std::runtime_error("Open YouGame to invite a friend, or use Copy code to share this room.");
+    // A room's Invite is YouGame's friend picker, which only the YouGame app has; its refusal ("the player didn't
+    // approve this") was all the player saw (owner 11-27). The way that always works is said with it.
+    if (!found->second.value("ok", false) && request.value("type", std::string()) == "mpFriend")
+      throw std::runtime_error(found->second.value("error", std::string("YouGame refused the invite.")) +
+                               " Or share the room code (Copy code): your friend types it in Join.");
     if (!found->second.value("ok", false))
       throw std::runtime_error(found->second.value("error", std::string("YouGame refused the room request.")));
     return found->second.value("result", json::object()).dump();

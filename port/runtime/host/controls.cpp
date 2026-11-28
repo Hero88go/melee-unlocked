@@ -147,7 +147,9 @@ void evaluate_locked(Peer& p) {
   if (p.mine == Answer::NoThisMatch) { send_answer_locked(p, false); return; }
   policy::Remembered r = remembered_locked(p.who.key);
   r.allowed |= p.session.allowed;
-  r.declined = (r.declined | p.session.declined) & ~r.allowed;
+  // Only this connection's no counts (answer above): a no saved by an older build is not read, so a player who
+  // said no once is asked again on the next connection.
+  r.declined = p.session.declined & ~r.allowed;
   switch (policy::auto_answer(bits, g.offered, r, false)) {
     case policy::Auto::Yes: p.mine = Answer::Yes; p.own_pending = false; send_answer_locked(p, true); return;
     case policy::Auto::YesOwn:
@@ -452,7 +454,14 @@ void answer(int port, bool allow) {
   const unsigned bits = g.state.bits[port];
   if (!p->who.key.empty()) {
     load_memory_locked();
-    g_memory[p->who.key] = policy::remember(remembered_locked(p->who.key), bits, allow);
+    // A yes is remembered for that opponent. A no counts for this connection only (p->session below) and takes back
+    // any yes kept for those options: owner 11-27, "he denied and I reconnected and it's not giving the option to
+    // reconsent": a no kept on file answered every later match by itself, and nothing asked again.
+    policy::Remembered kept = remembered_locked(p->who.key);
+    if (allow) kept = policy::remember(kept, bits, true);
+    else kept.allowed &= ~policy::main_bits(bits);
+    kept.declined = 0;
+    g_memory[p->who.key] = kept;
     if (g_memory.size() > kMemoryMax) g_memory.erase(g_memory.begin());
     save_memory_locked();
   }
