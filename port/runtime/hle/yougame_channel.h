@@ -117,8 +117,9 @@ uint64_t retry_after_ms(const nlohmann::json& answer);
 std::string log_text(const std::string& text);
 
 // What the game shows for a host's refusal over the channel, when ours says it better: notYet (the
-// host cannot do this for a game started on its own yet) and standalone_teams without words.
-// Empty: show the host's own words.
+// host cannot do this yet), notHere, and a copy that is unknown or out of date. Empty: show the
+// host's own words. None of them sends the player to the YouGame app: a copy the player started
+// plays everything the app's copy does, through the app or the YouGame Online add-on alike.
 std::string refusal_text(const nlohmann::json& answer);
 // The answer's result says a player is signed in but not ready yet (playerPending, no player).
 bool hello_pending(const nlohmann::json& result);

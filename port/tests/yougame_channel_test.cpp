@@ -112,7 +112,11 @@ void lines_and_pushes() {
   // Refusals: notYet in our words, always; standalone_teams only when the host gave none.
   CHECK(!channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "notYet"}, {"error", "x"}}).empty());
   CHECK(channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "standalone_teams"}, {"error", "Their words"}}).empty());
-  CHECK(!channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "standalone_teams"}}).empty());
+  CHECK(channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "standalone_teams"}}).empty());
+  CHECK(channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "notYet"}}) == "YouGame can't do this here yet.");
+  // No refusal sends the player to the YouGame app: a copy the player started does everything the app's does.
+  for (const char* code : {"notYet", "notHere", "unknown_build", "old_build", "build_replaced", "standalone_teams"})
+    CHECK(channel::refusal_text({{"re", 1}, {"ok", false}, {"code", code}}).find("YouGame app") == std::string::npos);
   CHECK(channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "busy"}}).empty());
   CHECK(!channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "unknown_build"}}).empty());
   CHECK(!channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "old_build"}}).empty());
@@ -121,7 +125,7 @@ void lines_and_pushes() {
   CHECK(channel::refusal_text({{"ok", false}, {"code", "unknown_build"}, {"error", "Get the latest version"}}) ==
         "Get the latest version");
   CHECK(channel::refusal_text({{"ok", false}, {"code", "build_replaced"}, {"current", "0.9.205-online-test.117"}}) ==
-        "This copy of Melee is out of date (the latest is 0.9.205-online-test.117). Open YouGame to update it, then play online.");
+        "This copy of Melee is out of date (the latest is 0.9.205-online-test.117). Update it to play online.");
   CHECK(channel::refusal_text({{"ok", false}, {"code", "build_replaced"}, {"current", " \n"}}) ==
         channel::refusal_text({{"ok", false}, {"code", "old_build"}}));
   CHECK(!channel::refusal_text({{"re", 1}, {"ok", false}, {"code", "notHere"}, {"retryAfter", 2}}).empty());

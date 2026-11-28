@@ -244,7 +244,7 @@ std::string refusal_text(const json& answer) {
   if (!answer.is_object() || answer.value("ok", false)) return {};
   const std::string code = answer.count("code") && answer["code"].is_string() ? answer["code"].get<std::string>() : "";
   const bool has_words = answer.count("error") && answer["error"].is_string() && !answer["error"].get<std::string>().empty();
-  if (code == "notYet") return "YouGame can't do this for a game started on its own yet. Start it from the YouGame app.";
+  if (code == "notYet") return "YouGame can't do this here yet.";
   if (code == "notHere") return "YouGame is still getting ready. Try again in a moment.";
   // A copy YouGame doesn't recognise: the app's own words win over ours. Ours never call it out of date,
   // because the newest build is refused the same way when the app can't look builds up.
@@ -258,11 +258,9 @@ std::string refusal_text(const json& answer) {
     if (answer.count("current") && answer["current"].is_string())
       for (const char c : answer["current"].get<std::string>())
         if (c > 0x20 && c < 0x7F && current.size() < 40) current += c;
-    return current.empty() ? "This copy of Melee is out of date. Open YouGame to update it, then play online."
-                           : "This copy of Melee is out of date (the latest is " + current +
-                                 "). Open YouGame to update it, then play online.";
+    return current.empty() ? "This copy of Melee is out of date. Update it to play online."
+                           : "This copy of Melee is out of date (the latest is " + current + "). Update it to play online.";
   }
-  if (code == "standalone_teams" && !has_words) return "Doubles needs the YouGame app. Start Melee from the YouGame app to play it.";
   return {};
 }
 

@@ -740,7 +740,7 @@ json bridge_stdio(const json& body, int timeout_ms, const std::function<bool()>&
 }
 
 // ------------------------------------------------------------------ the local channel's requests
-constexpr const char* kChannelClosed = "YouGame is not open. Open the YouGame app, then try again.";
+constexpr const char* kChannelClosed = "YouGame is not open. Open YouGame, then try again.";
 void player_arrived();   // after fetch_identity, below
 void player_wait_loop();
 void start_player_wait();
@@ -849,7 +849,7 @@ class PendingHttp {
 // POST <bridge>/sdk {type, ...} -> {ok, result | error}. Only the app's loopback address is
 // accepted: the token must never travel anywhere else.
 json bridge_http(const json& body, int timeout_ms, const std::function<bool()>& cancelled = {}) {
-  if (g_bridge_url.empty() || g_bridge_token.empty()) throw std::runtime_error((g_launcher || g_match_bridge) ? "Start Melee Unlocked from its launcher to play YouGame modes" : "Start Melee from the YouGame app to play online");
+  if (g_bridge_url.empty() || g_bridge_token.empty()) throw std::runtime_error((g_launcher || g_match_bridge) ? "Start Melee Unlocked from its launcher to play YouGame modes" : kChannelClosed);
   Url u;
   if (!parse_url(g_bridge_url + "/sdk", u) || u.secure || u.host != L"127.0.0.1") throw std::runtime_error((g_launcher || g_match_bridge) ? "The launcher's address is invalid" : "The YouGame app's address is invalid");
   HINTERNET session = http_session();

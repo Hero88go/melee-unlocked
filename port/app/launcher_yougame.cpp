@@ -1242,6 +1242,8 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
       // Launcher copies have no YouGame links of their own (the app's): said on the ticket for YouGame, and by
       // the game to the other seats (its word), so every seat of its match connects over direct UDP.
       body["links"] = false;
+      // The game's word that its online code plays with copies however they were started (links_flag 1).
+      if (q.value("links_flag", json()) == 1) body["links_flag"] = 1;
       if (players == 2) {
         // The Doubles home is YouGame's native unranked home: a 4-seat teams room that starts with 2 and
         // takes up to 2 local players (the game's own yougame_doubles.h ticket(); a 2-seat one is refused
@@ -1291,6 +1293,8 @@ BridgeReply handle(const HttpRequest& request, const std::vector<std::string>& t
       // Launcher copies have no YouGame links of their own (the app's): said on the ticket for YouGame, and by
       // the game to the other seats (its word), so every seat of its match connects over direct UDP.
       body["links"] = false;
+      // The game's word that its online code plays with copies however they were started (links_flag 1).
+      if (q.value("links_flag", json()) == 1) body["links_flag"] = 1;
       // A room named by its code is a private room (a friend's room, a held lobby or home), never a queue.
       if (!ranked && q.count("room") && q["room"].is_string() && !q.count("queue")) body["queue"] = "private";
       if (q.count("lobby")) body["lobby"] = q["lobby"];
