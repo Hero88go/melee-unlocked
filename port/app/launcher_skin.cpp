@@ -467,7 +467,9 @@ void status_line_bar(HDC dc, double bottom) {
   const size_t prefix = mods.find(L": ");
   if (prefix != std::wstring::npos) mods.erase(0,prefix+2);
   const double version_width = (g_status_style == 1 ? text_w(dc,g_f13b,s.version) : mw(dc,s.version,17))*96.0/dpi()+12;
-  part(2, true, s.mods_on ? kOk : P.dim, L"Mods", mods, P.text2, std::max(45.0, content_right-x-version_width));
+  // Check for updates (or Update to X) always has its room: the mods' list shortens for it.
+  const double update_width = s.update.empty() ? 0.0 : (g_status_style == 1 ? text_w(dc,g_f13b,s.update) : mw(dc,s.update,17))*96.0/dpi()+12;
+  part(2, true, s.mods_on ? kOk : P.dim, L"Mods", mods, P.text2, std::max(45.0, content_right-x-version_width-update_width));
   part(3, false, 0, L"", s.version, P.text2);
   if (!s.update.empty()) part(4, false, 0, L"", s.update, P.accent);
   const bool extension_hot = is_hot(A_STATUS, 6);
@@ -589,7 +591,7 @@ void rail(HDC dc, const launcher::yglobby::Data& d, int W, int H) {
     const int t = launcher::yglobby::tier_of_rating(pl.rating);
     double sx = x0 + 42; const double sy = ty + 16.26;
     sx += tx(dc, pl.in_match ? L"In match" : L"Online", sx, sy, g_f12, pl.in_match ? kAmber : P.dim) * 96.0 / dpi();
-    if (!g_elo || t < 0) { sx += tx(dc, kDot, sx, sy, g_f12, P.dim) * 96.0 / dpi(); tx(dc, t >= 0 ? kTierName[t] : L"Unranked", sx, sy, g_f12, t >= 0 ? kTier[t] : P.dim); }   // no rating: say Unranked, Elo on or off
+    if (!g_elo || t < 0) { sx += tx(dc, kDot, sx, sy, g_f12, P.dim) * 96.0 / dpi(); tx(dc, t >= 0 ? kTierName[t] : L"No rank yet", sx, sy, g_f12, t >= 0 ? kTier[t] : P.dim); }   // no rating: "No rank yet" (owner 11-27: "Unranked" beside "In match" read as the queue), Elo on or off
     if (build) tx(dc, kBuild[pl.build], x0 + 42, sy + 16, g_f12, kBuildCol[pl.build], 135);
     if (pl.in_match) { icon(dc, I_EYE, x0 + 184, y + (h - 16) / 2, 16, P.accent); hit(R(x0 + 180, y + (h - 24) / 2, 24, 24), A_WATCH_PLAYER); }
     const double by = g_elo ? y + 6 + (content - 40) / 2 : y + (h - 22) / 2;

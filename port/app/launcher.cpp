@@ -2469,11 +2469,15 @@ void refresh_updater() {
     g_version_line = line; g_version_dot = d;
     if (g_tab == 0) { invalidate(version_text_rect()); invalidate(LR(CX, play_layout().version_y + 3, 8, 8)); }
   }
-  ShowWindow(g_update_btn, (st == State::UpdateAvailable || st == State::Failed) && g_tab == 0 ? SW_SHOW : SW_HIDE);
-  set_text(g_update_btn, st == State::Failed ? "Retry" : "Update and restart");
+  // Always on the Play page (owner 11-27): Check for updates asks GitHub again, so a release published while the
+  // launcher is open shows without restarting it; with one found it is the Update button.
+  ShowWindow(g_update_btn, g_tab == 0 ? SW_SHOW : SW_HIDE);
+  set_text(g_update_btn, st == State::Failed ? "Retry" : st == State::UpdateAvailable ? "Update and restart"
+                         : st == State::Checking ? "Checking..." : st == State::Downloading || st == State::ReadyToInstall ? "Updating..."
+                         : "Check for updates");
   const bool choosing = host::updater::rollback_state() == host::updater::RollbackState::Downloading;
   EnableWindow(g_versions_btn, !choosing);
-  EnableWindow(g_update_btn, !choosing);
+  EnableWindow(g_update_btn, !choosing && st != State::Checking && st != State::Downloading && st != State::ReadyToInstall);
 }
 
 // What's new: the release notes from GitHub, the same text as each release page there, newest
@@ -3006,8 +3010,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           break;   // no update source for this build (see the check at start)
 #endif
           if (host::updater::rollback_state() == host::updater::RollbackState::Downloading) break;
-          if (host::updater::state() == host::updater::State::Failed) host::updater::check(MELEE_PORT_VERSION);
-          else { settings_standby_stop(); host::updater::download_and_install(); }
+          if (host::updater::state() == host::updater::State::UpdateAvailable) { settings_standby_stop(); host::updater::download_and_install(); }
+          else if (host::updater::state() == host::updater::State::Idle || host::updater::state() == host::updater::State::UpToDate ||
+                   host::updater::state() == host::updater::State::Failed) {
+            // Check for updates (or Retry): a release found now asks its yes/no again.
+            g_update_prompted = false;
+            host::updater::check(MELEE_PORT_VERSION);
+          }
           refresh_updater();
           break;
         case ID_VERSIONS: choose_version(); break;
@@ -3549,6 +3558,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdline, int show) {
                                 s.version = widen(MELEE_PORT_VERSION);
                                 s.extension = launcher::yougame::extension();
                                 if (host::updater::state() == host::updater::State::UpdateAvailable) s.update = launcher::lang::txw(L"Update to") + L" " + widen(host::updater::latest_version());
+                                else if (host::updater::state() == host::updater::State::Checking) s.update = launcher::lang::txw(L"Checking for updates...");
+                                else if (host::updater::state() == host::updater::State::Downloading || host::updater::state() == host::updater::State::ReadyToInstall) s.update = launcher::lang::txw(L"Updating...");
+                                else s.update = launcher::lang::txw(L"Check for updates");   // owner 11-27: no relaunch to see a new release
                                 const auto* cur = launcher::lang::find(launcher::lang::current()); s.language = cur ? cur->native : L"English";
                                 return s;
                               },

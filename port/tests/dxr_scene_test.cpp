@@ -7,6 +7,13 @@
 #include <cstdlib>
 #include <cstring>
 
+// gx_shader.cpp's True widescreen state, switchable here (the scene widens the camera the way the picture is).
+static bool g_test_true_widescreen = false;
+namespace gx {
+bool true_widescreen_active() { return g_test_true_widescreen; }
+float true_widen() { return 219.0f / 320.0f; }
+}
+
 namespace {
 void check(bool ok, const char* message) {
   if (!ok) {
@@ -82,6 +89,12 @@ int main() {
 
   gx::DxrScene scene;
   check(gx::build_dxr_scene(frame, scene), "extract a perspective match scene");
+  check(scene.gx_projection[0] == 1.0f, "73:60: the camera as GX authored it");
+  g_test_true_widescreen = true;
+  check(gx::build_dxr_scene(frame, scene) && std::fabs(scene.gx_projection[0] - 219.0f / 320.0f) < 1e-6f &&
+        scene.gx_projection[2] == 1.0f, "True widescreen: the rays' x scale widened as the picture's, y kept");
+  g_test_true_widescreen = false;
+  check(gx::build_dxr_scene(frame, scene), "extract a perspective match scene again");
   check(scene.camera_draw == 0, "choose first perspective draw as camera");
   check(scene.geometries.size() == 1, "exclude another camera and line-only draw");
   check(scene.vertices.size() == 3 && scene.indices.size() == 3,

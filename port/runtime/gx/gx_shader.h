@@ -111,5 +111,6 @@ void set_css_scene(bool on);   // the character select is on screen this frame (
 void set_true_widescreen(bool on, float aspect = 16.0f / 9.0f);   // aspect: the shape the world widens to
 float true_widescreen_factor();   // the x scale widened draws get (219/320 at 16:9)
 bool true_widescreen_active();   // what the renderer is doing now (True 16:9 on and the Slippi code off)
+float true_widen();   // the factor True widescreen scales a widened projection's x row by (219/320 at 16:9)
 
 }  // namespace gx

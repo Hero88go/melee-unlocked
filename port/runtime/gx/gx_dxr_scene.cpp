@@ -2,6 +2,7 @@
 // construction and traced shading are separate steps and must not be inferred from this module.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_dxr_scene.h"
+#include "gx_shader.h"   // true_widescreen_active, true_widen
 
 #include <algorithm>
 #include <cmath>
@@ -114,6 +115,14 @@ bool build_dxr_scene(const Frame& frame, DxrScene& out,
   }
   if (!camera) return false;
   std::memcpy(out.gx_projection, &camera->xf_regs[0x20], sizeof(out.gx_projection));
+  // The rays look through the lens the picture is drawn with: True widescreen widens the world camera's x row
+  // (gx_shader.cpp fill_vs_constants), so the same scale and shift here. Without it reflections and shadows sat
+  // where a 73:60 picture would have them (Stache, 11-27: displaced at any other aspect ratio).
+  if (true_widescreen_active() && !camera->frustum_backdrop) {
+    const float widen = true_widen();
+    out.gx_projection[0] *= widen;
+    out.gx_projection[1] *= widen;
+  }
   out.projection_type = camera->xf_regs[0x26];
 
   for (const FrameCommand& command : frame.commands) {

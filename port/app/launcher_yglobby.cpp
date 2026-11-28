@@ -954,7 +954,7 @@ void online_list(HDC dc, const Data& d, RECT p) {
     text(dc, q.name, RECT{nx, ny, nameR, ny + S(18)}, g_f.name, C_TEXT);
     const int t = tier_of(q.rating);
     runs(dc, {{q.in_match ? L"In match" : L"Online", g_f.sm, q.in_match ? C_AMBER : C_OK}, {L" \u00B7 ", g_f.sm, C_DIM},
-              {t >= 0 ? kTierName[t] : L"Unranked", g_f.sm, t >= 0 ? kTierColor[t] : RGB(0xAE, 0xB8, 0xC8)}}, x0 + S(38), ny + S(18), S(16), nameR);
+              {t >= 0 ? kTierName[t] : L"No rank yet", g_f.sm, t >= 0 ? kTierColor[t] : RGB(0xAE, 0xB8, 0xC8)}}, x0 + S(38), ny + S(18), S(16), nameR);
     if (q.build) text(dc, kBuildName[q.build], RECT{x0 + S(38), ny + S(34), nameR, ny + S(50)}, g_f.sm, kBuildColor[q.build]);
     if (q.in_match) {
       RECT e = rc(eyeX, midY, S(20), S(24)); text(dc, kEye, e, g_f.icon, C_WATCH, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

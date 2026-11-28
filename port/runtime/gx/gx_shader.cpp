@@ -755,6 +755,7 @@ void set_true_widescreen(bool on, float aspect) {
   g_true_widescreen.store(on, std::memory_order_relaxed);
 }
 bool true_widescreen_active() { return g_true_widescreen.load(std::memory_order_relaxed); }
+float true_widen() { return g_true_widen.load(std::memory_order_relaxed); }
 
 // Arcade look "2D camera": the orthographic projection that puts every point of the plane `d` units
 // in front of the camera where the perspective one `p` (GX layout: p[0] x scale, p[1] x shift, p[2]
